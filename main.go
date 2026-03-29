@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -99,10 +100,15 @@ func main() {
 	w := watcher.New(cfg.StagingDir, time.Duration(cfg.PollIntervalSeconds)*time.Second, func(dirPath string) {
 		item, err := staging.ReadStagingItem(dirPath, cfg.AgentAllowlist)
 		if err != nil {
-			log.Printf("reject %s: %v", dirPath, err)
-			var meta *staging.ItemMetadata
-			routing.RouteReject(dirPath, "validation_failed", meta, logger)
+			reason := staging.RejectReasonFromError(err)
+			log.Printf("reject %s (%s): %v", dirPath, reason, err)
+			routing.RouteReject(dirPath, reason, nil, logger)
 			return
+		}
+		// Write pending placeholder for ordered items before scanning
+		if item.Metadata.Ordered {
+			inboxDir := filepath.Join(cfg.AgentsDir, item.Metadata.DestinationAgent, "workspace", "inbox")
+			routing.WritePending(item, inboxDir)
 		}
 		pool.Input() <- pipeline.ScanRequest{
 			Item:      item,
@@ -235,6 +241,14 @@ func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]eng
 	return matchers, detectors
 }
 
+func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
+	if resp.Item.Metadata.Ordered {
+		itemID := filepath.Base(resp.Item.DirPath)
+		inboxDir := filepath.Join(cfg.AgentsDir, resp.Item.Metadata.DestinationAgent, "workspace", "inbox")
+		routing.RemovePending(itemID, inboxDir)
+	}
+}
+
 func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, rules engine.RuleConfig) error {
 	threshold := rules.QuarantineThreshold
 	if resp.TimedOut {
@@ -244,11 +258,13 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 			TotalScore: 0,
 			Verdict:    engine.VerdictQuarantine,
 		}
+		removePendingForItem(resp, cfg)
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "scan_timeout")
 	}
 
 	if resp.Err != nil {
 		log.Printf("scan error for %s: %v", resp.Item.DirPath, resp.Err)
+		removePendingForItem(resp, cfg)
 		return routing.RouteReject(resp.Item.DirPath, "scan_error", &resp.Item.Metadata, logger)
 	}
 
@@ -260,6 +276,7 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 			TotalScore: 0,
 			Verdict:    engine.VerdictQuarantine,
 		}
+		removePendingForItem(resp, cfg)
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "audit_failure")
 	}
 
@@ -296,13 +313,19 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 
 	if result.Verdict == engine.VerdictQuarantine {
 		notifyDir := cfg.SharedDir + "/glovebox-notifications"
+		removePendingForItem(resp, cfg)
 		return routing.RouteQuarantine(resp.Item, result, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "threshold_exceeded")
 	}
 
 	destDir, err := routing.ValidateDestination(resp.Item.Metadata.DestinationAgent, cfg.AgentsDir, cfg.AgentAllowlist)
 	if err != nil {
+		removePendingForItem(resp, cfg)
 		return routing.RouteReject(resp.Item.DirPath, err.Error(), &resp.Item.Metadata, logger)
 	}
 
-	return routing.RoutePass(resp.Item, result, destDir, logger, resp.Duration)
+	err = routing.RoutePass(resp.Item, result, destDir, logger, resp.Duration)
+	if err == nil {
+		removePendingForItem(resp, cfg)
+	}
+	return err
 }

@@ -16,6 +16,39 @@ func (e ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
+// RejectReasonFromError maps a ReadStagingItem error to a spec-defined reject reason.
+func RejectReasonFromError(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "auth_failure") {
+		return "source_auth_failure"
+	}
+	if strings.Contains(msg, "not in allowlist") {
+		return "unknown_destination"
+	}
+	if strings.Contains(msg, "metadata.json") {
+		return "malformed_metadata"
+	}
+	if strings.Contains(msg, "content") {
+		return "content_unreadable"
+	}
+	return "malformed_metadata"
+}
+
+// RejectReason returns the spec-defined reject reason for a set of validation errors.
+func RejectReason(errs []ValidationError) string {
+	for _, e := range errs {
+		if e.Field == "auth_failure" {
+			return "source_auth_failure"
+		}
+	}
+	for _, e := range errs {
+		if e.Field == "destination_agent" && e.Message != "required" {
+			return "unknown_destination"
+		}
+	}
+	return "malformed_metadata"
+}
+
 func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 	var errs []ValidationError
 
