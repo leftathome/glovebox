@@ -3,13 +3,12 @@ package connector
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 type ItemOptions struct {
@@ -29,20 +28,22 @@ type StagingWriter struct {
 	tmpDir        string
 }
 
-func NewStagingWriter(stagingDir string, connectorName string) *StagingWriter {
+func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, error) {
 	tmpDir := filepath.Join(stagingDir+"-tmp", connectorName)
-	os.MkdirAll(tmpDir, 0755)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return nil, fmt.Errorf("create staging tmp dir: %w", err)
+	}
 	return &StagingWriter{
 		stagingDir:    stagingDir,
 		connectorName: connectorName,
 		tmpDir:        tmpDir,
-	}
+	}, nil
 }
 
 type StagingItem struct {
-	dir  string
-	opts ItemOptions
-	file *os.File
+	dir        string
+	stagingDir string
+	opts       ItemOptions
 }
 
 func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
@@ -51,44 +52,63 @@ func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create item dir: %w", err)
 	}
-	return &StagingItem{dir: dir, opts: opts}, nil
+	return &StagingItem{dir: dir, stagingDir: w.stagingDir, opts: opts}, nil
 }
 
+// WriteContent writes (or appends) content to content.raw.
+// For streaming, use ContentWriter() instead.
 func (si *StagingItem) WriteContent(data []byte) error {
-	path := filepath.Join(si.dir, "content.raw")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	w, err := si.contentFile()
 	if err != nil {
-		return fmt.Errorf("open content.raw: %w", err)
+		return err
 	}
-	defer f.Close()
-	_, err = f.Write(data)
+	defer w.Close()
+	_, err = w.Write(data)
 	return err
 }
 
-func (si *StagingItem) ContentWriter() (io.WriteCloser, error) {
-	path := filepath.Join(si.dir, "content.raw")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open content.raw: %w", err)
-	}
-	return f, nil
+func (si *StagingItem) ContentWriter() (*os.File, error) {
+	return si.contentFile()
 }
 
-func (si *StagingItem) Commit(stagingDir string) error {
-	if err := validateItemOptions(si.opts); err != nil {
-		os.RemoveAll(si.dir)
-		return fmt.Errorf("metadata validation: %w", err)
+func (si *StagingItem) contentFile() (*os.File, error) {
+	path := filepath.Join(si.dir, "content.raw")
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+}
+
+func (si *StagingItem) Commit() error {
+	// Build metadata using the shared type for consistent JSON keys
+	meta := staging.ItemMetadata{
+		Source:           si.opts.Source,
+		Sender:           si.opts.Sender,
+		Subject:          staging.StripSubjectControlChars(si.opts.Subject),
+		Timestamp:        si.opts.Timestamp,
+		DestinationAgent: si.opts.DestinationAgent,
+		ContentType:      si.opts.ContentType,
+		Ordered:          si.opts.Ordered,
+		AuthFailure:      si.opts.AuthFailure,
 	}
 
-	meta := map[string]any{
-		"source":            si.opts.Source,
-		"sender":            si.opts.Sender,
-		"subject":           stripControlChars(si.opts.Subject),
-		"timestamp":         si.opts.Timestamp.Format(time.RFC3339),
-		"destination_agent": si.opts.DestinationAgent,
-		"content_type":      si.opts.ContentType,
-		"ordered":           si.opts.Ordered,
-		"auth_failure":      si.opts.AuthFailure,
+	// Validate using the shared validation (skip allowlist check -- glovebox handles that)
+	if errs := staging.Validate(meta, nil); len(errs) > 0 {
+		// Filter out destination_agent allowlist errors (nil allowlist means no check)
+		var real []staging.ValidationError
+		for _, e := range errs {
+			if e.Field == "destination_agent" && e.Message == "required" {
+				real = append(real, e)
+			} else if e.Field != "destination_agent" {
+				real = append(real, e)
+			}
+		}
+		if len(real) > 0 {
+			os.RemoveAll(si.dir)
+			return fmt.Errorf("metadata validation: %v", real)
+		}
+	}
+
+	if meta.DestinationAgent == "" {
+		os.RemoveAll(si.dir)
+		return fmt.Errorf("metadata validation: destination_agent is required")
 	}
 
 	data, err := json.Marshal(meta)
@@ -99,7 +119,7 @@ func (si *StagingItem) Commit(stagingDir string) error {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 
-	destDir := filepath.Join(stagingDir, filepath.Base(si.dir))
+	destDir := filepath.Join(si.stagingDir, filepath.Base(si.dir))
 	if err := os.Rename(si.dir, destDir); err != nil {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
@@ -117,55 +137,4 @@ func (w *StagingWriter) CleanOrphans() {
 			os.RemoveAll(filepath.Join(w.tmpDir, e.Name()))
 		}
 	}
-}
-
-func validateItemOptions(opts ItemOptions) error {
-	if opts.DestinationAgent == "" {
-		return fmt.Errorf("destination_agent is required")
-	}
-	if len(opts.Source) > 1024 {
-		return fmt.Errorf("source exceeds 1024 characters")
-	}
-	if len(opts.Sender) > 1024 {
-		return fmt.Errorf("sender exceeds 1024 characters")
-	}
-	if len(opts.Subject) > 1024 {
-		return fmt.Errorf("subject exceeds 1024 characters")
-	}
-	if len(opts.DestinationAgent) > 64 {
-		return fmt.Errorf("destination_agent exceeds 64 characters")
-	}
-	if len(opts.ContentType) > 64 {
-		return fmt.Errorf("content_type exceeds 64 characters")
-	}
-	for _, field := range []struct{ name, value string }{
-		{"source", opts.Source},
-		{"sender", opts.Sender},
-		{"destination_agent", opts.DestinationAgent},
-		{"content_type", opts.ContentType},
-	} {
-		if hasControlCharsConnector(field.value) {
-			return fmt.Errorf("%s contains control characters", field.name)
-		}
-	}
-	return nil
-}
-
-func hasControlCharsConnector(s string) bool {
-	for _, r := range s {
-		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
-			return true
-		}
-	}
-	return false
-}
-
-func stripControlChars(s string) string {
-	result := make([]rune, 0, len(s))
-	for _, r := range s {
-		if !unicode.IsControl(r) || r == '\n' || r == '\r' || r == '\t' {
-			result = append(result, r)
-		}
-	}
-	return string(result)
 }

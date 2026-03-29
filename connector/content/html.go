@@ -13,13 +13,13 @@ func HTMLToText(htmlContent []byte) []byte {
 
 	for {
 		tt := tokenizer.Next()
-		switch tt {
-		case html.ErrorToken:
-			if tokenizer.Err() == io.EOF {
-				return buf.Bytes()
+		if tt == html.ErrorToken {
+			if tokenizer.Err() != io.EOF {
+				// Malformed HTML -- return what we have
 			}
 			return buf.Bytes()
-		case html.TextToken:
+		}
+		if tt == html.TextToken {
 			buf.Write(tokenizer.Text())
 		}
 	}

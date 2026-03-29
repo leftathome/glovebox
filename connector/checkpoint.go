@@ -10,8 +10,8 @@ import (
 
 type Checkpoint interface {
 	Load(key string) (string, bool)
-	Save(key string, value string)
-	Delete(key string)
+	Save(key string, value string) error
+	Delete(key string) error
 }
 
 type fileCheckpoint struct {
@@ -48,29 +48,32 @@ func (c *fileCheckpoint) Load(key string) (string, bool) {
 	return v, ok
 }
 
-func (c *fileCheckpoint) Save(key string, value string) {
+func (c *fileCheckpoint) Save(key string, value string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data[key] = value
-	c.persist()
+	return c.persist()
 }
 
-func (c *fileCheckpoint) Delete(key string) {
+func (c *fileCheckpoint) Delete(key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.data, key)
-	c.persist()
+	return c.persist()
 }
 
-func (c *fileCheckpoint) persist() {
+func (c *fileCheckpoint) persist() error {
 	data, err := json.Marshal(c.data)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal checkpoint: %w", err)
 	}
 
 	tmpPath := c.path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return
+		return fmt.Errorf("write checkpoint tmp: %w", err)
 	}
-	os.Rename(tmpPath, c.path)
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		return fmt.Errorf("rename checkpoint: %w", err)
+	}
+	return nil
 }

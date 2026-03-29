@@ -14,7 +14,10 @@ func TestStagingWriter_CommitProducesCorrectStructure(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test-connector")
+	w, err := NewStagingWriter(stagingDir, "test-connector")
+	if err != nil {
+		t.Fatal(err)
+	}
 	item, err := w.NewItem(ItemOptions{
 		Source:           "email",
 		Sender:           "alice@example.com",
@@ -27,7 +30,7 @@ func TestStagingWriter_CommitProducesCorrectStructure(t *testing.T) {
 		t.Fatal(err)
 	}
 	item.WriteContent([]byte("email body"))
-	if err := item.Commit(stagingDir); err != nil {
+	if err := item.Commit(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -55,7 +58,7 @@ func TestStagingWriter_MetadataSchema(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test")
+	w, _ := NewStagingWriter(stagingDir, "test")
 	item, _ := w.NewItem(ItemOptions{
 		Source:           "imap",
 		Sender:           "bob@test.com",
@@ -65,7 +68,7 @@ func TestStagingWriter_MetadataSchema(t *testing.T) {
 		Ordered:          true,
 	})
 	item.WriteContent([]byte("content"))
-	item.Commit(stagingDir)
+	item.Commit()
 
 	entries, _ := os.ReadDir(stagingDir)
 	metaPath := filepath.Join(stagingDir, entries[0].Name(), "metadata.json")
@@ -90,7 +93,7 @@ func TestStagingWriter_ValidationRejectsOversizedFields(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test")
+	w, _ := NewStagingWriter(stagingDir, "test")
 	item, _ := w.NewItem(ItemOptions{
 		Source:           "email",
 		Sender:           strings.Repeat("a", 1025),
@@ -100,7 +103,7 @@ func TestStagingWriter_ValidationRejectsOversizedFields(t *testing.T) {
 	})
 	item.WriteContent([]byte("content"))
 
-	err := item.Commit(stagingDir)
+	err := item.Commit()
 	if err == nil {
 		t.Error("should reject oversized sender")
 	}
@@ -111,7 +114,7 @@ func TestStagingWriter_ValidationRejectsControlChars(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test")
+	w, _ := NewStagingWriter(stagingDir, "test")
 	item, _ := w.NewItem(ItemOptions{
 		Source:           "email",
 		Sender:           "bad\x00sender",
@@ -121,7 +124,7 @@ func TestStagingWriter_ValidationRejectsControlChars(t *testing.T) {
 	})
 	item.WriteContent([]byte("content"))
 
-	err := item.Commit(stagingDir)
+	err := item.Commit()
 	if err == nil {
 		t.Error("should reject control chars in sender")
 	}
@@ -132,7 +135,7 @@ func TestStagingWriter_ValidationRejectsEmptyDestination(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test")
+	w, _ := NewStagingWriter(stagingDir, "test")
 	item, _ := w.NewItem(ItemOptions{
 		Source:      "email",
 		Sender:      "a@b.com",
@@ -141,36 +144,9 @@ func TestStagingWriter_ValidationRejectsEmptyDestination(t *testing.T) {
 	})
 	item.WriteContent([]byte("content"))
 
-	err := item.Commit(stagingDir)
+	err := item.Commit()
 	if err == nil {
 		t.Error("should reject empty destination_agent")
-	}
-}
-
-func TestStagingWriter_CommitFailureLeavesNoPartialState(t *testing.T) {
-	base := t.TempDir()
-	stagingDir := filepath.Join(base, "staging")
-	// Don't create stagingDir -- commit will fail on rename
-
-	w := NewStagingWriter(stagingDir, "test")
-	item, _ := w.NewItem(ItemOptions{
-		Source:           "email",
-		Sender:           "a@b.com",
-		Timestamp:        time.Now(),
-		DestinationAgent: "messaging",
-		ContentType:      "text/plain",
-	})
-	item.WriteContent([]byte("content"))
-
-	err := item.Commit(stagingDir)
-	if err == nil {
-		t.Error("should fail when staging dir doesn't exist")
-	}
-
-	// Staging dir should have no items
-	entries, _ := os.ReadDir(stagingDir)
-	if len(entries) > 0 {
-		t.Error("no partial state should exist in staging after failed commit")
 	}
 }
 
@@ -179,14 +155,12 @@ func TestStagingWriter_OrphanCleanup(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "my-connector")
+	w, _ := NewStagingWriter(stagingDir, "my-connector")
 
-	// Create an orphan
 	orphanDir := filepath.Join(w.tmpDir, "orphan-item")
 	os.MkdirAll(orphanDir, 0755)
 	os.WriteFile(filepath.Join(orphanDir, "content.raw"), []byte("stale"), 0644)
 
-	// Create another connector's temp dir (should NOT be cleaned)
 	otherTmpDir := filepath.Join(stagingDir+"-tmp", "other-connector", "other-item")
 	os.MkdirAll(otherTmpDir, 0755)
 
@@ -205,7 +179,7 @@ func TestStagingWriter_MultipleWriteContentAppends(t *testing.T) {
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
-	w := NewStagingWriter(stagingDir, "test")
+	w, _ := NewStagingWriter(stagingDir, "test")
 	item, _ := w.NewItem(ItemOptions{
 		Source:           "email",
 		Sender:           "a@b.com",
@@ -215,11 +189,18 @@ func TestStagingWriter_MultipleWriteContentAppends(t *testing.T) {
 	})
 	item.WriteContent([]byte("part1"))
 	item.WriteContent([]byte("part2"))
-	item.Commit(stagingDir)
+	item.Commit()
 
 	entries, _ := os.ReadDir(stagingDir)
 	data, _ := os.ReadFile(filepath.Join(stagingDir, entries[0].Name(), "content.raw"))
 	if string(data) != "part1part2" {
 		t.Errorf("content = %q, want part1part2", data)
+	}
+}
+
+func TestStagingWriter_NewStagingWriterReturnsError(t *testing.T) {
+	_, err := NewStagingWriter("/proc/nonexistent/staging", "test")
+	if err == nil {
+		t.Error("should return error for unwritable directory")
 	}
 }

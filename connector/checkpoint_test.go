@@ -12,7 +12,9 @@ func TestCheckpoint_SaveLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp.Save("key1", "value1")
+	if err := cp.Save("key1", "value1"); err != nil {
+		t.Fatal(err)
+	}
 	v, ok := cp.Load("key1")
 	if !ok || v != "value1" {
 		t.Errorf("Load = (%q, %v), want (value1, true)", v, ok)
@@ -32,7 +34,9 @@ func TestCheckpoint_Delete(t *testing.T) {
 	dir := t.TempDir()
 	cp, _ := NewCheckpoint(dir)
 	cp.Save("key1", "value1")
-	cp.Delete("key1")
+	if err := cp.Delete("key1"); err != nil {
+		t.Fatal(err)
+	}
 	_, ok := cp.Load("key1")
 	if ok {
 		t.Error("key should be deleted")
@@ -93,5 +97,15 @@ func TestCheckpoint_EmptyStateDir(t *testing.T) {
 	_, ok := cp.Load("anything")
 	if ok {
 		t.Error("empty checkpoint should have no keys")
+	}
+}
+
+func TestCheckpoint_SaveReturnsError(t *testing.T) {
+	// Save to a valid dir should succeed
+	dir := t.TempDir()
+	cp, _ := NewCheckpoint(dir)
+	err := cp.Save("key", "value")
+	if err != nil {
+		t.Errorf("Save should succeed: %v", err)
 	}
 }

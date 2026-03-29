@@ -105,8 +105,8 @@ func (lp *LinkPolicy) ruleMatches(rule LinkPolicyRule, u *url.URL) bool {
 	return false
 }
 
-func isPrivateIP(ip net.IP) bool {
-	privateRanges := []string{
+var privateNetworks = func() []*net.IPNet {
+	cidrs := []string{
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
@@ -116,13 +116,17 @@ func isPrivateIP(ip net.IP) bool {
 		"fc00::/7",
 		"fe80::/10",
 	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, n, _ := net.ParseCIDR(cidr)
+		nets = append(nets, n)
+	}
+	return nets
+}()
 
-	for _, cidr := range privateRanges {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(ip) {
+func isPrivateIP(ip net.IP) bool {
+	for _, n := range privateNetworks {
+		if n.Contains(ip) {
 			return true
 		}
 	}
