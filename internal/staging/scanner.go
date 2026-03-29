@@ -10,13 +10,9 @@ func ReadStagingItem(dirPath string, allowlist []string) (StagingItem, error) {
 	contentPath := filepath.Join(dirPath, "content.raw")
 	metadataPath := filepath.Join(dirPath, "metadata.json")
 
-	if _, err := os.Stat(contentPath); err != nil {
-		return StagingItem{}, fmt.Errorf("content.raw missing: %w", err)
-	}
-
 	mf, err := os.Open(metadataPath)
 	if err != nil {
-		return StagingItem{}, fmt.Errorf("metadata.json missing: %w", err)
+		return StagingItem{}, fmt.Errorf("metadata.json: %w", err)
 	}
 	defer mf.Close()
 

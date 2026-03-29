@@ -11,15 +11,13 @@ import (
 
 var base64Pattern = regexp.MustCompile(`[A-Za-z0-9+/]{50,}={0,2}`)
 
-var zeroWidthRunes = map[rune]string{
-	0x200B: "ZERO WIDTH SPACE",
-	0x200C: "ZERO WIDTH NON-JOINER",
-	0x200D: "ZERO WIDTH JOINER",
-	0xFEFF: "BYTE ORDER MARK",
-	0x2060: "WORD JOINER",
-	0x200E: "LEFT-TO-RIGHT MARK",
-	0x200F: "RIGHT-TO-LEFT MARK",
-}
+var zeroWidthSet = func() map[rune]struct{} {
+	m := make(map[rune]struct{}, len(engine.ZeroWidthRunes))
+	for _, r := range engine.ZeroWidthRunes {
+		m[r] = struct{}{}
+	}
+	return m
+}()
 
 type EncodingAnomalyDetector struct{}
 
@@ -38,13 +36,17 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 		})
 	}
 
+	// Single pass for zero-width chars and unusual unicode
 	zwCount := 0
-	text := string(content)
-	for _, r := range text {
-		if _, ok := zeroWidthRunes[r]; ok {
+	unusualUnicodeCount := 0
+	for _, r := range string(content) {
+		if _, ok := zeroWidthSet[r]; ok {
 			zwCount++
+		} else if r > 0x7E && !unicode.IsLetter(r) && !unicode.IsPunct(r) && !unicode.IsSpace(r) {
+			unusualUnicodeCount++
 		}
 	}
+
 	if zwCount > 0 {
 		signals = append(signals, engine.Signal{
 			Name:    "suspicious_encoding",
@@ -53,17 +55,11 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 		})
 	}
 
-	unicodeEscapeCount := 0
-	for _, r := range text {
-		if r > 0x7E && !unicode.IsLetter(r) && !unicode.IsPunct(r) && !unicode.IsSpace(r) {
-			unicodeEscapeCount++
-		}
-	}
-	if unicodeEscapeCount > 10 {
+	if unusualUnicodeCount > 10 {
 		signals = append(signals, engine.Signal{
 			Name:    "suspicious_encoding",
 			Weight:  0.7,
-			Matched: fmt.Sprintf("excessive unusual unicode: %d characters", unicodeEscapeCount),
+			Matched: fmt.Sprintf("excessive unusual unicode: %d characters", unusualUnicodeCount),
 		})
 	}
 

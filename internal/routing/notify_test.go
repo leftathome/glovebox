@@ -40,7 +40,7 @@ func testScanResult() engine.ScanResult {
 
 func TestWriteQuarantineNotification_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteQuarantineNotification(testItem(), testScanResult(), 1234, dir)
+	err := WriteQuarantineNotification("20260328-150405-abc123", testItem(), testScanResult(), 1234, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestWriteQuarantineNotification_CreatesFile(t *testing.T) {
 
 func TestWriteQuarantineNotification_CorrectSchema(t *testing.T) {
 	dir := t.TempDir()
-	WriteQuarantineNotification(testItem(), testScanResult(), 1234, dir)
+	WriteQuarantineNotification("20260328-150405-abc123", testItem(), testScanResult(), 1234, dir)
 
 	entries, _ := os.ReadDir(dir)
 	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
@@ -83,7 +83,7 @@ func TestWriteQuarantineNotification_CorrectSchema(t *testing.T) {
 
 func TestWriteQuarantineNotification_NoRawContent(t *testing.T) {
 	dir := t.TempDir()
-	WriteQuarantineNotification(testItem(), testScanResult(), 1234, dir)
+	WriteQuarantineNotification("20260328-150405-abc123", testItem(), testScanResult(), 1234, dir)
 
 	entries, _ := os.ReadDir(dir)
 	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
@@ -98,9 +98,8 @@ func TestWriteQuarantineNotification_NoRawContent(t *testing.T) {
 
 func TestWriteQuarantineNotification_MultipleCreateSeparateFiles(t *testing.T) {
 	dir := t.TempDir()
-	WriteQuarantineNotification(testItem(), testScanResult(), 100, dir)
-	time.Sleep(time.Millisecond)
-	WriteQuarantineNotification(testItem(), testScanResult(), 200, dir)
+	WriteQuarantineNotification("20260328-150405-aaa111", testItem(), testScanResult(), 100, dir)
+	WriteQuarantineNotification("20260328-150406-bbb222", testItem(), testScanResult(), 200, dir)
 
 	entries, _ := os.ReadDir(dir)
 	if len(entries) < 2 {

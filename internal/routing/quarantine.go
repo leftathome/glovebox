@@ -68,7 +68,7 @@ func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, qua
 		return fmt.Errorf("write quarantine metadata: %w", err)
 	}
 
-	if err := WriteQuarantineNotification(item, scanResult, int64(len(content)), notifyDir); err != nil {
+	if err := WriteQuarantineNotification(qID, item, scanResult, int64(len(content)), notifyDir); err != nil {
 		return fmt.Errorf("write notification: %w", err)
 	}
 
@@ -81,7 +81,7 @@ func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, qua
 			ContentLength:  int64(len(content)),
 			Signals:        scanResult.Signals,
 			TotalScore:     scanResult.TotalScore,
-			Verdict:        "quarantine",
+			Verdict:        string(engine.VerdictQuarantine),
 			Destination:    item.Metadata.DestinationAgent,
 			ScanDurationMs: scanDuration.Milliseconds(),
 		},

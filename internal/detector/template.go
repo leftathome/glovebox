@@ -19,7 +19,6 @@ var templatePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)you\s+are\s+a\s+helpful\s+assistant`),
 }
 
-// conversationalPatterns match common non-prompt uses of "you are"
 var conversationalPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)you\s+are\s+invited`),
 	regexp.MustCompile(`(?i)you\s+are\s+welcome`),
@@ -35,21 +34,6 @@ type TemplateStructureDetector struct{}
 func (d TemplateStructureDetector) Detect(content []byte) ([]engine.Signal, error) {
 	text := string(content)
 
-	for _, cp := range conversationalPatterns {
-		if cp.Match(content) {
-			hasOtherPatterns := false
-			for _, tp := range templatePatterns {
-				if tp.MatchString(text) && !isConversationalMatch(tp, text) {
-					hasOtherPatterns = true
-					break
-				}
-			}
-			if !hasOtherPatterns {
-				return nil, nil
-			}
-		}
-	}
-
 	var matched []string
 	for _, tp := range templatePatterns {
 		if tp.MatchString(text) {
@@ -61,6 +45,11 @@ func (d TemplateStructureDetector) Detect(content []byte) ([]engine.Signal, erro
 		return nil, nil
 	}
 
+	// If conversational patterns explain all the matches, suppress
+	if isFullyConversational(text) {
+		return nil, nil
+	}
+
 	return []engine.Signal{{
 		Name:    "prompt_template_structure",
 		Weight:  0.6,
@@ -68,16 +57,31 @@ func (d TemplateStructureDetector) Detect(content []byte) ([]engine.Signal, erro
 	}}, nil
 }
 
-func isConversationalMatch(tp *regexp.Regexp, text string) bool {
-	loc := tp.FindStringIndex(text)
-	if loc == nil {
-		return false
-	}
-	matchedText := text[loc[0]:loc[1]]
+// isFullyConversational returns true when the text contains conversational
+// "you are" phrases but no template patterns that aren't covered by those
+// phrases (e.g., <system> tags, markdown headers, delimiter patterns).
+func isFullyConversational(text string) bool {
+	hasConversational := false
 	for _, cp := range conversationalPatterns {
-		if cp.MatchString(matchedText) {
-			return true
+		if cp.MatchString(text) {
+			hasConversational = true
+			break
 		}
 	}
-	return false
+	if !hasConversational {
+		return false
+	}
+
+	// Check for template patterns that are NOT "you are" based
+	// (XML tags, markdown headers, delimiters are never conversational)
+	for _, tp := range templatePatterns {
+		if !tp.MatchString(text) {
+			continue
+		}
+		s := tp.String()
+		if !strings.Contains(s, "you\\s+are") && !strings.Contains(s, "your\\s+instructions") {
+			return false
+		}
+	}
+	return true
 }

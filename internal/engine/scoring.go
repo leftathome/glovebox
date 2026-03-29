@@ -16,6 +16,7 @@ type Verdict string
 const (
 	VerdictPass       Verdict = "pass"
 	VerdictQuarantine Verdict = "quarantine"
+	VerdictReject     Verdict = "reject"
 )
 
 type ScanResult struct {

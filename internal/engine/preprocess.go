@@ -15,7 +15,9 @@ type PreprocessedContent struct {
 	RawHTML    []byte // For text/html: normalized but pre-strip (rules run against both)
 }
 
-var zeroWidthRunes = []rune{
+// ZeroWidthRunes is the canonical list of zero-width Unicode characters
+// stripped during pre-processing and flagged by the encoding anomaly detector.
+var ZeroWidthRunes = []rune{
 	0x200B, // zero-width space
 	0x200C, // zero-width non-joiner
 	0x200D, // zero-width joiner
@@ -47,8 +49,8 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 }
 
 var zeroWidthSet = func() map[rune]bool {
-	m := make(map[rune]bool, len(zeroWidthRunes))
-	for _, r := range zeroWidthRunes {
+	m := make(map[rune]bool, len(ZeroWidthRunes))
+	for _, r := range ZeroWidthRunes {
 		m[r] = true
 	}
 	return m

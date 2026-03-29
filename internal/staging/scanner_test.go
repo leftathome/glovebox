@@ -48,12 +48,14 @@ func TestReadStagingItem_MissingContent(t *testing.T) {
 	os.MkdirAll(itemDir, 0755)
 	os.WriteFile(filepath.Join(itemDir, "metadata.json"), []byte(validMetadataJSON), 0644)
 
-	_, err := ReadStagingItem(itemDir, scanAllowlist)
-	if err == nil {
-		t.Fatal("expected error for missing content.raw")
+	// Scanner no longer stat-checks content.raw (TOCTOU fix).
+	// It stores the path; routing will fail when it tries to read.
+	item, err := ReadStagingItem(itemDir, scanAllowlist)
+	if err != nil {
+		t.Fatalf("scanner should succeed with valid metadata: %v", err)
 	}
-	if !strings.Contains(err.Error(), "content.raw") {
-		t.Errorf("error should mention content.raw: %v", err)
+	if item.ContentPath != filepath.Join(itemDir, "content.raw") {
+		t.Errorf("content path = %q", item.ContentPath)
 	}
 }
 

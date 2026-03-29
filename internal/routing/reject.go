@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/audit"
+	"github.com/leftathome/glovebox/internal/engine"
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
@@ -24,7 +25,7 @@ func RouteReject(itemPath string, reason string, metadata *staging.ItemMetadata,
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			Source:      source,
 			Sender:      sender,
-			Verdict:     "reject",
+			Verdict:     string(engine.VerdictReject),
 			Destination: destination,
 		},
 		Reason: reason,
