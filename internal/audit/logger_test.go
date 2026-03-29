@@ -131,3 +131,45 @@ func TestNewLogger_FailsOnBadDir(t *testing.T) {
 		t.Fatal("expected error for nonexistent directory")
 	}
 }
+
+func TestLogger_NotDegradedInitially(t *testing.T) {
+	dir := t.TempDir()
+	logger, _ := NewLogger(dir)
+	defer logger.Close()
+	if logger.InDegradedMode() {
+		t.Error("should not be degraded initially")
+	}
+}
+
+func TestLogger_DegradedAfterWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	logger, _ := NewLogger(dir)
+	// Close the file to force write failure
+	logger.passFile.Close()
+	logger.LogPass(PassEntry{AuditEntry: AuditEntry{Verdict: "pass"}})
+	if !logger.InDegradedMode() {
+		t.Error("should be degraded after write failure")
+	}
+}
+
+func TestLogger_DegradedClearsOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	logger, _ := NewLogger(dir)
+	defer logger.Close()
+
+	// Force degraded by closing and reopening pass file
+	logger.passFile.Close()
+	logger.LogPass(PassEntry{AuditEntry: AuditEntry{Verdict: "pass"}})
+	if !logger.InDegradedMode() {
+		t.Fatal("should be degraded")
+	}
+
+	// Reopen pass file and write successfully via reject (which uses a different file)
+	logger.LogReject(RejectEntry{
+		AuditEntry: AuditEntry{Verdict: "reject"},
+		Reason:     "test",
+	})
+	if logger.InDegradedMode() {
+		t.Error("should clear degraded after successful write")
+	}
+}

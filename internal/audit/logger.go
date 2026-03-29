@@ -37,9 +37,10 @@ type RejectEntry struct {
 }
 
 type Logger struct {
-	mu       sync.Mutex
-	passFile *os.File
+	mu         sync.Mutex
+	passFile   *os.File
 	rejectFile *os.File
+	degraded   bool
 }
 
 func NewLogger(dir string) (*Logger, error) {
@@ -84,19 +85,28 @@ func (l *Logger) LogReject(entry RejectEntry) error {
 	return l.appendJSONL(l.rejectFile, entry)
 }
 
+func (l *Logger) InDegradedMode() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.degraded
+}
+
 func (l *Logger) appendJSONL(f *os.File, v any) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	data, err := json.Marshal(v)
 	if err != nil {
+		l.degraded = true
 		return fmt.Errorf("marshal audit entry: %w", err)
 	}
 
 	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
+		l.degraded = true
 		return fmt.Errorf("write audit log: %w", err)
 	}
 
+	l.degraded = false
 	return nil
 }
