@@ -16,20 +16,27 @@ type Matcher interface {
 	Match(content []byte, patterns []string) ([]MatchResult, error)
 }
 
+func findAllOffsets(haystack []byte, needle []byte) []int {
+	var positions []int
+	offset := 0
+	for {
+		idx := bytes.Index(haystack[offset:], needle)
+		if idx == -1 {
+			break
+		}
+		positions = append(positions, offset+idx)
+		offset += idx + len(needle)
+	}
+	return positions
+}
+
 type SubstringMatcher struct{}
 
 func (m SubstringMatcher) Match(content []byte, patterns []string) ([]MatchResult, error) {
 	var results []MatchResult
 	for _, p := range patterns {
-		pat := []byte(p)
-		offset := 0
-		for {
-			idx := bytes.Index(content[offset:], pat)
-			if idx == -1 {
-				break
-			}
-			results = append(results, MatchResult{Pattern: p, Position: offset + idx})
-			offset += idx + len(pat)
+		for _, pos := range findAllOffsets(content, []byte(p)) {
+			results = append(results, MatchResult{Pattern: p, Position: pos})
 		}
 	}
 	return results, nil
@@ -41,15 +48,8 @@ func (m CaseInsensitiveMatcher) Match(content []byte, patterns []string) ([]Matc
 	lower := bytes.ToLower(content)
 	var results []MatchResult
 	for _, p := range patterns {
-		pat := []byte(strings.ToLower(p))
-		offset := 0
-		for {
-			idx := bytes.Index(lower[offset:], pat)
-			if idx == -1 {
-				break
-			}
-			results = append(results, MatchResult{Pattern: p, Position: offset + idx})
-			offset += idx + len(pat)
+		for _, pos := range findAllOffsets(lower, []byte(strings.ToLower(p))) {
+			results = append(results, MatchResult{Pattern: p, Position: pos})
 		}
 	}
 	return results, nil

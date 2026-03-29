@@ -6,25 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/leftathome/glovebox/internal/engine"
 )
 
-type SignalEntry struct {
-	Name    string  `json:"name"`
-	Weight  float64 `json:"weight"`
-	Matched string  `json:"matched"`
-}
-
 type AuditEntry struct {
-	Timestamp      string        `json:"timestamp"`
-	Source         string        `json:"source"`
-	Sender         string        `json:"sender"`
-	ContentHash    string        `json:"content_hash"`
-	ContentLength  int64         `json:"content_length"`
-	Signals        []SignalEntry `json:"signals"`
-	TotalScore     float64       `json:"total_score"`
-	Verdict        string        `json:"verdict"`
-	Destination    string        `json:"destination"`
-	ScanDurationMs int64         `json:"scan_duration_ms"`
+	Timestamp      string          `json:"timestamp"`
+	Source         string          `json:"source"`
+	Sender         string          `json:"sender"`
+	ContentHash    string          `json:"content_hash"`
+	ContentLength  int64           `json:"content_length"`
+	Signals        []engine.Signal `json:"signals"`
+	TotalScore     float64         `json:"total_score"`
+	Verdict        string          `json:"verdict"`
+	Destination    string          `json:"destination"`
+	ScanDurationMs int64           `json:"scan_duration_ms"`
 }
 
 type PassEntry struct {
@@ -92,16 +88,18 @@ func (l *Logger) InDegradedMode() bool {
 }
 
 func (l *Logger) appendJSONL(f *os.File, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		l.mu.Lock()
+		l.degraded = true
+		l.mu.Unlock()
+		return fmt.Errorf("marshal audit entry: %w", err)
+	}
+	data = append(data, '\n')
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	data, err := json.Marshal(v)
-	if err != nil {
-		l.degraded = true
-		return fmt.Errorf("marshal audit entry: %w", err)
-	}
-
-	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
 		l.degraded = true
 		return fmt.Errorf("write audit log: %w", err)

@@ -12,6 +12,8 @@ import (
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
+const pendingSuffix = ".pending.json"
+
 type PendingInfo struct {
 	Status     string `json:"status"`
 	Source     string `json:"source"`
@@ -22,7 +24,7 @@ type PendingInfo struct {
 }
 
 func PendingFilename(itemID string) string {
-	return itemID + ".pending.json"
+	return itemID + pendingSuffix
 }
 
 func WritePending(item staging.StagingItem, agentInboxDir string) error {
@@ -67,7 +69,7 @@ func CleanStalePending(agentsDir string, agentNames []string) {
 			continue
 		}
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".pending.json") {
+			if strings.HasSuffix(e.Name(), pendingSuffix) {
 				path := filepath.Join(inboxDir, e.Name())
 				log.Printf("removing stale pending file: %s", path)
 				os.Remove(path)

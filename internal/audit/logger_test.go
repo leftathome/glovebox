@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/leftathome/glovebox/internal/engine"
 )
 
 func TestLogPass_AppendsValidJSONL(t *testing.T) {
@@ -21,7 +23,7 @@ func TestLogPass_AppendsValidJSONL(t *testing.T) {
 		Sender:         "alice@example.com",
 		ContentHash:    "abc123",
 		ContentLength:  100,
-		Signals:        []SignalEntry{},
+		Signals:        []engine.Signal{},
 		TotalScore:     0.0,
 		Verdict:        "pass",
 		Destination:    "messaging",
@@ -51,7 +53,7 @@ func TestLogReject_AppendsValidJSONL(t *testing.T) {
 			Sender:         "attacker@evil.com",
 			ContentHash:    "def456",
 			ContentLength:  500,
-			Signals:        []SignalEntry{{Name: "instruction_override", Weight: 1.0, Matched: "ignore previous"}},
+			Signals:        []engine.Signal{{Name: "instruction_override", Weight: 1.0, Matched: "ignore previous"}},
 			TotalScore:     1.0,
 			Verdict:        "quarantine",
 			Destination:    "messaging",

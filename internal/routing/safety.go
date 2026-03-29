@@ -3,18 +3,12 @@ package routing
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 func ValidateDestination(agent string, agentsDir string, allowlist []string) (string, error) {
-	found := false
-	for _, a := range allowlist {
-		if agent == a {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(allowlist, agent) {
 		return "", fmt.Errorf("unknown_destination: %q not in allowlist", agent)
 	}
 

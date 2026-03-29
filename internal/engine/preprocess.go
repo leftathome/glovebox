@@ -38,20 +38,29 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 	}
 
 	if strings.HasPrefix(contentType, "text/html") {
-		result.RawHTML = make([]byte, len(normalized))
-		copy(result.RawHTML, normalized)
+		// stripHTML reads via bytes.NewReader without mutating, so sharing the slice is safe
+		result.RawHTML = normalized
 		result.Normalized = stripHTML(normalized)
 	}
 
 	return result
 }
 
-func stripZeroWidth(data []byte) []byte {
-	s := string(data)
+var zeroWidthSet = func() map[rune]bool {
+	m := make(map[rune]bool, len(zeroWidthRunes))
 	for _, r := range zeroWidthRunes {
-		s = strings.ReplaceAll(s, string(r), "")
+		m[r] = true
 	}
-	return []byte(s)
+	return m
+}()
+
+func stripZeroWidth(data []byte) []byte {
+	return []byte(strings.Map(func(r rune) rune {
+		if zeroWidthSet[r] {
+			return -1
+		}
+		return r
+	}, string(data)))
 }
 
 func stripHTML(data []byte) []byte {

@@ -2,8 +2,8 @@ package staging
 
 import (
 	"fmt"
+	"slices"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -25,7 +25,7 @@ func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 	if meta.Sender == "" {
 		errs = append(errs, ValidationError{"sender", "required"})
 	}
-	if meta.Timestamp.IsZero() || meta.Timestamp.Equal(time.Time{}) {
+	if meta.Timestamp.IsZero() {
 		errs = append(errs, ValidationError{"timestamp", "required"})
 	}
 	if meta.DestinationAgent == "" {
@@ -35,7 +35,7 @@ func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 		errs = append(errs, ValidationError{"content_type", "required"})
 	}
 
-	if meta.DestinationAgent != "" && !inList(meta.DestinationAgent, allowlist) {
+	if meta.DestinationAgent != "" && !slices.Contains(allowlist, meta.DestinationAgent) {
 		errs = append(errs, ValidationError{"destination_agent", fmt.Sprintf("not in allowlist: %q", meta.DestinationAgent)})
 	}
 
@@ -75,29 +75,26 @@ func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 	return errs
 }
 
+// IsUnsafeControl returns true for control characters that are not
+// permitted in metadata fields (everything except \n, \r, \t).
+func IsUnsafeControl(r rune) bool {
+	return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t'
+}
+
 // StripSubjectControlChars removes control characters from the subject field.
 // Subject is treated differently: control chars are stripped, not rejected.
 func StripSubjectControlChars(subject string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+		if IsUnsafeControl(r) {
 			return -1
 		}
 		return r
 	}, subject)
 }
 
-func inList(s string, list []string) bool {
-	for _, v := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
-}
-
 func hasControlChars(s string) bool {
 	for _, r := range s {
-		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+		if IsUnsafeControl(r) {
 			return true
 		}
 	}
