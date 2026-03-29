@@ -1,0 +1,16 @@
+{
+  "staging_dir": "/data/glovebox/staging",
+  "quarantine_dir": "/data/glovebox/quarantine",
+  "audit_dir": "/data/glovebox/audit",
+  "failed_dir": "/data/glovebox/failed",
+  "agents_dir": "/data/agents",
+  "shared_dir": "/data/shared",
+  "agent_allowlist": ["messaging", "media", "calendar", "itinerary"],
+  "metrics_port": 9090,
+  "watch_mode": "fsnotify",
+  "poll_interval_seconds": 5,
+  "rules_file": "/etc/glovebox/rules.json",
+  "scan_workers": 4,
+  "scan_timeout_seconds": 30,
+  "scan_chunk_size_bytes": 262144
+}
