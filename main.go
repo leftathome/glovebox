@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/leftathome/glovebox/internal/audit"
 	"github.com/leftathome/glovebox/internal/config"
 	"github.com/leftathome/glovebox/internal/detector"
@@ -63,7 +66,7 @@ func main() {
 	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
 
 	router := pipeline.NewRouter(func(resp pipeline.ScanResponse) error {
-		return deliverResult(resp, cfg, logger, rules)
+		return deliverResult(resp, cfg, logger, rules, m)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,6 +130,40 @@ func main() {
 	}()
 
 	go w.Run(ctx)
+
+	// Periodically rescan items in failed/ directory
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.PollIntervalSeconds) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				entries, err := os.ReadDir(cfg.FailedDir)
+				if err != nil {
+					continue
+				}
+				for _, e := range entries {
+					if !e.IsDir() {
+						continue
+					}
+					itemDir := filepath.Join(cfg.FailedDir, e.Name())
+					item, err := staging.ReadStagingItem(itemDir, cfg.AgentAllowlist)
+					if err != nil {
+						log.Printf("failed rescan: reject %s: %v", itemDir, err)
+						routing.RouteReject(itemDir, staging.RejectReasonFromError(err), nil, logger)
+						continue
+					}
+					pool.Input() <- pipeline.ScanRequest{
+						Item:      item,
+						Matchers:  matchers,
+						Detectors: detectors,
+					}
+				}
+			}
+		}
+	}()
 
 	log.Printf("glovebox v0.1.0 started: watching %s, %d workers, timeout %ds",
 		cfg.StagingDir, cfg.ScanWorkers, cfg.ScanTimeoutSeconds)
@@ -249,9 +286,29 @@ func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 	}
 }
 
-func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, rules engine.RuleConfig) error {
+func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, rules engine.RuleConfig, m *gloveboxmetrics.Metrics) error {
+	ctx := context.Background()
 	threshold := rules.QuarantineThreshold
+
+	// Record metrics after routing
+	recordVerdict := func(verdict string) {
+		attrs := metric.WithAttributes(
+			attribute.String("verdict", verdict),
+			attribute.String("destination", resp.Item.Metadata.DestinationAgent),
+			attribute.String("source", resp.Item.Metadata.Source),
+		)
+		m.ItemsProcessed.Add(ctx, 1, attrs)
+		m.ProcessingDuration.Record(ctx, resp.Duration.Seconds(),
+			metric.WithAttributes(attribute.String("source", resp.Item.Metadata.Source)))
+		for _, sig := range resp.Signals {
+			m.SignalsTriggered.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("rule_name", sig.Name)))
+		}
+	}
+
 	if resp.TimedOut {
+		m.ScanTimeouts.Add(ctx, 1,
+			metric.WithAttributes(attribute.String("source", resp.Item.Metadata.Source)))
 		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		scanResult := engine.ScanResult{
 			Signals:    resp.Signals,
@@ -259,17 +316,19 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 			Verdict:    engine.VerdictQuarantine,
 		}
 		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "scan_timeout")
 	}
 
 	if resp.Err != nil {
-		log.Printf("scan error for %s: %v", resp.Item.DirPath, resp.Err)
+		log.Printf("scan error for %s, moving to failed/: %v", resp.Item.DirPath, resp.Err)
 		removePendingForItem(resp, cfg)
-		return routing.RouteReject(resp.Item.DirPath, "scan_error", &resp.Item.Metadata, logger)
+		return routing.RouteToFailed(resp.Item.DirPath, cfg.FailedDir, "scan_error")
 	}
 
 	// Check audit degraded mode -- quarantine everything if audit is broken
 	if logger.InDegradedMode() {
+		m.AuditFailures.Add(ctx, 1)
 		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		scanResult := engine.ScanResult{
 			Signals:    resp.Signals,
@@ -277,6 +336,7 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 			Verdict:    engine.VerdictQuarantine,
 		}
 		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "audit_failure")
 	}
 
@@ -314,18 +374,21 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 	if result.Verdict == engine.VerdictQuarantine {
 		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
 		return routing.RouteQuarantine(resp.Item, result, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "threshold_exceeded")
 	}
 
 	destDir, err := routing.ValidateDestination(resp.Item.Metadata.DestinationAgent, cfg.AgentsDir, cfg.AgentAllowlist)
 	if err != nil {
 		removePendingForItem(resp, cfg)
+		recordVerdict("reject")
 		return routing.RouteReject(resp.Item.DirPath, err.Error(), &resp.Item.Metadata, logger)
 	}
 
 	err = routing.RoutePass(resp.Item, result, destDir, logger, resp.Duration)
 	if err == nil {
 		removePendingForItem(resp, cfg)
+		recordVerdict("pass")
 	}
 	return err
 }
