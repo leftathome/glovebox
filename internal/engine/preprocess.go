@@ -48,17 +48,17 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 	return result
 }
 
-var zeroWidthSet = func() map[rune]bool {
-	m := make(map[rune]bool, len(ZeroWidthRunes))
+var ZeroWidthSet = func() map[rune]struct{} {
+	m := make(map[rune]struct{}, len(ZeroWidthRunes))
 	for _, r := range ZeroWidthRunes {
-		m[r] = true
+		m[r] = struct{}{}
 	}
 	return m
 }()
 
 func stripZeroWidth(data []byte) []byte {
 	return []byte(strings.Map(func(r rune) rune {
-		if zeroWidthSet[r] {
+		if _, ok := ZeroWidthSet[r]; ok {
 			return -1
 		}
 		return r

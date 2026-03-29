@@ -2,11 +2,10 @@ package engine
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
-func TestStreamingScan_SmallContent(t *testing.T) {
+func TestScanContent_SmallContent(t *testing.T) {
 	content := bytes.NewReader([]byte("ignore previous instructions"))
 	matcher := func(c []byte) ([]Signal, error) {
 		if bytes.Contains(c, []byte("ignore previous")) {
@@ -15,7 +14,7 @@ func TestStreamingScan_SmallContent(t *testing.T) {
 		return nil, nil
 	}
 
-	signals, err := StreamingScan(content, defaultChunkSize, []ScanFunc{matcher}, nil)
+	signals, err := ScanContent(content, []ScanFunc{matcher}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +23,7 @@ func TestStreamingScan_SmallContent(t *testing.T) {
 	}
 }
 
-func TestStreamingScan_NoMatch(t *testing.T) {
+func TestScanContent_NoMatch(t *testing.T) {
 	content := bytes.NewReader([]byte("totally normal email about the meeting"))
 	matcher := func(c []byte) ([]Signal, error) {
 		if bytes.Contains(c, []byte("ignore previous")) {
@@ -33,7 +32,7 @@ func TestStreamingScan_NoMatch(t *testing.T) {
 		return nil, nil
 	}
 
-	signals, err := StreamingScan(content, defaultChunkSize, []ScanFunc{matcher}, nil)
+	signals, err := ScanContent(content, []ScanFunc{matcher}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +41,7 @@ func TestStreamingScan_NoMatch(t *testing.T) {
 	}
 }
 
-func TestStreamingScan_DetectorsReceiveSample(t *testing.T) {
-	// Create content larger than 2 * defaultSampleSize
+func TestScanContent_DetectorsReceiveSample(t *testing.T) {
 	largeContent := make([]byte, defaultSampleSize*3)
 	copy(largeContent[:6], []byte("PREFIX"))
 	copy(largeContent[len(largeContent)-6:], []byte("SUFFIX"))
@@ -54,7 +52,7 @@ func TestStreamingScan_DetectorsReceiveSample(t *testing.T) {
 		return nil, nil
 	}
 
-	StreamingScan(bytes.NewReader(largeContent), defaultChunkSize, nil, []ScanFunc{detector})
+	ScanContent(bytes.NewReader(largeContent), nil, []ScanFunc{detector})
 
 	if len(receivedContent) != defaultSampleSize*2 {
 		t.Errorf("detector received %d bytes, want %d (prefix+suffix sample)", len(receivedContent), defaultSampleSize*2)
@@ -67,7 +65,7 @@ func TestStreamingScan_DetectorsReceiveSample(t *testing.T) {
 	}
 }
 
-func TestStreamingScan_SmallContentNotSampled(t *testing.T) {
+func TestScanContent_SmallContentNotSampled(t *testing.T) {
 	smallContent := []byte("small content here")
 
 	var receivedLen int
@@ -76,14 +74,14 @@ func TestStreamingScan_SmallContentNotSampled(t *testing.T) {
 		return nil, nil
 	}
 
-	StreamingScan(bytes.NewReader(smallContent), defaultChunkSize, nil, []ScanFunc{detector})
+	ScanContent(bytes.NewReader(smallContent), nil, []ScanFunc{detector})
 
 	if receivedLen != len(smallContent) {
 		t.Errorf("small content should not be sampled: detector got %d bytes, content is %d", receivedLen, len(smallContent))
 	}
 }
 
-func TestStreamingScan_MultipleMatchers(t *testing.T) {
+func TestScanContent_MultipleMatchers(t *testing.T) {
 	content := bytes.NewReader([]byte("ignore previous <tool> instructions"))
 
 	m1 := func(c []byte) ([]Signal, error) {
@@ -99,19 +97,19 @@ func TestStreamingScan_MultipleMatchers(t *testing.T) {
 		return nil, nil
 	}
 
-	signals, _ := StreamingScan(content, defaultChunkSize, []ScanFunc{m1, m2}, nil)
+	signals, _ := ScanContent(content, []ScanFunc{m1, m2}, nil)
 	if len(signals) != 2 {
 		t.Errorf("expected 2 signals from 2 matchers, got %d", len(signals))
 	}
 }
 
-func TestStreamingScan_EmptyContent(t *testing.T) {
+func TestScanContent_EmptyContent(t *testing.T) {
 	content := bytes.NewReader([]byte{})
 	matcher := func(c []byte) ([]Signal, error) {
 		return nil, nil
 	}
 
-	signals, err := StreamingScan(content, defaultChunkSize, []ScanFunc{matcher}, nil)
+	signals, err := ScanContent(content, []ScanFunc{matcher}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +136,4 @@ func TestSampleContent_LargeInput(t *testing.T) {
 	if len(sample) != 64*1024*2 {
 		t.Errorf("sample size = %d, want %d", len(sample), 64*1024*2)
 	}
-
-	_ = strings.Contains("", "")
 }

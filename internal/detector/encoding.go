@@ -11,13 +11,7 @@ import (
 
 var base64Pattern = regexp.MustCompile(`[A-Za-z0-9+/]{50,}={0,2}`)
 
-var zeroWidthSet = func() map[rune]struct{} {
-	m := make(map[rune]struct{}, len(engine.ZeroWidthRunes))
-	for _, r := range engine.ZeroWidthRunes {
-		m[r] = struct{}{}
-	}
-	return m
-}()
+// Uses engine.ZeroWidthSet for membership checks
 
 type EncodingAnomalyDetector struct{}
 
@@ -40,7 +34,7 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 	zwCount := 0
 	unusualUnicodeCount := 0
 	for _, r := range string(content) {
-		if _, ok := zeroWidthSet[r]; ok {
+		if _, ok := engine.ZeroWidthSet[r]; ok {
 			zwCount++
 		} else if r > 0x7E && !unicode.IsLetter(r) && !unicode.IsPunct(r) && !unicode.IsSpace(r) {
 			unusualUnicodeCount++

@@ -5,22 +5,19 @@ import (
 )
 
 const (
-	defaultChunkSize  = 256 * 1024 // 256KB
-	defaultSampleSize = 64 * 1024  // 64KB for prefix+suffix sampling
+	defaultSampleSize = 64 * 1024 // 64KB for prefix+suffix sampling
 )
 
 type ScanFunc func(content []byte) ([]Signal, error)
 
-// StreamingScan reads content in chunks and runs matchers against each chunk
-// with overlap to catch cross-boundary matches. Custom detectors that need
-// a global view receive a sampled prefix+suffix.
-func StreamingScan(reader io.Reader, chunkSize int, matchers []ScanFunc, detectors []ScanFunc) ([]Signal, error) {
-	if chunkSize <= 0 {
-		chunkSize = defaultChunkSize
-	}
-
-	// Read all content -- for Phase 1, content is bounded by scan timeout.
-	// Streaming chunked matching will be refined when the pipeline is assembled.
+// ScanContent reads all content from the reader, runs matchers against
+// the full content, and runs detectors against a sampled prefix+suffix
+// for large content. Phase 1 reads all content into memory; the per-item
+// scan timeout in the worker pool bounds memory exposure.
+//
+// TODO: implement true chunked streaming for Phase 2 to bound memory
+// independent of scan timeout.
+func ScanContent(reader io.Reader, matchers []ScanFunc, detectors []ScanFunc) ([]Signal, error) {
 	content, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
@@ -28,7 +25,6 @@ func StreamingScan(reader io.Reader, chunkSize int, matchers []ScanFunc, detecto
 
 	var allSignals []Signal
 
-	// Run matchers against full content
 	for _, scan := range matchers {
 		signals, err := scan(content)
 		if err != nil {
@@ -37,7 +33,6 @@ func StreamingScan(reader io.Reader, chunkSize int, matchers []ScanFunc, detecto
 		allSignals = append(allSignals, signals...)
 	}
 
-	// Run detectors against sampled prefix+suffix for large content
 	sample := sampleContent(content, defaultSampleSize)
 	for _, scan := range detectors {
 		signals, err := scan(sample)
