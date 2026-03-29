@@ -60,7 +60,15 @@ func TestEncodingAnomaly_MixedAnomalies(t *testing.T) {
 	d := EncodingAnomalyDetector{}
 	content := "Normal\xe2\x80\x8b text with " + strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldY", 3)
 	signals, _ := d.Detect([]byte(content))
-	if len(signals) < 2 {
-		t.Errorf("expected at least 2 signals for mixed anomalies, got %d", len(signals))
+	if len(signals) != 1 {
+		t.Errorf("expected exactly 1 consolidated signal, got %d", len(signals))
+	}
+	if len(signals) == 1 {
+		if !strings.Contains(signals[0].Matched, "base64") {
+			t.Error("signal should mention base64")
+		}
+		if !strings.Contains(signals[0].Matched, "zero-width") {
+			t.Error("signal should mention zero-width")
+		}
 	}
 }

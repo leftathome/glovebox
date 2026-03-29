@@ -62,7 +62,7 @@ func main() {
 	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
 
 	router := pipeline.NewRouter(func(resp pipeline.ScanResponse) error {
-		return deliverResult(resp, cfg, logger, rules.QuarantineThreshold)
+		return deliverResult(resp, cfg, logger, rules)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,7 +218,16 @@ func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]eng
 				log.Fatalf("unknown detector %q for rule %s", rule.Detector, rule.Name)
 			}
 			detectors = append(detectors, func(content []byte) ([]engine.Signal, error) {
-				return d.Detect(content)
+				signals, err := d.Detect(content)
+				if err != nil {
+					return nil, err
+				}
+				// Override signal name and weight with rule config values
+				for i := range signals {
+					signals[i].Name = rule.Name
+					signals[i].Weight = rule.Weight
+				}
+				return signals, nil
 			})
 		}
 	}
@@ -226,7 +235,8 @@ func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]eng
 	return matchers, detectors
 }
 
-func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, threshold float64) error {
+func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, rules engine.RuleConfig) error {
+	threshold := rules.QuarantineThreshold
 	if resp.TimedOut {
 		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		scanResult := engine.ScanResult{
@@ -260,17 +270,23 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 		signals = append(signals, sig)
 	}
 
-	// Find boost rules from the scan signals
+	// Build boost rules from rule config for signals that fired
+	boostRules := make(map[string]float64)
+	for _, rule := range rules.Rules {
+		if rule.Behavior == "weight_booster" {
+			boostRules[rule.Name] = rule.BoostFactor
+		}
+	}
 	for _, sig := range resp.Signals {
-		if sig.Name == "non_english_content" {
-			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: 1.5})
+		if factor, ok := boostRules[sig.Name]; ok {
+			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: factor})
 		}
 	}
 
 	// Remove boost signals from scoring (they have weight 0 and are applied as multipliers)
 	var scoringSignals []engine.Signal
 	for _, sig := range signals {
-		if sig.Name != "non_english_content" {
+		if _, isBoost := boostRules[sig.Name]; !isBoost {
 			scoringSignals = append(scoringSignals, sig)
 		}
 	}

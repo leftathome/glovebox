@@ -1,9 +1,9 @@
 package engine
 
 type Signal struct {
-	Name    string
-	Weight  float64
-	Matched string
+	Name    string  `json:"name"`
+	Weight  float64 `json:"weight"`
+	Matched string  `json:"matched"`
 }
 
 type BoostRule struct {

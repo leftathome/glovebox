@@ -19,6 +19,7 @@ type QuarantineMetadata struct {
 	Timestamp        string          `json:"timestamp"`
 	DestinationAgent string          `json:"destination_agent"`
 	ContentType      string          `json:"content_type"`
+	ContentHash      string          `json:"content_hash"`
 	Signals          []engine.Signal `json:"signals"`
 	TotalScore       float64         `json:"total_score"`
 	Threshold        float64         `json:"threshold"`
@@ -53,6 +54,7 @@ func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, qua
 		Timestamp:        item.Metadata.Timestamp.Format(time.RFC3339),
 		DestinationAgent: item.Metadata.DestinationAgent,
 		ContentType:      item.Metadata.ContentType,
+		ContentHash:      hash,
 		Signals:          scanResult.Signals,
 		TotalScore:       scanResult.TotalScore,
 		Threshold:        threshold,
