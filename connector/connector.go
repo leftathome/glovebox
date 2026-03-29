@@ -19,13 +19,26 @@ type Listener interface {
 	Handler() http.Handler
 }
 
+// ConnectorContext is passed to connectors during setup, providing
+// framework-initialized resources.
+type ConnectorContext struct {
+	Writer *StagingWriter
+	Router *Router
+}
+
+// SetupFunc is an optional initialization callback. If Options.Setup is set,
+// it is called after the runner initializes the staging writer and router,
+// allowing the connector to receive these resources.
+type SetupFunc func(cc ConnectorContext) error
+
 type Options struct {
 	Name         string
 	StagingDir   string
 	StateDir     string
 	ConfigFile   string
 	Connector    Connector
-	PollInterval time.Duration
+	Setup        SetupFunc
+	PollInterval time.Duration // 0 = poll once and exit
 	HealthPort   int
 }
 

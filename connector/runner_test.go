@@ -201,7 +201,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 			Name:         "test",
 			Connector:    mock,
 			PollInterval: 5 * time.Second,
-		}, cp, &ready, testLogger)
+		}, mock, cp, &ready, testLogger)
 	}()
 
 	select {

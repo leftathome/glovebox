@@ -3,6 +3,7 @@ package connector
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -67,7 +68,7 @@ func (si *StagingItem) WriteContent(data []byte) error {
 	return err
 }
 
-func (si *StagingItem) ContentWriter() (*os.File, error) {
+func (si *StagingItem) ContentWriter() (io.WriteCloser, error) {
 	return si.contentFile()
 }
 
@@ -89,26 +90,16 @@ func (si *StagingItem) Commit() error {
 		AuthFailure:      si.opts.AuthFailure,
 	}
 
-	// Validate using the shared validation (skip allowlist check -- glovebox handles that)
-	if errs := staging.Validate(meta, nil); len(errs) > 0 {
-		// Filter out destination_agent allowlist errors (nil allowlist means no check)
-		var real []staging.ValidationError
-		for _, e := range errs {
-			if e.Field == "destination_agent" && e.Message == "required" {
-				real = append(real, e)
-			} else if e.Field != "destination_agent" {
-				real = append(real, e)
-			}
-		}
-		if len(real) > 0 {
-			os.RemoveAll(si.dir)
-			return fmt.Errorf("metadata validation: %v", real)
-		}
-	}
-
+	// Validate using shared validation. Pass destination as its own allowlist
+	// so the allowlist check passes -- glovebox does the real allowlist check.
+	allowlist := []string{meta.DestinationAgent}
 	if meta.DestinationAgent == "" {
 		os.RemoveAll(si.dir)
 		return fmt.Errorf("metadata validation: destination_agent is required")
+	}
+	if errs := staging.Validate(meta, allowlist); len(errs) > 0 {
+		os.RemoveAll(si.dir)
+		return fmt.Errorf("metadata validation: %v", errs)
 	}
 
 	data, err := json.Marshal(meta)

@@ -22,9 +22,6 @@ func Run(opts Options) {
 	if opts.HealthPort == 0 {
 		opts.HealthPort = 8080
 	}
-	if opts.PollInterval == 0 {
-		opts.PollInterval = 5 * time.Minute
-	}
 
 	logger := slog.Default().With("connector", opts.Name)
 	logger.Info("starting connector")
@@ -72,7 +69,13 @@ func Run(opts Options) {
 	}
 	writer.CleanOrphans()
 
-	_ = router // available for connectors via config
+	// Pass resources to connector via setup callback
+	if opts.Setup != nil {
+		if err := opts.Setup(ConnectorContext{Writer: writer, Router: router}); err != nil {
+			logger.Error("connector setup", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -106,12 +109,11 @@ func Run(opts Options) {
 	}()
 
 	// Determine execution mode
-	_, isWatcher := opts.Connector.(Watcher)
-	_, isListener := opts.Connector.(Listener)
+	watcher, isWatcher := opts.Connector.(Watcher)
+	listener, isListener := opts.Connector.(Listener)
 
 	// Start listener if applicable
 	if isListener {
-		listener := opts.Connector.(Listener)
 		listenerServer := &http.Server{
 			Addr:    fmt.Sprintf(":%d", opts.HealthPort+1),
 			Handler: listener.Handler(),
@@ -157,15 +159,19 @@ func Run(opts Options) {
 		return
 	}
 
-	// Poll-only mode: exit after first poll
-	if !isWatcher && !isListener && opts.PollInterval == 0 {
+	// Poll-once mode: PollInterval == 0 and no watcher/listener
+	if opts.PollInterval == 0 && !isWatcher && !isListener {
 		shutdown(healthServer, logger)
 		return
 	}
 
-	// Long-running mode
+	// Long-running mode needs a poll interval
+	if opts.PollInterval == 0 {
+		opts.PollInterval = 5 * time.Minute
+	}
+
 	if isWatcher {
-		runWatchLoop(ctx, opts, cp, &ready, logger)
+		runWatchLoop(ctx, opts, watcher, cp, &ready, logger)
 	} else {
 		runPollLoop(ctx, opts, cp, &ready, logger)
 	}
@@ -181,8 +187,7 @@ func runPoll(ctx context.Context, c Connector, cp Checkpoint, logger *slog.Logge
 	return c.Poll(ctx, cp)
 }
 
-func runWatchLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomic.Bool, logger *slog.Logger) {
-	watcher := opts.Connector.(Watcher)
+func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, ready *atomic.Bool, logger *slog.Logger) {
 	pollTicker := time.NewTicker(opts.PollInterval)
 	defer pollTicker.Stop()
 
@@ -193,7 +198,6 @@ func runWatchLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomi
 			break
 		}
 
-		// Start watch in background
 		watchCtx, watchCancel := context.WithCancel(ctx)
 		watchDone := make(chan error, 1)
 
@@ -211,24 +215,39 @@ func runWatchLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomi
 
 		case err := <-watchDone:
 			watchCancel()
+			wg.Wait()
 			if err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent watch error", "error", err)
 					os.Exit(1)
 				}
 				logger.Warn("watch error, will re-poll and retry", "error", err)
-				time.Sleep(opts.PollInterval)
-				if err := runPoll(ctx, opts.Connector, cp, logger); err == nil {
+				// Wait with cancellation support instead of blocking sleep
+				select {
+				case <-time.After(opts.PollInterval):
+				case <-ctx.Done():
+					return
+				}
+				if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+					if IsPermanent(err) {
+						logger.Error("permanent error during re-poll", "error", err)
+						os.Exit(1)
+					}
+					logger.Warn("re-poll error", "error", err)
+				} else {
 					ready.Store(true)
 				}
 			}
 
 		case <-pollTicker.C:
-			// Pause watch for periodic re-poll
 			watchCancel()
 			wg.Wait()
 			logger.Info("periodic re-poll")
 			if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+				if IsPermanent(err) {
+					logger.Error("permanent error during re-poll", "error", err)
+					os.Exit(1)
+				}
 				logger.Warn("re-poll error", "error", err)
 			}
 		}
@@ -261,5 +280,7 @@ func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomic
 func shutdown(server *http.Server, logger *slog.Logger) {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	server.Shutdown(shutCtx)
+	if err := server.Shutdown(shutCtx); err != nil {
+		logger.Warn("health server shutdown", "error", err)
+	}
 }
