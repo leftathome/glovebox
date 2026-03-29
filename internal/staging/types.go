@@ -27,7 +27,6 @@ type StagingItem struct {
 	Metadata    ItemMetadata
 }
 
-// ParseMetadata reads and parses a metadata.json from the given reader.
 func ParseMetadata(r io.Reader) (ItemMetadata, error) {
 	var meta ItemMetadata
 	if err := json.NewDecoder(r).Decode(&meta); err != nil {

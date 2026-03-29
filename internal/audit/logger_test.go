@@ -14,7 +14,8 @@ func TestLogPass_AppendsValidJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
 	}
-	entry := PassEntry{
+	defer logger.Close()
+	entry := PassEntry{AuditEntry: AuditEntry{
 		Timestamp:      "2026-03-28T12:00:00Z",
 		Source:         "email",
 		Sender:         "alice@example.com",
@@ -25,7 +26,7 @@ func TestLogPass_AppendsValidJSONL(t *testing.T) {
 		Verdict:        "pass",
 		Destination:    "messaging",
 		ScanDurationMs: 42,
-	}
+	}}
 	if err := logger.LogPass(entry); err != nil {
 		t.Fatalf("LogPass: %v", err)
 	}
@@ -42,18 +43,21 @@ func TestLogPass_AppendsValidJSONL(t *testing.T) {
 func TestLogReject_AppendsValidJSONL(t *testing.T) {
 	dir := t.TempDir()
 	logger, _ := NewLogger(dir)
+	defer logger.Close()
 	entry := RejectEntry{
-		Timestamp:      "2026-03-28T12:00:00Z",
-		Source:         "email",
-		Sender:         "attacker@evil.com",
-		ContentHash:    "def456",
-		ContentLength:  500,
-		Signals:        []SignalEntry{{Name: "instruction_override", Weight: 1.0, Matched: "ignore previous"}},
-		TotalScore:     1.0,
-		Verdict:        "quarantine",
-		Reason:         "threshold_exceeded",
-		Destination:    "messaging",
-		ScanDurationMs: 15,
+		AuditEntry: AuditEntry{
+			Timestamp:      "2026-03-28T12:00:00Z",
+			Source:         "email",
+			Sender:         "attacker@evil.com",
+			ContentHash:    "def456",
+			ContentLength:  500,
+			Signals:        []SignalEntry{{Name: "instruction_override", Weight: 1.0, Matched: "ignore previous"}},
+			TotalScore:     1.0,
+			Verdict:        "quarantine",
+			Destination:    "messaging",
+			ScanDurationMs: 15,
+		},
+		Reason: "threshold_exceeded",
 	}
 	if err := logger.LogReject(entry); err != nil {
 		t.Fatalf("LogReject: %v", err)
@@ -74,13 +78,14 @@ func TestLogReject_AppendsValidJSONL(t *testing.T) {
 func TestLogPass_MultipleWrites(t *testing.T) {
 	dir := t.TempDir()
 	logger, _ := NewLogger(dir)
+	defer logger.Close()
 	for i := 0; i < 3; i++ {
-		logger.LogPass(PassEntry{
+		logger.LogPass(PassEntry{AuditEntry: AuditEntry{
 			Timestamp: "2026-03-28T12:00:00Z",
 			Source:    "email",
 			Sender:    "a@b.com",
 			Verdict:   "pass",
-		})
+		}})
 	}
 	f, _ := os.Open(filepath.Join(dir, "pass.jsonl"))
 	defer f.Close()
@@ -101,12 +106,13 @@ func TestLogPass_MultipleWrites(t *testing.T) {
 func TestLogPass_SingleLinePerEntry(t *testing.T) {
 	dir := t.TempDir()
 	logger, _ := NewLogger(dir)
-	logger.LogPass(PassEntry{
+	defer logger.Close()
+	logger.LogPass(PassEntry{AuditEntry: AuditEntry{
 		Timestamp: "2026-03-28T12:00:00Z",
 		Source:    "email",
 		Sender:    "has\nnewline@test.com",
 		Verdict:   "pass",
-	})
+	}})
 	f, _ := os.Open(filepath.Join(dir, "pass.jsonl"))
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -119,10 +125,9 @@ func TestLogPass_SingleLinePerEntry(t *testing.T) {
 	}
 }
 
-func TestLogPass_WriteFailureReturnsError(t *testing.T) {
-	logger, _ := NewLogger("/nonexistent/path/that/does/not/exist")
-	err := logger.LogPass(PassEntry{Verdict: "pass"})
+func TestNewLogger_FailsOnBadDir(t *testing.T) {
+	_, err := NewLogger("/nonexistent/path/that/does/not/exist")
 	if err == nil {
-		t.Fatal("expected error for write to nonexistent path")
+		t.Fatal("expected error for nonexistent directory")
 	}
 }

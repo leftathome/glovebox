@@ -14,7 +14,7 @@ type SignalEntry struct {
 	Matched string  `json:"matched"`
 }
 
-type PassEntry struct {
+type AuditEntry struct {
 	Timestamp      string        `json:"timestamp"`
 	Source         string        `json:"source"`
 	Sender         string        `json:"sender"`
@@ -25,40 +25,66 @@ type PassEntry struct {
 	Verdict        string        `json:"verdict"`
 	Destination    string        `json:"destination"`
 	ScanDurationMs int64         `json:"scan_duration_ms"`
+}
+
+type PassEntry struct {
+	AuditEntry
 }
 
 type RejectEntry struct {
-	Timestamp      string        `json:"timestamp"`
-	Source         string        `json:"source"`
-	Sender         string        `json:"sender"`
-	ContentHash    string        `json:"content_hash"`
-	ContentLength  int64         `json:"content_length"`
-	Signals        []SignalEntry `json:"signals"`
-	TotalScore     float64       `json:"total_score"`
-	Verdict        string        `json:"verdict"`
-	Reason         string        `json:"reason"`
-	Destination    string        `json:"destination"`
-	ScanDurationMs int64         `json:"scan_duration_ms"`
+	AuditEntry
+	Reason string `json:"reason"`
 }
 
 type Logger struct {
-	dir string
-	mu  sync.Mutex
+	mu       sync.Mutex
+	passFile *os.File
+	rejectFile *os.File
 }
 
 func NewLogger(dir string) (*Logger, error) {
-	return &Logger{dir: dir}, nil
+	passPath := filepath.Join(dir, "pass.jsonl")
+	pf, err := os.OpenFile(passPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open audit log %s: %w", passPath, err)
+	}
+
+	rejectPath := filepath.Join(dir, "rejected.jsonl")
+	rf, err := os.OpenFile(rejectPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		pf.Close()
+		return nil, fmt.Errorf("open audit log %s: %w", rejectPath, err)
+	}
+
+	return &Logger{passFile: pf, rejectFile: rf}, nil
+}
+
+func (l *Logger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var firstErr error
+	if l.passFile != nil {
+		if err := l.passFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if l.rejectFile != nil {
+		if err := l.rejectFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (l *Logger) LogPass(entry PassEntry) error {
-	return l.appendJSONL("pass.jsonl", entry)
+	return l.appendJSONL(l.passFile, entry)
 }
 
 func (l *Logger) LogReject(entry RejectEntry) error {
-	return l.appendJSONL("rejected.jsonl", entry)
+	return l.appendJSONL(l.rejectFile, entry)
 }
 
-func (l *Logger) appendJSONL(filename string, v any) error {
+func (l *Logger) appendJSONL(f *os.File, v any) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -67,16 +93,9 @@ func (l *Logger) appendJSONL(filename string, v any) error {
 		return fmt.Errorf("marshal audit entry: %w", err)
 	}
 
-	path := filepath.Join(l.dir, filename)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open audit log %s: %w", path, err)
-	}
-	defer f.Close()
-
 	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("write audit log %s: %w", path, err)
+		return fmt.Errorf("write audit log: %w", err)
 	}
 
 	return nil

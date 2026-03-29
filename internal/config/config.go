@@ -44,7 +44,6 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	applyEnvOverrides(&cfg)
-	applyDefaults(&cfg)
 	return cfg, nil
 }
 
@@ -90,20 +89,3 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-func applyDefaults(cfg *Config) {
-	if cfg.ScanWorkers == 0 {
-		cfg.ScanWorkers = 4
-	}
-	if cfg.ScanTimeoutSeconds == 0 {
-		cfg.ScanTimeoutSeconds = 30
-	}
-	if cfg.ScanChunkSizeBytes == 0 {
-		cfg.ScanChunkSizeBytes = 262144
-	}
-	if cfg.MetricsPort == 0 {
-		cfg.MetricsPort = 9090
-	}
-	if cfg.WatchMode == "" {
-		cfg.WatchMode = "fsnotify"
-	}
-}

@@ -42,19 +42,19 @@ func LoadRules(r io.Reader) (RuleConfig, error) {
 	return rc, nil
 }
 
+var validMatchTypes = map[MatchType]bool{
+	MatchSubstring:                true,
+	MatchSubstringCaseInsensitive: true,
+	MatchRegex:                    true,
+	MatchCustomDetector:           true,
+}
+
 func validateRuleConfig(rc RuleConfig) error {
 	if len(rc.Rules) == 0 {
 		return fmt.Errorf("rules must not be empty")
 	}
 	if rc.QuarantineThreshold <= 0.0 || rc.QuarantineThreshold > 2.0 {
 		return fmt.Errorf("quarantine_threshold must be in (0.0, 2.0], got %f", rc.QuarantineThreshold)
-	}
-
-	validMatchTypes := map[MatchType]bool{
-		MatchSubstring:                true,
-		MatchSubstringCaseInsensitive: true,
-		MatchRegex:                    true,
-		MatchCustomDetector:           true,
 	}
 
 	for i, rule := range rc.Rules {
