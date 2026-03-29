@@ -1,0 +1,57 @@
+replicaCount: 1
+
+image:
+  repository: glovebox
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  stagingDir: /data/glovebox/staging
+  quarantineDir: /data/glovebox/quarantine
+  auditDir: /data/glovebox/audit
+  failedDir: /data/glovebox/failed
+  agentsDir: /data/agents
+  sharedDir: /data/shared
+  metricsPort: 9090
+  watchMode: fsnotify
+  pollIntervalSeconds: 5
+  scanWorkers: 4
+  scanTimeoutSeconds: 30
+  scanChunkSizeBytes: 262144
+  agentAllowlist:
+    - messaging
+    - media
+    - calendar
+    - itinerary
+
+persistence:
+  staging:
+    size: 1Gi
+    storageClass: ""
+  quarantine:
+    size: 5Gi
+    storageClass: ""
+  audit:
+    size: 10Gi
+    storageClass: ""
+  agents:
+    size: 5Gi
+    storageClass: ""
+  shared:
+    size: 1Gi
+    storageClass: ""
+
+metrics:
+  port: 9090
+  servicePort: 9090
+
+networkPolicy:
+  enabled: true

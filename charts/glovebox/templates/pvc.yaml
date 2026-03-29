@@ -1,0 +1,20 @@
+{{- $release := .Release.Name }}
+{{- range $name, $spec := dict "staging" .Values.persistence.staging "quarantine" .Values.persistence.quarantine "audit" .Values.persistence.audit "agents" .Values.persistence.agents "shared" .Values.persistence.shared }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $release }}-glovebox-{{ $name }}
+  labels:
+    app: glovebox
+    release: {{ $release }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $spec.size }}
+  {{- if $spec.storageClass }}
+  storageClassName: {{ $spec.storageClass | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-glovebox
+  labels:
+    app: glovebox
+    release: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: glovebox
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: glovebox
+        release: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: glovebox
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/glovebox/config.json
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/glovebox
+              readOnly: true
+            - name: staging
+              mountPath: {{ .Values.config.stagingDir }}
+            - name: quarantine
+              mountPath: {{ .Values.config.quarantineDir }}
+            - name: audit
+              mountPath: {{ .Values.config.auditDir }}
+            - name: agents
+              mountPath: {{ .Values.config.agentsDir }}
+            - name: shared
+              mountPath: {{ .Values.config.sharedDir }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-glovebox-config
+        - name: staging
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-staging
+        - name: quarantine
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-quarantine
+        - name: audit
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-audit
+        - name: agents
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-agents
+        - name: shared
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-shared

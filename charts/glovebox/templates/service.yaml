@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-glovebox-metrics
+  labels:
+    app: glovebox
+    release: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.metrics.servicePort }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app: glovebox
+    release: {{ .Release.Name }}

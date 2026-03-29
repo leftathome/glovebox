@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-glovebox-config
+  labels:
+    app: glovebox
+    release: {{ .Release.Name }}
+data:
+  config.json: |
+    {
+      "staging_dir": {{ .Values.config.stagingDir | quote }},
+      "quarantine_dir": {{ .Values.config.quarantineDir | quote }},
+      "audit_dir": {{ .Values.config.auditDir | quote }},
+      "failed_dir": {{ .Values.config.failedDir | quote }},
+      "agents_dir": {{ .Values.config.agentsDir | quote }},
+      "shared_dir": {{ .Values.config.sharedDir | quote }},
+      "agent_allowlist": {{ .Values.config.agentAllowlist | toJson }},
+      "metrics_port": {{ .Values.config.metricsPort }},
+      "watch_mode": {{ .Values.config.watchMode | quote }},
+      "poll_interval_seconds": {{ .Values.config.pollIntervalSeconds }},
+      "rules_file": "/etc/glovebox/rules.json",
+      "scan_workers": {{ .Values.config.scanWorkers }},
+      "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
+      "scan_chunk_size_bytes": {{ .Values.config.scanChunkSizeBytes }}
+    }
+  rules.json: |
+    {{- .Files.Get "rules.json" | default (.Files.Get "../../configs/default-rules.json") | nindent 4 }}
