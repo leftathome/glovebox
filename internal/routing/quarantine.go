@@ -1,7 +1,6 @@
 package routing
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,7 +32,7 @@ func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, qua
 		return fmt.Errorf("read content: %w", err)
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256(content))
+	hash := contentHash(content)
 	now := time.Now().UTC()
 	qID := fmt.Sprintf("%s-%s", now.Format("20060102-150405"), hash[:12])
 	qDir := filepath.Join(quarantineDir, qID)

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -105,7 +106,7 @@ func (m *Metrics) Handler() http.Handler {
 
 func (m *Metrics) Shutdown() error {
 	if m.provider != nil {
-		return m.provider.Shutdown(nil)
+		return m.provider.Shutdown(context.Background())
 	}
 	return nil
 }

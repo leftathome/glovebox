@@ -1,7 +1,6 @@
 package routing
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +37,7 @@ func RoutePass(item staging.StagingItem, scanResult engine.ScanResult, destDir s
 		return fmt.Errorf("write metadata to inbox: %w", err)
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256(content))
+	hash := contentHash(content)
 
 	if err := logger.LogPass(audit.PassEntry{AuditEntry: audit.AuditEntry{
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),

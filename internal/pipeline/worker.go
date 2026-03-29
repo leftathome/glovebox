@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -85,7 +86,7 @@ func (p *WorkerPool) scan(ctx context.Context, req ScanRequest) ScanResponse {
 	done := make(chan ScanResponse, 1)
 
 	go func() {
-		f, err := openContent(req.Item.ContentPath)
+		f, err := os.Open(req.Item.ContentPath)
 		if err != nil {
 			done <- ScanResponse{Item: req.Item, Err: err, Duration: time.Since(start)}
 			return

@@ -9,7 +9,8 @@ type DeliveryFunc func(resp ScanResponse) error
 
 // Router receives scan responses and delivers them. Unordered items are
 // delivered immediately. Ordered items are accumulated and delivered in
-// FIFO order (by directory name) when Flush is called.
+// sorted order (by directory name, which is timestamp-prefixed) when
+// Flush is called.
 type Router struct {
 	deliver DeliveryFunc
 	pending map[string][]ScanResponse
@@ -32,18 +33,28 @@ func (r *Router) Route(resp ScanResponse) error {
 	return nil
 }
 
-// Flush delivers all accumulated ordered items in FIFO order per destination.
+// Flush delivers all accumulated ordered items in sorted order per destination.
 func (r *Router) Flush() error {
-	for dest, items := range r.pending {
-		sort.Slice(items, func(i, j int) bool {
-			return filepath.Base(items[i].Item.DirPath) < filepath.Base(items[j].Item.DirPath)
+	for _, items := range r.pending {
+		// Pre-compute sort keys to avoid filepath.Base in comparator
+		type keyed struct {
+			key  string
+			resp ScanResponse
+		}
+		sorted := make([]keyed, len(items))
+		for i, resp := range items {
+			sorted[i] = keyed{key: filepath.Base(resp.Item.DirPath), resp: resp}
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].key < sorted[j].key
 		})
-		for _, resp := range items {
-			if err := r.deliver(resp); err != nil {
+
+		for _, k := range sorted {
+			if err := r.deliver(k.resp); err != nil {
 				return err
 			}
 		}
-		delete(r.pending, dest)
 	}
+	r.pending = make(map[string][]ScanResponse)
 	return nil
 }
