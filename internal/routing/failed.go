@@ -16,9 +16,13 @@ func RouteToFailed(itemPath string, failedDir string, reason string) error {
 	destPath := filepath.Join(failedDir, itemName)
 
 	if err := os.Rename(itemPath, destPath); err != nil {
-		// Cross-device: fall back to copy
-		return copyDir(itemPath, destPath)
+		if err := copyDir(itemPath, destPath); err != nil {
+			return err
+		}
 	}
+
+	// Record why the item was moved to failed/
+	os.WriteFile(filepath.Join(destPath, "failed_reason.txt"), []byte(reason), 0644)
 
 	return nil
 }

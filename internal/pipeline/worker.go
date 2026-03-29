@@ -3,7 +3,6 @@ package pipeline
 import (
 	"bytes"
 	"context"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -139,6 +138,9 @@ func (p *WorkerPool) scan(ctx context.Context, req ScanRequest) ScanResponse {
 // appendDeduped adds signals from src to dst, skipping signals with the
 // same name that already exist in dst (avoids double-counting from dual scan).
 func appendDeduped(dst, src []engine.Signal) []engine.Signal {
+	if len(src) == 0 {
+		return dst
+	}
 	seen := make(map[string]bool, len(dst))
 	for _, s := range dst {
 		seen[s.Name] = true
@@ -151,5 +153,3 @@ func appendDeduped(dst, src []engine.Signal) []engine.Signal {
 	return dst
 }
 
-// Ensure io.Reader is used (compile check for ScanContent compatibility)
-var _ io.Reader = (*bytes.Reader)(nil)

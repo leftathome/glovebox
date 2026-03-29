@@ -63,10 +63,18 @@ func main() {
 
 	matchers, detectors := buildScanFuncs(rules, registry)
 
+	// Pre-compute boost rules from config (static, don't rebuild per item)
+	boostConfig := make(map[string]float64)
+	for _, rule := range rules.Rules {
+		if rule.Behavior == "weight_booster" {
+			boostConfig[rule.Name] = rule.BoostFactor
+		}
+	}
+
 	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
 
 	router := pipeline.NewRouter(func(resp pipeline.ScanResponse) error {
-		return deliverResult(resp, cfg, logger, rules, m)
+		return deliverResult(resp, cfg, logger, rules.QuarantineThreshold, boostConfig, m)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,8 +101,8 @@ func main() {
 	for _, dir := range []string{cfg.StagingDir, cfg.QuarantineDir, cfg.AuditDir, cfg.FailedDir} {
 		os.MkdirAll(dir, 0755)
 	}
-	notifyDir := cfg.SharedDir + "/glovebox-notifications"
-	os.MkdirAll(notifyDir, 0755)
+	mainNotifyDir := filepath.Join(cfg.SharedDir, "glovebox-notifications")
+	os.MkdirAll(mainNotifyDir, 0755)
 
 	// Start worker pool
 	go pool.Run(ctx)
@@ -155,10 +163,14 @@ func main() {
 						routing.RouteReject(itemDir, staging.RejectReasonFromError(err), nil, logger)
 						continue
 					}
-					pool.Input() <- pipeline.ScanRequest{
+					select {
+					case pool.Input() <- pipeline.ScanRequest{
 						Item:      item,
 						Matchers:  matchers,
 						Detectors: detectors,
+					}:
+					case <-ctx.Done():
+						return
 					}
 				}
 			}
@@ -191,6 +203,24 @@ func main() {
 	log.Println("glovebox stopped")
 }
 
+func makeMatcherScanFunc(m engine.Matcher, rule engine.Rule) engine.ScanFunc {
+	return func(content []byte) ([]engine.Signal, error) {
+		results, err := m.Match(content, rule.Patterns)
+		if err != nil || len(results) == 0 {
+			return nil, err
+		}
+		matched := make([]string, len(results))
+		for i, r := range results {
+			matched[i] = fmt.Sprintf("%s at %d", r.Pattern, r.Position)
+		}
+		return []engine.Signal{{
+			Name:    rule.Name,
+			Weight:  rule.Weight,
+			Matched: strings.Join(matched, "; "),
+		}}, nil
+	}
+}
+
 func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]engine.ScanFunc, []engine.ScanFunc) {
 	var matchers []engine.ScanFunc
 	var detectors []engine.ScanFunc
@@ -199,61 +229,17 @@ func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]eng
 		rule := rule
 		switch rule.MatchType {
 		case engine.MatchSubstring:
-			m := engine.SubstringMatcher{}
-			matchers = append(matchers, func(content []byte) ([]engine.Signal, error) {
-				results, err := m.Match(content, rule.Patterns)
-				if err != nil || len(results) == 0 {
-					return nil, err
-				}
-				matched := make([]string, len(results))
-				for i, r := range results {
-					matched[i] = fmt.Sprintf("%s at %d", r.Pattern, r.Position)
-				}
-				return []engine.Signal{{
-					Name:    rule.Name,
-					Weight:  rule.Weight,
-					Matched: strings.Join(matched, "; "),
-				}}, nil
-			})
+			matchers = append(matchers, makeMatcherScanFunc(engine.SubstringMatcher{}, rule))
 
 		case engine.MatchSubstringCaseInsensitive:
-			m := engine.CaseInsensitiveMatcher{}
-			matchers = append(matchers, func(content []byte) ([]engine.Signal, error) {
-				results, err := m.Match(content, rule.Patterns)
-				if err != nil || len(results) == 0 {
-					return nil, err
-				}
-				matched := make([]string, len(results))
-				for i, r := range results {
-					matched[i] = fmt.Sprintf("%s at %d", r.Pattern, r.Position)
-				}
-				return []engine.Signal{{
-					Name:    rule.Name,
-					Weight:  rule.Weight,
-					Matched: strings.Join(matched, "; "),
-				}}, nil
-			})
+			matchers = append(matchers, makeMatcherScanFunc(engine.CaseInsensitiveMatcher{}, rule))
 
 		case engine.MatchRegex:
 			m, err := engine.NewRegexMatcher(rule.Patterns)
 			if err != nil {
 				log.Fatalf("compile regex for rule %s: %v", rule.Name, err)
 			}
-			matchers = append(matchers, func(content []byte) ([]engine.Signal, error) {
-				results, err := m.Match(content, nil)
-				if err != nil || len(results) == 0 {
-					return nil, err
-				}
-				matched := make([]string, len(results))
-				for i, r := range results {
-					matched[i] = fmt.Sprintf("%s at %d", r.Pattern, r.Position)
-				}
-				return []engine.Signal{{
-					Name:    rule.Name,
-					Weight:  rule.Weight,
-					Matched: strings.Join(matched, "; "),
-				}}, nil
-			})
+			matchers = append(matchers, makeMatcherScanFunc(m, rule))
 
 		case engine.MatchCustomDetector:
 			d, ok := registry.Get(rule.Detector)
@@ -286,11 +272,10 @@ func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 	}
 }
 
-func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, rules engine.RuleConfig, m *gloveboxmetrics.Metrics) error {
+func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, threshold float64, boostConfig map[string]float64, m *gloveboxmetrics.Metrics) error {
 	ctx := context.Background()
-	threshold := rules.QuarantineThreshold
+	notifyDir := filepath.Join(cfg.SharedDir, "glovebox-notifications")
 
-	// Record metrics after routing
 	recordVerdict := func(verdict string) {
 		attrs := metric.WithAttributes(
 			attribute.String("verdict", verdict),
@@ -309,7 +294,6 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 	if resp.TimedOut {
 		m.ScanTimeouts.Add(ctx, 1,
 			metric.WithAttributes(attribute.String("source", resp.Item.Metadata.Source)))
-		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		scanResult := engine.ScanResult{
 			Signals:    resp.Signals,
 			TotalScore: 0,
@@ -329,7 +313,6 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 	// Check audit degraded mode -- quarantine everything if audit is broken
 	if logger.InDegradedMode() {
 		m.AuditFailures.Add(ctx, 1)
-		notifyDir := cfg.SharedDir + "/glovebox-notifications"
 		scanResult := engine.ScanResult{
 			Signals:    resp.Signals,
 			TotalScore: 0,
@@ -340,39 +323,22 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "audit_failure")
 	}
 
-	// Score signals
-	var signals []engine.Signal
+	// Separate boost signals from scoring signals in a single pass
 	var boosts []engine.BoostRule
-	for _, sig := range resp.Signals {
-		signals = append(signals, sig)
-	}
-
-	// Build boost rules from rule config for signals that fired
-	boostRules := make(map[string]float64)
-	for _, rule := range rules.Rules {
-		if rule.Behavior == "weight_booster" {
-			boostRules[rule.Name] = rule.BoostFactor
-		}
-	}
-	for _, sig := range resp.Signals {
-		if factor, ok := boostRules[sig.Name]; ok {
-			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: factor})
-		}
-	}
-
-	// Remove boost signals from scoring (they have weight 0 and are applied as multipliers)
 	var scoringSignals []engine.Signal
-	for _, sig := range signals {
-		if _, isBoost := boostRules[sig.Name]; !isBoost {
+	for _, sig := range resp.Signals {
+		if factor, ok := boostConfig[sig.Name]; ok {
+			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: factor})
+		} else {
 			scoringSignals = append(scoringSignals, sig)
 		}
 	}
 
 	result := engine.ScoreSignals(scoringSignals, boosts, threshold)
-	result.Signals = signals // Preserve all signals including boosts for audit
+	result.Signals = resp.Signals // Preserve all signals including boosts for audit
 
 	if result.Verdict == engine.VerdictQuarantine {
-		notifyDir := cfg.SharedDir + "/glovebox-notifications"
+		notifyDir := notifyDir
 		removePendingForItem(resp, cfg)
 		recordVerdict("quarantine")
 		return routing.RouteQuarantine(resp.Item, result, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "threshold_exceeded")
