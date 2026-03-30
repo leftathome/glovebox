@@ -161,7 +161,7 @@ jobs:
       # -- glovebox --
       - name: Docker meta for glovebox
         id: meta-glovebox
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox
           tags: |
@@ -186,7 +186,7 @@ jobs:
       # -- rss-connector --
       - name: Docker meta for rss-connector
         id: meta-rss
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox-rss
           tags: |
@@ -211,7 +211,7 @@ jobs:
       # -- imap-connector --
       - name: Docker meta for imap-connector
         id: meta-imap
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox-imap
           tags: |
