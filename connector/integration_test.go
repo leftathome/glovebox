@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// --- integration helpers ---
-
 // producerConnector is a mock that writes N items to staging during Poll.
 type producerConnector struct {
 	writer  *StagingWriter
