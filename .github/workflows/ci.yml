@@ -44,7 +44,7 @@ jobs:
 
       - name: Test Report
         if: always()
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         with:
           name: 'Go Test Results'
           path: 'test-report.xml'
