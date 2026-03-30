@@ -68,10 +68,11 @@ services:
       - staging:/data/glovebox/staging
       - quarantine:/data/glovebox/quarantine
       - audit:/data/glovebox/audit
+      - failed:/data/glovebox/failed
       - agents:/data/agents
       - shared:/data/shared
     ports:
-      - "9090:9090"
+      - "9090:9090"  # Prometheus metrics
 
   rss-connector:
     build:
@@ -90,6 +91,7 @@ volumes:
   staging:
   quarantine:
   audit:
+  failed:
   agents:
   shared:
   rss-state:
@@ -130,16 +132,22 @@ Anything flagged lands in `quarantine`.
 
 Glovebox reads a JSON config file (default: `/etc/glovebox/config.json`):
 
-| Key                    | Purpose                                    |
-|------------------------|--------------------------------------------|
-| `staging_dir`          | Directory connectors write items to        |
-| `quarantine_dir`       | Flagged items held for review              |
-| `agents_dir`           | Root of agent workspace directories        |
-| `rules_file`           | Path to the scanning rules JSON            |
-| `scan_workers`         | Number of parallel scan goroutines         |
-| `scan_timeout_seconds` | Per-item timeout (quarantine on expiry)    |
-| `metrics_port`         | Port for Prometheus `/metrics` endpoint    |
-| `agent_allowlist`      | Which agent names are valid destinations   |
+| Key                      | Purpose                                    |
+|--------------------------|--------------------------------------------|
+| `staging_dir`            | Directory connectors write items to        |
+| `quarantine_dir`         | Flagged items held for review              |
+| `audit_dir`              | Append-only JSONL scan verdict logs        |
+| `failed_dir`             | Items that failed validation (retried)     |
+| `agents_dir`             | Root of agent workspace directories        |
+| `shared_dir`             | Shared directory for quarantine notifications |
+| `rules_file`             | Path to the scanning rules JSON            |
+| `scan_workers`           | Number of parallel scan goroutines         |
+| `scan_timeout_seconds`   | Per-item timeout (quarantine on expiry)    |
+| `scan_chunk_size_bytes`  | Content chunk size for scanning            |
+| `metrics_port`           | Port for Prometheus `/metrics` endpoint    |
+| `watch_mode`             | `fsnotify` (default) or `polling`          |
+| `poll_interval_seconds`  | Polling interval for staging watcher       |
+| `agent_allowlist`        | Which agent names are valid destinations   |
 
 The rules file (`configs/default-rules.json`) defines pattern rules, weights,
 and the `quarantine_threshold`. See `docs/` for the full configuration reference.
