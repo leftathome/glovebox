@@ -1,0 +1,46 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 10
+
+  # Docker - root Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 10
+
+  # Docker - RSS connector
+  - package-ecosystem: "docker"
+    directory: "/connectors/rss"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 10
+
+  # Docker - IMAP connector
+  - package-ecosystem: "docker"
+    directory: "/connectors/imap"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 10
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 10
