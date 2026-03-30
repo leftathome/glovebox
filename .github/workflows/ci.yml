@@ -54,9 +54,12 @@ jobs:
         if: always()
         run: |
           if [ -f test-report.xml ]; then
-            TESTS=$(grep -c '<testcase' test-report.xml || echo 0)
-            FAILURES=$(grep -c '<failure' test-report.xml || echo 0)
-            SKIPPED=$(grep -c '<skipped' test-report.xml || echo 0)
+            TESTS=$(grep -c '<testcase' test-report.xml 2>/dev/null || true)
+            FAILURES=$(grep -c '<failure' test-report.xml 2>/dev/null || true)
+            SKIPPED=$(grep -c '<skipped' test-report.xml 2>/dev/null || true)
+            TESTS=${TESTS:-0}
+            FAILURES=${FAILURES:-0}
+            SKIPPED=${SKIPPED:-0}
             PASSED=$((TESTS - FAILURES - SKIPPED))
             echo "## Test Results" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
