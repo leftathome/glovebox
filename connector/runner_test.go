@@ -79,7 +79,7 @@ func testOptions(t *testing.T, c Connector) Options {
 func TestRunPoll_CallsConnector(t *testing.T) {
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestRunPoll_CallsConnector(t *testing.T) {
 func TestRunPoll_PropagatesError(t *testing.T) {
 	mock := &mockPollConnector{pollErr: fmt.Errorf("network error")}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -102,7 +102,7 @@ func TestRunPoll_RespectsContext(t *testing.T) {
 	cancel()
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(ctx, mock, cp, testLogger)
+	err := runPoll(ctx, mock, cp, nil, testLogger)
 	if err == nil {
 		t.Error("expected context error")
 	}
@@ -174,7 +174,7 @@ func TestRunPollLoop_PollsOnInterval(t *testing.T) {
 			Name:         "test",
 			Connector:    mock,
 			PollInterval: 50 * time.Millisecond,
-		}, cp, &ready, testLogger)
+		}, cp, nil, &ready, testLogger)
 	}()
 
 	time.Sleep(180 * time.Millisecond)
@@ -201,7 +201,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 			Name:         "test",
 			Connector:    mock,
 			PollInterval: 5 * time.Second,
-		}, mock, cp, &ready, testLogger)
+		}, mock, cp, nil, &ready, testLogger)
 	}()
 
 	select {
@@ -217,7 +217,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 func TestRunPoll_PermanentError(t *testing.T) {
 	mock := &mockPollConnector{pollErr: PermanentError(fmt.Errorf("bad creds"))}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger)
 	if err == nil {
 		t.Fatal("expected error")
 	}

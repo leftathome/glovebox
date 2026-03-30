@@ -69,9 +69,17 @@ func Run(opts Options) {
 	}
 	writer.CleanOrphans()
 
+	// Init metrics
+	metrics, err := NewMetrics(opts.Name)
+	if err != nil {
+		logger.Error("init metrics", "error", err)
+		os.Exit(1)
+	}
+	defer metrics.Shutdown()
+
 	// Pass resources to connector via setup callback
 	if opts.Setup != nil {
-		if err := opts.Setup(ConnectorContext{Writer: writer, Router: router}); err != nil {
+		if err := opts.Setup(ConnectorContext{Writer: writer, Router: router, Metrics: metrics}); err != nil {
 			logger.Error("connector setup", "error", err)
 			os.Exit(1)
 		}
@@ -97,6 +105,7 @@ func Run(opts Options) {
 			w.Write([]byte("not ready"))
 		}
 	})
+	healthMux.Handle("/metrics", metrics.Handler())
 
 	healthServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", opts.HealthPort),
@@ -143,7 +152,7 @@ func Run(opts Options) {
 
 	// Initial poll
 	logger.Info("running initial poll")
-	if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+	if err := runPoll(ctx, opts.Connector, cp, metrics, logger); err != nil {
 		if IsPermanent(err) {
 			logger.Error("permanent error during initial poll", "error", err)
 			os.Exit(1)
@@ -171,23 +180,38 @@ func Run(opts Options) {
 	}
 
 	if isWatcher {
-		runWatchLoop(ctx, opts, watcher, cp, &ready, logger)
+		runWatchLoop(ctx, opts, watcher, cp, metrics, &ready, logger)
 	} else {
-		runPollLoop(ctx, opts, cp, &ready, logger)
+		runPollLoop(ctx, opts, cp, metrics, &ready, logger)
 	}
 
 	shutdown(healthServer, logger)
 	logger.Info("connector stopped")
 }
 
-func runPoll(ctx context.Context, c Connector, cp Checkpoint, logger *slog.Logger) error {
+func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger *slog.Logger) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return c.Poll(ctx, cp)
+	start := time.Now()
+	err := c.Poll(ctx, cp)
+	if m != nil {
+		m.RecordPollDuration(time.Since(start))
+		if err != nil {
+			m.RecordPoll("error")
+			if IsPermanent(err) {
+				m.RecordError("permanent")
+			} else {
+				m.RecordError("transient")
+			}
+		} else {
+			m.RecordPoll("success")
+		}
+	}
+	return err
 }
 
-func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, ready *atomic.Bool, logger *slog.Logger) {
+func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger) {
 	pollTicker := time.NewTicker(opts.PollInterval)
 	defer pollTicker.Stop()
 
@@ -228,7 +252,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 				case <-ctx.Done():
 					return
 				}
-				if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+				if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
 					if IsPermanent(err) {
 						logger.Error("permanent error during re-poll", "error", err)
 						os.Exit(1)
@@ -243,7 +267,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 			watchCancel()
 			wg.Wait()
 			logger.Info("periodic re-poll")
-			if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+			if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent error during re-poll", "error", err)
 					os.Exit(1)
@@ -254,7 +278,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 	}
 }
 
-func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomic.Bool, logger *slog.Logger) {
+func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger) {
 	ticker := time.NewTicker(opts.PollInterval)
 	defer ticker.Stop()
 
@@ -264,7 +288,7 @@ func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, ready *atomic
 			return
 		case <-ticker.C:
 			logger.Info("scheduled poll")
-			if err := runPoll(ctx, opts.Connector, cp, logger); err != nil {
+			if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent poll error", "error", err)
 					os.Exit(1)

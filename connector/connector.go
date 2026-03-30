@@ -22,8 +22,9 @@ type Listener interface {
 // ConnectorContext is passed to connectors during setup, providing
 // framework-initialized resources.
 type ConnectorContext struct {
-	Writer *StagingWriter
-	Router *Router
+	Writer  *StagingWriter
+	Router  *Router
+	Metrics *Metrics
 }
 
 // SetupFunc is an optional initialization callback. If Options.Setup is set,

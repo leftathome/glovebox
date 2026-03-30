@@ -1,0 +1,25 @@
+package main
+
+import (
+	"os"
+	"time"
+
+	"github.com/leftathome/glovebox/connector"
+)
+
+func main() {
+	c := &{{.StructName}}Connector{}
+	connector.Run(connector.Options{
+		Name:       "{{.Name}}",
+		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
+		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
+		ConfigFile: os.Getenv("GLOVEBOX_CONNECTOR_CONFIG"),
+		Connector:  c,
+		Setup: func(cc connector.ConnectorContext) error {
+			c.writer = cc.Writer
+			c.router = cc.Router
+			return nil
+		},
+		PollInterval: 5 * time.Minute,
+	})
+}

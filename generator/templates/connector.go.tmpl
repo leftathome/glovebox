@@ -1,0 +1,20 @@
+package {{.Package}}
+
+import (
+	"context"
+
+	"github.com/leftathome/glovebox/connector"
+)
+
+// {{.StructName}}Connector implements the connector.Connector interface.
+type {{.StructName}}Connector struct {
+	config Config
+	writer *connector.StagingWriter
+	router *connector.Router
+}
+
+// Poll fetches data from the source and writes it to staging.
+func (c *{{.StructName}}Connector) Poll(ctx context.Context, cp connector.Checkpoint) error {
+	// TODO: implement fetch logic
+	return nil
+}

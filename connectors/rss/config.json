@@ -1,0 +1,23 @@
+{
+  "routes": [
+    {
+      "match": "feed:example-blog",
+      "destination": "reader"
+    },
+    {
+      "match": "*",
+      "destination": "inbox"
+    }
+  ],
+  "feeds": [
+    {
+      "name": "example-blog",
+      "url": "https://example.com/feed.xml"
+    }
+  ],
+  "fetch_links": false,
+  "link_policy": {
+    "default": "safe",
+    "rules": []
+  }
+}

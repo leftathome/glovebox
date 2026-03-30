@@ -1,0 +1,22 @@
+# {{.Name}} connector
+
+Glovebox connector for {{.Name}}.
+
+## Configuration
+
+Set environment variables:
+- `GLOVEBOX_STAGING_DIR` - staging directory path
+- `GLOVEBOX_STATE_DIR` - state directory path
+- `GLOVEBOX_CONNECTOR_CONFIG` - path to config.json
+
+## Config File
+
+See `config.json` for route configuration.
+
+## Building
+
+    go build ./connectors/{{.Name}}/
+
+## Docker
+
+    docker build -f connectors/{{.Name}}/Dockerfile -t glovebox-{{.Name}} .
