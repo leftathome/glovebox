@@ -113,6 +113,13 @@ func (w *Watcher) dispatchIfNew(path string) {
 	if w.seen[path] {
 		return
 	}
+	// Readiness gate: metadata.json is the last file written by the connector's
+	// Commit(). Its presence guarantees content.raw also exists. This is critical
+	// for networked/virtualized mounts (NFS, iSCSI, 9P, virtiofs) where directory
+	// contents may not be visible immediately after an atomic rename.
+	if _, err := os.Stat(filepath.Join(path, "metadata.json")); err != nil {
+		return
+	}
 	w.seen[path] = true
 	w.handler(path)
 }

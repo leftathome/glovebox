@@ -114,9 +114,12 @@ Connectors write to staging/
 Connectors write each item as a subdirectory under `staging/`. To ensure atomic handoff, connectors MUST:
 
 1. Write the item to a temporary directory outside `staging/` (e.g., `staging-tmp/`)
-2. Once both files are fully written, atomically rename the directory into `staging/`
+2. Write `content.raw` first, then `metadata.json` last
+3. Once both files are fully written, atomically rename the directory into `staging/`
 
 This prevents the glovebox from reading a partially-written item.
+
+**Readiness gate:** The glovebox watcher uses the presence of `metadata.json` inside a staging directory as the readiness signal. Since connectors write `metadata.json` last (before the atomic rename), its existence guarantees `content.raw` is also present. Directories without `metadata.json` are skipped and retried on the next poll cycle. This is critical for networked and virtualized mounts (NFS, iSCSI, 9P, virtiofs) where directory contents may not be visible immediately after an atomic rename due to client-side attribute caching.
 
 ```
 staging/<timestamp>-<uuid>/

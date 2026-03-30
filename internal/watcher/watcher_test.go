@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// writeReadyItem creates a staging item directory with metadata.json so
+// the watcher's readiness gate considers it dispatchable.
+func writeReadyItem(t *testing.T, dir, name string) {
+	t.Helper()
+	itemDir := filepath.Join(dir, name)
+	os.MkdirAll(itemDir, 0755)
+	os.WriteFile(filepath.Join(itemDir, "metadata.json"), []byte(`{}`), 0644)
+}
+
 func TestWatcher_DetectsNewDirectory(t *testing.T) {
 	dir := t.TempDir()
 
@@ -26,7 +35,7 @@ func TestWatcher_DetectsNewDirectory(t *testing.T) {
 	go w.Run(ctx)
 
 	time.Sleep(50 * time.Millisecond)
-	os.MkdirAll(filepath.Join(dir, "20260328-item1"), 0755)
+	writeReadyItem(t, dir, "20260328-item1")
 	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()
@@ -39,10 +48,10 @@ func TestWatcher_DetectsNewDirectory(t *testing.T) {
 func TestWatcher_FIFOOrder(t *testing.T) {
 	dir := t.TempDir()
 
-	// Pre-create directories before starting watcher
-	os.MkdirAll(filepath.Join(dir, "20260328-0003-ccc"), 0755)
-	os.MkdirAll(filepath.Join(dir, "20260328-0001-aaa"), 0755)
-	os.MkdirAll(filepath.Join(dir, "20260328-0002-bbb"), 0755)
+	// Pre-create directories with metadata.json before starting watcher
+	writeReadyItem(t, dir, "20260328-0003-ccc")
+	writeReadyItem(t, dir, "20260328-0001-aaa")
+	writeReadyItem(t, dir, "20260328-0002-bbb")
 
 	var mu sync.Mutex
 	var detected []string
@@ -93,7 +102,7 @@ func TestWatcher_PollingDetectsItems(t *testing.T) {
 	go w.runPolling(ctx)
 
 	time.Sleep(30 * time.Millisecond)
-	os.MkdirAll(filepath.Join(dir, "20260328-poll-item"), 0755)
+	writeReadyItem(t, dir, "20260328-poll-item")
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
@@ -158,9 +167,52 @@ func TestWatcher_IgnoresFiles(t *testing.T) {
 	}
 }
 
+func TestWatcher_SkipsItemWithoutMetadata(t *testing.T) {
+	dir := t.TempDir()
+
+	var mu sync.Mutex
+	var detected []string
+
+	w := New(dir, 50*time.Millisecond, func(path string) {
+		mu.Lock()
+		detected = append(detected, filepath.Base(path))
+		mu.Unlock()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.runPolling(ctx)
+
+	// Create a directory WITHOUT metadata.json (simulates mount visibility delay)
+	os.MkdirAll(filepath.Join(dir, "20260328-not-ready"), 0755)
+	time.Sleep(120 * time.Millisecond)
+
+	mu.Lock()
+	if len(detected) != 0 {
+		t.Errorf("should not dispatch item without metadata.json, got %v", detected)
+	}
+	mu.Unlock()
+
+	// Now write metadata.json -- next poll should pick it up
+	os.WriteFile(filepath.Join(dir, "20260328-not-ready", "metadata.json"), []byte(`{}`), 0644)
+	time.Sleep(120 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, d := range detected {
+		if d == "20260328-not-ready" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("item should be dispatched after metadata.json appears")
+	}
+}
+
 func TestWatcher_NoDuplicates(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "20260328-item"), 0755)
+	writeReadyItem(t, dir, "20260328-item")
 
 	var mu sync.Mutex
 	count := 0
