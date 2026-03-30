@@ -46,6 +46,11 @@ func (w *Watcher) Run(ctx context.Context) {
 
 	w.pollOnce()
 
+	// Periodic poll alongside fsnotify catches items whose metadata.json
+	// was not yet visible when the fsnotify Create event fired.
+	ticker := time.NewTicker(w.pollInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -61,6 +66,8 @@ func (w *Watcher) Run(ctx context.Context) {
 				}
 				w.dispatchIfNew(event.Name)
 			}
+		case <-ticker.C:
+			w.pollOnce()
 		case err, ok := <-fw.Errors:
 			if !ok {
 				return
