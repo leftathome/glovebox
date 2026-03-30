@@ -170,7 +170,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push glovebox
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -195,7 +195,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push rss-connector
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./connectors/rss/Dockerfile
@@ -220,7 +220,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push imap-connector
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./connectors/imap/Dockerfile
