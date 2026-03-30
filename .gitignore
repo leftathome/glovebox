@@ -2,3 +2,8 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Private specs (not for public release)
+docs/specs/01-*.md
+docs/specs/02-*.md
+docs/specs/03-*.md
