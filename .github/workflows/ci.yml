@@ -11,6 +11,8 @@ permissions:
   contents: read
   packages: write
   checks: write
+  id-token: write
+  attestations: write
 
 env:
   REGISTRY: ghcr.io
@@ -69,9 +71,24 @@ jobs:
           fi
 
   build-binaries:
-    name: Build binaries
+    name: Build binaries (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     needs: test
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: windows
+            goarch: arm64
+            ext: .exe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,22 +100,38 @@ jobs:
           cache: true
 
       - name: Build glovebox
-        run: CGO_ENABLED=0 go build -o glovebox .
+        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o glovebox${{ matrix.ext || '' }} .
 
       - name: Build rss-connector
-        run: CGO_ENABLED=0 go build -o rss-connector ./connectors/rss/
+        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o rss-connector${{ matrix.ext || '' }} ./connectors/rss/
 
       - name: Build imap-connector
-        run: CGO_ENABLED=0 go build -o imap-connector ./connectors/imap/
+        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o imap-connector${{ matrix.ext || '' }} ./connectors/imap/
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          artifact-name: sbom-${{ matrix.goos }}-${{ matrix.goarch }}.spdx.json
+          output-file: sbom.spdx.json
+
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            glovebox${{ matrix.ext }}
+            rss-connector${{ matrix.ext }}
+            imap-connector${{ matrix.ext }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            glovebox
-            rss-connector
-            imap-connector
+            glovebox${{ matrix.ext || '' }}
+            rss-connector${{ matrix.ext || '' }}
+            imap-connector${{ matrix.ext || '' }}
+            sbom.spdx.json
 
   build-docker:
     name: Build Docker images
@@ -107,6 +140,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -138,6 +174,9 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta-glovebox.outputs.tags }}
           labels: ${{ steps.meta-glovebox.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -160,6 +199,9 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta-rss.outputs.tags }}
           labels: ${{ steps.meta-rss.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -182,6 +224,9 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta-imap.outputs.tags }}
           labels: ${{ steps.meta-imap.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
