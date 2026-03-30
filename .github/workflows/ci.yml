@@ -24,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -44,7 +44,7 @@ jobs:
 
       - name: Test Report
         if: always()
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         with:
           name: 'Go Test Results'
           path: 'test-report.xml'
@@ -94,10 +94,10 @@ jobs:
             ext: .exe
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -119,7 +119,7 @@ jobs:
 
       - name: Attest build provenance
         if: github.event_name == 'push'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             glovebox${{ matrix.ext }}
@@ -127,7 +127,7 @@ jobs:
             imap-connector${{ matrix.ext }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -142,17 +142,17 @@ jobs:
     needs: test
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -161,7 +161,7 @@ jobs:
       # -- glovebox --
       - name: Docker meta for glovebox
         id: meta-glovebox
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox
           tags: |
@@ -170,7 +170,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push glovebox
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -186,7 +186,7 @@ jobs:
       # -- rss-connector --
       - name: Docker meta for rss-connector
         id: meta-rss
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox-rss
           tags: |
@@ -195,7 +195,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push rss-connector
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./connectors/rss/Dockerfile
@@ -211,7 +211,7 @@ jobs:
       # -- imap-connector --
       - name: Docker meta for imap-connector
         id: meta-imap
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/glovebox-imap
           tags: |
@@ -220,7 +220,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push imap-connector
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./connectors/imap/Dockerfile
@@ -262,10 +262,10 @@ jobs:
     needs: [test]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
