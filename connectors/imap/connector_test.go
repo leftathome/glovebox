@@ -156,7 +156,7 @@ func makeMultipartEmail(from, subject, textBody, htmlBody string) []byte {
 // setupTestConnector creates an IMAPConnector wired to a mock client and real
 // staging writer in a temp directory. Returns the connector, checkpoint, and
 // staging dir for assertions.
-func setupTestConnector(t *testing.T, mock *mockIMAPClient, routes []connector.Route) (*IMAPConnector, *mockCheckpoint, string) {
+func setupTestConnector(t *testing.T, mock *mockIMAPClient, rules []connector.Rule, username string) (*IMAPConnector, *mockCheckpoint, string) {
 	t.Helper()
 
 	stagingDir := t.TempDir()
@@ -167,7 +167,7 @@ func setupTestConnector(t *testing.T, mock *mockIMAPClient, routes []connector.R
 		t.Fatalf("create staging writer: %v", err)
 	}
 
-	router := connector.NewRouter(routes)
+	matcher := connector.NewRuleMatcher(rules)
 	cp := newMockCheckpoint()
 
 	var folders []FolderConfig
@@ -179,8 +179,9 @@ func setupTestConnector(t *testing.T, mock *mockIMAPClient, routes []connector.R
 		config: Config{
 			Folders: folders,
 		},
-		writer: writer,
-		router: router,
+		writer:       writer,
+		matcher:      matcher,
+		imapUsername: username,
 		newClient: func() IMAPClient {
 			return mock
 		},
@@ -258,10 +259,10 @@ func TestPollFetchesMessages(t *testing.T) {
 		},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 	}
-	c, cp, stagingDir := setupTestConnector(t, mock, routes)
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	err := c.Poll(context.Background(), cp)
 	if err != nil {
@@ -311,10 +312,10 @@ func TestCheckpointAdvances(t *testing.T) {
 		},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 	}
-	c, cp, _ := setupTestConnector(t, mock, routes)
+	c, cp, _ := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	err := c.Poll(context.Background(), cp)
 	if err != nil {
@@ -340,10 +341,10 @@ func TestPollSkipsProcessed(t *testing.T) {
 		},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 	}
-	c, cp, stagingDir := setupTestConnector(t, mock, routes)
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	// Pre-set checkpoint so UIDs 1 and 2 are already processed.
 	cp.Save("uid:INBOX", "2")
@@ -379,11 +380,11 @@ func TestFolderRouting(t *testing.T) {
 		},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 		{Match: "folder:Sent", Destination: "archive"},
 	}
-	c, cp, stagingDir := setupTestConnector(t, mock, routes)
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	err := c.Poll(context.Background(), cp)
 	if err != nil {
@@ -426,10 +427,10 @@ func TestMIMEDecoding(t *testing.T) {
 		},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 	}
-	c, cp, stagingDir := setupTestConnector(t, mock, routes)
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	err := c.Poll(context.Background(), cp)
 	if err != nil {
@@ -455,10 +456,10 @@ func TestWatchReturnsOnCancel(t *testing.T) {
 		"INBOX": {},
 	})
 
-	routes := []connector.Route{
+	rules := []connector.Rule{
 		{Match: "folder:INBOX", Destination: "messaging"},
 	}
-	c, cp, _ := setupTestConnector(t, mock, routes)
+	c, cp, _ := setupTestConnector(t, mock, rules, "testuser@example.com")
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -485,5 +486,86 @@ func TestWatchReturnsOnCancel(t *testing.T) {
 	}
 	if !mock.closed {
 		t.Error("expected client to be closed")
+	}
+}
+
+func TestIdentityInStagedMetadata(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	mock := newMockIMAPClient(map[string][]mockMessage{
+		"INBOX": {
+			{UID: 1, Raw: makeRawEmail("alice@example.com", "Hello", "Body"), Sender: "alice@example.com", Subject: "Hello", Date: now},
+		},
+	})
+
+	rules := []connector.Rule{
+		{Match: "folder:INBOX", Destination: "messaging"},
+	}
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "steve@homelab.local")
+
+	err := c.Poll(context.Background(), cp)
+	if err != nil {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+
+	dirs := stagingItemDirs(t, stagingDir)
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 staging item, got %d", len(dirs))
+	}
+
+	meta := readStagingMetadata(t, dirs[0])
+
+	identity, ok := meta["identity"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected identity in metadata")
+	}
+	if identity["provider"] != "imap" {
+		t.Errorf("expected provider=imap, got %v", identity["provider"])
+	}
+	if identity["auth_method"] != "app_password" {
+		t.Errorf("expected auth_method=app_password, got %v", identity["auth_method"])
+	}
+	if identity["account_id"] != "steve@homelab.local" {
+		t.Errorf("expected account_id=steve@homelab.local, got %v", identity["account_id"])
+	}
+}
+
+func TestRuleTagsInStagedMetadata(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	mock := newMockIMAPClient(map[string][]mockMessage{
+		"INBOX": {
+			{UID: 1, Raw: makeRawEmail("alice@example.com", "Hello", "Body"), Sender: "alice@example.com", Subject: "Hello", Date: now},
+		},
+	})
+
+	rules := []connector.Rule{
+		{
+			Match:       "folder:INBOX",
+			Destination: "messaging",
+			Tags:        map[string]string{"priority": "high", "category": "personal"},
+		},
+	}
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "testuser@example.com")
+
+	err := c.Poll(context.Background(), cp)
+	if err != nil {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+
+	dirs := stagingItemDirs(t, stagingDir)
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 staging item, got %d", len(dirs))
+	}
+
+	meta := readStagingMetadata(t, dirs[0])
+
+	tags, ok := meta["tags"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected tags in metadata")
+	}
+	if tags["priority"] != "high" {
+		t.Errorf("expected tag priority=high, got %v", tags["priority"])
+	}
+	if tags["category"] != "personal" {
+		t.Errorf("expected tag category=personal, got %v", tags["category"])
 	}
 }

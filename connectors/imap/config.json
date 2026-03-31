@@ -2,7 +2,7 @@
   "folders": [
     {"name": "INBOX"}
   ],
-  "routes": [
+  "rules": [
     {"match": "folder:INBOX", "destination": "messaging"},
     {"match": "*", "destination": "general"}
   ]

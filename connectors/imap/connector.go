@@ -15,10 +15,11 @@ import (
 // IMAPConnector implements connector.Connector and connector.Watcher.
 // It polls IMAP folders for new messages and stages them for processing.
 type IMAPConnector struct {
-	config    Config
-	writer    *connector.StagingWriter
-	router    *connector.Router
-	newClient func() IMAPClient
+	config      Config
+	writer      *connector.StagingWriter
+	matcher     *connector.RuleMatcher
+	imapUsername string
+	newClient   func() IMAPClient
 }
 
 // Poll iterates configured folders, fetches messages newer than the
@@ -50,9 +51,9 @@ func (c *IMAPConnector) Poll(ctx context.Context, cp connector.Checkpoint) error
 			}
 		}
 
-		dest, routed := c.router.Match("folder:" + folder.Name)
-		if !routed {
-			logger.Debug("no route for folder, skipping", "folder", folder.Name)
+		result, matched := c.matcher.Match("folder:" + folder.Name)
+		if !matched {
+			logger.Debug("no rule for folder, skipping", "folder", folder.Name)
 			continue
 		}
 
@@ -86,13 +87,24 @@ func (c *IMAPConnector) Poll(ctx context.Context, cp connector.Checkpoint) error
 				}
 			}
 
+			var identity *connector.Identity
+			if c.imapUsername != "" {
+				identity = &connector.Identity{
+					AccountID:  c.imapUsername,
+					Provider:   "imap",
+					AuthMethod: "app_password",
+				}
+			}
+
 			item, err := c.writer.NewItem(connector.ItemOptions{
 				Source:           "imap",
 				Sender:           sender,
 				Subject:          subject,
 				Timestamp:        date,
-				DestinationAgent: dest,
+				DestinationAgent: result.Destination,
 				ContentType:      "text/plain",
+				RuleTags:         result.Tags,
+				Identity:         identity,
 			})
 			if err != nil {
 				return fmt.Errorf("create staging item: %w", err)

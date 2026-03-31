@@ -31,6 +31,7 @@ func main() {
 
 	c.config = cfg
 	c.newClient = newRealClient
+	c.imapUsername = os.Getenv("IMAP_USERNAME")
 
 	connector.Run(connector.Options{
 		Name:       "imap",
@@ -40,7 +41,10 @@ func main() {
 		Connector:  c,
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
-			c.router = cc.Router
+			c.matcher = cc.Matcher
+			if cfg.ConfigIdentity != nil {
+				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
+			}
 			return nil
 		},
 		PollInterval: 5 * time.Minute,

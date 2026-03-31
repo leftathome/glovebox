@@ -44,7 +44,10 @@ func main() {
 		Connector:  c,
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
-			c.router = cc.Router
+			c.matcher = cc.Matcher
+			if cfg.ConfigIdentity != nil {
+				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
+			}
 			return nil
 		},
 		PollInterval: 15 * time.Minute,

@@ -30,7 +30,7 @@ var entryTimeFormats = []string{
 type RSSConnector struct {
 	config     Config
 	writer     *connector.StagingWriter
-	router     *connector.Router
+	matcher    *connector.RuleMatcher
 	linkPolicy *content.LinkPolicy
 	httpClient *http.Client
 }
@@ -89,10 +89,10 @@ func (c *RSSConnector) pollFeed(ctx context.Context, feed FeedConfig, checkpoint
 		}
 	}
 
-	routeKey := "feed:" + feed.Name
-	destination, ok := c.router.Match(routeKey)
+	ruleKey := "feed:" + feed.Name
+	result, ok := c.matcher.Match(ruleKey)
 	if !ok {
-		logger.Warn("no route for feed, skipping", "feed", feed.Name)
+		logger.Warn("no rule for feed, skipping", "feed", feed.Name)
 		return nil
 	}
 
@@ -119,8 +119,10 @@ func (c *RSSConnector) pollFeed(ctx context.Context, feed FeedConfig, checkpoint
 			Sender:           feed.Name,
 			Subject:          entry.Title,
 			Timestamp:        ts,
-			DestinationAgent: destination,
+			DestinationAgent: result.Destination,
 			ContentType:      "text/plain",
+			RuleTags:         result.Tags,
+			Identity:         &connector.Identity{Provider: "rss", AuthMethod: "none"},
 		})
 		if err != nil {
 			return fmt.Errorf("new staging item: %w", err)
