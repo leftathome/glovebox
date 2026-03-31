@@ -2,10 +2,14 @@ package staging
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
 )
+
+// validTagKey matches alphanumeric characters, hyphens, underscores, and dots.
+var validTagKey = regexp.MustCompile(`^[a-zA-Z0-9\-_.]+$`)
 
 type ValidationError struct {
 	Field   string
@@ -101,8 +105,86 @@ func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 		errs = append(errs, ValidationError{"content_type", "contains control characters"})
 	}
 
+	// Validate identity sub-fields when present.
+	if meta.Identity != nil {
+		errs = append(errs, validateIdentity(meta.Identity)...)
+	}
+
+	// Validate tags when present.
+	if len(meta.Tags) > 0 {
+		errs = append(errs, validateTags(meta.Tags)...)
+	}
+
 	if meta.AuthFailure {
 		errs = append(errs, ValidationError{"auth_failure", "source authentication failed"})
+	}
+
+	return errs
+}
+
+func validateIdentity(id *ItemIdentity) []ValidationError {
+	var errs []ValidationError
+
+	if len(id.Provider) > 64 {
+		errs = append(errs, ValidationError{"identity.provider", "exceeds 64 characters"})
+	}
+	if hasControlChars(id.Provider) {
+		errs = append(errs, ValidationError{"identity.provider", "contains control characters"})
+	}
+
+	if len(id.AuthMethod) > 64 {
+		errs = append(errs, ValidationError{"identity.auth_method", "exceeds 64 characters"})
+	}
+	if hasControlChars(id.AuthMethod) {
+		errs = append(errs, ValidationError{"identity.auth_method", "contains control characters"})
+	}
+
+	if len(id.AccountID) > 1024 {
+		errs = append(errs, ValidationError{"identity.account_id", "exceeds 1024 characters"})
+	}
+	if hasControlChars(id.AccountID) {
+		errs = append(errs, ValidationError{"identity.account_id", "contains control characters"})
+	}
+
+	if len(id.Tenant) > 256 {
+		errs = append(errs, ValidationError{"identity.tenant", "exceeds 256 characters"})
+	}
+	if hasControlChars(id.Tenant) {
+		errs = append(errs, ValidationError{"identity.tenant", "contains control characters"})
+	}
+
+	if len(id.Scopes) > 32 {
+		errs = append(errs, ValidationError{"identity.scopes", "exceeds 32 entries"})
+	}
+	for i, scope := range id.Scopes {
+		if len(scope) > 64 {
+			errs = append(errs, ValidationError{"identity.scopes", fmt.Sprintf("scope[%d] exceeds 64 characters", i)})
+		}
+	}
+
+	return errs
+}
+
+func validateTags(tags map[string]string) []ValidationError {
+	var errs []ValidationError
+
+	if len(tags) > 32 {
+		errs = append(errs, ValidationError{"tags", fmt.Sprintf("exceeds 32 tags (has %d)", len(tags))})
+	}
+
+	for k, v := range tags {
+		if len(k) > 64 {
+			errs = append(errs, ValidationError{"tags", fmt.Sprintf("key %q exceeds 64 characters", k)})
+		}
+		if !validTagKey.MatchString(k) {
+			errs = append(errs, ValidationError{"tags", fmt.Sprintf("key %q contains invalid characters (allowed: alphanumeric, -, _, .)", k)})
+		}
+		if len(v) > 1024 {
+			errs = append(errs, ValidationError{"tags", fmt.Sprintf("value for key %q exceeds 1024 characters", k)})
+		}
+		if hasControlChars(v) {
+			errs = append(errs, ValidationError{"tags", fmt.Sprintf("value for key %q contains control characters", k)})
+		}
 	}
 
 	return errs

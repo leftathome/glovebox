@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/engine"
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 func TestLogPass_AppendsValidJSONL(t *testing.T) {
@@ -151,6 +152,107 @@ func TestLogger_DegradedAfterWriteFailure(t *testing.T) {
 	logger.LogPass(PassEntry{AuditEntry: AuditEntry{Verdict: "pass"}})
 	if !logger.InDegradedMode() {
 		t.Error("should be degraded after write failure")
+	}
+}
+
+func TestAuditEntry_IncludesIdentityAndTags(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewLogger(dir)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	identity := &staging.ItemIdentity{
+		AccountID:  "steve@github",
+		Provider:   "github",
+		AuthMethod: "oauth",
+		Scopes:     []string{"repo", "read:org"},
+		Tenant:     "steve",
+	}
+	tags := map[string]string{"team": "platform", "env": "production"}
+
+	entry := PassEntry{AuditEntry: AuditEntry{
+		Timestamp:      "2026-03-28T12:00:00Z",
+		Source:         "github",
+		Sender:         "octocat",
+		ContentHash:    "abc123",
+		ContentLength:  200,
+		Signals:        []engine.Signal{},
+		TotalScore:     0.0,
+		Verdict:        "pass",
+		Destination:    "messaging",
+		ScanDurationMs: 10,
+		Identity:       identity,
+		Tags:           tags,
+	}}
+	if err := logger.LogPass(entry); err != nil {
+		t.Fatalf("LogPass: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "pass.jsonl"))
+	var decoded PassEntry
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("invalid JSONL: %v", err)
+	}
+	if decoded.Identity == nil {
+		t.Fatal("expected identity in audit entry, got nil")
+	}
+	if decoded.Identity.Provider != "github" {
+		t.Errorf("identity.provider = %q, want github", decoded.Identity.Provider)
+	}
+	if decoded.Identity.AccountID != "steve@github" {
+		t.Errorf("identity.account_id = %q, want steve@github", decoded.Identity.AccountID)
+	}
+	if len(decoded.Identity.Scopes) != 2 {
+		t.Errorf("identity.scopes len = %d, want 2", len(decoded.Identity.Scopes))
+	}
+	if decoded.Tags == nil {
+		t.Fatal("expected tags in audit entry, got nil")
+	}
+	if decoded.Tags["team"] != "platform" {
+		t.Errorf("tags[team] = %q, want platform", decoded.Tags["team"])
+	}
+	if decoded.Tags["env"] != "production" {
+		t.Errorf("tags[env] = %q, want production", decoded.Tags["env"])
+	}
+}
+
+func TestAuditEntry_OmitsIdentityAndTagsWhenNil(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewLogger(dir)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	entry := PassEntry{AuditEntry: AuditEntry{
+		Timestamp:      "2026-03-28T12:00:00Z",
+		Source:         "rss",
+		Sender:         "feed",
+		ContentHash:    "abc",
+		ContentLength:  50,
+		Signals:        []engine.Signal{},
+		TotalScore:     0.0,
+		Verdict:        "pass",
+		Destination:    "media",
+		ScanDurationMs: 5,
+	}}
+	if err := logger.LogPass(entry); err != nil {
+		t.Fatalf("LogPass: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "pass.jsonl"))
+	// Verify that identity and tags keys are not present in the JSON
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, exists := raw["identity"]; exists {
+		t.Error("expected identity to be omitted from JSON when nil")
+	}
+	if _, exists := raw["tags"]; exists {
+		t.Error("expected tags to be omitted from JSON when nil")
 	}
 }
 

@@ -8,19 +8,22 @@ import (
 	"sync"
 
 	"github.com/leftathome/glovebox/internal/engine"
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 type AuditEntry struct {
-	Timestamp      string          `json:"timestamp"`
-	Source         string          `json:"source"`
-	Sender         string          `json:"sender"`
-	ContentHash    string          `json:"content_hash"`
-	ContentLength  int64           `json:"content_length"`
-	Signals        []engine.Signal `json:"signals"`
-	TotalScore     float64         `json:"total_score"`
-	Verdict        string          `json:"verdict"`
-	Destination    string          `json:"destination"`
-	ScanDurationMs int64           `json:"scan_duration_ms"`
+	Timestamp      string                `json:"timestamp"`
+	Source         string                `json:"source"`
+	Sender         string                `json:"sender"`
+	ContentHash    string                `json:"content_hash"`
+	ContentLength  int64                 `json:"content_length"`
+	Signals        []engine.Signal       `json:"signals"`
+	TotalScore     float64               `json:"total_score"`
+	Verdict        string                `json:"verdict"`
+	Destination    string                `json:"destination"`
+	ScanDurationMs int64                 `json:"scan_duration_ms"`
+	Identity       *staging.ItemIdentity `json:"identity,omitempty"`
+	Tags           map[string]string     `json:"tags,omitempty"`
 }
 
 type PassEntry struct {

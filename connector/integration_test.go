@@ -18,19 +18,20 @@ import (
 // producerConnector is a mock that writes N items to staging during Poll.
 type producerConnector struct {
 	writer  *StagingWriter
-	router  *Router
+	matcher *RuleMatcher
 	count   int
 	source  string
-	routeOn string // routing key passed to router.Match
+	routeOn string // routing key passed to matcher.Match
 }
 
 func (c *producerConnector) Poll(ctx context.Context, cp Checkpoint) error {
 	for i := 0; i < c.count; i++ {
-		dest, ok := c.router.Match(c.routeOn)
+		result, ok := c.matcher.Match(c.routeOn)
 		if !ok {
-			// unmatched route -- skip item, do NOT advance checkpoint
+			// unmatched rule -- skip item, do NOT advance checkpoint
 			continue
 		}
+		dest := result.Destination
 		item, err := c.writer.NewItem(ItemOptions{
 			Source:           c.source,
 			Sender:           "test-sender",
@@ -81,7 +82,7 @@ func TestIntegration_ItemFlowsToStaging(t *testing.T) {
 		t.Fatalf("NewStagingWriter: %v", err)
 	}
 
-	router := NewRouter([]Route{
+	matcher := NewRuleMatcher([]Rule{
 		{Match: "*", Destination: "messaging"},
 	})
 
@@ -92,7 +93,7 @@ func TestIntegration_ItemFlowsToStaging(t *testing.T) {
 
 	c := &producerConnector{
 		writer:  writer,
-		router:  router,
+		matcher: matcher,
 		count:   3,
 		source:  "integration-test",
 		routeOn: "anything",
@@ -157,7 +158,7 @@ func TestIntegration_CheckpointPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("NewStagingWriter: %v", err)
 	}
 
-	router := NewRouter([]Route{
+	matcher := NewRuleMatcher([]Rule{
 		{Match: "*", Destination: "default"},
 	})
 
@@ -169,7 +170,7 @@ func TestIntegration_CheckpointPersistsAcrossRestart(t *testing.T) {
 
 	c := &producerConnector{
 		writer:  writer,
-		router:  router,
+		matcher: matcher,
 		count:   2,
 		source:  "cp-test",
 		routeOn: "any",
@@ -273,7 +274,7 @@ func TestIntegration_NoWildcardRouteWarning(t *testing.T) {
 	}
 
 	// Routes with no wildcard -- only exact match for "known"
-	router := NewRouter([]Route{
+	matcher := NewRuleMatcher([]Rule{
 		{Match: "known", Destination: "handler"},
 	})
 
@@ -285,7 +286,7 @@ func TestIntegration_NoWildcardRouteWarning(t *testing.T) {
 	// Connector that routes on "known" -- should succeed
 	c := &producerConnector{
 		writer:  writer,
-		router:  router,
+		matcher: matcher,
 		count:   2,
 		source:  "no-wc-test",
 		routeOn: "known",
@@ -313,7 +314,7 @@ func TestIntegration_UnmatchedRouteSkipsItem(t *testing.T) {
 	}
 
 	// Route only matches "specific-key", no wildcard
-	router := NewRouter([]Route{
+	matcher := NewRuleMatcher([]Rule{
 		{Match: "specific-key", Destination: "handler"},
 	})
 
@@ -325,7 +326,7 @@ func TestIntegration_UnmatchedRouteSkipsItem(t *testing.T) {
 	// Connector routes on "unknown-key" -- no match
 	c := &producerConnector{
 		writer:  writer,
-		router:  router,
+		matcher: matcher,
 		count:   3,
 		source:  "unmatched-test",
 		routeOn: "unknown-key",
