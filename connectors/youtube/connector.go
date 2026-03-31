@@ -228,7 +228,7 @@ func (c *YouTubeConnector) fetchAPI(ctx context.Context, url string) ([]byte, er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("HTTP %d from YouTube API", resp.StatusCode)
 	}
 
 	const maxBody = 10 << 20 // 10 MB

@@ -273,7 +273,7 @@ func (c *SteamConnector) fetchURL(ctx context.Context, url string) ([]byte, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("HTTP %d from Steam API", resp.StatusCode)
 	}
 
 	limited := io.LimitReader(resp.Body, 10<<20) // 10 MB limit
