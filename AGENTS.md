@@ -163,7 +163,8 @@ connector/                  # Public library (import as github.com/leftathome/gl
   runner.go                 # Run() lifecycle, poll loops, health endpoints, signal handling
   staging.go                # StagingWriter, StagingItem, ItemOptions, atomic handoff
   checkpoint.go             # Checkpoint interface, file-backed implementation
-  route.go                  # Router, Route
+  rule.go                   # RuleMatcher, Rule, MatchResult
+  identity.go               # Identity, ConfigIdentity, MergeIdentity
   metrics.go                # Metrics (OTel + Prometheus)
   content/                  # Optional content helpers
     mime.go                 # DecodeMIME -- parse MIME multipart messages
@@ -198,18 +199,18 @@ Creates `connectors/<name>/` with: connector.go, config.go, main.go,
 config.json, Dockerfile, README.md.
 
 **Step 2: Define config.** Edit `connectors/<name>/config.go`. Keep
-`connector.BaseConfig` embedded (provides `routes` field). Add
-connector-specific fields with `json` struct tags.
+`connector.BaseConfig` embedded (provides `rules` and `identity` fields).
+Add connector-specific fields with `json` struct tags.
 
 **Step 3: Implement Poll.** Edit `connectors/<name>/connector.go`. The struct
 must have fields: `config Config`, `writer *connector.StagingWriter`,
-`router *connector.Router`. Implement
+`matcher *connector.RuleMatcher`. Implement
 `Poll(ctx context.Context, cp connector.Checkpoint) error`. Inside Poll,
 follow this sequence for each item:
 
 1. Check `ctx.Err()` for cancellation
-2. Call `c.router.Match(key)` to get destination (skip if no match)
-3. Call `c.writer.NewItem(connector.ItemOptions{...})` to create staging item
+2. Call `c.matcher.Match(key)` to get a `MatchResult` (skip if no match)
+3. Call `c.writer.NewItem(connector.ItemOptions{..., DestinationAgent: result.Destination, RuleTags: result.Tags})` to create staging item
 4. Call `item.WriteContent(data)` to write content
 5. Call `item.Commit()` to atomically stage the item
 6. Call `cp.Save(key, value)` to advance checkpoint AFTER commit succeeds
@@ -232,15 +233,16 @@ port (HealthPort + 1).
 (env: `GLOVEBOX_CONNECTOR_CONFIG`, default: `/etc/connector/config.json`).
 Unmarshal into your Config struct. Create connector instance. Call
 `connector.Run(connector.Options{...})` with a `Setup` callback that sets
-`writer` and `router`. Read credentials from environment variables, never from
+`writer` and `matcher`. Read credentials from environment variables, never from
 config files.
 
 **Step 7: Write tests.** Create `connectors/<name>/connector_test.go`. Use
 `t.TempDir()` for staging and state directories. Use `httptest.NewServer` to
-mock HTTP endpoints. Call `connector.NewStagingWriter`, `connector.NewRouter`,
-and `connector.NewCheckpoint` directly. Call `Poll(context.Background(), cp)`
-directly -- do NOT use `connector.Run` in tests. Verify: staged item count,
-metadata.json fields, checkpoint values, deduplication on re-poll.
+mock HTTP endpoints. Call `connector.NewStagingWriter`,
+`connector.NewRuleMatcher`, and `connector.NewCheckpoint` directly. Call
+`Poll(context.Background(), cp)` directly -- do NOT use `connector.Run` in
+tests. Verify: staged item count, metadata.json fields (including tags and
+identity), checkpoint values, deduplication on re-poll.
 
 **Step 8: Verify.**
 
@@ -273,9 +275,9 @@ Build from repo root. The Dockerfile copies the full module context.
 **Staging an item:**
 
 ```go
-dest, ok := c.router.Match("feed:" + feed.Name)
+result, ok := c.matcher.Match("feed:" + feed.Name)
 if !ok {
-    return nil  // no route, skip
+    return nil  // no matching rule, skip
 }
 
 item, err := c.writer.NewItem(connector.ItemOptions{
@@ -283,8 +285,9 @@ item, err := c.writer.NewItem(connector.ItemOptions{
     Sender:           senderName,
     Subject:          title,
     Timestamp:        ts,
-    DestinationAgent: dest,
+    DestinationAgent: result.Destination,
     ContentType:      "text/plain",
+    RuleTags:         result.Tags,
 })
 if err != nil {
     return fmt.Errorf("new staging item: %w", err)
@@ -312,7 +315,7 @@ connector.Run(connector.Options{
     Connector:  c,
     Setup: func(cc connector.ConnectorContext) error {
         c.writer = cc.Writer
-        c.router = cc.Router
+        c.matcher = cc.Matcher
         return nil
     },
     PollInterval: 5 * time.Minute,
@@ -330,10 +333,10 @@ func newTestConnector(t *testing.T) (*MyConnector, string, string) {
     if err != nil {
         t.Fatalf("NewStagingWriter: %v", err)
     }
-    router := connector.NewRouter([]connector.Route{
+    matcher := connector.NewRuleMatcher([]connector.Rule{
         {Match: "*", Destination: "test-agent"},
     })
-    c := &MyConnector{writer: writer, router: router, config: Config{...}}
+    c := &MyConnector{writer: writer, matcher: matcher, config: Config{...}}
     return c, stagingDir, stateDir
 }
 ```
@@ -356,7 +359,7 @@ func newTestConnector(t *testing.T) (*MyConnector, string, string) {
    The framework handles metadata construction and validation.
 
 5. **Empty DestinationAgent.** `Commit()` will fail if `DestinationAgent` is
-   empty. Always route through the Router first.
+   empty. Always match through the RuleMatcher first.
 
 6. **Skipping tests.** Every connector must have tests. Use mock HTTP servers
    and temp directories. Test: first poll, deduplication on re-poll, metadata

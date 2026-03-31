@@ -125,13 +125,13 @@ func TestGenerate(t *testing.T) {
 		t.Error("Dockerfile missing connector path")
 	}
 
-	// Verify config.json has routes.
+	// Verify config.json has rules.
 	configJSON, err := os.ReadFile(filepath.Join(outputDir, "config.json"))
 	if err != nil {
 		t.Fatalf("read config.json: %v", err)
 	}
-	if !strings.Contains(string(configJSON), `"routes"`) {
-		t.Error("config.json missing routes key")
+	if !strings.Contains(string(configJSON), `"rules"`) {
+		t.Error("config.json missing rules key")
 	}
 }
 

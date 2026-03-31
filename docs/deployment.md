@@ -151,7 +151,7 @@ or customize (see Section 5.5 for the rules format).
 
 ```json
 {
-  "routes": [
+  "rules": [
     { "match": "feed:home-assistant-blog", "destination": "media" },
     { "match": "*", "destination": "messaging" }
   ],
@@ -181,7 +181,7 @@ or customize (see Section 5.5 for the rules format).
     { "name": "INBOX" },
     { "name": "Notifications" }
   ],
-  "routes": [
+  "rules": [
     { "match": "folder:INBOX", "destination": "messaging" },
     { "match": "folder:Notifications", "destination": "media" },
     { "match": "*", "destination": "messaging" }
@@ -774,24 +774,38 @@ The glovebox scanner reads a JSON config file (default path:
 
 ### 5.2 Connector Config -- Common Fields
 
-Every connector config file supports a `routes` array that determines which
-agent workspace receives each item. Routes are evaluated in order; the first
-match wins.
+Every connector config file supports a `rules` array that determines which
+agent workspace receives each item. Rules are evaluated in order; the first
+match wins. Each rule can also carry metadata tags that are attached to items.
+
+The `routes` key is accepted for backward compatibility but deprecated. Use
+`rules` in all new configurations.
 
 ```json
 {
-  "routes": [
-    { "match": "<pattern>", "destination": "<agent-name>" },
+  "rules": [
+    { "match": "<pattern>", "destination": "<agent-name>", "tags": {"key": "value"} },
     { "match": "*", "destination": "<default-agent>" }
-  ]
+  ],
+  "identity": {
+    "provider": "<connector-type>",
+    "auth_method": "<auth-method>",
+    "account_id": "<account>"
+  }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `routes` | []object | Ordered list of routing rules. |
-| `routes[].match` | string | Pattern to match against the item source. Use `*` as a catch-all. Prefix patterns are connector-specific (e.g., `feed:<name>` for RSS, `folder:<name>` for IMAP). |
-| `routes[].destination` | string | Name of the agent workspace to deliver to. Must be in glovebox's `agent_allowlist`. |
+| `rules` | []object | Ordered list of routing rules. |
+| `rules[].match` | string | Pattern to match against the item source. Use `*` as a catch-all. Prefix patterns are connector-specific (e.g., `feed:<name>` for RSS, `folder:<name>` for IMAP). |
+| `rules[].destination` | string | Name of the agent workspace to deliver to. Must be in glovebox's `agent_allowlist`. |
+| `rules[].tags` | object | Optional key-value metadata tags attached to items matching this rule. Per-item tags override rule tags on conflict. |
+| `identity` | object | Optional config-level identity defaults. Merged with per-item identity at commit time. |
+| `identity.provider` | string | Connector type (e.g., "imap", "rss"). |
+| `identity.auth_method` | string | Authentication method (e.g., "app-password", "oauth2"). |
+| `identity.account_id` | string | Account identifier (e.g., email address). |
+| `identity.tenant` | string | Optional tenant identifier for multi-tenant deployments. |
 
 ### 5.3 RSS Connector Config
 

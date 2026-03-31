@@ -101,7 +101,7 @@ Create `quickstart-rss.json` with an RSS feed to poll:
 
 ```json
 {
-  "routes": [
+  "rules": [
     { "match": "*", "destination": "messaging" }
   ],
   "feeds": [

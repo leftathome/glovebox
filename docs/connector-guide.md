@@ -85,7 +85,7 @@ This creates `connectors/my-source/` with:
 | `connector.go`   | Stub implementing `Connector` with an empty `Poll`  |
 | `config.go`      | Config struct embedding `connector.BaseConfig`       |
 | `main.go`        | Entry point wiring `connector.Run`                   |
-| `config.json`    | Example config with a wildcard route                 |
+| `config.json`    | Example config with a wildcard rule                  |
 | `Dockerfile`     | Multi-stage build (golang -> distroless)             |
 | `README.md`      | Usage placeholder                                    |
 
@@ -122,7 +122,7 @@ import (
 type MySourceConnector struct {
     config Config
     writer *connector.StagingWriter
-    router *connector.Router
+    matcher *connector.RuleMatcher
 }
 
 func (c *MySourceConnector) Poll(ctx context.Context, cp connector.Checkpoint) error {
@@ -140,10 +140,10 @@ func (c *MySourceConnector) Poll(ctx context.Context, cp connector.Checkpoint) e
             return ctx.Err()
         }
 
-        // 3. Route the item to a destination agent
-        dest, ok := c.router.Match("category:" + item.Category)
+        // 3. Match the item against rules to find its destination
+        result, ok := c.matcher.Match("category:" + item.Category)
         if !ok {
-            continue // no route configured, skip
+            continue // no matching rule, skip
         }
 
         // 4. Write to staging
@@ -152,8 +152,9 @@ func (c *MySourceConnector) Poll(ctx context.Context, cp connector.Checkpoint) e
             Sender:           item.Author,
             Subject:          item.Title,
             Timestamp:        item.CreatedAt,
-            DestinationAgent: dest,
+            DestinationAgent: result.Destination,
             ContentType:      "text/plain",
+            RuleTags:         result.Tags,
         })
         if err != nil {
             return fmt.Errorf("new staging item: %w", err)
@@ -218,7 +219,7 @@ func main() {
         Connector:  c,
         Setup: func(cc connector.ConnectorContext) error {
             c.writer = cc.Writer
-            c.router = cc.Router
+            c.matcher = cc.Matcher
             return nil
         },
         PollInterval: 5 * time.Minute,
@@ -226,13 +227,13 @@ func main() {
 }
 ```
 
-### Step 5: Configure routing
+### Step 5: Configure rules
 
 Edit `config.json`:
 
 ```json
 {
-    "routes": [
+    "rules": [
         {"match": "category:alerts",   "destination": "notifications"},
         {"match": "category:reports",  "destination": "analytics"},
         {"match": "*",                 "destination": "default-agent"}
@@ -311,10 +312,13 @@ if err := item.Commit(); err != nil {
 | `Sender`          | `string`   | Yes      | Who sent the content                              |
 | `Subject`         | `string`   | Yes      | Subject line or title                             |
 | `Timestamp`       | `time.Time`| Yes      | When the content was created                      |
-| `DestinationAgent`| `string`   | Yes      | Target agent (from router)                        |
+| `DestinationAgent`| `string`   | Yes      | Target agent (from rule match)                    |
 | `ContentType`     | `string`   | Yes      | MIME type of content.raw                          |
 | `Ordered`         | `bool`     | No       | Whether ordering matters for this item            |
 | `AuthFailure`     | `bool`     | No       | True if source auth failed for this item          |
+| `Identity`        | `*Identity`| No       | Per-item identity (merged with config identity)   |
+| `Tags`            | `map[string]string` | No | Per-item metadata tags                       |
+| `RuleTags`        | `map[string]string` | No | Tags from the matched rule (via MatchResult) |
 
 Metadata validation runs on `Commit()`. It enforces max lengths (1024 chars for
 source/sender/subject, 64 chars for destination_agent/content_type), strips
@@ -371,19 +375,28 @@ data, _ := json.Marshal(seen)
 cp.Save("seen_ids", string(data))
 ```
 
-### 3.3 Router
+### 3.3 RuleMatcher
 
-The `Router` maps connector-defined match keys to destination agent names
-based on configuration. Routes are evaluated in order; first match wins.
+The `RuleMatcher` maps connector-defined match keys to destination agent names
+and optional tags based on configuration. Rules are evaluated in order; first
+match wins.
 
 ```go
-type Route struct {
-    Match       string `json:"match"`
-    Destination string `json:"destination"`
+type Rule struct {
+    Match       string            `json:"match"`
+    Destination string            `json:"destination"`
+    Tags        map[string]string `json:"tags,omitempty"`
 }
 
-router := connector.NewRouter(routes)
-dest, ok := router.Match("feed:techcrunch")
+type MatchResult struct {
+    Destination string
+    Tags        map[string]string
+}
+
+matcher := connector.NewRuleMatcher(rules)
+result, ok := matcher.Match("feed:techcrunch")
+// result.Destination -- the agent name
+// result.Tags        -- metadata tags from the matched rule
 ```
 
 **Match key conventions by connector type:**
@@ -395,23 +408,89 @@ dest, ok := router.Match("feed:techcrunch")
 | GitHub    | `repo:<name>`        | `repo:myorg/myrepo`                |
 | Webhook   | `event:<type>`       | `event:push`, `event:issue`        |
 
-**Wildcard route:**
+**Wildcard rule:**
 
-A `"*"` match acts as a catch-all. If no route matches and no wildcard is
+A `"*"` match acts as a catch-all. If no rule matches and no wildcard is
 configured, the item is skipped and a warning is logged. The runner warns at
-startup if no wildcard route is defined.
+startup if no wildcard rule is defined.
 
 **Simple single-destination config:**
 
 ```json
 {
-    "routes": [
+    "rules": [
         {"match": "*", "destination": "messaging"}
     ]
 }
 ```
 
-### 3.4 Error Handling
+**Rules with tags:**
+
+Tags defined on a rule are included in the `MatchResult` and automatically
+merged into the item's metadata at commit time (via `RuleTags` on
+`ItemOptions`). Per-item tags override rule tags on key conflict.
+
+```json
+{
+    "rules": [
+        {"match": "feed:internal", "destination": "engineering", "tags": {"priority": "high", "source_type": "internal"}},
+        {"match": "*", "destination": "default-agent", "tags": {"priority": "normal"}}
+    ]
+}
+```
+
+### 3.4 Identity
+
+The identity system tracks which authenticated account produced each item.
+Identity is set at two levels:
+
+1. **Config-level identity** (`ConfigIdentity`) -- defaults from the connector
+   config file, applied to all items. Set via `StagingWriter.SetConfigIdentity()`.
+2. **Per-item identity** (`Identity`) -- set on individual `ItemOptions`. Per-item
+   fields override config-level fields when both are present.
+
+```go
+// Config-level identity (set once during setup):
+writer.SetConfigIdentity(&connector.ConfigIdentity{
+    Provider:   "imap",
+    AuthMethod: "app-password",
+    AccountID:  "user@example.com",
+})
+
+// Per-item identity (optional, overrides config for specific items):
+item, err := c.writer.NewItem(connector.ItemOptions{
+    Source:           "imap",
+    DestinationAgent: result.Destination,
+    // ...
+    Identity: &connector.Identity{
+        Provider:   "imap",
+        AuthMethod: "oauth2",
+        AccountID:  "other-user@example.com",
+        Scopes:     []string{"IMAP", "SMTP"},
+    },
+})
+```
+
+The framework merges these at `Commit()` time using `MergeIdentity()`. Per-item
+non-empty fields override config-level values. Scopes come from the per-item
+identity only (config has no scopes field).
+
+Config identity is specified in `config.json`:
+
+```json
+{
+    "identity": {
+        "provider": "imap",
+        "auth_method": "app-password",
+        "account_id": "user@example.com"
+    },
+    "rules": [
+        {"match": "*", "destination": "messaging"}
+    ]
+}
+```
+
+### 3.5 Error Handling
 
 Errors from `Poll` and `Watch` are classified as transient or permanent:
 
@@ -441,7 +520,7 @@ treated as transient by default.
 the 50 successfully committed and checkpointed items are preserved. The next
 poll resumes from the last checkpoint.
 
-### 3.5 Health Endpoints
+### 3.6 Health Endpoints
 
 The runner exposes HTTP health endpoints on a configurable port (default 8080):
 
@@ -514,22 +593,49 @@ type Options struct {
 // ConnectorContext is passed to the Setup callback.
 type ConnectorContext struct {
     Writer  *StagingWriter
-    Router  *Router
+    Matcher *RuleMatcher
     Metrics *Metrics
 }
 
 // SetupFunc is called after the runner initializes resources.
 type SetupFunc func(cc ConnectorContext) error
 
-// BaseConfig provides the routes field that all connector configs share.
+// BaseConfig provides the rules field that all connector configs share.
+// The "routes" key is accepted for backward compatibility but deprecated.
 type BaseConfig struct {
-    Routes []Route `json:"routes"`
+    Rules          []Rule          `json:"rules"`
+    Routes         []Rule          `json:"routes"`
+    ConfigIdentity *ConfigIdentity `json:"identity,omitempty"`
 }
 
-// Route maps a match key to a destination agent.
-type Route struct {
-    Match       string `json:"match"`
-    Destination string `json:"destination"`
+// Rule maps a match key to a destination agent, with optional tags.
+type Rule struct {
+    Match       string            `json:"match"`
+    Destination string            `json:"destination"`
+    Tags        map[string]string `json:"tags,omitempty"`
+}
+
+// MatchResult holds the destination and tags produced by a successful match.
+type MatchResult struct {
+    Destination string
+    Tags        map[string]string
+}
+
+// Identity represents the authenticated identity that produced an item.
+type Identity struct {
+    AccountID  string   `json:"account_id,omitempty"`
+    Provider   string   `json:"provider"`
+    AuthMethod string   `json:"auth_method"`
+    Scopes     []string `json:"scopes,omitempty"`
+    Tenant     string   `json:"tenant,omitempty"`
+}
+
+// ConfigIdentity is the identity block from connector config.
+type ConfigIdentity struct {
+    AccountID  string `json:"account_id,omitempty"`
+    Provider   string `json:"provider,omitempty"`
+    AuthMethod string `json:"auth_method,omitempty"`
+    Tenant     string `json:"tenant,omitempty"`
 }
 
 // ItemOptions configures a staged item.
@@ -542,6 +648,9 @@ type ItemOptions struct {
     ContentType      string
     Ordered          bool
     AuthFailure      bool
+    Identity         *Identity
+    Tags             map[string]string
+    RuleTags         map[string]string
 }
 ```
 
@@ -563,8 +672,8 @@ func NewCheckpoint(stateDir string) (Checkpoint, error)
 // NewStagingWriter creates a staging writer for the given connector.
 func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, error)
 
-// NewRouter creates a router from the given routes.
-func NewRouter(routes []Route) *Router
+// NewRuleMatcher creates a rule matcher from the given rules.
+func NewRuleMatcher(rules []Rule) *RuleMatcher
 
 // NewMetrics creates OTel instruments with Prometheus exporter.
 // connectorName is recorded as the "connector" label on all metrics.
@@ -579,6 +688,10 @@ func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error)
 
 // CleanOrphans removes incomplete items from previous runs.
 func (w *StagingWriter) CleanOrphans()
+
+// SetConfigIdentity sets the config-level identity used as the base for
+// identity merging at Commit() time.
+func (w *StagingWriter) SetConfigIdentity(ci *ConfigIdentity)
 ```
 
 #### StagingItem Methods
@@ -595,12 +708,20 @@ func (si *StagingItem) ContentWriter() (io.WriteCloser, error)
 func (si *StagingItem) Commit() error
 ```
 
-#### Router Methods
+#### RuleMatcher Methods
 
 ```go
-// Match returns the destination for the first matching route.
-// Returns ("", false) if no route matches.
-func (r *Router) Match(key string) (string, bool)
+// Match returns the MatchResult for the first matching rule.
+// Returns (MatchResult{}, false) if no rule matches.
+func (rm *RuleMatcher) Match(key string) (MatchResult, bool)
+```
+
+#### Identity Functions
+
+```go
+// MergeIdentity merges config-level identity with per-item identity.
+// Per-item fields override config fields. Returns nil if both are nil.
+func MergeIdentity(config *ConfigIdentity, item *Identity) *Identity
 ```
 
 #### Metrics Methods
@@ -736,15 +857,15 @@ func newTestConnector(t *testing.T, feeds []FeedConfig) (*MyConnector, string, s
         t.Fatalf("NewStagingWriter: %v", err)
     }
 
-    routes := []connector.Route{
+    rules := []connector.Rule{
         {Match: "*", Destination: "test-agent"},
     }
-    router := connector.NewRouter(routes)
+    matcher := connector.NewRuleMatcher(rules)
 
     c := &MyConnector{
         config: Config{Feeds: feeds},
         writer: writer,
-        router: router,
+        matcher: matcher,
     }
 
     return c, stagingDir, stateDir
@@ -886,16 +1007,21 @@ go vet ./connectors/my-source/...
 
 ### Config file format
 
-Every connector config file is JSON. It must include a `routes` array (from
+Every connector config file is JSON. It must include a `rules` array (from
 `connector.BaseConfig`) and can include any connector-specific fields.
+The `routes` key is accepted for backward compatibility but deprecated.
 
 ```json
 {
-    "routes": [
+    "rules": [
         {"match": "feed:techcrunch", "destination": "news"},
-        {"match": "feed:internal",   "destination": "engineering"},
+        {"match": "feed:internal",   "destination": "engineering", "tags": {"priority": "high"}},
         {"match": "*",               "destination": "default-agent"}
     ],
+    "identity": {
+        "provider": "rss",
+        "auth_method": "none"
+    },
     "api_endpoint": "https://api.example.com",
     "max_items": 100
 }
@@ -903,7 +1029,7 @@ Every connector config file is JSON. It must include a `routes` array (from
 
 ### Config struct pattern
 
-Embed `connector.BaseConfig` to inherit the routes field:
+Embed `connector.BaseConfig` to inherit the rules and identity fields:
 
 ```go
 type Config struct {
@@ -913,8 +1039,10 @@ type Config struct {
 }
 ```
 
-The runner parses routes from the config file automatically and initializes
-the router. Your connector reads its own config fields separately in `main.go`.
+The runner parses rules from the config file automatically and initializes
+the rule matcher. Your connector reads its own config fields separately in
+`main.go`. If a `ConfigIdentity` is present, the runner sets it on the
+staging writer automatically.
 
 ### Environment variables
 
