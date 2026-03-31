@@ -21,12 +21,16 @@ type ItemOptions struct {
 	ContentType      string
 	Ordered          bool
 	AuthFailure      bool
+	Identity         *Identity
+	Tags             map[string]string
+	RuleTags         map[string]string
 }
 
 type StagingWriter struct {
-	stagingDir    string
-	connectorName string
-	tmpDir        string
+	stagingDir     string
+	connectorName  string
+	tmpDir         string
+	configIdentity *ConfigIdentity
 }
 
 func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, error) {
@@ -41,10 +45,17 @@ func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, 
 	}, nil
 }
 
+// SetConfigIdentity sets the config-level identity used as the base for
+// identity merging at Commit() time.
+func (w *StagingWriter) SetConfigIdentity(ci *ConfigIdentity) {
+	w.configIdentity = ci
+}
+
 type StagingItem struct {
-	dir        string
-	stagingDir string
-	opts       ItemOptions
+	dir            string
+	stagingDir     string
+	opts           ItemOptions
+	configIdentity *ConfigIdentity
 }
 
 func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
@@ -53,7 +64,7 @@ func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create item dir: %w", err)
 	}
-	return &StagingItem{dir: dir, stagingDir: w.stagingDir, opts: opts}, nil
+	return &StagingItem{dir: dir, stagingDir: w.stagingDir, opts: opts, configIdentity: w.configIdentity}, nil
 }
 
 // WriteContent writes (or appends) content to content.raw.
@@ -90,6 +101,24 @@ func (si *StagingItem) Commit() error {
 		AuthFailure:      si.opts.AuthFailure,
 	}
 
+	// Merge RuleTags with Tags (per-item Tags win on conflict).
+	mergedTags := mergeTags(si.opts.RuleTags, si.opts.Tags)
+	if len(mergedTags) > 0 {
+		meta.Tags = mergedTags
+	}
+
+	// Merge config-level identity with per-item identity.
+	mergedIdentity := MergeIdentity(si.configIdentity, si.opts.Identity)
+	if mergedIdentity != nil {
+		meta.Identity = &staging.ItemIdentity{
+			AccountID:  mergedIdentity.AccountID,
+			Provider:   mergedIdentity.Provider,
+			AuthMethod: mergedIdentity.AuthMethod,
+			Scopes:     mergedIdentity.Scopes,
+			Tenant:     mergedIdentity.Tenant,
+		}
+	}
+
 	// Validate using shared validation. Pass destination as its own allowlist
 	// so the allowlist check passes -- glovebox does the real allowlist check.
 	allowlist := []string{meta.DestinationAgent}
@@ -116,6 +145,22 @@ func (si *StagingItem) Commit() error {
 	}
 
 	return nil
+}
+
+// mergeTags merges rule-level tags with per-item tags.
+// Per-item tags win on key conflict. Returns nil if both are empty.
+func mergeTags(ruleTags, itemTags map[string]string) map[string]string {
+	if len(ruleTags) == 0 && len(itemTags) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(ruleTags)+len(itemTags))
+	for k, v := range ruleTags {
+		merged[k] = v
+	}
+	for k, v := range itemTags {
+		merged[k] = v
+	}
+	return merged
 }
 
 func (w *StagingWriter) CleanOrphans() {

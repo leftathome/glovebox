@@ -204,3 +204,215 @@ func TestStagingWriter_NewStagingWriterReturnsError(t *testing.T) {
 		t.Error("should return error for unwritable directory")
 	}
 }
+
+// readCommittedMetadata is a test helper that reads the first committed item's
+// metadata.json from the staging directory and returns it as a raw map.
+func readCommittedMetadata(t *testing.T, stagingDir string) map[string]any {
+	t.Helper()
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatalf("read staging dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("unmarshal metadata.json: %v", err)
+		}
+		return meta
+	}
+	t.Fatal("no committed item found in staging dir")
+	return nil
+}
+
+func TestStagingWriter_CommitWritesIdentity(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "test")
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "github",
+		Sender:           "octocat",
+		Timestamp:        time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+		Identity: &Identity{
+			AccountID:  "steve@github",
+			Provider:   "github",
+			AuthMethod: "oauth",
+			Scopes:     []string{"repo", "read:org"},
+			Tenant:     "steve",
+		},
+	})
+	item.WriteContent([]byte("pr body"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	idRaw, ok := meta["identity"]
+	if !ok {
+		t.Fatal("metadata.json missing identity field")
+	}
+	idMap, ok := idRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("identity is not an object: %T", idRaw)
+	}
+	if idMap["account_id"] != "steve@github" {
+		t.Errorf("identity.account_id = %v, want steve@github", idMap["account_id"])
+	}
+	if idMap["provider"] != "github" {
+		t.Errorf("identity.provider = %v, want github", idMap["provider"])
+	}
+	if idMap["auth_method"] != "oauth" {
+		t.Errorf("identity.auth_method = %v, want oauth", idMap["auth_method"])
+	}
+	if idMap["tenant"] != "steve" {
+		t.Errorf("identity.tenant = %v, want steve", idMap["tenant"])
+	}
+}
+
+func TestStagingWriter_CommitWritesTags(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "test")
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "github",
+		Sender:           "octocat",
+		Timestamp:        time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+		Tags:             map[string]string{"team": "platform", "env": "production"},
+	})
+	item.WriteContent([]byte("content"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	tagsRaw, ok := meta["tags"]
+	if !ok {
+		t.Fatal("metadata.json missing tags field")
+	}
+	tagsMap, ok := tagsRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("tags is not an object: %T", tagsRaw)
+	}
+	if tagsMap["team"] != "platform" {
+		t.Errorf("tags.team = %v, want platform", tagsMap["team"])
+	}
+	if tagsMap["env"] != "production" {
+		t.Errorf("tags.env = %v, want production", tagsMap["env"])
+	}
+}
+
+func TestStagingWriter_TagMerge_ItemWinsOverRuleTags(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "test")
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "github",
+		Sender:           "octocat",
+		Timestamp:        time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+		RuleTags:         map[string]string{"a": "1", "b": "2"},
+		Tags:             map[string]string{"b": "override"},
+	})
+	item.WriteContent([]byte("content"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	tagsMap, ok := meta["tags"].(map[string]any)
+	if !ok {
+		t.Fatal("metadata.json missing or invalid tags field")
+	}
+	if tagsMap["a"] != "1" {
+		t.Errorf("tags.a = %v, want 1", tagsMap["a"])
+	}
+	if tagsMap["b"] != "override" {
+		t.Errorf("tags.b = %v, want override (item tags should win)", tagsMap["b"])
+	}
+}
+
+func TestStagingWriter_IdentityMerge_ConfigAndItem(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "test")
+	w.SetConfigIdentity(&ConfigIdentity{
+		Provider: "github",
+		Tenant:   "steve",
+	})
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "github",
+		Sender:           "octocat",
+		Timestamp:        time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+		Identity: &Identity{
+			AccountID: "steve@github",
+		},
+	})
+	item.WriteContent([]byte("content"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	idMap, ok := meta["identity"].(map[string]any)
+	if !ok {
+		t.Fatal("metadata.json missing or invalid identity field")
+	}
+	if idMap["provider"] != "github" {
+		t.Errorf("identity.provider = %v, want github (from config)", idMap["provider"])
+	}
+	if idMap["tenant"] != "steve" {
+		t.Errorf("identity.tenant = %v, want steve (from config)", idMap["tenant"])
+	}
+	if idMap["account_id"] != "steve@github" {
+		t.Errorf("identity.account_id = %v, want steve@github (from item)", idMap["account_id"])
+	}
+}
+
+func TestStagingWriter_NoIdentityNoTags_OmittedFromMetadata(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "test")
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "rss",
+		Sender:           "feed",
+		Timestamp:        time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+	})
+	item.WriteContent([]byte("content"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	if _, ok := meta["identity"]; ok {
+		t.Error("metadata.json should omit identity when not set")
+	}
+	if _, ok := meta["tags"]; ok {
+		t.Error("metadata.json should omit tags when not set")
+	}
+}

@@ -15,7 +15,9 @@ import (
 )
 
 type BaseConfig struct {
-	Routes []Route `json:"routes"`
+	Rules          []Rule          `json:"rules"`
+	Routes         []Rule          `json:"routes"`
+	ConfigIdentity *ConfigIdentity `json:"identity,omitempty"`
 }
 
 func Run(opts Options) {
@@ -40,17 +42,23 @@ func Run(opts Options) {
 		}
 	}
 
-	router := NewRouter(baseCfg.Routes)
-	if len(baseCfg.Routes) > 0 {
+	// Backward-compatible migration: "routes" -> "rules"
+	if len(baseCfg.Rules) == 0 && len(baseCfg.Routes) > 0 {
+		baseCfg.Rules = baseCfg.Routes
+		logger.Warn("config key 'routes' is deprecated, use 'rules' instead")
+	}
+
+	matcher := NewRuleMatcher(baseCfg.Rules)
+	if len(baseCfg.Rules) > 0 {
 		hasWildcard := false
-		for _, r := range baseCfg.Routes {
+		for _, r := range baseCfg.Rules {
 			if r.Match == "*" {
 				hasWildcard = true
 				break
 			}
 		}
 		if !hasWildcard {
-			logger.Warn("no wildcard route defined -- unmatched items will be skipped")
+			logger.Warn("no wildcard rule defined -- unmatched items will be skipped")
 		}
 	}
 
@@ -79,7 +87,7 @@ func Run(opts Options) {
 
 	// Pass resources to connector via setup callback
 	if opts.Setup != nil {
-		if err := opts.Setup(ConnectorContext{Writer: writer, Router: router, Metrics: metrics}); err != nil {
+		if err := opts.Setup(ConnectorContext{Writer: writer, Matcher: matcher, Metrics: metrics}); err != nil {
 			logger.Error("connector setup", "error", err)
 			os.Exit(1)
 		}

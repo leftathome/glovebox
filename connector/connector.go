@@ -23,7 +23,7 @@ type Listener interface {
 // framework-initialized resources.
 type ConnectorContext struct {
 	Writer  *StagingWriter
-	Router  *Router
+	Matcher *RuleMatcher
 	Metrics *Metrics
 }
 

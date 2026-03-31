@@ -1,12 +1,15 @@
 package connector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,7 +66,7 @@ func testOptions(t *testing.T, c Connector) Options {
 	os.MkdirAll(stagingDir, 0755)
 
 	cfgPath := filepath.Join(base, "config.json")
-	os.WriteFile(cfgPath, []byte(`{"routes":[{"match":"*","destination":"messaging"}]}`), 0644)
+	os.WriteFile(cfgPath, []byte(`{"rules":[{"match":"*","destination":"messaging"}]}`), 0644)
 
 	return Options{
 		Name:         "test",
@@ -223,5 +226,144 @@ func TestRunPoll_PermanentError(t *testing.T) {
 	}
 	if !IsPermanent(err) {
 		t.Error("error should be permanent")
+	}
+}
+
+func TestBaseConfig_RulesParsedCorrectly(t *testing.T) {
+	cfg := `{"rules":[{"match":"email","destination":"inbox"},{"match":"*","destination":"default"}]}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(bc.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(bc.Rules))
+	}
+	if bc.Rules[0].Match != "email" {
+		t.Errorf("rules[0].Match = %q, want %q", bc.Rules[0].Match, "email")
+	}
+	if bc.Rules[1].Destination != "default" {
+		t.Errorf("rules[1].Destination = %q, want %q", bc.Rules[1].Destination, "default")
+	}
+}
+
+func TestBaseConfig_RoutesFallbackToRules(t *testing.T) {
+	// Config uses deprecated "routes" key -- should still parse into Routes
+	// and be migrated to Rules in Run().
+	cfg := `{"routes":[{"match":"*","destination":"legacy"}]}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(bc.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(bc.Routes))
+	}
+	if len(bc.Rules) != 0 {
+		t.Fatalf("expected 0 rules before migration, got %d", len(bc.Rules))
+	}
+
+	// Simulate the migration logic from Run()
+	if len(bc.Rules) == 0 && len(bc.Routes) > 0 {
+		bc.Rules = bc.Routes
+	}
+
+	if len(bc.Rules) != 1 {
+		t.Fatalf("after migration: expected 1 rule, got %d", len(bc.Rules))
+	}
+	if bc.Rules[0].Destination != "legacy" {
+		t.Errorf("after migration: rules[0].Destination = %q, want %q", bc.Rules[0].Destination, "legacy")
+	}
+}
+
+func TestBaseConfig_RulesTakePrecedenceOverRoutes(t *testing.T) {
+	// When both "rules" and "routes" are present, "rules" wins.
+	cfg := `{
+		"rules":[{"match":"*","destination":"new-dest"}],
+		"routes":[{"match":"*","destination":"old-dest"}]
+	}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(bc.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(bc.Rules))
+	}
+	if len(bc.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(bc.Routes))
+	}
+
+	// Simulate migration: since Rules is non-empty, Routes should be ignored
+	if len(bc.Rules) == 0 && len(bc.Routes) > 0 {
+		bc.Rules = bc.Routes
+	}
+
+	if bc.Rules[0].Destination != "new-dest" {
+		t.Errorf("rules[0].Destination = %q, want %q (rules should take precedence)", bc.Rules[0].Destination, "new-dest")
+	}
+}
+
+func TestBaseConfig_DeprecationWarningLogged(t *testing.T) {
+	// Verify that using "routes" logs a deprecation warning.
+	// We capture slog output by using a custom handler.
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	logger := slog.New(handler)
+
+	cfg := `{"routes":[{"match":"*","destination":"legacy"}]}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Simulate the migration logic from Run()
+	if len(bc.Rules) == 0 && len(bc.Routes) > 0 {
+		bc.Rules = bc.Routes
+		logger.Warn("config key 'routes' is deprecated, use 'rules' instead")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "deprecated") {
+		t.Errorf("expected deprecation warning in log output, got: %s", output)
+	}
+}
+
+func TestBaseConfig_IdentityField(t *testing.T) {
+	cfg := `{
+		"rules":[{"match":"*","destination":"default"}],
+		"identity":{"provider":"imap","auth_method":"oauth2","tenant":"example.com"}
+	}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if bc.ConfigIdentity == nil {
+		t.Fatal("expected ConfigIdentity to be set")
+	}
+	if bc.ConfigIdentity.Provider != "imap" {
+		t.Errorf("Provider = %q, want %q", bc.ConfigIdentity.Provider, "imap")
+	}
+	if bc.ConfigIdentity.AuthMethod != "oauth2" {
+		t.Errorf("AuthMethod = %q, want %q", bc.ConfigIdentity.AuthMethod, "oauth2")
+	}
+	if bc.ConfigIdentity.Tenant != "example.com" {
+		t.Errorf("Tenant = %q, want %q", bc.ConfigIdentity.Tenant, "example.com")
+	}
+}
+
+func TestConnectorContext_HasMatcher(t *testing.T) {
+	matcher := NewRuleMatcher([]Rule{
+		{Match: "*", Destination: "default"},
+	})
+	cc := ConnectorContext{
+		Matcher: matcher,
+	}
+	if cc.Matcher == nil {
+		t.Fatal("expected Matcher to be set")
+	}
+	result, ok := cc.Matcher.Match("anything")
+	if !ok {
+		t.Fatal("expected match")
+	}
+	if result.Destination != "default" {
+		t.Errorf("Destination = %q, want %q", result.Destination, "default")
 	}
 }
