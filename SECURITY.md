@@ -12,7 +12,7 @@ This keeps the report private and allows us to coordinate a fix before disclosur
 
 ### Alternative: Email
 
-Send details to **security@leftathome.dev**.
+Send details to **leftathome@gmail.com** with subject line **[SECURITY] glovebox**.
 
 ### What to Include
 
