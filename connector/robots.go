@@ -104,12 +104,16 @@ func (rc *RobotsChecker) CrawlDelay(origin string) int {
 }
 
 // originFromURL extracts the scheme + host (origin) from a URL string.
+// Only http and https schemes are allowed to prevent SSRF.
 func originFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
 	}
-	if u.Scheme == "" || u.Host == "" {
+	if u.Host == "" {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host
@@ -162,20 +166,24 @@ func (rc *RobotsChecker) fetchRobots(ctx context.Context, origin string) *robots
 			continue
 		}
 
-		defer resp.Body.Close()
-
 		// 4xx = allow (no robots.txt or forbidden).
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			resp.Body.Close()
 			return &robotsRules{}
 		}
 
 		// 5xx = deny.
 		if resp.StatusCode >= 500 {
+			resp.Body.Close()
 			return &robotsRules{denyAll: true}
 		}
 
-		// 2xx = parse the body.
-		return parseRobotsTxt(resp.Body, rc.userAgent)
+		// 2xx = parse the body (capped at 512KB to prevent OOM).
+		const maxRobotsSize = 512 << 10
+		limited := io.LimitReader(resp.Body, maxRobotsSize)
+		rules := parseRobotsTxt(limited, rc.userAgent)
+		resp.Body.Close()
+		return rules
 	}
 
 	// Exhausted redirect hops.
