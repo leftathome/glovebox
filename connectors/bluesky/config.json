@@ -1,0 +1,14 @@
+{
+  "service": "https://bsky.social",
+  "feed_uris": [],
+  "rules": [
+    {
+      "match": "feed:timeline",
+      "destination": "home-agent",
+      "tags": {
+        "source_type": "social",
+        "platform": "bluesky"
+      }
+    }
+  ]
+}
