@@ -10,7 +10,7 @@ import (
 type {{.StructName}}Connector struct {
 	config Config
 	writer *connector.StagingWriter
-	router *connector.Router
+	matcher *connector.RuleMatcher
 }
 
 // Poll fetches data from the source and writes it to staging.

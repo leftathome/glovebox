@@ -17,7 +17,7 @@ func main() {
 		Connector:  c,
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
-			c.router = cc.Router
+			c.matcher = cc.Matcher
 			return nil
 		},
 		PollInterval: 5 * time.Minute,
