@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -129,14 +130,25 @@ func (r *RefreshableTokenSource) refresh(ctx context.Context) (string, error) {
 		"client_id":     {r.config.ClientID},
 		"client_secret": {r.config.ClientSecret},
 	}
+	if len(r.config.Scopes) > 0 {
+		form.Set("scope", strings.Join(r.config.Scopes, " "))
+	}
 
-	resp, err := http.PostForm(r.config.TokenURL, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.config.TokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("build refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("token refresh request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	const maxResponseBytes = 1 << 20 // 1 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("read refresh response: %w", err)
 	}
@@ -184,7 +196,7 @@ func (r *RefreshableTokenSource) persist(tf *tokenFile) error {
 	}
 
 	tmpPath := r.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("write token tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, r.path); err != nil {
