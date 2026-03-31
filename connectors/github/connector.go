@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
@@ -78,7 +79,7 @@ func (c *GitHubConnector) pollRepo(ctx context.Context, repo RepoConfig, checkpo
 	lastID, hasCheckpoint := checkpoint.Load(cpKey)
 
 	// GitHub returns events newest-first. Reverse to process oldest-first.
-	reverseEvents(events)
+	slices.Reverse(events)
 
 	// Find start index after checkpoint.
 	startIdx := 0
@@ -237,8 +238,3 @@ func (c *GitHubConnector) Handler() http.Handler {
 	})
 }
 
-func reverseEvents(events []ghEvent) {
-	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-		events[i], events[j] = events[j], events[i]
-	}
-}

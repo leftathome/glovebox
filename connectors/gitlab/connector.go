@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,15 +65,11 @@ func (c *GitLabConnector) pollProject(ctx context.Context, project ProjectConfig
 		return nil
 	}
 
-	// GitLab returns events newest-first. We want to process oldest-first
-	// so checkpointing is consistent. Reverse the slice.
-	reversed := make([]json.RawMessage, len(events))
-	for i, ev := range events {
-		reversed[len(events)-1-i] = ev
-	}
+	// GitLab returns events newest-first. Reverse to process oldest-first.
+	slices.Reverse(events)
 
 	var highestID int
-	for _, rawEvent := range reversed {
+	for _, rawEvent := range events {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -145,10 +142,11 @@ func (c *GitLabConnector) fetchAllEvents(ctx context.Context, projectPath string
 	// what the GitLab API expects when using the path as a project ID.
 	encodedPath := url.PathEscape(projectPath)
 
+	const maxPages = 10
 	var allEvents []json.RawMessage
 	page := ""
 
-	for {
+	for pageCount := 0; pageCount < maxPages; pageCount++ {
 		rawPath := fmt.Sprintf("/api/v4/projects/%s/events", encodedPath)
 		query := ""
 		if page != "" {
