@@ -1,0 +1,22 @@
+{{- range $name, $connector := .Values.connectors }}
+{{- if $connector.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-{{ $name }}-state
+  labels:
+    app: glovebox-connector
+    connector: {{ $name }}
+    release: {{ $.Release.Name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $connector.state.size }}
+  {{- if $connector.state.storageClass }}
+  storageClassName: {{ $connector.state.storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

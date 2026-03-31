@@ -42,6 +42,9 @@ persistence:
   audit:
     size: 10Gi
     storageClass: ""
+  failed:
+    size: 5Gi
+    storageClass: ""
   agents:
     size: 5Gi
     storageClass: ""
@@ -55,3 +58,194 @@ metrics:
 
 networkPolicy:
   enabled: true
+
+connectors:
+  rss:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-rss
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  imap:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-imap
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  github:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-github
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  gitlab:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-gitlab
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  jira:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-jira
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  trello:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-trello
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  linkedin:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-linkedin
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  meta:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-meta
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  bluesky:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-bluesky
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+
+  x:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-x
+      tag: latest
+    config: {}
+    env: {}
+    secrets: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""

@@ -1,5 +1,5 @@
 {{- $release := .Release.Name }}
-{{- range $name, $spec := dict "staging" .Values.persistence.staging "quarantine" .Values.persistence.quarantine "audit" .Values.persistence.audit "agents" .Values.persistence.agents "shared" .Values.persistence.shared }}
+{{- range $name, $spec := dict "staging" .Values.persistence.staging "quarantine" .Values.persistence.quarantine "audit" .Values.persistence.audit "failed" .Values.persistence.failed "agents" .Values.persistence.agents "shared" .Values.persistence.shared }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

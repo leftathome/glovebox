@@ -40,6 +40,8 @@ spec:
               mountPath: {{ .Values.config.quarantineDir }}
             - name: audit
               mountPath: {{ .Values.config.auditDir }}
+            - name: failed
+              mountPath: {{ .Values.config.failedDir }}
             - name: agents
               mountPath: {{ .Values.config.agentsDir }}
             - name: shared
@@ -57,6 +59,9 @@ spec:
         - name: audit
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-glovebox-audit
+        - name: failed
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-glovebox-failed
         - name: agents
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-glovebox-agents
