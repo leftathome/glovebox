@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "match": "query:*",
+      "destination": "research"
+    }
+  ],
+  "queries": [
+    {
+      "name": "example-topic",
+      "query": "large language models"
+    }
+  ]
+}

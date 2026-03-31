@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "match": "app:*",
+      "destination": "inbox"
+    }
+  ],
+  "apps": [
+    {
+      "id": "440",
+      "name": "team-fortress-2"
+    }
+  ],
+  "fetch_reviews": true,
+  "fetch_news": true
+}

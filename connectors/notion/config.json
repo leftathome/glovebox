@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "match": "database:your-database-id",
+      "destination": "knowledge-agent",
+      "tags": {
+        "source_type": "knowledge_base",
+        "priority": "normal"
+      }
+    },
+    {
+      "match": "page:your-page-id",
+      "destination": "knowledge-agent"
+    }
+  ],
+  "database_ids": [
+    "your-database-id"
+  ],
+  "page_ids": [
+    "your-page-id"
+  ]
+}
