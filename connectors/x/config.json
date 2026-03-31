@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "match": "feed:mentions",
+      "destination": "social-agent",
+      "tags": {
+        "source_type": "social",
+        "priority": "normal"
+      }
+    },
+    {
+      "match": "event:tweet_create_events",
+      "destination": "social-agent"
+    },
+    {
+      "match": "event:favorite_events",
+      "destination": "social-agent"
+    }
+  ],
+  "user_id": "YOUR_USER_ID",
+  "feed_types": ["mentions"]
+}

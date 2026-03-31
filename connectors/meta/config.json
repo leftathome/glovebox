@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "match": "platform:facebook",
+      "destination": "social-agent",
+      "tags": {
+        "source_type": "social",
+        "platform": "facebook"
+      }
+    },
+    {
+      "match": "event:feed",
+      "destination": "social-agent"
+    },
+    {
+      "match": "event:messages",
+      "destination": "social-agent"
+    }
+  ],
+  "page_id": "123456789",
+  "fetch_posts": true,
+  "fetch_comments": false
+}

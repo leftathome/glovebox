@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "match": "feed:shares",
+      "destination": "social-agent",
+      "tags": {
+        "source_type": "social",
+        "priority": "low"
+      }
+    },
+    {
+      "match": "feed:posts",
+      "destination": "social-agent",
+      "tags": {
+        "source_type": "social",
+        "priority": "low"
+      }
+    }
+  ],
+  "feed_types": ["posts", "shares"]
+}
