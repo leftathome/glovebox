@@ -28,7 +28,7 @@ type ConnectorContext struct {
 }
 
 // SetupFunc is an optional initialization callback. If Options.Setup is set,
-// it is called after the runner initializes the staging writer and router,
+// it is called after the runner initializes the staging writer and rule matcher,
 // allowing the connector to receive these resources.
 type SetupFunc func(cc ConnectorContext) error
 
