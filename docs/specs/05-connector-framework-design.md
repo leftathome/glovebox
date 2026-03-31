@@ -367,11 +367,28 @@ Metrics provided by the runner (automatic):
 
 Connectors can register additional connector-specific metrics if needed.
 
-## 11. Credentials
+## 11. Credentials and Authentication
 
-Secrets are injected as environment variables by the deployment layer (K8s secrets from 1Password Connect + ESO in Phase 1, `op run` in Phase 2). The connector library provides no abstraction for credentials — connectors read `os.Getenv()` directly.
+**Note:** This section is superseded by the detailed design in
+`docs/specs/06-connector-auth-and-provenance-design.md` which covers OAuth token
+lifecycle, identity propagation, and the unified rules config.
 
-The scaffold template includes commented placeholder env var names for the connector type.
+### 11.1 Static Credentials
+
+Secrets (API keys, PATs, passwords) are injected as environment variables by the
+deployment layer (K8s secrets, 1Password Connect, `op run`). Connectors read
+`os.Getenv()` directly or use `StaticTokenSource`.
+
+### 11.2 OAuth Token Lifecycle
+
+For connectors that use OAuth 2.0, the library provides `TokenSource` interface
+with `RefreshableTokenSource` for automatic token refresh and atomic
+persistence. See spec 06 for details.
+
+### 11.3 Identity and Provenance
+
+Each item carries an optional `identity` object in metadata.json and optional
+`tags` resolved from the unified rules config. See spec 06 for the full schema.
 
 ## 12. Scaffold Generator
 
