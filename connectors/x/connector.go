@@ -21,6 +21,7 @@ type XConnector struct {
 	config        Config
 	writer        *connector.StagingWriter
 	matcher       *connector.RuleMatcher
+	fetchCounter  *connector.FetchCounter
 	httpClient    *http.Client
 	tokenSource   connector.TokenSource
 	apiBase       string // e.g. "https://api.x.com" or test server URL
@@ -113,6 +114,11 @@ func (c *XConnector) pollMentions(ctx context.Context, checkpoint connector.Chec
 			return ctx.Err()
 		}
 
+		if status := c.fetchCounter.TryFetch("mentions"); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "source", "mentions", "status", status)
+			break
+		}
+
 		item, err := c.writer.NewItem(connector.ItemOptions{
 			Source:           "x",
 			Sender:           tw.parsed.AuthorID,
@@ -161,7 +167,6 @@ func (c *XConnector) fetchAPI(ctx context.Context, url string) ([]byte, error) {
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "glovebox-x/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

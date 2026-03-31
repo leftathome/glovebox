@@ -18,11 +18,12 @@ import (
 
 // GitLabConnector polls GitLab project events and stages new entries.
 type GitLabConnector struct {
-	config      Config
-	writer      *connector.StagingWriter
-	matcher     *connector.RuleMatcher
-	tokenSource connector.TokenSource
-	httpClient  *http.Client
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	fetchCounter *connector.FetchCounter
+	tokenSource  connector.TokenSource
+	httpClient   *http.Client
 }
 
 func (c *GitLabConnector) Poll(ctx context.Context, checkpoint connector.Checkpoint) error {
@@ -86,6 +87,11 @@ func (c *GitLabConnector) pollProject(ctx context.Context, project ProjectConfig
 		// Skip events at or below the checkpoint.
 		if hasCheckpoint && eventMeta.ID <= lastID {
 			continue
+		}
+
+		if status := c.fetchCounter.TryFetch(project.Path); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "project", project.Path, "status", status)
+			break
 		}
 
 		ts, err := time.Parse(time.RFC3339Nano, eventMeta.CreatedAt)
@@ -191,7 +197,6 @@ func (c *GitLabConnector) fetchPageRaw(ctx context.Context, baseURL, rawPath, qu
 	// Preserve the encoded path so %2F is not decoded to /.
 	req.URL.RawPath = rawPath
 	req.Header.Set("PRIVATE-TOKEN", token)
-	req.Header.Set("User-Agent", "glovebox-gitlab/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

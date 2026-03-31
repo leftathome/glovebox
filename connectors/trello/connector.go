@@ -17,13 +17,14 @@ const defaultBaseURL = "https://api.trello.com"
 
 // TrelloConnector polls Trello boards for recent actions and stages them.
 type TrelloConnector struct {
-	config     Config
-	apiKey     string
-	token      string
-	writer     *connector.StagingWriter
-	matcher    *connector.RuleMatcher
-	httpClient *http.Client
-	baseURL    string
+	config       Config
+	apiKey       string
+	token        string
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	httpClient   *http.Client
+	baseURL      string
+	fetchCounter *connector.FetchCounter
 }
 
 // trelloAction represents a single action from the Trello API response.
@@ -91,6 +92,14 @@ func (c *TrelloConnector) pollBoard(ctx context.Context, board BoardConfig, chec
 	for i := startIdx; i < len(actions); i++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		status := c.fetchCounter.TryFetch(board.Name)
+		if status == connector.FetchPollLimit {
+			return nil
+		}
+		if status == connector.FetchSourceLimit {
+			break
 		}
 
 		action := actions[i]
@@ -164,8 +173,6 @@ func (c *TrelloConnector) fetchActions(ctx context.Context, boardID string) ([]t
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "glovebox-trello/1.0")
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch board %s actions: %w", boardID, err)

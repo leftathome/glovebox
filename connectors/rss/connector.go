@@ -28,11 +28,13 @@ var entryTimeFormats = []string{
 
 // RSSConnector polls RSS and Atom feeds and stages new entries.
 type RSSConnector struct {
-	config     Config
-	writer     *connector.StagingWriter
-	matcher    *connector.RuleMatcher
-	linkPolicy *content.LinkPolicy
-	httpClient *http.Client
+	config        Config
+	writer        *connector.StagingWriter
+	matcher       *connector.RuleMatcher
+	linkPolicy    *content.LinkPolicy
+	httpClient    *http.Client
+	fetchCounter  *connector.FetchCounter
+	robotsChecker *connector.RobotsChecker
 }
 
 func (c *RSSConnector) Poll(ctx context.Context, checkpoint connector.Checkpoint) error {
@@ -99,6 +101,14 @@ func (c *RSSConnector) pollFeed(ctx context.Context, feed FeedConfig, checkpoint
 	for i := startIdx; i < len(entries); i++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		status := c.fetchCounter.TryFetch(feed.Name)
+		if status == connector.FetchPollLimit {
+			return nil
+		}
+		if status == connector.FetchSourceLimit {
+			break
 		}
 
 		entry := entries[i]
@@ -258,6 +268,11 @@ func (c *RSSConnector) fetchLinkedContent(ctx context.Context, rawURL string, lo
 		return ""
 	}
 
+	if c.robotsChecker != nil && !c.robotsChecker.Allowed(ctx, rawURL) {
+		logger.Debug("link fetch denied by robots.txt", "url", rawURL)
+		return ""
+	}
+
 	body, err := c.fetchURLWithLimit(ctx, rawURL, 1<<20) // 1 MB limit
 	if err != nil {
 		logger.Debug("link fetch failed", "url", rawURL, "error", err)
@@ -277,8 +292,6 @@ func (c *RSSConnector) fetchURLWithLimit(ctx context.Context, url string, maxByt
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "glovebox-rss/1.0")
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err

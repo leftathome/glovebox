@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -40,9 +39,7 @@ func main() {
 	c := &GitLabConnector{
 		config:      cfg,
 		tokenSource: connector.NewStaticTokenSource(token),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient: connector.NewHTTPClient(connector.HTTPClientOptions{}),
 	}
 
 	connector.Run(connector.Options{
@@ -54,6 +51,7 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
 			c.matcher = cc.Matcher
+			c.fetchCounter = cc.FetchCounter
 			if cfg.ConfigIdentity != nil {
 				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
 			}

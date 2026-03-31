@@ -37,11 +37,12 @@ func newTestConnector(t *testing.T, pageID string, apiBase string, rules []conne
 			PageID:     pageID,
 			FetchPosts: true,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		apiBase:     apiBase,
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      apiBase,
 	}
 
 	return c, stagingDir, stateDir
@@ -173,13 +174,14 @@ func TestWebhookVerificationChallenge(t *testing.T) {
 	matcher := connector.NewRuleMatcher(rules)
 
 	c := &MetaConnector{
-		config:      Config{PageID: "123456"},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		apiBase:     "http://unused",
-		verifyToken: "my-verify-token",
+		config:       Config{PageID: "123456"},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      "http://unused",
+		verifyToken:  "my-verify-token",
 	}
 
 	handler := c.Handler()
@@ -214,13 +216,14 @@ func TestWebhookValidSignatureStaged(t *testing.T) {
 	matcher := connector.NewRuleMatcher(rules)
 
 	c := &MetaConnector{
-		config:      Config{PageID: "123456"},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		apiBase:     "http://unused",
-		appSecret:   []byte(secret),
+		config:       Config{PageID: "123456"},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      "http://unused",
+		appSecret:    []byte(secret),
 	}
 
 	handler := c.Handler()
@@ -262,10 +265,11 @@ func TestWebhookInvalidSignatureRejected(t *testing.T) {
 	matcher := connector.NewRuleMatcher(rules)
 
 	c := &MetaConnector{
-		config:    Config{PageID: "123456"},
-		writer:    writer,
-		matcher:   matcher,
-		appSecret: []byte(secret),
+		config:       Config{PageID: "123456"},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		appSecret:    []byte(secret),
 	}
 
 	handler := c.Handler()

@@ -15,13 +15,14 @@ import (
 
 // LinkedInConnector polls LinkedIn shares via the REST API v2.
 type LinkedInConnector struct {
-	config      Config
-	writer      *connector.StagingWriter
-	matcher     *connector.RuleMatcher
-	httpClient  *http.Client
-	tokenSource connector.TokenSource
-	apiBase     string // e.g. "https://api.linkedin.com" or test server URL
-	personID    string // LinkedIn person URN ID
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	httpClient   *http.Client
+	tokenSource  connector.TokenSource
+	apiBase      string // e.g. "https://api.linkedin.com" or test server URL
+	personID     string // LinkedIn person URN ID
+	fetchCounter *connector.FetchCounter
 }
 
 // liShare is a minimal representation of a LinkedIn share from the Shares API.
@@ -110,6 +111,14 @@ func (c *LinkedInConnector) pollFeed(ctx context.Context, feedType string, check
 			return ctx.Err()
 		}
 
+		status := c.fetchCounter.TryFetch("shares")
+		if status == connector.FetchPollLimit {
+			return nil
+		}
+		if status == connector.FetchSourceLimit {
+			break
+		}
+
 		s := shares[i]
 
 		item, err := c.writer.NewItem(connector.ItemOptions{
@@ -155,7 +164,6 @@ func (c *LinkedInConnector) fetchAPI(ctx context.Context, url string) ([]byte, e
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "glovebox-linkedin/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

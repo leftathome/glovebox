@@ -15,12 +15,13 @@ import (
 
 // JiraConnector polls Jira projects for recently updated issues.
 type JiraConnector struct {
-	config     Config
-	writer     *connector.StagingWriter
-	matcher    *connector.RuleMatcher
-	email      string
-	apiToken   string
-	httpClient *http.Client
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	fetchCounter *connector.FetchCounter
+	email        string
+	apiToken     string
+	httpClient   *http.Client
 }
 
 func (c *JiraConnector) Poll(ctx context.Context, checkpoint connector.Checkpoint) error {
@@ -68,6 +69,11 @@ func (c *JiraConnector) pollProject(ctx context.Context, project string, checkpo
 	for _, issue := range issues {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		if status := c.fetchCounter.TryFetch(project); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "project", project, "status", status)
+			break
 		}
 
 		// Build the content JSON.

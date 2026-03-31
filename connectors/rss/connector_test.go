@@ -62,10 +62,11 @@ func newTestConnector(t *testing.T, feeds []FeedConfig, fetchLinks bool, linkPol
 			FetchLinks: fetchLinks,
 			LinkPolicy: linkPolicyCfg,
 		},
-		writer:     writer,
-		matcher:    matcher,
-		linkPolicy: content.NewLinkPolicy(linkPolicyCfg),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		writer:       writer,
+		matcher:      matcher,
+		linkPolicy:   content.NewLinkPolicy(linkPolicyCfg),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
 
 	return c, stagingDir, stateDir
@@ -646,10 +647,11 @@ func TestRuleTagsInMetadata(t *testing.T) {
 		config: Config{
 			Feeds: feeds,
 		},
-		writer:     writer,
-		matcher:    matcher,
-		linkPolicy: content.NewLinkPolicy(content.LinkPolicyConfig{}),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		writer:       writer,
+		matcher:      matcher,
+		linkPolicy:   content.NewLinkPolicy(content.LinkPolicyConfig{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
 	cp := newCheckpoint(t, stateDir)
 

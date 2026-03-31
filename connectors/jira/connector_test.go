@@ -34,11 +34,12 @@ func newTestConnector(t *testing.T, baseURL string, projects []string, rules []c
 			BaseURL:  baseURL,
 			Projects: projects,
 		},
-		writer:     writer,
-		matcher:    matcher,
-		email:      "test@example.com",
-		apiToken:   "test-token",
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		email:        "test@example.com",
+		apiToken:     "test-token",
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 
 	return c, stagingDir, stateDir

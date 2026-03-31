@@ -32,12 +32,13 @@ func newTestConnector(t *testing.T, feedTypes []string, apiBase string, rules []
 		config: Config{
 			FeedTypes: feedTypes,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		apiBase:     apiBase,
-		personID:    "abc123",
+		writer:       writer,
+		matcher:      matcher,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      apiBase,
+		personID:     "abc123",
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
 
 	return c, stagingDir, stateDir
