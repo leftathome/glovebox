@@ -23,8 +23,11 @@ The connector framework provides a public Go library (`github.com/leftathome/glo
 ### Out of scope:
 - Content inspection or scanning (that's the glovebox)
 - Agent routing decisions based on content analysis (downstream concern)
-- OAuth token refresh flows (handled by the deployment layer or connector-specific code)
 - Round 2 and 3 connectors (designed against this framework later)
+
+*Note: OAuth token refresh was originally out of scope but is now in scope per
+spec 06 (connector auth and provenance design), which adds `TokenSource`,
+`RefreshableTokenSource`, and identity propagation to the connector library.*
 
 ## 3. Package Structure
 
@@ -233,27 +236,31 @@ Checkpoint is saved per-item, not per-poll. If the connector crashes mid-poll, i
 
 ## 7. Config-Based Routing
 
+*Note: The `routes`/`Router` API described below is superseded by the unified
+`rules`/`RuleMatcher` API in spec 06. The library accepts both `routes` and
+`rules` in config for backward compatibility, but new connectors should use
+`rules`.*
+
 ### 7.1 Route Configuration
 
 ```json
 {
-    "routes": [
-        {"match": "folder:INBOX",     "destination": "messaging"},
+    "rules": [
+        {"match": "folder:INBOX",     "destination": "messaging", "tags": {"priority": "high"}},
         {"match": "folder:Calendar",  "destination": "calendar"},
-        {"match": "folder:Contacts",  "destination": "crm"},
-        {"match": "*",                "destination": "messaging"}
+        {"match": "*",                "destination": "messaging", "tags": {"env": "production"}}
     ]
 }
 ```
 
-### 7.2 Router
+### 7.2 RuleMatcher
 
 ```go
-router := connector.NewRouter(config.Routes)
+matcher := connector.NewRuleMatcher(config.Rules)
 
-dest := router.Match("folder:INBOX")     // -> "messaging"
-dest := router.Match("folder:Calendar")  // -> "calendar"
-dest := router.Match("anything-else")    // -> "messaging" (wildcard)
+result, ok := matcher.Match("folder:INBOX")
+// result.Destination -> "messaging"
+// result.Tags -> {"priority": "high"}
 ```
 
 - Match keys are connector-defined strings — the library imposes no vocabulary
@@ -495,7 +502,7 @@ Setting `"default": "unrestricted"` disables all checks for operators who know t
 
 - Staging writer: atomic rename, metadata.json schema, orphan cleanup
 - Checkpoint: save/load/delete, atomic persistence, concurrent access
-- Router: exact match, wildcard, first-match-wins, no-match behavior
+- RuleMatcher: exact match, wildcard, first-match-wins, no-match, tags resolution
 - Runner: lifecycle (poll-only, poll+watch, poll+listener), signal handling, health endpoints
 - Content helpers: MIME decoding, HTML stripping
 
@@ -514,7 +521,7 @@ Setting `"default": "unrestricted"` disables all checks for operators who know t
 
 The connector framework is designed to accommodate future connectors without structural changes:
 
-- **OAuth connectors** (GitHub, LinkedIn, etc.): token refresh logic lives in connector-specific code, not the library. The library doesn't need to know about OAuth.
+- **OAuth connectors** (GitHub, LinkedIn, etc.): the library provides `TokenSource` with `RefreshableTokenSource` for automatic token refresh and persistence. See spec 06 for details.
 - **Rate-limited APIs**: connectors implement their own rate limiting / backoff. The library's transient error handling + checkpoint resumption supports this naturally.
 - **Webhook connectors**: implement `Listener`, the runner handles HTTP server lifecycle.
 - **Bidirectional connectors** (e.g., send emails via IMAP): out of scope for Phase 1. The connector interface is read-only by design. Write capabilities would be a separate interface added later.
