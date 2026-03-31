@@ -95,10 +95,10 @@ func makeFeedResponse(ids ...string) []byte {
 
 func TestPollFetchesPostsAndStages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify access_token query param is present.
-		token := r.URL.Query().Get("access_token")
-		if token != "test-token" {
-			t.Errorf("expected access_token=test-token, got %q", token)
+		// Verify Bearer token is in Authorization header.
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token" {
+			t.Errorf("expected Authorization: Bearer test-token, got %q", auth)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(makeFeedResponse("page_100", "page_101", "page_102"))
