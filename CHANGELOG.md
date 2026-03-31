@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RoundTrip: clone request before setting headers (http.RoundTripper contract)
 - robots.txt: SSRF prevention (http/https only), bounded read (512KB cap)
 - Generator: templates use package main (was package name, wouldn't compile)
+- Meta webhook: reflected XSS via hub.challenge (set Content-Type text/plain)
+- CI: CodeQL action bumped to v4 (Node.js 24 compatible)
+- CI: explicit CodeQL workflow for Go only (was auto-detecting Ruby)
+- CI: Docker builds parallelized via matrix (11 concurrent vs sequential)
+- Contact emails updated in SECURITY.md and CODE_OF_CONDUCT.md
 
 ## [0.1.0] - 2026-03-29
 
