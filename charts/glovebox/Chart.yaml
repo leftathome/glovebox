@@ -3,4 +3,4 @@ name: glovebox
 description: Content scanning service for the OpenClaw Home Agent
 type: application
 version: 0.2.0
-appVersion: "0.1.0"
+appVersion: "0.2.0"
