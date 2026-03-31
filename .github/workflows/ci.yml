@@ -102,38 +102,14 @@ jobs:
           go-version: "1.26"
           cache: true
 
-      - name: Build glovebox
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o glovebox${{ matrix.ext || '' }} .
-
-      - name: Build rss-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o rss-connector${{ matrix.ext || '' }} ./connectors/rss/
-
-      - name: Build imap-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o imap-connector${{ matrix.ext || '' }} ./connectors/imap/
-
-      - name: Build github-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o github-connector${{ matrix.ext || '' }} ./connectors/github/
-
-      - name: Build gitlab-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o gitlab-connector${{ matrix.ext || '' }} ./connectors/gitlab/
-
-      - name: Build jira-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o jira-connector${{ matrix.ext || '' }} ./connectors/jira/
-
-      - name: Build trello-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o trello-connector${{ matrix.ext || '' }} ./connectors/trello/
-
-      - name: Build linkedin-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o linkedin-connector${{ matrix.ext || '' }} ./connectors/linkedin/
-
-      - name: Build meta-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o meta-connector${{ matrix.ext || '' }} ./connectors/meta/
-
-      - name: Build bluesky-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o bluesky-connector${{ matrix.ext || '' }} ./connectors/bluesky/
-
-      - name: Build x-connector
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o x-connector${{ matrix.ext || '' }} ./connectors/x/
+      - name: Build all binaries
+        run: |
+          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/; do
+            name=$(basename "$target")
+            if [ "$name" = "." ]; then name="glovebox"; else name="${name}-connector"; fi
+            echo "Building $name..."
+            CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "${name}${{ matrix.ext || '' }}" "$target"
+          done
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
@@ -147,16 +123,7 @@ jobs:
         with:
           subject-path: |
             glovebox${{ matrix.ext }}
-            rss-connector${{ matrix.ext }}
-            imap-connector${{ matrix.ext }}
-            github-connector${{ matrix.ext }}
-            gitlab-connector${{ matrix.ext }}
-            jira-connector${{ matrix.ext }}
-            trello-connector${{ matrix.ext }}
-            linkedin-connector${{ matrix.ext }}
-            meta-connector${{ matrix.ext }}
-            bluesky-connector${{ matrix.ext }}
-            x-connector${{ matrix.ext }}
+            *-connector${{ matrix.ext }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -168,9 +135,46 @@ jobs:
             sbom.spdx.json
 
   build-docker:
-    name: Build Docker images
+    name: Docker (${{ matrix.image }})
     runs-on: ubuntu-latest
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: glovebox
+            dockerfile: ./Dockerfile
+            context: .
+          - image: glovebox-rss
+            dockerfile: ./connectors/rss/Dockerfile
+            context: .
+          - image: glovebox-imap
+            dockerfile: ./connectors/imap/Dockerfile
+            context: .
+          - image: glovebox-github
+            dockerfile: ./connectors/github/Dockerfile
+            context: .
+          - image: glovebox-gitlab
+            dockerfile: ./connectors/gitlab/Dockerfile
+            context: .
+          - image: glovebox-jira
+            dockerfile: ./connectors/jira/Dockerfile
+            context: .
+          - image: glovebox-trello
+            dockerfile: ./connectors/trello/Dockerfile
+            context: .
+          - image: glovebox-linkedin
+            dockerfile: ./connectors/linkedin/Dockerfile
+            context: .
+          - image: glovebox-meta
+            dockerfile: ./connectors/meta/Dockerfile
+            context: .
+          - image: glovebox-bluesky
+            dockerfile: ./connectors/bluesky/Dockerfile
+            context: .
+          - image: glovebox-x
+            dockerfile: ./connectors/x/Dockerfile
+            context: .
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -189,272 +193,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # -- glovebox --
-      - name: Docker meta for glovebox
-        id: meta-glovebox
+      - name: Docker meta
+        id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push glovebox
+      - name: Build and push
         uses: docker/build-push-action@v7
         with:
-          context: .
-          file: ./Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-glovebox.outputs.tags }}
-          labels: ${{ steps.meta-glovebox.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- rss-connector --
-      - name: Docker meta for rss-connector
-        id: meta-rss
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-rss
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push rss-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/rss/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-rss.outputs.tags }}
-          labels: ${{ steps.meta-rss.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- imap-connector --
-      - name: Docker meta for imap-connector
-        id: meta-imap
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-imap
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push imap-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/imap/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-imap.outputs.tags }}
-          labels: ${{ steps.meta-imap.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- github-connector --
-      - name: Docker meta for github-connector
-        id: meta-github
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-github
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push github-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/github/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-github.outputs.tags }}
-          labels: ${{ steps.meta-github.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- gitlab-connector --
-      - name: Docker meta for gitlab-connector
-        id: meta-gitlab
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-gitlab
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push gitlab-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/gitlab/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-gitlab.outputs.tags }}
-          labels: ${{ steps.meta-gitlab.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- jira-connector --
-      - name: Docker meta for jira-connector
-        id: meta-jira
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-jira
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push jira-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/jira/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-jira.outputs.tags }}
-          labels: ${{ steps.meta-jira.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- trello-connector --
-      - name: Docker meta for trello-connector
-        id: meta-trello
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-trello
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push trello-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/trello/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-trello.outputs.tags }}
-          labels: ${{ steps.meta-trello.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- linkedin-connector --
-      - name: Docker meta for linkedin-connector
-        id: meta-linkedin
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-linkedin
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push linkedin-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/linkedin/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-linkedin.outputs.tags }}
-          labels: ${{ steps.meta-linkedin.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- meta-connector --
-      - name: Docker meta for meta-connector
-        id: meta-meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-meta
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push meta-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/meta/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-meta.outputs.tags }}
-          labels: ${{ steps.meta-meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- bluesky-connector --
-      - name: Docker meta for bluesky-connector
-        id: meta-bluesky
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-bluesky
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push bluesky-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/bluesky/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-bluesky.outputs.tags }}
-          labels: ${{ steps.meta-bluesky.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -- x-connector --
-      - name: Docker meta for x-connector
-        id: meta-x
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/glovebox-x
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - name: Build and push x-connector
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./connectors/x/Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta-x.outputs.tags }}
-          labels: ${{ steps.meta-x.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
   helm:
     name: Package and push Helm chart
@@ -463,10 +224,10 @@ jobs:
     if: github.event_name == 'push'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
