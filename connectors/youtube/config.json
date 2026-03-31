@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "match": "channel:UC_EXAMPLE_CHANNEL_ID",
+      "destination": "media-agent",
+      "tags": {
+        "source_type": "video",
+        "priority": "normal"
+      }
+    }
+  ],
+  "channel_ids": [
+    "UC_EXAMPLE_CHANNEL_ID"
+  ]
+}

@@ -187,6 +187,100 @@ func (r *RefreshableTokenSource) refresh(ctx context.Context) (string, error) {
 	return newToken.AccessToken, nil
 }
 
+// ClientCredentialsTokenSource manages an OAuth2 access token obtained
+// via the client_credentials grant type. Tokens are cached in memory
+// and re-fetched automatically when they expire. Thread-safe.
+type ClientCredentialsTokenSource struct {
+	config OAuthConfig
+	mu     sync.Mutex
+	token  string
+	expiry time.Time
+}
+
+// NewClientCredentialsTokenSource creates a TokenSource that obtains
+// tokens using the OAuth2 client_credentials grant. TokenURL, ClientID,
+// and ClientSecret must all be non-empty.
+func NewClientCredentialsTokenSource(config OAuthConfig) (TokenSource, error) {
+	if config.TokenURL == "" {
+		return nil, fmt.Errorf("client credentials: TokenURL must not be empty")
+	}
+	if config.ClientID == "" {
+		return nil, fmt.Errorf("client credentials: ClientID must not be empty")
+	}
+	if config.ClientSecret == "" {
+		return nil, fmt.Errorf("client credentials: ClientSecret must not be empty")
+	}
+	return &ClientCredentialsTokenSource{config: config}, nil
+}
+
+// Token returns a valid access token, fetching one from the token
+// endpoint if the cached token has expired or is not yet set.
+func (c *ClientCredentialsTokenSource) Token(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.token != "" && time.Now().Before(c.expiry.Add(-expiryBuffer)) {
+		return c.token, nil
+	}
+
+	return c.authenticate(ctx)
+}
+
+// authenticate performs the OAuth2 client_credentials grant, caches the
+// result, and returns the new access token.
+func (c *ClientCredentialsTokenSource) authenticate(ctx context.Context) (string, error) {
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {c.config.ClientID},
+		"client_secret": {c.config.ClientSecret},
+	}
+	if len(c.config.Scopes) > 0 {
+		form.Set("scope", strings.Join(c.config.Scopes, " "))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.TokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("build client credentials request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("client credentials request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	const maxResponseBytes = 1 << 20 // 1 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return "", fmt.Errorf("read client credentials response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", PermanentError(fmt.Errorf(
+			"client credentials token request returned 401: check client_id and client_secret"))
+	}
+
+	var tr tokenResponse
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return "", fmt.Errorf("parse client credentials response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("client credentials token request failed with status %d: %s",
+			resp.StatusCode, string(body))
+	}
+
+	if tr.AccessToken == "" {
+		return "", fmt.Errorf("client credentials response contained empty access_token")
+	}
+
+	c.token = tr.AccessToken
+	c.expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	return c.token, nil
+}
+
 // persist writes the token file atomically using a temp file and rename,
 // following the same pattern as checkpoint.go.
 func (r *RefreshableTokenSource) persist(tf *tokenFile) error {

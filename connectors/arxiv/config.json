@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "match": "query:ai-papers",
+      "destination": "research"
+    },
+    {
+      "match": "*",
+      "destination": "inbox"
+    }
+  ],
+  "queries": [
+    {
+      "name": "ai-papers",
+      "query": "cat:cs.AI",
+      "max_results": 25
+    }
+  ]
+}

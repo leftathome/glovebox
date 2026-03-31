@@ -1,0 +1,16 @@
+{
+  "feeds": ["top", "new", "best"],
+  "follow_comments": true,
+  "max_comments": 10,
+  "rules": [
+    {"match": "feed:top", "destination": "news-agent"},
+    {"match": "feed:new", "destination": "news-agent"},
+    {"match": "feed:best", "destination": "news-agent"},
+    {"match": "feed:ask", "destination": "news-agent"},
+    {"match": "feed:show", "destination": "news-agent"}
+  ],
+  "fetch_limits": {
+    "per_source": 30,
+    "per_poll": 100
+  }
+}
