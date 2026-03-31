@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "match": "calendar:primary",
+      "destination": "schedule-agent",
+      "tags": {
+        "source_type": "calendar",
+        "priority": "normal"
+      }
+    }
+  ],
+  "calendar_ids": ["primary"]
+}

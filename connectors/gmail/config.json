@@ -1,0 +1,8 @@
+{
+  "label_ids": ["INBOX"],
+  "max_results": 25,
+  "rules": [
+    {"match": "label:INBOX", "destination": "messaging"},
+    {"match": "*", "destination": "general"}
+  ]
+}
