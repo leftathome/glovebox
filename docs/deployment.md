@@ -39,9 +39,20 @@ Container images are published to GitHub Container Registry:
 | Glovebox | `ghcr.io/leftathome/glovebox` |
 | RSS connector | `ghcr.io/leftathome/glovebox-rss` |
 | IMAP connector | `ghcr.io/leftathome/glovebox-imap` |
+| GitHub connector | `ghcr.io/leftathome/glovebox-github` |
+| GitLab connector | `ghcr.io/leftathome/glovebox-gitlab` |
+| Jira connector | `ghcr.io/leftathome/glovebox-jira` |
+| Trello connector | `ghcr.io/leftathome/glovebox-trello` |
+| LinkedIn connector | `ghcr.io/leftathome/glovebox-linkedin` |
+| Meta connector | `ghcr.io/leftathome/glovebox-meta` |
+| Bluesky connector | `ghcr.io/leftathome/glovebox-bluesky` |
+| X connector | `ghcr.io/leftathome/glovebox-x` |
+| Helm chart | `oci://ghcr.io/leftathome/charts/glovebox` |
 
-Images are tagged `latest` (from main), plus semver tags (`v1.2.3`, `v1.2`) on
-release.
+All images are multi-arch (linux/amd64 + linux/arm64) with SBOMs and SLSA
+provenance attestations. Tagged `latest` (from main) plus semver tags
+(`v0.2.0`, `v0.2`) on release. Binaries available from
+[GitHub Releases](https://github.com/leftathome/glovebox/releases).
 
 ---
 
@@ -273,8 +284,30 @@ curl -s http://localhost:8082/readyz
 
 ## 3. Kubernetes
 
-This section provides guidance for deploying glovebox on Kubernetes. It is not a
-complete Helm chart, but covers the key resources you need.
+### 3.0 Helm Chart (Recommended)
+
+The easiest way to deploy on Kubernetes is with the Helm chart, published as an
+OCI artifact:
+
+```sh
+# Install with default values (glovebox only, no connectors enabled)
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0
+
+# Install with RSS connector enabled
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0 \
+  --set connectors.rss.enabled=true
+
+# Install with custom values file
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0 \
+  -f my-values.yaml -n glovebox --create-namespace
+```
+
+The chart supports all 10 connectors, toggled via `values.yaml`. Each connector
+gets its own Deployment, ConfigMap, Service, and state PVC. See the chart's
+`values.yaml` for the full configuration reference.
+
+The following section covers manual Kubernetes deployment for operators who
+prefer raw manifests over Helm.
 
 ### 3.1 Shared Volume
 
