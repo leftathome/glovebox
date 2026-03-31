@@ -148,8 +148,14 @@ func (c *JiraConnector) searchIssues(ctx context.Context, jql string) ([]jiraIss
 		return nil, fmt.Errorf("Jira API returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
+	const maxBody = 10 << 20 // 10 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, fmt.Errorf("read search response: %w", err)
+	}
+
 	var searchResp jiraSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	if err := json.Unmarshal(body, &searchResp); err != nil {
 		return nil, fmt.Errorf("decode search response: %w", err)
 	}
 

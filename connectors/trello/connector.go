@@ -168,7 +168,7 @@ func (c *TrelloConnector) fetchActions(ctx context.Context, boardID string) ([]t
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetch board %s actions: %w", boardID, err)
 	}
 	defer resp.Body.Close()
 
