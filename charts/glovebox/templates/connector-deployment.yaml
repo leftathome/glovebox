@@ -1,0 +1,86 @@
+{{- range $name, $connector := .Values.connectors }}
+{{- if $connector.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-{{ $name }}
+  labels:
+    app: glovebox-connector
+    connector: {{ $name }}
+    release: {{ $.Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glovebox-connector
+      connector: {{ $name }}
+      release: {{ $.Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: glovebox-connector
+        connector: {{ $name }}
+        release: {{ $.Release.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: {{ $name }}
+          image: "{{ $connector.image.repository }}:{{ $connector.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GLOVEBOX_STAGING_DIR
+              value: /data/glovebox/staging
+            - name: GLOVEBOX_STATE_DIR
+              value: /state
+            - name: GLOVEBOX_CONNECTOR_CONFIG
+              value: /etc/connector/config.json
+            {{- range $key, $value := $connector.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- if $connector.secrets }}
+          envFrom:
+            - secretRef:
+                name: {{ $connector.secrets }}
+          {{- end }}
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $connector.resources | nindent 12 }}
+          volumeMounts:
+            - name: staging
+              mountPath: /data/glovebox/staging
+            - name: state
+              mountPath: /state
+            - name: config
+              mountPath: /etc/connector
+              readOnly: true
+      volumes:
+        - name: staging
+          persistentVolumeClaim:
+            claimName: {{ $.Release.Name }}-glovebox-staging
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "glovebox.fullname" $ }}-{{ $name }}-state
+        - name: config
+          configMap:
+            name: {{ include "glovebox.fullname" $ }}-{{ $name }}-config
+{{- end }}
+{{- end }}

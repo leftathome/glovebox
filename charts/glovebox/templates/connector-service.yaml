@@ -1,0 +1,24 @@
+{{- range $name, $connector := .Values.connectors }}
+{{- if $connector.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-{{ $name }}
+  labels:
+    app: glovebox-connector
+    connector: {{ $name }}
+    release: {{ $.Release.Name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: health
+      protocol: TCP
+      name: health
+  selector:
+    app: glovebox-connector
+    connector: {{ $name }}
+    release: {{ $.Release.Name }}
+{{- end }}
+{{- end }}
