@@ -152,20 +152,49 @@ Glovebox reads a JSON config file (default: `/etc/glovebox/config.json`):
 The rules file (`configs/default-rules.json`) defines pattern rules, weights,
 and the `quarantine_threshold`. See `docs/` for the full configuration reference.
 
-## Building from source
+## Installation
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/leftathome/glovebox/releases).
+Archives are available for Linux (amd64, arm64), macOS (arm64), and Windows
+(amd64, arm64). Each archive contains glovebox and all connector binaries.
+
+### Docker images
+
+Published to GitHub Container Registry for linux/amd64 and linux/arm64:
+
+```sh
+docker pull ghcr.io/leftathome/glovebox:latest
+docker pull ghcr.io/leftathome/glovebox-rss:latest
+docker pull ghcr.io/leftathome/glovebox-imap:latest
+# Also: glovebox-github, glovebox-gitlab, glovebox-jira, glovebox-trello,
+#        glovebox-linkedin, glovebox-meta, glovebox-bluesky, glovebox-x
+```
+
+### Helm chart
+
+```sh
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0
+```
+
+See `docs/deployment.md` for full Kubernetes deployment instructions including
+connector configuration via `values.yaml`.
+
+### Building from source
 
 ```sh
 # Glovebox scanner
 go build -o glovebox .
 
-# Connectors
-go build -o rss-connector ./connectors/rss/
-go build -o imap-connector ./connectors/imap/
+# Connectors (all 10)
+for c in rss imap github gitlab jira trello linkedin meta bluesky x; do
+  go build -o "${c}-connector" "./connectors/${c}/"
+done
 
 # Docker images
 docker build -t glovebox .
 docker build -t glovebox-rss -f connectors/rss/Dockerfile .
-docker build -t glovebox-imap -f connectors/imap/Dockerfile .
 
 # Run tests
 go vet ./...
