@@ -202,6 +202,7 @@ func (c *MetaConnector) handleWebhookVerify(w http.ResponseWriter, r *http.Reque
 	challenge := r.URL.Query().Get("hub.challenge")
 
 	if mode == "subscribe" && token == c.verifyToken {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(challenge))
 		return
