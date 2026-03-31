@@ -59,10 +59,10 @@ func (c *MetaConnector) pollFeed(ctx context.Context, checkpoint connector.Check
 		return fmt.Errorf("get token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/%s/feed?fields=id,message,created_time,from&access_token=%s",
-		c.apiBase, c.config.PageID, token)
+	apiURL := fmt.Sprintf("%s/%s/feed?fields=id,message,created_time,from",
+		c.apiBase, c.config.PageID)
 
-	body, err := c.fetchAPI(ctx, url)
+	body, err := c.fetchAPI(ctx, apiURL, token)
 	if err != nil {
 		return fmt.Errorf("fetch feed for page %s: %w", c.config.PageID, err)
 	}
@@ -151,12 +151,13 @@ func (c *MetaConnector) pollFeed(ctx context.Context, checkpoint connector.Check
 	return nil
 }
 
-func (c *MetaConnector) fetchAPI(ctx context.Context, url string) ([]byte, error) {
+func (c *MetaConnector) fetchAPI(ctx context.Context, url string, token string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "glovebox-meta/1.0")
 
 	resp, err := c.httpClient.Do(req)
