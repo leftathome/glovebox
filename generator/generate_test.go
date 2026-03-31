@@ -93,8 +93,8 @@ func TestGenerate(t *testing.T) {
 	}
 	connectorStr := string(connectorGo)
 
-	if !strings.Contains(connectorStr, "package testconnector") {
-		t.Error("connector.go missing expected package name 'testconnector'")
+	if !strings.Contains(connectorStr, "package main") {
+		t.Error("connector.go missing expected package declaration 'package main'")
 	}
 	if !strings.Contains(connectorStr, "TestConnectorConnector") {
 		t.Error("connector.go missing expected struct name 'TestConnectorConnector'")
