@@ -1,0 +1,18 @@
+{
+  "base_url": "https://mycompany.atlassian.net",
+  "projects": ["PROJ", "OPS"],
+  "rules": [
+    {
+      "match": "project:PROJ",
+      "destination": "project-agent"
+    },
+    {
+      "match": "project:OPS",
+      "destination": "ops-agent"
+    },
+    {
+      "match": "*",
+      "destination": "default-agent"
+    }
+  ]
+}

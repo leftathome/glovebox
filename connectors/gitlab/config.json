@@ -1,0 +1,14 @@
+{
+  "base_url": "https://gitlab.com",
+  "projects": [
+    {
+      "path": "mygroup/myproject"
+    }
+  ],
+  "rules": [
+    {
+      "match": "project:mygroup/myproject",
+      "destination": "dev-agent"
+    }
+  ]
+}

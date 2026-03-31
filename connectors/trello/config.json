@@ -1,0 +1,9 @@
+{
+  "boards": [],
+  "rules": [
+    {
+      "match": "*",
+      "destination": "home-agent"
+    }
+  ]
+}

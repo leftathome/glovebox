@@ -1,0 +1,27 @@
+{
+  "rules": [
+    {
+      "match": "repo:myorg/myrepo",
+      "destination": "dev-agent",
+      "tags": {
+        "source_type": "vcs",
+        "priority": "normal"
+      }
+    },
+    {
+      "match": "event:push",
+      "destination": "dev-agent"
+    },
+    {
+      "match": "event:pull_request",
+      "destination": "dev-agent"
+    }
+  ],
+  "repos": [
+    {
+      "owner": "myorg",
+      "repo": "myrepo"
+    }
+  ],
+  "webhook_secret_env": "GITHUB_WEBHOOK_SECRET"
+}
