@@ -46,15 +46,15 @@ func newTestConnector(t *testing.T, feeds []FeedConfig, fetchLinks bool, linkPol
 		t.Fatalf("NewStagingWriter: %v", err)
 	}
 
-	routes := make([]connector.Route, 0, len(feeds))
+	rules := make([]connector.Rule, 0, len(feeds))
 	for _, f := range feeds {
-		routes = append(routes, connector.Route{
+		rules = append(rules, connector.Rule{
 			Match:       "feed:" + f.Name,
 			Destination: "test-agent",
 		})
 	}
 
-	router := connector.NewRouter(routes)
+	matcher := connector.NewRuleMatcher(rules)
 
 	c := &RSSConnector{
 		config: Config{
@@ -63,7 +63,7 @@ func newTestConnector(t *testing.T, feeds []FeedConfig, fetchLinks bool, linkPol
 			LinkPolicy: linkPolicyCfg,
 		},
 		writer:     writer,
-		router:     router,
+		matcher:    matcher,
 		linkPolicy: content.NewLinkPolicy(linkPolicyCfg),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
@@ -547,6 +547,147 @@ func TestMetadataFields(t *testing.T) {
 		if meta["destination_agent"] != "test-agent" {
 			t.Errorf("expected destination_agent 'test-agent', got %v", meta["destination_agent"])
 		}
+	}
+}
+
+func TestIdentityInMetadata(t *testing.T) {
+	feedXML := rssTemplate(`
+    <item>
+      <title>Identity Test</title>
+      <link>https://example.com/id</link>
+      <description>Testing identity</description>
+      <guid>id-1</guid>
+      <pubDate>Mon, 01 Jan 2024 12:00:00 +0000</pubDate>
+    </item>`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(feedXML))
+	}))
+	defer srv.Close()
+
+	feeds := []FeedConfig{{Name: "idfeed", URL: srv.URL}}
+	c, stagingDir, stateDir := newTestConnector(t, feeds, false, content.LinkPolicyConfig{})
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		identity, ok := meta["identity"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected identity object in metadata")
+		}
+		if identity["provider"] != "rss" {
+			t.Errorf("expected identity provider 'rss', got %v", identity["provider"])
+		}
+		if identity["auth_method"] != "none" {
+			t.Errorf("expected identity auth_method 'none', got %v", identity["auth_method"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}
+
+func TestRuleTagsInMetadata(t *testing.T) {
+	feedXML := rssTemplate(`
+    <item>
+      <title>Tags Test</title>
+      <link>https://example.com/tags</link>
+      <description>Testing rule tags</description>
+      <guid>tags-1</guid>
+      <pubDate>Mon, 01 Jan 2024 12:00:00 +0000</pubDate>
+    </item>`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(feedXML))
+	}))
+	defer srv.Close()
+
+	stagingDir := t.TempDir()
+	stateDir := t.TempDir()
+
+	writer, err := connector.NewStagingWriter(stagingDir, "rss")
+	if err != nil {
+		t.Fatalf("NewStagingWriter: %v", err)
+	}
+
+	rules := []connector.Rule{
+		{
+			Match:       "feed:tagfeed",
+			Destination: "test-agent",
+			Tags:        map[string]string{"category": "news", "priority": "high"},
+		},
+	}
+	matcher := connector.NewRuleMatcher(rules)
+
+	feeds := []FeedConfig{{Name: "tagfeed", URL: srv.URL}}
+	c := &RSSConnector{
+		config: Config{
+			Feeds: feeds,
+		},
+		writer:     writer,
+		matcher:    matcher,
+		linkPolicy: content.NewLinkPolicy(content.LinkPolicyConfig{}),
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		tags, ok := meta["tags"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected tags object in metadata")
+		}
+		if tags["category"] != "news" {
+			t.Errorf("expected tag category 'news', got %v", tags["category"])
+		}
+		if tags["priority"] != "high" {
+			t.Errorf("expected tag priority 'high', got %v", tags["priority"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
 	}
 }
 
