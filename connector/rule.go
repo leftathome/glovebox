@@ -32,9 +32,16 @@ func NewRuleMatcher(rules []Rule) *RuleMatcher {
 func (rm *RuleMatcher) Match(key string) (MatchResult, bool) {
 	for _, rule := range rm.rules {
 		if rule.Match == key || rule.Match == "*" {
+			var tags map[string]string
+			if len(rule.Tags) > 0 {
+				tags = make(map[string]string, len(rule.Tags))
+				for k, v := range rule.Tags {
+					tags[k] = v
+				}
+			}
 			return MatchResult{
 				Destination: rule.Destination,
-				Tags:        rule.Tags,
+				Tags:        tags,
 			}, true
 		}
 	}
