@@ -334,6 +334,338 @@ func TestIdentityFieldsInMetadata(t *testing.T) {
 	}
 }
 
+// readFirstStagedContent reads the content.raw file from the first staged item
+// and unmarshals it into a videoContent struct.
+func readFirstStagedContent(t *testing.T, stagingDir string) videoContent {
+	t.Helper()
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatalf("read staging dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
+		data, err := os.ReadFile(contentPath)
+		if err != nil {
+			t.Fatalf("read content.raw: %v", err)
+		}
+		var vc videoContent
+		if err := json.Unmarshal(data, &vc); err != nil {
+			t.Fatalf("unmarshal videoContent: %v", err)
+		}
+		return vc
+	}
+	t.Fatal("no staged items found")
+	return videoContent{}
+}
+
+// makeCommentThreadsResponse builds a YouTube commentThreads API JSON response.
+func makeCommentThreadsResponse(comments ...string) []byte {
+	type commentSnippet struct {
+		TextDisplay string `json:"textDisplay"`
+	}
+	type topLevelComment struct {
+		Snippet commentSnippet `json:"snippet"`
+	}
+	type threadSnippet struct {
+		TopLevelComment topLevelComment `json:"topLevelComment"`
+	}
+	type threadItem struct {
+		Snippet threadSnippet `json:"snippet"`
+	}
+	type resp struct {
+		Items []threadItem `json:"items"`
+	}
+	r := resp{}
+	for _, c := range comments {
+		r.Items = append(r.Items, threadItem{
+			Snippet: threadSnippet{
+				TopLevelComment: topLevelComment{
+					Snippet: commentSnippet{TextDisplay: c},
+				},
+			},
+		})
+	}
+	data, _ := json.Marshal(r)
+	return data
+}
+
+// makeCaptionsResponse builds a YouTube captions API JSON response.
+func makeCaptionsResponse(languages ...string) []byte {
+	type captionSnippet struct {
+		Language string `json:"language"`
+		Name     string `json:"name"`
+	}
+	type captionItem struct {
+		Snippet captionSnippet `json:"snippet"`
+	}
+	type resp struct {
+		Items []captionItem `json:"items"`
+	}
+	r := resp{}
+	for _, lang := range languages {
+		r.Items = append(r.Items, captionItem{
+			Snippet: captionSnippet{Language: lang, Name: lang + " auto"},
+		})
+	}
+	data, _ := json.Marshal(r)
+	return data
+}
+
+func TestCommentsFetchedAndIncluded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/search") {
+			w.Write(makeSearchResponse("vid1"))
+			return
+		}
+		if strings.HasSuffix(path, "/videos") {
+			videoID := r.URL.Query().Get("id")
+			w.Write(makeVideoResponse(videoID, "Title", "Desc", "2026-03-28T12:00:00Z", "Chan"))
+			return
+		}
+		if strings.HasSuffix(path, "/commentThreads") {
+			w.Write(makeCommentThreadsResponse("Great video!", "Very helpful", "Thanks for sharing"))
+			return
+		}
+		if strings.HasSuffix(path, "/captions") {
+			w.Write(makeCaptionsResponse())
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	channelIDs := []string{"UC_test_channel"}
+	rules := []connector.Rule{
+		{Match: "channel:UC_test_channel", Destination: "media-agent"},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, channelIDs, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	vc := readFirstStagedContent(t, stagingDir)
+	if len(vc.Comments) != 3 {
+		t.Fatalf("expected 3 comments, got %d", len(vc.Comments))
+	}
+	if vc.Comments[0] != "Great video!" {
+		t.Errorf("expected first comment 'Great video!', got %q", vc.Comments[0])
+	}
+	if vc.Comments[1] != "Very helpful" {
+		t.Errorf("expected second comment 'Very helpful', got %q", vc.Comments[1])
+	}
+}
+
+func TestCaptionsMetadataIncluded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/search") {
+			w.Write(makeSearchResponse("vid1"))
+			return
+		}
+		if strings.HasSuffix(path, "/videos") {
+			videoID := r.URL.Query().Get("id")
+			w.Write(makeVideoResponse(videoID, "Title", "Desc", "2026-03-28T12:00:00Z", "Chan"))
+			return
+		}
+		if strings.HasSuffix(path, "/commentThreads") {
+			w.Write(makeCommentThreadsResponse())
+			return
+		}
+		if strings.HasSuffix(path, "/captions") {
+			w.Write(makeCaptionsResponse("en", "es", "fr"))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	channelIDs := []string{"UC_test_channel"}
+	rules := []connector.Rule{
+		{Match: "channel:UC_test_channel", Destination: "media-agent"},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, channelIDs, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	vc := readFirstStagedContent(t, stagingDir)
+	if len(vc.CaptionLanguages) != 3 {
+		t.Fatalf("expected 3 caption languages, got %d", len(vc.CaptionLanguages))
+	}
+	if vc.CaptionLanguages[0] != "en" {
+		t.Errorf("expected first caption language 'en', got %q", vc.CaptionLanguages[0])
+	}
+	if vc.CaptionLanguages[1] != "es" {
+		t.Errorf("expected second caption language 'es', got %q", vc.CaptionLanguages[1])
+	}
+}
+
+func TestVideoWithoutCommentsHandledGracefully(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/search") {
+			w.Write(makeSearchResponse("vid1"))
+			return
+		}
+		if strings.HasSuffix(path, "/videos") {
+			videoID := r.URL.Query().Get("id")
+			w.Write(makeVideoResponse(videoID, "Title", "Desc", "2026-03-28T12:00:00Z", "Chan"))
+			return
+		}
+		if strings.HasSuffix(path, "/commentThreads") {
+			// Empty items -- no comments on this video.
+			w.Write([]byte(`{"items":[]}`))
+			return
+		}
+		if strings.HasSuffix(path, "/captions") {
+			w.Write(makeCaptionsResponse("en"))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	channelIDs := []string{"UC_test_channel"}
+	rules := []connector.Rule{
+		{Match: "channel:UC_test_channel", Destination: "media-agent"},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, channelIDs, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	count := countStagedItems(t, stagingDir)
+	if count != 1 {
+		t.Fatalf("expected 1 staged item, got %d", count)
+	}
+
+	vc := readFirstStagedContent(t, stagingDir)
+	if vc.Comments != nil && len(vc.Comments) != 0 {
+		t.Errorf("expected no comments, got %d", len(vc.Comments))
+	}
+}
+
+func TestVideoWithoutCaptionsHandledGracefully(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/search") {
+			w.Write(makeSearchResponse("vid1"))
+			return
+		}
+		if strings.HasSuffix(path, "/videos") {
+			videoID := r.URL.Query().Get("id")
+			w.Write(makeVideoResponse(videoID, "Title", "Desc", "2026-03-28T12:00:00Z", "Chan"))
+			return
+		}
+		if strings.HasSuffix(path, "/commentThreads") {
+			w.Write(makeCommentThreadsResponse("A comment"))
+			return
+		}
+		if strings.HasSuffix(path, "/captions") {
+			// Empty items -- no captions on this video.
+			w.Write([]byte(`{"items":[]}`))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	channelIDs := []string{"UC_test_channel"}
+	rules := []connector.Rule{
+		{Match: "channel:UC_test_channel", Destination: "media-agent"},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, channelIDs, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	count := countStagedItems(t, stagingDir)
+	if count != 1 {
+		t.Fatalf("expected 1 staged item, got %d", count)
+	}
+
+	vc := readFirstStagedContent(t, stagingDir)
+	if vc.CaptionLanguages != nil && len(vc.CaptionLanguages) != 0 {
+		t.Errorf("expected no captions, got %d", len(vc.CaptionLanguages))
+	}
+	// Comments should still be present.
+	if len(vc.Comments) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(vc.Comments))
+	}
+}
+
+func TestFetchCommentsFalseSkipsComments(t *testing.T) {
+	commentEndpointCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/search") {
+			w.Write(makeSearchResponse("vid1"))
+			return
+		}
+		if strings.HasSuffix(path, "/videos") {
+			videoID := r.URL.Query().Get("id")
+			w.Write(makeVideoResponse(videoID, "Title", "Desc", "2026-03-28T12:00:00Z", "Chan"))
+			return
+		}
+		if strings.HasSuffix(path, "/commentThreads") {
+			commentEndpointCalled = true
+			w.Write(makeCommentThreadsResponse("should not appear"))
+			return
+		}
+		if strings.HasSuffix(path, "/captions") {
+			w.Write(makeCaptionsResponse())
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	channelIDs := []string{"UC_test_channel"}
+	rules := []connector.Rule{
+		{Match: "channel:UC_test_channel", Destination: "media-agent"},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, channelIDs, srv.URL, rules)
+	c.config.FetchComments = boolPtr(false)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	if commentEndpointCalled {
+		t.Error("commentThreads endpoint should not have been called when FetchComments is false")
+	}
+
+	vc := readFirstStagedContent(t, stagingDir)
+	if vc.Comments != nil {
+		t.Errorf("expected nil comments when fetch disabled, got %v", vc.Comments)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 func TestRuleTagsInMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
