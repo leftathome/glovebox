@@ -55,6 +55,11 @@ persistence:
 metrics:
   port: 9090
   servicePort: 9090
+  annotations: true  # add prometheus.io/* annotations to all pods
+  serviceMonitor:
+    enabled: false    # create ServiceMonitor CRDs (requires prometheus-operator)
+    interval: 30s
+    labels: {}        # additional labels for ServiceMonitor (e.g., release: prometheus)
 
 networkPolicy:
   enabled: true

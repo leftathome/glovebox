@@ -16,6 +16,12 @@ spec:
       labels:
         app: glovebox
         release: {{ .Release.Name }}
+      {{- if .Values.metrics.annotations }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.metrics.port }}"
+        prometheus.io/path: "/metrics"
+      {{- end }}
     spec:
       containers:
         - name: glovebox
