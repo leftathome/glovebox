@@ -63,10 +63,11 @@ func newTestGitLabConnector(t *testing.T, projects []ProjectConfig, baseURL stri
 			Projects: projects,
 			BaseURL:  baseURL,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 
 	return c, stagingDir, stateDir
@@ -248,10 +249,11 @@ func TestRuleTagsInMetadata(t *testing.T) {
 			Projects: projects,
 			BaseURL:  srv.URL,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 	cp := newCheckpoint(t, stateDir)
 

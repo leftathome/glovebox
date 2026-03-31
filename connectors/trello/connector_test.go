@@ -44,12 +44,13 @@ func newTestConnector(t *testing.T, boards []BoardConfig, baseURL string) (*Trel
 		config: Config{
 			Boards: boards,
 		},
-		apiKey:     "test-key",
-		token:      "test-token",
-		writer:     writer,
-		matcher:    matcher,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		baseURL:    baseURL,
+		apiKey:       "test-key",
+		token:        "test-token",
+		writer:       writer,
+		matcher:      matcher,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		baseURL:      baseURL,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
 
 	return c, stagingDir, stateDir
@@ -318,12 +319,13 @@ func TestRuleTagsInMetadata(t *testing.T) {
 		config: Config{
 			Boards: boards,
 		},
-		apiKey:     "test-key",
-		token:      "test-token",
-		writer:     writer,
-		matcher:    matcher,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		baseURL:    srv.URL,
+		apiKey:       "test-key",
+		token:        "test-token",
+		writer:       writer,
+		matcher:      matcher,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		baseURL:      srv.URL,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
 	cp := newCheckpoint(t, stateDir)
 

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -39,13 +38,11 @@ func main() {
 	}
 
 	c := &TrelloConnector{
-		config:  cfg,
-		apiKey:  apiKey,
-		token:   token,
-		baseURL: defaultBaseURL,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		config:     cfg,
+		apiKey:     apiKey,
+		token:      token,
+		baseURL:    defaultBaseURL,
+		httpClient: connector.NewHTTPClient(connector.HTTPClientOptions{}),
 	}
 
 	connector.Run(connector.Options{
@@ -57,6 +54,7 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
 			c.matcher = cc.Matcher
+			c.fetchCounter = cc.FetchCounter
 			if cfg.ConfigIdentity != nil {
 				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
 			}

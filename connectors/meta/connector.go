@@ -15,14 +15,15 @@ import (
 
 // MetaConnector polls Meta Graph API page feeds and handles webhooks.
 type MetaConnector struct {
-	config      Config
-	writer      *connector.StagingWriter
-	matcher     *connector.RuleMatcher
-	httpClient  *http.Client
-	tokenSource connector.TokenSource
-	apiBase     string // e.g. "https://graph.facebook.com" or test server URL
-	appSecret   []byte // META_APP_SECRET for webhook signature verification
-	verifyToken string // META_VERIFY_TOKEN for webhook subscription verification
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	fetchCounter *connector.FetchCounter
+	httpClient   *http.Client
+	tokenSource  connector.TokenSource
+	apiBase      string // e.g. "https://graph.facebook.com" or test server URL
+	appSecret    []byte // META_APP_SECRET for webhook signature verification
+	verifyToken  string // META_VERIFY_TOKEN for webhook subscription verification
 }
 
 // metaPost is a minimal representation of a post from the Graph API page feed.
@@ -121,6 +122,11 @@ func (c *MetaConnector) pollFeed(ctx context.Context, checkpoint connector.Check
 
 		p := posts[i]
 
+		if status := c.fetchCounter.TryFetch(c.config.PageID); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "page_id", c.config.PageID, "status", status)
+			break
+		}
+
 		item, err := c.writer.NewItem(connector.ItemOptions{
 			Source:           "meta",
 			Sender:           c.config.PageID,
@@ -158,7 +164,6 @@ func (c *MetaConnector) fetchAPI(ctx context.Context, url string, token string) 
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "glovebox-meta/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

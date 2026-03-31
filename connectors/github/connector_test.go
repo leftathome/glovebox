@@ -36,11 +36,12 @@ func newTestConnector(t *testing.T, repos []RepoConfig, apiBase string, rules []
 		config: Config{
 			Repos: repos,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-token"),
-		apiBase:     apiBase,
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      apiBase,
 	}
 
 	return c, stagingDir, stateDir
@@ -178,12 +179,13 @@ func TestWebhookValidSignature(t *testing.T) {
 			Repos:         repos,
 			WebhookSecret: "GITHUB_WEBHOOK_SECRET",
 		},
-		writer:        writer,
-		matcher:       matcher,
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 		webhookSecret: []byte(secret),
-		httpClient:    &http.Client{Timeout: 10 * time.Second},
-		tokenSource:   connector.NewStaticTokenSource("test-token"),
-		apiBase:       "http://unused",
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      "http://unused",
 	}
 
 	handler := c.Handler()
@@ -228,12 +230,13 @@ func TestWebhookInvalidSignature(t *testing.T) {
 		config: Config{
 			WebhookSecret: "GITHUB_WEBHOOK_SECRET",
 		},
-		writer:        writer,
-		matcher:       matcher,
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 		webhookSecret: []byte(secret),
-		httpClient:    &http.Client{Timeout: 10 * time.Second},
-		tokenSource:   connector.NewStaticTokenSource("test-token"),
-		apiBase:       "http://unused",
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-token"),
+		apiBase:      "http://unused",
 	}
 
 	handler := c.Handler()

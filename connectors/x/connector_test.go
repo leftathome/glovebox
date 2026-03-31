@@ -37,11 +37,12 @@ func newTestConnector(t *testing.T, userID string, feedTypes []string, apiBase s
 			UserID:    userID,
 			FeedTypes: feedTypes,
 		},
-		writer:      writer,
-		matcher:     matcher,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		tokenSource: connector.NewStaticTokenSource("test-bearer-token"),
-		apiBase:     apiBase,
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenSource:  connector.NewStaticTokenSource("test-bearer-token"),
+		apiBase:      apiBase,
 	}
 
 	return c, stagingDir, stateDir
@@ -241,6 +242,7 @@ func TestWebhookValidSignatureStaged(t *testing.T) {
 		},
 		writer:        writer,
 		matcher:       matcher,
+		fetchCounter:  connector.NewFetchCounter(connector.FetchLimits{}),
 		webhookSecret: []byte(webhookSecret),
 	}
 
@@ -287,6 +289,7 @@ func TestWebhookInvalidSignatureRejected(t *testing.T) {
 		},
 		writer:        writer,
 		matcher:       matcher,
+		fetchCounter:  connector.NewFetchCounter(connector.FetchLimits{}),
 		webhookSecret: []byte(webhookSecret),
 	}
 

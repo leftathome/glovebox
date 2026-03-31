@@ -18,12 +18,13 @@ const maxResponseBytes = 10 << 20 // 10 MB
 
 // BlueskyConnector polls Bluesky (AT Protocol) feeds and stages new posts.
 type BlueskyConnector struct {
-	config      Config
-	identifier  string
-	appPassword string
-	writer      *connector.StagingWriter
-	matcher     *connector.RuleMatcher
-	httpClient  *http.Client
+	config       Config
+	identifier   string
+	appPassword  string
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	fetchCounter *connector.FetchCounter
+	httpClient   *http.Client
 }
 
 // sessionResponse is the JSON returned by com.atproto.server.createSession.
@@ -120,6 +121,11 @@ func (c *BlueskyConnector) Poll(ctx context.Context, checkpoint connector.Checkp
 		}
 
 		post := posts[i]
+
+		if status := c.fetchCounter.TryFetch("timeline"); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "source", "timeline", "status", status)
+			break
+		}
 
 		// Parse the record to extract text.
 		var rec postRecord

@@ -97,12 +97,13 @@ func newTestBlueskyConnector(t *testing.T, serviceURL string) (*BlueskyConnector
 	cfg.FeedURIs = []string{"at://did:plc:testuser123/app.bsky.feed.getAuthorFeed"}
 
 	c := &BlueskyConnector{
-		config:     cfg,
-		identifier: "testuser.bsky.social",
-		appPassword: "test-app-password",
-		writer:     writer,
-		matcher:    matcher,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		config:       cfg,
+		identifier:   "testuser.bsky.social",
+		appPassword:  "test-app-password",
+		writer:       writer,
+		matcher:      matcher,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 
 	return c, stagingDir, stateDir

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -28,12 +27,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	httpClient := connector.NewHTTPClient(connector.HTTPClientOptions{})
+	rc := connector.NewRobotsChecker(httpClient)
+
 	c := &RSSConnector{
-		config:     cfg,
-		linkPolicy: content.NewLinkPolicy(cfg.LinkPolicy),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		config:        cfg,
+		linkPolicy:    content.NewLinkPolicy(cfg.LinkPolicy),
+		httpClient:    httpClient,
+		robotsChecker: rc,
 	}
 
 	connector.Run(connector.Options{
@@ -45,6 +46,7 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
 			c.matcher = cc.Matcher
+			c.fetchCounter = cc.FetchCounter
 			if cfg.ConfigIdentity != nil {
 				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
 			}

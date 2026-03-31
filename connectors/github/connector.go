@@ -15,12 +15,13 @@ import (
 
 // GitHubConnector polls GitHub repository events and handles webhooks.
 type GitHubConnector struct {
-	config        Config
-	writer        *connector.StagingWriter
-	matcher       *connector.RuleMatcher
-	httpClient    *http.Client
-	tokenSource   connector.TokenSource
-	apiBase       string // e.g. "https://api.github.com" or test server URL
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	fetchCounter *connector.FetchCounter
+	httpClient   *http.Client
+	tokenSource  connector.TokenSource
+	apiBase      string // e.g. "https://api.github.com" or test server URL
 	webhookSecret []byte
 }
 
@@ -110,6 +111,11 @@ func (c *GitHubConnector) pollRepo(ctx context.Context, repo RepoConfig, checkpo
 
 		ev := events[i]
 
+		if status := c.fetchCounter.TryFetch(repoSlug); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "repo", repoSlug, "status", status)
+			break
+		}
+
 		item, err := c.writer.NewItem(connector.ItemOptions{
 			Source:           "github",
 			Sender:           repoSlug,
@@ -153,7 +159,6 @@ func (c *GitHubConnector) fetchAPI(ctx context.Context, url string) ([]byte, err
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "glovebox-github/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

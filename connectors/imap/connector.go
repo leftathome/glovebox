@@ -15,11 +15,12 @@ import (
 // IMAPConnector implements connector.Connector and connector.Watcher.
 // It polls IMAP folders for new messages and stages them for processing.
 type IMAPConnector struct {
-	config      Config
-	writer      *connector.StagingWriter
-	matcher     *connector.RuleMatcher
-	imapUsername string
-	newClient   func() IMAPClient
+	config       Config
+	writer       *connector.StagingWriter
+	matcher      *connector.RuleMatcher
+	imapUsername  string
+	newClient    func() IMAPClient
+	fetchCounter *connector.FetchCounter
 }
 
 // Poll iterates configured folders, fetches messages newer than the
@@ -66,6 +67,14 @@ func (c *IMAPConnector) Poll(ctx context.Context, cp connector.Checkpoint) error
 		for _, uid := range uids {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+
+			status := c.fetchCounter.TryFetch(folder.Name)
+			if status == connector.FetchPollLimit {
+				return nil
+			}
+			if status == connector.FetchSourceLimit {
+				break
 			}
 
 			raw, sender, subject, date, err := client.FetchMessage(ctx, uid)

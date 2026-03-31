@@ -181,7 +181,8 @@ func setupTestConnector(t *testing.T, mock *mockIMAPClient, rules []connector.Ru
 		},
 		writer:       writer,
 		matcher:      matcher,
-		imapUsername: username,
+		imapUsername:  username,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 		newClient: func() IMAPClient {
 			return mock
 		},

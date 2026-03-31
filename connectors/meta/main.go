@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -42,7 +41,7 @@ func main() {
 
 	c := &MetaConnector{
 		config:      cfg,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		httpClient:  connector.NewHTTPClient(connector.HTTPClientOptions{}),
 		tokenSource: connector.NewStaticTokenSource(accessToken),
 		apiBase:     "https://graph.facebook.com",
 		appSecret:   appSecret,
@@ -58,6 +57,7 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			c.writer = cc.Writer
 			c.matcher = cc.Matcher
+			c.fetchCounter = cc.FetchCounter
 			if cfg.ConfigIdentity != nil {
 				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
 			}
