@@ -47,8 +47,11 @@ type userAgentTransport struct {
 	userAgent string
 }
 
-// RoundTrip sets the User-Agent header and delegates to the base transport.
+// RoundTrip clones the request, sets the User-Agent header, and delegates
+// to the base transport. The clone avoids mutating the caller's request,
+// which would violate the http.RoundTripper contract.
 func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("User-Agent", t.userAgent)
-	return t.base.RoundTrip(req)
+	r := req.Clone(req.Context())
+	r.Header.Set("User-Agent", t.userAgent)
+	return t.base.RoundTrip(r)
 }
