@@ -18,6 +18,7 @@ type BaseConfig struct {
 	Rules          []Rule          `json:"rules"`
 	Routes         []Rule          `json:"routes"`
 	ConfigIdentity *ConfigIdentity `json:"identity,omitempty"`
+	FetchLimits    FetchLimits     `json:"fetch_limits"`
 }
 
 func Run(opts Options) {
@@ -85,9 +86,17 @@ func Run(opts Options) {
 	}
 	defer metrics.Shutdown()
 
+	// Init fetch counter
+	fetchCounter := NewFetchCounter(baseCfg.FetchLimits)
+
 	// Pass resources to connector via setup callback
 	if opts.Setup != nil {
-		if err := opts.Setup(ConnectorContext{Writer: writer, Matcher: matcher, Metrics: metrics}); err != nil {
+		if err := opts.Setup(ConnectorContext{
+			Writer:       writer,
+			Matcher:      matcher,
+			Metrics:      metrics,
+			FetchCounter: fetchCounter,
+		}); err != nil {
 			logger.Error("connector setup", "error", err)
 			os.Exit(1)
 		}
@@ -160,7 +169,7 @@ func Run(opts Options) {
 
 	// Initial poll
 	logger.Info("running initial poll")
-	if err := runPoll(ctx, opts.Connector, cp, metrics, logger); err != nil {
+	if err := runPoll(ctx, opts.Connector, cp, metrics, logger, fetchCounter); err != nil {
 		if IsPermanent(err) {
 			logger.Error("permanent error during initial poll", "error", err)
 			os.Exit(1)
@@ -188,18 +197,21 @@ func Run(opts Options) {
 	}
 
 	if isWatcher {
-		runWatchLoop(ctx, opts, watcher, cp, metrics, &ready, logger)
+		runWatchLoop(ctx, opts, watcher, cp, metrics, &ready, logger, fetchCounter)
 	} else {
-		runPollLoop(ctx, opts, cp, metrics, &ready, logger)
+		runPollLoop(ctx, opts, cp, metrics, &ready, logger, fetchCounter)
 	}
 
 	shutdown(healthServer, logger)
 	logger.Info("connector stopped")
 }
 
-func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger *slog.Logger) error {
+func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger *slog.Logger, fc *FetchCounter) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if fc != nil {
+		fc.Reset()
 	}
 	start := time.Now()
 	err := c.Poll(ctx, cp)
@@ -219,7 +231,7 @@ func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger
 	return err
 }
 
-func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger) {
+func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
 	pollTicker := time.NewTicker(opts.PollInterval)
 	defer pollTicker.Stop()
 
@@ -260,7 +272,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 				case <-ctx.Done():
 					return
 				}
-				if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
+				if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
 					if IsPermanent(err) {
 						logger.Error("permanent error during re-poll", "error", err)
 						os.Exit(1)
@@ -275,7 +287,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 			watchCancel()
 			wg.Wait()
 			logger.Info("periodic re-poll")
-			if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
+			if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent error during re-poll", "error", err)
 					os.Exit(1)
@@ -286,7 +298,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 	}
 }
 
-func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger) {
+func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
 	ticker := time.NewTicker(opts.PollInterval)
 	defer ticker.Stop()
 
@@ -296,7 +308,7 @@ func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, r
 			return
 		case <-ticker.C:
 			logger.Info("scheduled poll")
-			if err := runPoll(ctx, opts.Connector, cp, m, logger); err != nil {
+			if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent poll error", "error", err)
 					os.Exit(1)

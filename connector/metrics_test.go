@@ -48,7 +48,7 @@ func TestMetrics_PollIncrementsCounter(t *testing.T) {
 	// Simulate a successful poll via runPoll
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
-	if err := runPoll(context.Background(), mock, cp, m, testLogger); err != nil {
+	if err := runPoll(context.Background(), mock, cp, m, testLogger, nil); err != nil {
 		t.Fatalf("runPoll: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestMetrics_PollErrorIncrementsCounters(t *testing.T) {
 	// Transient error
 	mock := &mockPollConnector{pollErr: fmt.Errorf("timeout")}
 	cp, _ := NewCheckpoint(t.TempDir())
-	_ = runPoll(context.Background(), mock, cp, m, testLogger)
+	_ = runPoll(context.Background(), mock, cp, m, testLogger, nil)
 
 	body := scrapeMetrics(t, m)
 
@@ -99,7 +99,7 @@ func TestMetrics_PermanentErrorLabel(t *testing.T) {
 
 	mock := &mockPollConnector{pollErr: PermanentError(fmt.Errorf("bad token"))}
 	cp, _ := NewCheckpoint(t.TempDir())
-	_ = runPoll(context.Background(), mock, cp, m, testLogger)
+	_ = runPoll(context.Background(), mock, cp, m, testLogger, nil)
 
 	body := scrapeMetrics(t, m)
 

@@ -82,7 +82,7 @@ func testOptions(t *testing.T, c Connector) Options {
 func TestRunPoll_CallsConnector(t *testing.T) {
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, nil, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestRunPoll_CallsConnector(t *testing.T) {
 func TestRunPoll_PropagatesError(t *testing.T) {
 	mock := &mockPollConnector{pollErr: fmt.Errorf("network error")}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, nil, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger, nil)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -105,7 +105,7 @@ func TestRunPoll_RespectsContext(t *testing.T) {
 	cancel()
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(ctx, mock, cp, nil, testLogger)
+	err := runPoll(ctx, mock, cp, nil, testLogger, nil)
 	if err == nil {
 		t.Error("expected context error")
 	}
@@ -177,7 +177,7 @@ func TestRunPollLoop_PollsOnInterval(t *testing.T) {
 			Name:         "test",
 			Connector:    mock,
 			PollInterval: 50 * time.Millisecond,
-		}, cp, nil, &ready, testLogger)
+		}, cp, nil, &ready, testLogger, nil)
 	}()
 
 	time.Sleep(180 * time.Millisecond)
@@ -204,7 +204,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 			Name:         "test",
 			Connector:    mock,
 			PollInterval: 5 * time.Second,
-		}, mock, cp, nil, &ready, testLogger)
+		}, mock, cp, nil, &ready, testLogger, nil)
 	}()
 
 	select {
@@ -220,7 +220,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 func TestRunPoll_PermanentError(t *testing.T) {
 	mock := &mockPollConnector{pollErr: PermanentError(fmt.Errorf("bad creds"))}
 	cp, _ := NewCheckpoint(t.TempDir())
-	err := runPoll(context.Background(), mock, cp, nil, testLogger)
+	err := runPoll(context.Background(), mock, cp, nil, testLogger, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -365,5 +365,89 @@ func TestConnectorContext_HasMatcher(t *testing.T) {
 	}
 	if result.Destination != "default" {
 		t.Errorf("Destination = %q, want %q", result.Destination, "default")
+	}
+}
+
+func TestBaseConfig_FetchLimitsParsed(t *testing.T) {
+	cfg := `{
+		"rules":[{"match":"*","destination":"default"}],
+		"fetch_limits":{"per_source":50,"per_poll":200}
+	}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if bc.FetchLimits.PerSource != 50 {
+		t.Errorf("FetchLimits.PerSource = %d, want 50", bc.FetchLimits.PerSource)
+	}
+	if bc.FetchLimits.PerPoll != 200 {
+		t.Errorf("FetchLimits.PerPoll = %d, want 200", bc.FetchLimits.PerPoll)
+	}
+}
+
+func TestBaseConfig_FetchLimitsDefaultZero(t *testing.T) {
+	cfg := `{"rules":[{"match":"*","destination":"default"}]}`
+	var bc BaseConfig
+	if err := json.Unmarshal([]byte(cfg), &bc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if bc.FetchLimits.PerSource != 0 {
+		t.Errorf("FetchLimits.PerSource = %d, want 0 (unlimited)", bc.FetchLimits.PerSource)
+	}
+	if bc.FetchLimits.PerPoll != 0 {
+		t.Errorf("FetchLimits.PerPoll = %d, want 0 (unlimited)", bc.FetchLimits.PerPoll)
+	}
+}
+
+func TestConnectorContext_HasFetchCounter(t *testing.T) {
+	fc := NewFetchCounter(FetchLimits{PerSource: 10, PerPoll: 100})
+	cc := ConnectorContext{
+		FetchCounter: fc,
+	}
+	if cc.FetchCounter == nil {
+		t.Fatal("expected FetchCounter to be set on ConnectorContext")
+	}
+	status := cc.FetchCounter.TryFetch("test-source")
+	if !status.Allowed() {
+		t.Error("expected fetch to be allowed")
+	}
+}
+
+func TestRunPoll_ResetsFetchCounter(t *testing.T) {
+	fc := NewFetchCounter(FetchLimits{PerSource: 5, PerPoll: 10})
+
+	// Simulate some fetches from a prior poll cycle.
+	fc.TryFetch("source-a")
+	fc.TryFetch("source-a")
+	fc.TryFetch("source-b")
+	if fc.Count() != 3 {
+		t.Fatalf("pre-condition: expected count 3, got %d", fc.Count())
+	}
+
+	mock := &mockPollConnector{}
+	cp, _ := NewCheckpoint(t.TempDir())
+
+	err := runPoll(context.Background(), mock, cp, nil, testLogger, fc)
+	if err != nil {
+		t.Fatalf("runPoll error: %v", err)
+	}
+
+	// FetchCounter should have been reset before the poll.
+	if fc.Count() != 0 {
+		t.Errorf("expected FetchCounter reset to 0 before poll, got %d", fc.Count())
+	}
+}
+
+func TestRunPoll_NilFetchCounterSafe(t *testing.T) {
+	mock := &mockPollConnector{}
+	cp, _ := NewCheckpoint(t.TempDir())
+
+	// Passing nil FetchCounter should not panic.
+	err := runPoll(context.Background(), mock, cp, nil, testLogger, nil)
+	if err != nil {
+		t.Fatalf("runPoll error: %v", err)
+	}
+	if mock.pollCount.Load() != 1 {
+		t.Errorf("poll count = %d, want 1", mock.pollCount.Load())
 	}
 }
