@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-01
+
+### Added
+
+- Helm chart: `existingClaim` option for all PVCs (staging, quarantine, audit,
+  failed, agents, shared) to support bring-your-own persistent volumes
+
 ## [0.2.0] - 2026-03-31
 
 ### Added
@@ -111,6 +118,7 @@ framework.
 - Apache License 2.0
 - Documentation: README, deployment guide, connector author guide, AGENTS.md
 
-[Unreleased]: https://github.com/leftathome/glovebox/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/leftathome/glovebox/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/leftathome/glovebox/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/leftathome/glovebox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/leftathome/glovebox/releases/tag/v0.1.0
