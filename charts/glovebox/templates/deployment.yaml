@@ -58,19 +58,19 @@ spec:
             name: {{ .Release.Name }}-glovebox-config
         - name: staging
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-staging
+            claimName: {{ .Values.persistence.staging.existingClaim | default (printf "%s-glovebox-staging" .Release.Name) }}
         - name: quarantine
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-quarantine
+            claimName: {{ .Values.persistence.quarantine.existingClaim | default (printf "%s-glovebox-quarantine" .Release.Name) }}
         - name: audit
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-audit
+            claimName: {{ .Values.persistence.audit.existingClaim | default (printf "%s-glovebox-audit" .Release.Name) }}
         - name: failed
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-failed
+            claimName: {{ .Values.persistence.failed.existingClaim | default (printf "%s-glovebox-failed" .Release.Name) }}
         - name: agents
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-agents
+            claimName: {{ .Values.persistence.agents.existingClaim | default (printf "%s-glovebox-agents" .Release.Name) }}
         - name: shared
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-glovebox-shared
+            claimName: {{ .Values.persistence.shared.existingClaim | default (printf "%s-glovebox-shared" .Release.Name) }}

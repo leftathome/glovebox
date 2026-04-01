@@ -36,21 +36,27 @@ persistence:
   staging:
     size: 1Gi
     storageClass: ""
+    existingClaim: ""
   quarantine:
     size: 5Gi
     storageClass: ""
+    existingClaim: ""
   audit:
     size: 10Gi
     storageClass: ""
+    existingClaim: ""
   failed:
     size: 5Gi
     storageClass: ""
+    existingClaim: ""
   agents:
     size: 5Gi
     storageClass: ""
+    existingClaim: ""
   shared:
     size: 1Gi
     storageClass: ""
+    existingClaim: ""
 
 metrics:
   port: 9090
