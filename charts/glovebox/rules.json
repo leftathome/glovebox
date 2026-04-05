@@ -1,0 +1,62 @@
+{
+  "rules": [
+    {
+      "name": "instruction_override",
+      "patterns": [
+        "(?i)ignore\\s+(\\w+\\s+)*previous",
+        "(?i)disregard\\s+(\\w+\\s+)*your\\s+instructions",
+        "(?i)forget\\s+(\\w+\\s+)*your\\s+instructions",
+        "(?i)new\\s+directive"
+      ],
+      "weight": 1.0,
+      "match_type": "regex"
+    },
+    {
+      "name": "role_reassignment",
+      "patterns": [
+        "(?i)you\\s+are\\s+now",
+        "(?i)act\\s+as",
+        "(?i)pretend\\s+you\\s+are",
+        "(?i)your\\s+new\\s+role"
+      ],
+      "weight": 1.0,
+      "match_type": "regex"
+    },
+    {
+      "name": "tool_invocation_syntax",
+      "patterns": [
+        "<tool>",
+        "<function_call>",
+        "exec:",
+        "bash:",
+        "```shell"
+      ],
+      "weight": 0.8,
+      "match_type": "substring"
+    },
+    {
+      "name": "suspicious_encoding",
+      "patterns": [],
+      "weight": 0.7,
+      "match_type": "custom_detector",
+      "detector": "encoding_anomaly"
+    },
+    {
+      "name": "prompt_template_structure",
+      "patterns": [],
+      "weight": 0.6,
+      "match_type": "custom_detector",
+      "detector": "template_structure"
+    },
+    {
+      "name": "non_english_content",
+      "patterns": [],
+      "weight": 0.0,
+      "match_type": "custom_detector",
+      "detector": "language_detection",
+      "behavior": "weight_booster",
+      "boost_factor": 1.5
+    }
+  ],
+  "quarantine_threshold": 0.8
+}

@@ -65,7 +65,7 @@ func countStagedItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -313,7 +313,7 @@ func TestIdentityInMetadata(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true

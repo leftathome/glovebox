@@ -64,7 +64,7 @@ func stagingItemCount(t *testing.T, dir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -112,7 +112,7 @@ func TestIntegration_ItemFlowsToStaging(t *testing.T) {
 	// Verify metadata.json schema on each item
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")

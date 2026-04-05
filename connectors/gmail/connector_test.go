@@ -158,7 +158,7 @@ func countStagingItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -195,7 +195,7 @@ func stagingItemDirs(t *testing.T, stagingDir string) []string {
 	}
 	var dirs []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			dirs = append(dirs, filepath.Join(stagingDir, e.Name()))
 		}
 	}

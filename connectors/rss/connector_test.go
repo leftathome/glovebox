@@ -80,7 +80,7 @@ func countStagedItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -359,7 +359,7 @@ func TestLinkFetching(t *testing.T) {
 	// Verify the staged item content includes text from the linked page.
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
@@ -413,7 +413,7 @@ func TestLinkPolicyDeniesPrivateIP(t *testing.T) {
 	// have been blocked by link policy).
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
@@ -481,7 +481,7 @@ func TestLinkPolicyAllowsConfiguredDomain(t *testing.T) {
 
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
@@ -522,7 +522,7 @@ func TestMetadataFields(t *testing.T) {
 
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
@@ -578,7 +578,7 @@ func TestIdentityInMetadata(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
@@ -662,7 +662,7 @@ func TestRuleTagsInMetadata(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
