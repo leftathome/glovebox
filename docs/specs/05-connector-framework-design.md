@@ -120,12 +120,15 @@ A connector implements `Connector` (required) plus optionally `Watcher` and/or `
 
 ## 5. Staging Writer
 
-The library provides `StagingWriter` for the atomic handoff protocol:
+The library provides `StagingBackend` as the abstraction for item delivery. `StagingWriter` (filesystem mode) is one implementation; `HTTPStagingBackend` (HTTP ingest mode) is the other. Backend selection is based on environment variables -- see spec 08 Section 4.4. *(Amended by spec 08.)*
+
+The `NewItem` -> `WriteContent` -> `Commit` API is unchanged regardless of backend:
 
 ```go
-writer := connector.NewStagingWriter(stagingDir, connectorName)
-
-item := writer.NewItem(connector.ItemOptions{
+// Backend is selected automatically by connector.Run based on env vars.
+// StagingWriter is used when GLOVEBOX_STAGING_DIR is set.
+// HTTPStagingBackend is used when GLOVEBOX_INGEST_URL is set.
+item := backend.NewItem(connector.ItemOptions{
     Source:           "imap",
     Sender:           "alice@example.com",
     Subject:          "Re: meeting notes",
@@ -289,7 +292,7 @@ A connector that routes everything to one agent:
 func main() {
     connector.Run(connector.Options{
         Name:         "imap",
-        StagingDir:   os.Getenv("GLOVEBOX_STAGING_DIR"),
+        StagingDir:   os.Getenv("GLOVEBOX_STAGING_DIR"), // optional when GLOVEBOX_INGEST_URL is set
         StateDir:     os.Getenv("GLOVEBOX_STATE_DIR"),
         ConfigFile:   os.Getenv("GLOVEBOX_CONNECTOR_CONFIG"),
         Connector:    &IMAPConnector{},
@@ -297,6 +300,8 @@ func main() {
     })
 }
 ```
+
+`connector.Run` selects the staging backend based on environment variables: `GLOVEBOX_INGEST_URL` (HTTP mode) takes precedence over `GLOVEBOX_STAGING_DIR` (filesystem mode). See spec 08 Section 4.4. *(Amended by spec 08.)*
 
 ### 8.2 Lifecycle
 
@@ -366,11 +371,12 @@ Metrics provided by the runner (automatic):
 | Metric | Type | Labels |
 |--------|------|--------|
 | `connector_polls_total` | counter | connector, status |
-| `connector_items_produced_total` | counter | connector, destination |
 | `connector_poll_duration_seconds` | histogram | connector |
 | `connector_errors_total` | counter | connector, type |
 | `connector_checkpoint_age_seconds` | gauge | connector |
 | `connector_items_dropped_total` | counter | connector, reason |
+
+~~`connector_items_produced_total`~~ has been removed. The scanner is the authoritative counter for items received, via `glovebox_items_received_total` (see spec 08 Section 3.12). *(Amended by spec 08.)*
 
 Connectors can register additional connector-specific metrics if needed.
 
