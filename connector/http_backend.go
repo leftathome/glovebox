@@ -12,13 +12,7 @@ import (
 	"os"
 	"strconv"
 	"time"
-
-	"github.com/leftathome/glovebox/internal/staging"
 )
-
-// inMemoryThreshold is the maximum content size (4 MB) that will be buffered
-// in memory. Above this threshold, content is spilled to a temporary file.
-const inMemoryThreshold = 4 * 1024 * 1024
 
 // HTTPStagingBackend implements StagingBackend by POSTing items to the
 // scanner's /v1/ingest endpoint as multipart/form-data requests.
@@ -35,10 +29,11 @@ type HTTPStagingBackend struct {
 var _ StagingBackend = (*HTTPStagingBackend)(nil)
 
 // NewHTTPStagingBackend creates a new HTTP-based staging backend that POSTs
-// items to ingestURL. If httpClient is nil, http.DefaultClient is used.
+// items to ingestURL. If httpClient is nil, a default client with a 30s
+// timeout is used.
 func NewHTTPStagingBackend(ingestURL, connectorName string, httpClient *http.Client) *HTTPStagingBackend {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &HTTPStagingBackend{
 		ingestURL:     ingestURL,
@@ -58,15 +53,11 @@ func (h *HTTPStagingBackend) SetConfigIdentity(ci *ConfigIdentity) {
 // NewItem creates a StagingItem whose Commit() POSTs to the ingest endpoint
 // instead of writing to the filesystem.
 func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
-	buf := &contentBuffer{}
-
 	si := &StagingItem{
 		opts:           opts,
 		configIdentity: h.configIdentity,
 	}
 
-	// Set up a temp dir for content file operations (WriteContent/ContentWriter
-	// use si.dir). We create a temp dir lazily on first write.
 	tmpDir, err := os.MkdirTemp("", "glovebox-http-*")
 	if err != nil {
 		return nil, fmt.Errorf("create http backend tmp dir: %w", err)
@@ -74,52 +65,20 @@ func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
 	si.dir = tmpDir
 
 	si.commitFunc = func() error {
-		return h.commitHTTP(si, buf, tmpDir)
+		return h.commitHTTP(si, tmpDir)
 	}
 
 	return si, nil
 }
 
 // commitHTTP builds metadata, validates it, reads content from the staging
-// item's directory, and POSTs the multipart request with retries.
-func (h *HTTPStagingBackend) commitHTTP(si *StagingItem, buf *contentBuffer, tmpDir string) error {
+// item's temp directory, and POSTs the multipart request with retries.
+func (h *HTTPStagingBackend) commitHTTP(si *StagingItem, tmpDir string) error {
 	defer os.RemoveAll(tmpDir)
 
-	// Build metadata (same logic as filesystem Commit).
-	meta := staging.ItemMetadata{
-		Source:           si.opts.Source,
-		Sender:           si.opts.Sender,
-		Subject:          staging.StripSubjectControlChars(si.opts.Subject),
-		Timestamp:        si.opts.Timestamp,
-		DestinationAgent: si.opts.DestinationAgent,
-		ContentType:      si.opts.ContentType,
-		Ordered:          si.opts.Ordered,
-		AuthFailure:      si.opts.AuthFailure,
-	}
-
-	mergedTags := mergeTags(si.opts.RuleTags, si.opts.Tags)
-	if len(mergedTags) > 0 {
-		meta.Tags = mergedTags
-	}
-
-	mergedIdentity := MergeIdentity(si.configIdentity, si.opts.Identity)
-	if mergedIdentity != nil {
-		meta.Identity = &staging.ItemIdentity{
-			AccountID:  mergedIdentity.AccountID,
-			Provider:   mergedIdentity.Provider,
-			AuthMethod: mergedIdentity.AuthMethod,
-			Scopes:     mergedIdentity.Scopes,
-			Tenant:     mergedIdentity.Tenant,
-		}
-	}
-
-	// Validate metadata.
-	if meta.DestinationAgent == "" {
-		return fmt.Errorf("metadata validation: destination_agent is required")
-	}
-	allowlist := []string{meta.DestinationAgent}
-	if errs := staging.Validate(meta, allowlist); len(errs) > 0 {
-		return fmt.Errorf("metadata validation: %v", errs)
+	meta, err := si.buildMetadata()
+	if err != nil {
+		return err
 	}
 
 	metaJSON, err := json.Marshal(meta)
@@ -127,17 +86,20 @@ func (h *HTTPStagingBackend) commitHTTP(si *StagingItem, buf *contentBuffer, tmp
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	// Read content from the content.raw file that WriteContent wrote to.
 	contentPath := si.dir + "/content.raw"
 	contentData, err := os.ReadFile(contentPath)
 	if err != nil {
-		// No content written -- use empty content.
 		contentData = nil
 	}
 
-	_ = buf // buf is unused; content is read from the temp file
-
 	return h.postWithRetry(metaJSON, contentData)
+}
+
+// drainAndClose reads remaining bytes from the response body and closes it,
+// allowing HTTP connection reuse.
+func drainAndClose(body io.ReadCloser) {
+	io.Copy(io.Discard, body)
+	body.Close()
 }
 
 // postWithRetry sends the multipart request and retries on transient errors.
@@ -166,7 +128,7 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 			lastErr = fmt.Errorf("http request failed: %w", err)
 			continue
 		}
-		resp.Body.Close()
+		drainAndClose(resp.Body)
 
 		switch {
 		case resp.StatusCode == http.StatusAccepted:
@@ -176,13 +138,8 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 		case resp.StatusCode == http.StatusTooManyRequests:
 			lastErr = fmt.Errorf("ingest rate limited (429)")
 			if ra := parseRetryAfter(resp.Header.Get("Retry-After")); ra > 0 {
-				// Override normal backoff with server-requested delay.
-				// Subtract the backoff we would have already slept (we haven't yet
-				// for the next iteration). We handle this by sleeping the difference
-				// now and skipping the next iteration's backoff.
 				h.sleep(ra)
-				// Do the retry immediately (skip the built-in backoff).
-				attempt++ // consume one extra attempt slot
+				attempt++
 				if attempt > h.retryMax {
 					break
 				}
@@ -203,7 +160,7 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 					lastErr = fmt.Errorf("http request failed: %w", rErr)
 					continue
 				}
-				retryResp.Body.Close()
+				drainAndClose(retryResp.Body)
 
 				if retryResp.StatusCode == http.StatusAccepted {
 					return nil
@@ -232,7 +189,6 @@ func (h *HTTPStagingBackend) buildMultipart(metaJSON, content []byte) (*bytes.Bu
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 
-	// metadata part as application/json
 	metaHeader := make(textproto.MIMEHeader)
 	metaHeader.Set("Content-Disposition", `form-data; name="metadata"`)
 	metaHeader.Set("Content-Type", "application/json")
@@ -244,7 +200,6 @@ func (h *HTTPStagingBackend) buildMultipart(metaJSON, content []byte) (*bytes.Bu
 		return nil, "", err
 	}
 
-	// content part as application/octet-stream
 	contentHeader := make(textproto.MIMEHeader)
 	contentHeader.Set("Content-Disposition", `form-data; name="content"; filename="content.raw"`)
 	contentHeader.Set("Content-Type", "application/octet-stream")
@@ -269,8 +224,7 @@ func (h *HTTPStagingBackend) backoffDuration(attempt int) time.Duration {
 	base := h.retryBase
 	shift := time.Duration(1) << uint(attempt)
 	d := base * shift
-	// Full jitter: multiply by random factor in [0.5, 1.5)
-	jitter := 0.5 + rand.Float64() // [0.5, 1.5)
+	jitter := 0.5 + rand.Float64()
 	return time.Duration(float64(d) * jitter)
 }
 
@@ -285,11 +239,9 @@ func parseRetryAfter(val string) time.Duration {
 	if val == "" {
 		return 0
 	}
-	// Try as seconds first.
 	if secs, err := strconv.Atoi(val); err == nil && secs > 0 {
 		return time.Duration(secs) * time.Second
 	}
-	// Try as HTTP-date.
 	if t, err := http.ParseTime(val); err == nil {
 		d := time.Until(t)
 		if d > 0 {
@@ -297,17 +249,4 @@ func parseRetryAfter(val string) time.Duration {
 		}
 	}
 	return 0
-}
-
-// contentBuffer is a placeholder for tracking content writes. In the HTTP
-// backend, content is written to the StagingItem's temp dir via the standard
-// WriteContent/ContentWriter methods, then read back at Commit time.
-type contentBuffer struct{}
-
-// Ensure io.Writer conformance is not needed; content flows through StagingItem's
-// existing file-based WriteContent.
-var _ io.Writer = (*contentBuffer)(nil)
-
-func (cb *contentBuffer) Write(p []byte) (int, error) {
-	return len(p), nil
 }

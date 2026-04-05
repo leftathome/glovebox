@@ -89,12 +89,9 @@ func (si *StagingItem) contentFile() (*os.File, error) {
 	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 }
 
-func (si *StagingItem) Commit() error {
-	if si.commitFunc != nil {
-		return si.commitFunc()
-	}
-
-	// Build metadata using the shared type for consistent JSON keys
+// buildMetadata constructs and validates ItemMetadata from the staging item's
+// options, merging tags and identity. Used by both filesystem and HTTP backends.
+func (si *StagingItem) buildMetadata() (staging.ItemMetadata, error) {
 	meta := staging.ItemMetadata{
 		Source:           si.opts.Source,
 		Sender:           si.opts.Sender,
@@ -106,13 +103,11 @@ func (si *StagingItem) Commit() error {
 		AuthFailure:      si.opts.AuthFailure,
 	}
 
-	// Merge RuleTags with Tags (per-item Tags win on conflict).
 	mergedTags := mergeTags(si.opts.RuleTags, si.opts.Tags)
 	if len(mergedTags) > 0 {
 		meta.Tags = mergedTags
 	}
 
-	// Merge config-level identity with per-item identity.
 	mergedIdentity := MergeIdentity(si.configIdentity, si.opts.Identity)
 	if mergedIdentity != nil {
 		meta.Identity = &staging.ItemIdentity{
@@ -124,16 +119,26 @@ func (si *StagingItem) Commit() error {
 		}
 	}
 
-	// Validate using shared validation. Pass destination as its own allowlist
-	// so the allowlist check passes -- glovebox does the real allowlist check.
-	allowlist := []string{meta.DestinationAgent}
 	if meta.DestinationAgent == "" {
-		os.RemoveAll(si.dir)
-		return fmt.Errorf("metadata validation: destination_agent is required")
+		return staging.ItemMetadata{}, fmt.Errorf("metadata validation: destination_agent is required")
 	}
+	allowlist := []string{meta.DestinationAgent}
 	if errs := staging.Validate(meta, allowlist); len(errs) > 0 {
+		return staging.ItemMetadata{}, fmt.Errorf("metadata validation: %v", errs)
+	}
+
+	return meta, nil
+}
+
+func (si *StagingItem) Commit() error {
+	if si.commitFunc != nil {
+		return si.commitFunc()
+	}
+
+	meta, err := si.buildMetadata()
+	if err != nil {
 		os.RemoveAll(si.dir)
-		return fmt.Errorf("metadata validation: %v", errs)
+		return err
 	}
 
 	data, err := json.Marshal(meta)

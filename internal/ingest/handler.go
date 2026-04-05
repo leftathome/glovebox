@@ -42,6 +42,12 @@ func (h *Handler) SetReady() {
 	h.ready.Store(true)
 }
 
+// DecrementQueue decrements the backpressure counter when the scanner watcher
+// dispatches an item from the staging directory to the scan worker pool.
+func (h *Handler) DecrementQueue() {
+	h.queueDepth.Add(-1)
+}
+
 // InitQueueDepth counts existing non-hidden directories in stagingDir and
 // removes the .ingest-tmp/ directory if it exists (orphan cleanup).
 func (h *Handler) InitQueueDepth() error {
