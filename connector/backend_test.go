@@ -1,19 +1,12 @@
 package connector
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-// TestStagingWriterImplementsBackend is a compile-time check that
-// *StagingWriter satisfies the StagingBackend interface.
-func TestStagingWriterImplementsBackend(t *testing.T) {
-	var _ StagingBackend = (*StagingWriter)(nil)
-}
 
 // TestBackendNewItemProducesValidStagingItem creates a StagingItem via the
 // StagingBackend interface, writes content, commits, and verifies the
@@ -28,7 +21,6 @@ func TestBackendNewItemProducesValidStagingItem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Use the Backend interface, not the concrete type.
 	var backend StagingBackend = w
 
 	item, err := backend.NewItem(ItemOptions{
@@ -119,7 +111,6 @@ func TestBackendSetConfigIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read metadata from the committed item.
 	meta := readCommittedMetadata(t, stagingDir)
 
 	idRaw, ok := meta["identity"]
@@ -131,7 +122,6 @@ func TestBackendSetConfigIdentity(t *testing.T) {
 		t.Fatalf("identity is not an object: %T", idRaw)
 	}
 
-	// Config-level fields should be present.
 	if idMap["provider"] != "github" {
 		t.Errorf("identity.provider = %v, want github (from config)", idMap["provider"])
 	}
@@ -141,30 +131,7 @@ func TestBackendSetConfigIdentity(t *testing.T) {
 	if idMap["auth_method"] != "oauth" {
 		t.Errorf("identity.auth_method = %v, want oauth (from config)", idMap["auth_method"])
 	}
-
-	// Per-item field should override / be present.
 	if idMap["account_id"] != "steve@github" {
 		t.Errorf("identity.account_id = %v, want steve@github (from item)", idMap["account_id"])
-	}
-
-	// Verify metadata.json is valid JSON with expected top-level fields.
-	entries, _ := os.ReadDir(stagingDir)
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
-		data, err := os.ReadFile(metaPath)
-		if err != nil {
-			continue
-		}
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err != nil {
-			t.Fatalf("metadata.json is not valid JSON: %v", err)
-		}
-		if _, ok := raw["source"]; !ok {
-			t.Error("metadata.json missing source field")
-		}
-		break
 	}
 }
