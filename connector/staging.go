@@ -56,6 +56,7 @@ type StagingItem struct {
 	stagingDir     string
 	opts           ItemOptions
 	configIdentity *ConfigIdentity
+	commitFunc     func() error
 }
 
 func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
@@ -89,6 +90,10 @@ func (si *StagingItem) contentFile() (*os.File, error) {
 }
 
 func (si *StagingItem) Commit() error {
+	if si.commitFunc != nil {
+		return si.commitFunc()
+	}
+
 	// Build metadata using the shared type for consistent JSON keys
 	meta := staging.ItemMetadata{
 		Source:           si.opts.Source,
