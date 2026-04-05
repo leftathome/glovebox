@@ -19,7 +19,7 @@ It is **not** an OpenClaw agent. It has no LLM dependency in Phase 1, no tools, 
 These constraints are absolute and must hold across all code paths:
 
 - **The glovebox never modifies content.** It reads, assesses, and routes. Content arrives and leaves byte-identical.
-- **The glovebox has no network egress.** It operates on the local filesystem only. Enforced at the container/network level (Cilium NetworkPolicy in Phase 1, application firewall in Phase 2).
+- **The glovebox has no network egress.** It accepts inbound connections for content ingest (port 9091) and metrics (port 9090), but makes no outbound connections. Enforced at the container/network level (Cilium NetworkPolicy in Phase 1, application firewall in Phase 2). *(Amended by spec 08.)*
 - **The glovebox has no delete access to the audit log.** Append-only access is enforced at the filesystem permission level, not just by convention.
 - **No item reaches an agent workspace without being scanned.** There is no code path that bypasses the heuristic engine.
 
@@ -111,7 +111,9 @@ Connectors write to staging/
 
 ### 5.1 Directory Structure
 
-Connectors write each item as a subdirectory under `staging/`. To ensure atomic handoff, connectors MUST:
+In HTTP ingest mode (Kubernetes), the staging directory is written to by the scanner's ingest handler, not directly by connectors. The directory structure, readiness gate, and atomic handoff behavior are unchanged. In filesystem mode (macOS), connectors write directly as described below. *(Amended by spec 08.)*
+
+Connectors (or the ingest handler) write each item as a subdirectory under `staging/`. To ensure atomic handoff, the writer MUST:
 
 1. Write the item to a temporary directory outside `staging/` (e.g., `staging-tmp/`)
 2. Write `content.raw` first, then `metadata.json` last
@@ -461,7 +463,10 @@ Metrics:
 - `glovebox_items_processed_total` (counter, labels: verdict, destination, source)
 - `glovebox_processing_duration_seconds` (histogram, labels: source)
 - `glovebox_signals_triggered_total` (counter, labels: rule_name)
-- `glovebox_staging_queue_depth` (gauge)
+- `glovebox_items_received_total` (counter, labels: source, status) — items received via ingest or filesystem *(Added by spec 08)*
+- `glovebox_receive_duration_seconds` (histogram, labels: source) — time to receive + write to staging *(Added by spec 08)*
+- `glovebox_receive_bytes_total` (counter, labels: source) — content bytes received *(Added by spec 08)*
+- `glovebox_staging_queue_depth` (gauge) — uses atomic counter in HTTP mode, directory count in filesystem mode *(Amended by spec 08)*
 - `glovebox_quarantine_queue_depth` (gauge)
 - `glovebox_pending_items` (gauge, labels: source, destination_agent)
 - `glovebox_scan_workers_busy` (gauge)
@@ -518,7 +523,7 @@ Transient directories (`staging/`, `failed/`) are NOT backed up.
 
 On receiving SIGTERM:
 
-1. Stop accepting new items from the watcher
+1. Stop accepting new items from the watcher and the ingest endpoint (return 503). Complete all in-flight ingest writes before proceeding. *(Amended by spec 08.)*
 2. Wait for all in-flight scan workers to complete their current item (or timeout)
 3. Route all completed scan results
 4. Write final audit entries
