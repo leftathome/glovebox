@@ -1,11 +1,9 @@
 package ingest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -330,13 +328,3 @@ func TestMetricsNilSafe(t *testing.T) {
 	}
 }
 
-// TestMultipartBuildHelper is a compile guard: ensure buildMultipart still works.
-// (It is used by both handler_test.go and metrics_test.go.)
-func TestMultipartBuildHelper(t *testing.T) {
-	body := &bytes.Buffer{}
-	w := multipart.NewWriter(body)
-	w.Close()
-	if body.Len() == 0 {
-		t.Error("expected non-empty body from multipart writer")
-	}
-}
