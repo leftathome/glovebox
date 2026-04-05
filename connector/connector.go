@@ -38,7 +38,7 @@ type SetupFunc func(cc ConnectorContext) error
 
 type Options struct {
 	Name         string
-	StagingDir   string
+	StagingDir   string // required for filesystem mode; unused when GLOVEBOX_INGEST_URL is set
 	StateDir     string
 	ConfigFile   string
 	Connector    Connector

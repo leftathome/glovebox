@@ -1,22 +1,56 @@
 {{- if .Values.networkPolicy.enabled }}
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-glovebox
+  name: {{ include "glovebox.fullname" . }}
   labels:
-    app: glovebox
-    release: {{ .Release.Name }}
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
 spec:
   podSelector:
     matchLabels:
-      app: glovebox
-      release: {{ .Release.Name }}
+      {{- include "glovebox.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    {{- if .Values.config.ingest.enabled }}
+    # Ingest: connectors only
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: connector
+      ports:
+        - port: {{ .Values.config.ingest.port }}
+          protocol: TCP
+    {{- end }}
+    # Metrics: unrestricted
+    - ports:
+        - port: {{ .Values.metrics.port }}
+          protocol: TCP
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "glovebox.fullname" . }}-connectors
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "glovebox.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: connector
   policyTypes:
     - Egress
     - Ingress
   ingress:
     - ports:
-        - port: {{ .Values.metrics.port }}
+        - port: 8080
           protocol: TCP
-  egress: []
+  egress:
+    - {}  # connectors need outbound access to external APIs
 {{- end }}

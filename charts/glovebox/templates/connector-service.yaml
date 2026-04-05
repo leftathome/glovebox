@@ -6,9 +6,9 @@ kind: Service
 metadata:
   name: {{ include "glovebox.fullname" $ }}-{{ $name }}
   labels:
-    app: glovebox-connector
-    connector: {{ $name }}
-    release: {{ $.Release.Name }}
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: {{ $name }}
 spec:
   type: ClusterIP
   ports:
@@ -17,8 +17,9 @@ spec:
       protocol: TCP
       name: health
   selector:
-    app: glovebox-connector
-    connector: {{ $name }}
-    release: {{ $.Release.Name }}
+    app.kubernetes.io/name: {{ include "glovebox.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: {{ $name }}
 {{- end }}
 {{- end }}

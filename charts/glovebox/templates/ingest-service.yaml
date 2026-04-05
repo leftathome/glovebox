@@ -1,16 +1,18 @@
+{{- if .Values.config.ingest.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "glovebox.fullname" . }}-metrics
+  name: {{ include "glovebox.fullname" . }}-ingest
   labels:
     {{- include "glovebox.labels" . | nindent 4 }}
     app.kubernetes.io/component: scanner
 spec:
   type: ClusterIP
   ports:
-    - port: {{ .Values.metrics.servicePort }}
-      targetPort: metrics
+    - port: {{ .Values.config.ingest.port }}
+      targetPort: ingest
       protocol: TCP
-      name: metrics
+      name: ingest
   selector:
     {{- include "glovebox.selectorLabels" . | nindent 4 }}
+{{- end }}

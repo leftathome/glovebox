@@ -70,13 +70,13 @@ func Run(opts Options) {
 		os.Exit(1)
 	}
 
-	// Init staging writer
-	writer, err := NewStagingWriter(opts.StagingDir, opts.Name)
+	// Select staging backend
+	ingestURL := os.Getenv("GLOVEBOX_INGEST_URL")
+	backend, writer, err := selectBackend(opts.Name, ingestURL, opts.StagingDir, logger)
 	if err != nil {
-		logger.Error("init staging writer", "error", err)
+		logger.Error("backend selection failed", "error", err)
 		os.Exit(1)
 	}
-	writer.CleanOrphans()
 
 	// Init metrics
 	metrics, err := NewMetrics(opts.Name)
@@ -93,7 +93,7 @@ func Run(opts Options) {
 	if opts.Setup != nil {
 		if err := opts.Setup(ConnectorContext{
 			Writer:       writer,
-			Backend:      writer,
+			Backend:      backend,
 			Matcher:      matcher,
 			Metrics:      metrics,
 			FetchCounter: fetchCounter,
@@ -320,6 +320,27 @@ func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, r
 			}
 		}
 	}
+}
+
+// selectBackend chooses between HTTPStagingBackend and filesystem StagingWriter
+// based on the provided configuration. ingestURL takes precedence over stagingDir.
+// Returns (backend, writer, error) where writer is nil in HTTP mode.
+func selectBackend(name, ingestURL, stagingDir string, logger *slog.Logger) (StagingBackend, *StagingWriter, error) {
+	if ingestURL != "" {
+		backend := NewHTTPStagingBackend(ingestURL, name, &http.Client{Timeout: 30 * time.Second})
+		logger.Info("using HTTP ingest backend", "url", ingestURL)
+		return backend, nil, nil
+	}
+	if stagingDir != "" {
+		w, err := NewStagingWriter(stagingDir, name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("init staging writer: %w", err)
+		}
+		w.CleanOrphans()
+		logger.Info("using filesystem staging backend", "dir", stagingDir)
+		return w, w, nil
+	}
+	return nil, nil, fmt.Errorf("either GLOVEBOX_INGEST_URL or staging dir must be set")
 }
 
 func shutdown(server *http.Server, logger *slog.Logger) {

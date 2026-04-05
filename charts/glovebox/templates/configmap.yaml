@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-glovebox-config
+  name: {{ include "glovebox.fullname" . }}-config
   labels:
-    app: glovebox
-    release: {{ .Release.Name }}
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
 data:
   config.json: |
     {
@@ -21,7 +21,15 @@ data:
       "rules_file": "/etc/glovebox/rules.json",
       "scan_workers": {{ .Values.config.scanWorkers }},
       "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
-      "scan_chunk_size_bytes": {{ .Values.config.scanChunkSizeBytes }}
+      "scan_chunk_size_bytes": {{ .Values.config.scanChunkSizeBytes }},
+      "ingest": {
+        "enabled": {{ .Values.config.ingest.enabled }},
+        "port": {{ .Values.config.ingest.port | int }},
+        "max_body_bytes": {{ .Values.config.ingest.maxBodyBytes | int }},
+        "max_metadata_bytes": {{ .Values.config.ingest.maxMetadataBytes | int }},
+        "backpressure_threshold": {{ .Values.config.ingest.backpressureThreshold | int }},
+        "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }}
+      }
     }
   rules.json: |
-    {{- .Files.Get "rules.json" | default (.Files.Get "../../configs/default-rules.json") | nindent 4 }}
+    {{- .Files.Get "rules.json" | nindent 4 }}
