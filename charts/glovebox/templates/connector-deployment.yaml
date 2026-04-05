@@ -1,5 +1,6 @@
 {{- range $name, $connector := .Values.connectors }}
 {{- if $connector.enabled }}
+{{- $ingestMode := $connector.ingestMode | default "http" }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -47,8 +48,13 @@ spec:
               drop:
                 - ALL
           env:
+            {{- if eq $ingestMode "http" }}
+            - name: GLOVEBOX_INGEST_URL
+              value: "http://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.config.ingest.port }}/v1/ingest"
+            {{- else }}
             - name: GLOVEBOX_STAGING_DIR
               value: /data/glovebox/staging
+            {{- end }}
             - name: GLOVEBOX_STATE_DIR
               value: /state
             - name: GLOVEBOX_CONNECTOR_CONFIG
@@ -81,8 +87,10 @@ spec:
           resources:
             {{- toYaml $connector.resources | nindent 12 }}
           volumeMounts:
+            {{- if eq $ingestMode "filesystem" }}
             - name: staging
               mountPath: /data/glovebox/staging
+            {{- end }}
             - name: state
               mountPath: /state
             - name: config
@@ -101,9 +109,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if eq $ingestMode "filesystem" }}
         - name: staging
           persistentVolumeClaim:
             claimName: {{ $.Values.persistence.staging.existingClaim | default (printf "%s-staging" (include "glovebox.fullname" $)) }}
+        {{- end }}
         - name: state
           persistentVolumeClaim:
             claimName: {{ $connector.state.existingClaim | default (printf "%s-%s-state" (include "glovebox.fullname" $) $name) }}
