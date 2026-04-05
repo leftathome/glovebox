@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-05
+
+### Added
+
+- **HTTP ingest API** (spec 08): scanner accepts content items via POST
+  `/v1/ingest` on a dedicated port (9091), replacing the shared staging PVC
+  between connectors and the scanner. Connectors POST multipart
+  (metadata JSON + content bytes) instead of writing to a shared filesystem.
+  Eliminates RWX PVC requirement, co-location constraints, and fsGroup
+  permission issues in Kubernetes deployments.
+- `StagingBackend` interface: abstracts item delivery mechanism.
+  `StagingWriter` (filesystem) and `HTTPStagingBackend` (HTTP ingest) both
+  implement it. Backend selected automatically by `connector.Run` based on
+  `GLOVEBOX_INGEST_URL` (HTTP mode) or `GLOVEBOX_STAGING_DIR` (filesystem mode).
+- Ingest handler with atomic write (`.ingest-tmp/` rename), backpressure via
+  atomic counter (429 with Retry-After), startup readiness gate (503 until
+  initialized), strict multipart validation (reject missing/duplicate/unexpected
+  parts), configurable size limits (256KB metadata, 64MB body).
+- `HTTPStagingBackend` with exponential backoff + jitter retry on 429/5xx/network
+  errors. Honors Retry-After header. Returns PermanentError on 400/413.
+  `X-Glovebox-Connector` header on every request.
+- Unified receive metrics: `glovebox_items_received_total` (source, status),
+  `glovebox_receive_duration_seconds`, `glovebox_receive_bytes_total`,
+  `glovebox_staging_queue_depth` (atomic counter). `source` label threads
+  through entire pipeline for end-to-end traceability.
+- 5 integration tests proving full HTTP ingest pipeline (end-to-end, identity
+  merge, backpressure recovery, validation rejection, server restart).
+- Design specification: `docs/specs/08-ingest-api-design.md`
+
+### Changed
+
+- **Helm chart v0.3.0**: major overhaul
+  - Connectors default to HTTP ingest (`GLOVEBOX_INGEST_URL`); staging PVC mount
+    removed. Per-connector `ingestMode` toggle (default: `http`, option:
+    `filesystem`) for backward compatibility.
+  - New ingest Service (ClusterIP, port 9091) for scanner
+  - Scanner NetworkPolicy: port 9091 restricted to connector pods, port 9090
+    (metrics) unrestricted. Separate ports prevent NetworkPolicy bypass.
+  - Standard `app.kubernetes.io/*` labels on all resources
+  - `podSecurityContext` (runAsNonRoot, runAsUser, fsGroup) on all deployments
+  - `containerSecurityContext` (allowPrivilegeEscalation: false, drop ALL) on all containers
+  - ServiceAccount with `automountServiceAccountToken: false`
+  - `helm.sh/resource-policy: keep` on all PVCs (prevents data loss on uninstall)
+  - Configurable `accessMode` per PVC (staging defaults to ReadWriteMany for
+    filesystem mode, ReadWriteOnce sufficient for HTTP mode)
+  - `nodeSelector`, `affinity`, `tolerations` on scanner and all connectors
+    (connectors inherit from top-level values, overridable per-connector)
+  - Config checksum annotations for automatic rollout on ConfigMap changes
+  - Liveness/readiness probes on scanner deployment
+  - Startup probe on ingest port
+  - `nameOverride` / `fullnameOverride` support
+  - Consistent naming via `glovebox.fullname` helper across all resources
+  - `existingClaim` support for connector state PVCs
+  - Per-connector `imagePullPolicy` configuration
+  - Ingest config in scanner ConfigMap (port, size limits, backpressure threshold)
+  - Removed dead rules.json fallback path
+- `ConnectorContext.Writer` deprecated in favor of `ConnectorContext.Backend`
+- `connector_items_produced_total` metric deprecated (scanner-side
+  `glovebox_items_received_total` is the authoritative counter)
+- `StagingItem.Commit()` delegates to backend via `commitFunc` dispatch
+- Shared `buildMetadata()` method on `StagingItem` used by both filesystem
+  and HTTP backends (eliminates code duplication)
+- Chart version bumped to 0.3.0, appVersion to 0.2.3
+
+## [0.2.3] - 2026-04-05
+
+### Fixed
+
+- Add missing source files for Outlook, Teams, OneDrive connectors (v0.2.2
+  shipped test files without source code, causing `go vet` failures)
+- Teams test reading wrong filename (`content` instead of `content.raw`)
+
+## [0.2.2] - 2026-04-05 [BROKEN]
+
+> **This release is broken.** Use v0.2.3 instead.
+
+### Added
+
+- ClientCredentials token source for service-to-service OAuth
+- 6 new connectors: Notion, Semantic Scholar, arXiv, Steam, Hacker News, LinkedIn
+- YouTube comments (commentThreads API) and caption language metadata
+- Gmail connector (OAuth + MIME decoding)
+- Google Calendar connector (event polling with updatedMin checkpoint)
+- Google Drive connector (delta token change tracking)
+- Outlook mail connector (Microsoft Graph)
+- Teams messages connector (Microsoft Graph)
+- OneDrive activity connector (Microsoft Graph delta API)
+
+### Fixed
+
+- Redact API keys from Steam and YouTube error messages
+- staging-tmp path for container deployments
+- Helm: existingClaim support for all PVCs, bundled default rules
+
 ## [0.2.1] - 2026-04-01
 
 ### Added
