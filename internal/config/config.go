@@ -126,6 +126,16 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Ingest.BackpressureThreshold = n
 		}
 	}
+	if v := os.Getenv("GLOVEBOX_INGEST_MAX_METADATA_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Ingest.MaxMetadataBytes = n
+		}
+	}
+	if v := os.Getenv("GLOVEBOX_INGEST_REQUEST_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Ingest.RequestTimeoutSeconds = n
+		}
+	}
 }
 
 func (c *Config) Validate() error {
