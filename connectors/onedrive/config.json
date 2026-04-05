@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "match": "drive:changes",
+      "destination": "file-agent",
+      "tags": {
+        "source_type": "cloud_storage",
+        "priority": "normal"
+      }
+    }
+  ]
+}
