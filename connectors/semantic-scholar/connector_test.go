@@ -85,7 +85,7 @@ func countStagedItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -121,7 +121,7 @@ func TestPollFetchesPapers(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	foundTitle := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
@@ -256,7 +256,7 @@ func TestIdentityWithAPIKey(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
@@ -311,7 +311,7 @@ func TestIdentityWithoutAPIKey(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
@@ -388,7 +388,7 @@ func TestRuleTags(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true

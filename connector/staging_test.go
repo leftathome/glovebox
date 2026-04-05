@@ -71,7 +71,17 @@ func TestStagingWriter_MetadataSchema(t *testing.T) {
 	item.Commit()
 
 	entries, _ := os.ReadDir(stagingDir)
-	metaPath := filepath.Join(stagingDir, entries[0].Name(), "metadata.json")
+	var itemDir string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			itemDir = e.Name()
+			break
+		}
+	}
+	if itemDir == "" {
+		t.Fatal("no committed item directory found in staging")
+	}
+	metaPath := filepath.Join(stagingDir, itemDir, "metadata.json")
 	data, _ := os.ReadFile(metaPath)
 
 	var meta map[string]any
@@ -192,7 +202,17 @@ func TestStagingWriter_MultipleWriteContentAppends(t *testing.T) {
 	item.Commit()
 
 	entries, _ := os.ReadDir(stagingDir)
-	data, _ := os.ReadFile(filepath.Join(stagingDir, entries[0].Name(), "content.raw"))
+	var itemDir string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			itemDir = e.Name()
+			break
+		}
+	}
+	if itemDir == "" {
+		t.Fatal("no committed item directory found in staging")
+	}
+	data, _ := os.ReadFile(filepath.Join(stagingDir, itemDir, "content.raw"))
 	if string(data) != "part1part2" {
 		t.Errorf("content = %q, want part1part2", data)
 	}

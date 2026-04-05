@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -117,7 +118,7 @@ func countStagedItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -141,7 +142,7 @@ func readMetadata(t *testing.T, stagingDir string) []map[string]interface{} {
 	}
 	var metas []map[string]interface{}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")

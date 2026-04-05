@@ -34,7 +34,7 @@ type StagingWriter struct {
 }
 
 func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, error) {
-	tmpDir := filepath.Join(stagingDir+"-tmp", connectorName)
+	tmpDir := filepath.Join(stagingDir, ".tmp", connectorName)
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		return nil, fmt.Errorf("create staging tmp dir: %w", err)
 	}

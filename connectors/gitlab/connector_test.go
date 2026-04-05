@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,7 @@ func countStagedItems(t *testing.T, stagingDir string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
@@ -186,7 +187,7 @@ func TestIdentityInMetadata(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
@@ -264,7 +265,7 @@ func TestRuleTagsInMetadata(t *testing.T) {
 	entries, _ := os.ReadDir(stagingDir)
 	found := false
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		found = true
@@ -347,7 +348,7 @@ func TestContentIsJSONEventBody(t *testing.T) {
 
 	entries, _ := os.ReadDir(stagingDir)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
