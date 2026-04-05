@@ -44,6 +44,14 @@ func NewHTTPStagingBackend(ingestURL, connectorName string, httpClient *http.Cli
 	}
 }
 
+// WithRetry configures retry parameters for testing. It returns the backend
+// for method chaining.
+func (h *HTTPStagingBackend) WithRetry(max int, base time.Duration) *HTTPStagingBackend {
+	h.retryMax = max
+	h.retryBase = base
+	return h
+}
+
 // SetConfigIdentity sets the config-level identity used as the base for
 // identity merging at Commit() time.
 func (h *HTTPStagingBackend) SetConfigIdentity(ci *ConfigIdentity) {
