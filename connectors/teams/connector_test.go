@@ -163,7 +163,7 @@ func TestHTMLBodyDecoded(t *testing.T) {
 			continue
 		}
 		found = true
-		contentPath := filepath.Join(stagingDir, e.Name(), "content")
+		contentPath := filepath.Join(stagingDir, e.Name(), "content.raw")
 		data, err := os.ReadFile(contentPath)
 		if err != nil {
 			t.Fatalf("read content: %v", err)

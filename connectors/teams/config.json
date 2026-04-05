@@ -1,0 +1,7 @@
+{
+  "channels": [],
+  "rules": [
+    {"match": "channel:*", "destination": "messaging"},
+    {"match": "*", "destination": "general"}
+  ]
+}
