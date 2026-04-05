@@ -93,6 +93,7 @@ func Run(opts Options) {
 	if opts.Setup != nil {
 		if err := opts.Setup(ConnectorContext{
 			Writer:       writer,
+			Backend:      writer,
 			Matcher:      matcher,
 			Metrics:      metrics,
 			FetchCounter: fetchCounter,

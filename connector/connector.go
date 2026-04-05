@@ -22,7 +22,8 @@ type Listener interface {
 // ConnectorContext is passed to connectors during setup, providing
 // framework-initialized resources.
 type ConnectorContext struct {
-	Writer       *StagingWriter
+	Writer       *StagingWriter // concrete writer -- keep for backward compat
+	Backend      StagingBackend // preferred access path for new code
 	Matcher      *RuleMatcher
 	Metrics      *Metrics
 	FetchCounter *FetchCounter

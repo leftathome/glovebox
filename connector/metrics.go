@@ -50,6 +50,8 @@ func NewMetrics(connectorName string) (*Metrics, error) {
 		return nil, err
 	}
 
+	// Deprecated: connector_items_produced_total will be removed when
+	// scanner-side receive metrics are implemented.
 	m.itemsProduced, err = meter.Int64Counter("connector_items_produced_total",
 		metric.WithDescription("Total items produced by a connector"))
 	if err != nil {
@@ -113,6 +115,7 @@ func (m *Metrics) RecordPollDuration(d time.Duration) {
 }
 
 // RecordItemProduced increments the connector_items_produced_total counter.
+// Deprecated: will be removed when scanner-side receive metrics are implemented.
 func (m *Metrics) RecordItemProduced(destination string) {
 	m.itemsProduced.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("connector", m.connectorName),

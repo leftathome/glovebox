@@ -2,9 +2,19 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 )
+
+type IngestConfig struct {
+	Enabled               bool  `json:"enabled"`
+	Port                  int   `json:"port"`
+	MaxBodyBytes          int64 `json:"max_body_bytes"`
+	MaxMetadataBytes      int64 `json:"max_metadata_bytes"`
+	BackpressureThreshold int   `json:"backpressure_threshold"`
+	RequestTimeoutSeconds int   `json:"request_timeout_seconds"`
+}
 
 type Config struct {
 	StagingDir          string   `json:"staging_dir"`
@@ -20,7 +30,8 @@ type Config struct {
 	RulesFile           string   `json:"rules_file"`
 	ScanWorkers         int      `json:"scan_workers"`
 	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
-	ScanChunkSizeBytes  int      `json:"scan_chunk_size_bytes"`
+	ScanChunkSizeBytes  int          `json:"scan_chunk_size_bytes"`
+	Ingest              IngestConfig  `json:"ingest"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -31,6 +42,14 @@ func LoadConfig(path string) (Config, error) {
 		ScanWorkers:         4,
 		ScanTimeoutSeconds:  30,
 		ScanChunkSizeBytes:  262144,
+		Ingest: IngestConfig{
+			Enabled:               true,
+			Port:                  9091,
+			MaxBodyBytes:          67108864,
+			MaxMetadataBytes:      262144,
+			BackpressureThreshold: 100,
+			RequestTimeoutSeconds: 60,
+		},
 	}
 
 	if path != "" {
@@ -87,5 +106,41 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.ScanTimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("GLOVEBOX_INGEST_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Ingest.Enabled = b
+		}
+	}
+	if v := os.Getenv("GLOVEBOX_INGEST_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Ingest.Port = n
+		}
+	}
+	if v := os.Getenv("GLOVEBOX_INGEST_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Ingest.MaxBodyBytes = n
+		}
+	}
+	if v := os.Getenv("GLOVEBOX_INGEST_BACKPRESSURE_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Ingest.BackpressureThreshold = n
+		}
+	}
+}
+
+func (c *Config) Validate() error {
+	if !c.Ingest.Enabled {
+		return nil
+	}
+	if c.Ingest.Port <= 0 {
+		return fmt.Errorf("ingest.port must be > 0 when ingest is enabled, got %d", c.Ingest.Port)
+	}
+	if c.Ingest.MaxBodyBytes <= 0 {
+		return fmt.Errorf("ingest.max_body_bytes must be > 0 when ingest is enabled, got %d", c.Ingest.MaxBodyBytes)
+	}
+	if c.Ingest.BackpressureThreshold <= 0 {
+		return fmt.Errorf("ingest.backpressure_threshold must be > 0 when ingest is enabled, got %d", c.Ingest.BackpressureThreshold)
+	}
+	return nil
 }
 
