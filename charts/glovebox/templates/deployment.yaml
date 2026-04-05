@@ -1,32 +1,36 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-glovebox
+  name: {{ include "glovebox.fullname" . }}
   labels:
-    app: glovebox
-    release: {{ .Release.Name }}
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: glovebox
-      release: {{ .Release.Name }}
+      {{- include "glovebox.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: glovebox
-        release: {{ .Release.Name }}
-      {{- if .Values.metrics.annotations }}
+        {{- include "glovebox.selectorLabels" . | nindent 8 }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.annotations }}
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.metrics.port }}"
         prometheus.io/path: "/metrics"
-      {{- end }}
+        {{- end }}
     spec:
+      serviceAccountName: {{ include "glovebox.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: glovebox
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           args:
             - --config
             - /etc/glovebox/config.json
@@ -34,6 +38,29 @@ spec:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
+            {{- if .Values.config.ingest.enabled }}
+            - name: ingest
+              containerPort: {{ .Values.config.ingest.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          {{- if .Values.config.ingest.enabled }}
+          startupProbe:
+            tcpSocket:
+              port: ingest
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -52,25 +79,37 @@ spec:
               mountPath: {{ .Values.config.agentsDir }}
             - name: shared
               mountPath: {{ .Values.config.sharedDir }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: config
           configMap:
-            name: {{ .Release.Name }}-glovebox-config
+            name: {{ include "glovebox.fullname" . }}-config
         - name: staging
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.staging.existingClaim | default (printf "%s-glovebox-staging" .Release.Name) }}
+            claimName: {{ .Values.persistence.staging.existingClaim | default (printf "%s-staging" (include "glovebox.fullname" .)) }}
         - name: quarantine
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.quarantine.existingClaim | default (printf "%s-glovebox-quarantine" .Release.Name) }}
+            claimName: {{ .Values.persistence.quarantine.existingClaim | default (printf "%s-quarantine" (include "glovebox.fullname" .)) }}
         - name: audit
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.audit.existingClaim | default (printf "%s-glovebox-audit" .Release.Name) }}
+            claimName: {{ .Values.persistence.audit.existingClaim | default (printf "%s-audit" (include "glovebox.fullname" .)) }}
         - name: failed
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.failed.existingClaim | default (printf "%s-glovebox-failed" .Release.Name) }}
+            claimName: {{ .Values.persistence.failed.existingClaim | default (printf "%s-failed" (include "glovebox.fullname" .)) }}
         - name: agents
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.agents.existingClaim | default (printf "%s-glovebox-agents" .Release.Name) }}
+            claimName: {{ .Values.persistence.agents.existingClaim | default (printf "%s-agents" (include "glovebox.fullname" .)) }}
         - name: shared
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.shared.existingClaim | default (printf "%s-glovebox-shared" .Release.Name) }}
+            claimName: {{ .Values.persistence.shared.existingClaim | default (printf "%s-shared" (include "glovebox.fullname" .)) }}

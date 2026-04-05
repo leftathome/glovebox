@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/leftathome/glovebox/internal/config"
 	"github.com/leftathome/glovebox/internal/staging"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Handler serves the POST /v1/ingest endpoint for the scanner's HTTP ingest API.
@@ -26,6 +29,13 @@ type Handler struct {
 	allowlist  []string
 	queueDepth atomic.Int64
 	ready      atomic.Bool
+	metrics    *IngestMetrics
+}
+
+// SetMetrics attaches ingest metrics to the handler. If not called (or called
+// with nil), the handler operates without recording metrics.
+func (h *Handler) SetMetrics(m *IngestMetrics) {
+	h.metrics = m
 }
 
 // NewHandler creates a new ingest handler.
@@ -72,8 +82,42 @@ func (h *Handler) InitQueueDepth() error {
 	return nil
 }
 
+// recordReceived increments the items_received counter if metrics are wired.
+func (h *Handler) recordReceived(source, status string) {
+	if h.metrics == nil {
+		return
+	}
+	h.metrics.itemsReceived.Add(context.Background(), 1,
+		metric.WithAttributes(
+			attribute.String("source", source),
+			attribute.String("status", status),
+		))
+}
+
+// recordAcceptMetrics records duration, bytes, and staging depth on a
+// successful ingest (202).
+func (h *Handler) recordAcceptMetrics(source string, contentSize int64, elapsed time.Duration) {
+	if h.metrics == nil {
+		return
+	}
+	ctx := context.Background()
+	srcAttr := metric.WithAttributes(attribute.String("source", source))
+	h.metrics.receiveDuration.Record(ctx, elapsed.Seconds(), srcAttr)
+	h.metrics.receiveBytes.Add(ctx, contentSize, srcAttr)
+}
+
+// recordStagingDepth records the current staging queue depth gauge.
+func (h *Handler) recordStagingDepth() {
+	if h.metrics == nil {
+		return
+	}
+	h.metrics.stagingDepth.Record(context.Background(), h.queueDepth.Load())
+}
+
 // ServeHTTP handles ingest requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	// Step 1: readiness gate
 	if !h.ready.Load() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -94,6 +138,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 4: backpressure check
 	if h.queueDepth.Load() >= int64(h.config.BackpressureThreshold) {
+		h.recordReceived("", "throttled")
 		w.Header().Set("Retry-After", "5")
 		writeJSON(w, http.StatusTooManyRequests, map[string]interface{}{
 			"status":              "backpressure",
@@ -108,6 +153,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		h.recordReceived("", "rejected")
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"status":  "error",
 			"message": "expected multipart form data",
@@ -131,12 +177,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// Could be a max bytes error
 			if isMaxBytesError(err) {
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 					"status":  "error",
 					"message": "request body too large",
 				})
 				return
 			}
+			h.recordReceived("", "rejected")
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("parse multipart: %v", err),
@@ -151,6 +199,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "metadata":
 			if hasMetadata {
 				part.Close()
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"status":  "error",
 					"message": "duplicate metadata part",
@@ -162,6 +211,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			parsedCT, _, _ := mime.ParseMediaType(partCT)
 			if parsedCT != "application/json" {
 				part.Close()
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"status":  "error",
 					"message": fmt.Sprintf("metadata part must be application/json, got %q", partCT),
@@ -174,12 +224,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				part.Close()
 				if isMaxBytesError(err) {
+					h.recordReceived("", "rejected")
 					writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 						"status":  "error",
 						"message": "request body too large",
 					})
 					return
 				}
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"status":  "error",
 					"message": fmt.Sprintf("read metadata: %v", err),
@@ -188,6 +240,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if int64(len(metadataBytes)) > h.config.MaxMetadataBytes {
 				part.Close()
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 					"status":  "error",
 					"message": "metadata too large",
@@ -200,6 +253,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "content":
 			if hasContent {
 				part.Close()
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"status":  "error",
 					"message": "duplicate content part",
@@ -210,12 +264,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				part.Close()
 				if isMaxBytesError(err) {
+					h.recordReceived("", "rejected")
 					writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 						"status":  "error",
 						"message": "request body too large",
 					})
 					return
 				}
+				h.recordReceived("", "rejected")
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"status":  "error",
 					"message": fmt.Sprintf("read content: %v", err),
@@ -227,6 +283,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		default:
 			part.Close()
+			h.recordReceived("", "rejected")
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("unexpected part: %q", partName),
@@ -236,6 +293,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !hasMetadata {
+		h.recordReceived("", "rejected")
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"status":  "error",
 			"message": "missing metadata part",
@@ -243,6 +301,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasContent {
+		h.recordReceived("", "rejected")
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"status":  "error",
 			"message": "missing content part",
@@ -253,6 +312,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 7: parse and validate metadata
 	meta, err := staging.ParseMetadata(bytes.NewReader(metadataBytes))
 	if err != nil {
+		h.recordReceived("", "rejected")
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"status":  "error",
 			"message": fmt.Sprintf("invalid metadata JSON: %v", err),
@@ -265,6 +325,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i, e := range errs {
 			msgs[i] = e.Error()
 		}
+		h.recordReceived(meta.Source, "rejected")
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"status":  "error",
 			"message": fmt.Sprintf("metadata validation failed: %s", strings.Join(msgs, "; ")),
@@ -331,8 +392,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 12: increment queue depth
 	h.queueDepth.Add(1)
+	h.recordStagingDepth()
 
-	// Step 13: return 202
+	// Step 13: record metrics and return 202
+	elapsed := time.Since(start)
+	h.recordReceived(meta.Source, "accepted")
+	h.recordAcceptMetrics(meta.Source, int64(len(contentBytes)), elapsed)
+
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status":  "accepted",
 		"item_id": itemName,

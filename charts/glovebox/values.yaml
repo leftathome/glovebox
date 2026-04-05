@@ -1,8 +1,11 @@
+nameOverride: ""
+fullnameOverride: ""
+
 replicaCount: 1
 
 image:
-  repository: glovebox
-  tag: latest
+  repository: ghcr.io/leftathome/glovebox
+  tag: ""  # defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
 resources:
@@ -12,6 +15,27 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
+
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
 
 config:
   stagingDir: /data/glovebox/staging
@@ -31,32 +55,45 @@ config:
     - media
     - calendar
     - itinerary
+  ingest:
+    enabled: true
+    port: 9091
+    maxBodyBytes: 67108864
+    maxMetadataBytes: 262144
+    backpressureThreshold: 100
+    requestTimeoutSeconds: 60
 
 persistence:
   staging:
     size: 1Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteMany  # shared between scanner + connectors
   quarantine:
     size: 5Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteOnce
   audit:
     size: 10Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteOnce
   failed:
     size: 5Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteOnce
   agents:
     size: 5Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteOnce
   shared:
     size: 1Gi
     storageClass: ""
     existingClaim: ""
+    accessMode: ReadWriteOnce
 
 metrics:
   port: 9090
@@ -76,6 +113,7 @@ connectors:
     image:
       repository: ghcr.io/leftathome/glovebox-rss
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -89,12 +127,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   imap:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-imap
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -108,12 +151,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   github:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-github
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -127,12 +175,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   gitlab:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-gitlab
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -146,12 +199,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   jira:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-jira
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -165,12 +223,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   trello:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-trello
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -184,12 +247,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   linkedin:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-linkedin
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -203,12 +271,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   meta:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-meta
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -222,12 +295,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   bluesky:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-bluesky
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -241,12 +319,17 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
 
   x:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-x
       tag: latest
+      pullPolicy: IfNotPresent
     config: {}
     env: {}
     secrets: ""
@@ -260,3 +343,7 @@ connectors:
     state:
       size: 1Gi
       storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []

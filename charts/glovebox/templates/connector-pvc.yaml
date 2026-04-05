@@ -1,14 +1,16 @@
 {{- range $name, $connector := .Values.connectors }}
-{{- if $connector.enabled }}
+{{- if and $connector.enabled (not $connector.state.existingClaim) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "glovebox.fullname" $ }}-{{ $name }}-state
   labels:
-    app: glovebox-connector
-    connector: {{ $name }}
-    release: {{ $.Release.Name }}
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: {{ $name }}
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

@@ -3,18 +3,17 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ .Release.Name }}-glovebox
+  name: {{ include "glovebox.fullname" . }}
   labels:
-    app: glovebox
-    release: {{ .Release.Name }}
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
     {{- with .Values.metrics.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      app: glovebox
-      release: {{ .Release.Name }}
+      {{- include "glovebox.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}
@@ -27,18 +26,19 @@ kind: ServiceMonitor
 metadata:
   name: {{ include "glovebox.fullname" $ }}-{{ $name }}
   labels:
-    app: glovebox-connector
-    connector: {{ $name }}
-    release: {{ $.Release.Name }}
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: {{ $name }}
     {{- with $.Values.metrics.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      app: glovebox-connector
-      connector: {{ $name }}
-      release: {{ $.Release.Name }}
+      app.kubernetes.io/name: {{ include "glovebox.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: connector
+      glovebox.io/connector: {{ $name }}
   endpoints:
     - port: health
       interval: {{ $.Values.metrics.serviceMonitor.interval }}
