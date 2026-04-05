@@ -16,11 +16,12 @@ type IngestMetrics struct {
 }
 
 // NewIngestMetrics creates ingest metrics using the given MeterProvider.
-// If provider is nil, it creates a no-op set of metrics that will not
-// record anything.
+// provider must not be nil.
 func NewIngestMetrics(provider *sdkmetric.MeterProvider) (*IngestMetrics, error) {
-	var meterOpt []metric.MeterOption
-	meter := provider.Meter("glovebox.ingest", meterOpt...)
+	if provider == nil {
+		return nil, fmt.Errorf("MeterProvider must not be nil")
+	}
+	meter := provider.Meter("glovebox.ingest")
 
 	m := &IngestMetrics{}
 	var err error

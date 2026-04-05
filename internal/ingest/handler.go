@@ -118,7 +118,7 @@ func (h *Handler) recordStagingDepth() {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Step 1: readiness gate
+	// Readiness gate
 	if !h.ready.Load() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"status":  "unavailable",
@@ -127,7 +127,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 2: method check
+	// Method check
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
 			"status":  "error",
@@ -136,7 +136,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 4: backpressure check
+	// Backpressure check
 	if h.queueDepth.Load() >= int64(h.config.BackpressureThreshold) {
 		h.recordReceived("", "throttled")
 		w.Header().Set("Retry-After", "5")
@@ -147,7 +147,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 5: parse multipart form with body size limit
+	// Parse multipart form with body size limit
 	limitedBody := http.MaxBytesReader(w, r.Body, h.config.MaxBodyBytes)
 
 	contentType := r.Header.Get("Content-Type")
@@ -163,7 +163,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	reader := multipart.NewReader(limitedBody, params["boundary"])
 
-	// Step 6: read exactly 2 parts -- metadata and content
+	// Read exactly 2 parts: metadata and content
 	var metadataBytes []byte
 	var contentBytes []byte
 	var hasMetadata, hasContent bool
@@ -309,7 +309,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 7: parse and validate metadata
+	// Parse and validate metadata
 	meta, err := staging.ParseMetadata(bytes.NewReader(metadataBytes))
 	if err != nil {
 		h.recordReceived("", "rejected")
@@ -333,7 +333,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 8: create temp dir
+	// Create temp dir for atomic write
 	itemName := fmt.Sprintf("%s-%s",
 		time.Now().UTC().Format("20060102-150405"),
 		uuid.New().String()[:8])
@@ -359,7 +359,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		os.RemoveAll(tmpItemDir)
 	}
 
-	// Step 9: write content.raw
+	// Write content.raw
 	if err := os.WriteFile(filepath.Join(tmpItemDir, "content.raw"), contentBytes, 0644); err != nil {
 		cleanup()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -369,7 +369,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 10: write metadata.json
+	// Write metadata.json
 	if err := os.WriteFile(filepath.Join(tmpItemDir, "metadata.json"), metadataBytes, 0644); err != nil {
 		cleanup()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -379,7 +379,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 11: atomic rename
+	// Atomic rename into staging dir
 	destDir := filepath.Join(h.stagingDir, itemName)
 	if err := os.Rename(tmpItemDir, destDir); err != nil {
 		cleanup()
@@ -390,11 +390,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 12: increment queue depth
+	// Increment backpressure counter
 	h.queueDepth.Add(1)
 	h.recordStagingDepth()
 
-	// Step 13: record metrics and return 202
+	// Record metrics and return 202
 	elapsed := time.Since(start)
 	h.recordReceived(meta.Source, "accepted")
 	h.recordAcceptMetrics(meta.Source, int64(len(contentBytes)), elapsed)
