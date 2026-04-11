@@ -20,12 +20,18 @@ import (
 	"github.com/leftathome/glovebox/internal/config"
 	"github.com/leftathome/glovebox/internal/detector"
 	"github.com/leftathome/glovebox/internal/engine"
+	"github.com/leftathome/glovebox/internal/ingest"
 	gloveboxmetrics "github.com/leftathome/glovebox/internal/metrics"
 	"github.com/leftathome/glovebox/internal/pipeline"
 	"github.com/leftathome/glovebox/internal/routing"
 	"github.com/leftathome/glovebox/internal/staging"
 	"github.com/leftathome/glovebox/internal/watcher"
 )
+
+// Version is set via -ldflags at build time, e.g.:
+//
+//	go build -ldflags "-X main.Version=v1.2.3"
+var Version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config.json")
@@ -93,6 +99,39 @@ func main() {
 			log.Printf("metrics server error: %v", err)
 		}
 	}()
+
+	// Start ingest HTTP server if enabled
+	var ingestHandler *ingest.Handler
+	var ingestServer *http.Server
+	if cfg.Ingest.Enabled {
+		ingestHandler = ingest.NewHandler(cfg.StagingDir, cfg.Ingest, cfg.AgentAllowlist)
+
+		ingestMetrics, err := ingest.NewIngestMetrics(m.Provider())
+		if err != nil {
+			log.Fatalf("init ingest metrics: %v", err)
+		}
+		ingestHandler.SetMetrics(ingestMetrics)
+
+		if err := ingestHandler.InitQueueDepth(); err != nil {
+			log.Fatalf("init ingest queue depth: %v", err)
+		}
+		ingestHandler.SetReady()
+
+		ingestMux := http.NewServeMux()
+		ingestMux.Handle("/v1/ingest", ingestHandler)
+		ingestServer = &http.Server{
+			Addr:         fmt.Sprintf(":%d", cfg.Ingest.Port),
+			Handler:      ingestMux,
+			ReadTimeout:  time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+			WriteTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+		}
+		go func() {
+			log.Printf("ingest server listening on :%d", cfg.Ingest.Port)
+			if err := ingestServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("ingest server error: %v", err)
+			}
+		}()
+	}
 
 	// Clean stale pending files from previous run
 	routing.CleanStalePending(cfg.AgentsDir, cfg.AgentAllowlist)
@@ -177,8 +216,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("glovebox v0.1.0 started: watching %s, %d workers, timeout %ds",
-		cfg.StagingDir, cfg.ScanWorkers, cfg.ScanTimeoutSeconds)
+	log.Printf("glovebox %s started: watching %s, %d workers, timeout %ds",
+		Version, cfg.StagingDir, cfg.ScanWorkers, cfg.ScanTimeoutSeconds)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
@@ -198,6 +237,9 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
+	if ingestServer != nil {
+		ingestServer.Shutdown(shutdownCtx)
+	}
 	metricsServer.Shutdown(shutdownCtx)
 
 	log.Println("glovebox stopped")

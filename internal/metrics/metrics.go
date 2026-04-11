@@ -104,6 +104,12 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
 }
 
+// Provider returns the underlying MeterProvider so other subsystems (e.g.
+// ingest) can register their own meters against the same exporter.
+func (m *Metrics) Provider() *sdkmetric.MeterProvider {
+	return m.provider
+}
+
 func (m *Metrics) Shutdown() error {
 	if m.provider != nil {
 		return m.provider.Shutdown(context.Background())
