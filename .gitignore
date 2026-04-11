@@ -7,3 +7,8 @@
 docs/specs/01-*.md
 docs/specs/02-*.md
 docs/specs/03-*.md
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
+hackernews
+trello

@@ -15,7 +15,7 @@ import (
 // GDriveConnector polls the Google Drive Changes API for file activity.
 type GDriveConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

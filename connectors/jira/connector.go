@@ -16,7 +16,7 @@ import (
 // JiraConnector polls Jira projects for recently updated issues.
 type JiraConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	email        string

@@ -22,7 +22,7 @@ const defaultMaxResults = 25
 // ArxivConnector polls the Arxiv API for new papers matching configured queries.
 type ArxivConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	fetchCounter *connector.FetchCounter

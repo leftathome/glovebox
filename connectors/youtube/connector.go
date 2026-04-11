@@ -17,7 +17,7 @@ import (
 // YouTubeConnector polls YouTube channels for new video metadata.
 type YouTubeConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

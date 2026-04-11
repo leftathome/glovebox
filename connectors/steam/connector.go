@@ -17,7 +17,7 @@ import (
 type SteamConnector struct {
 	config       Config
 	apiKey       string
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	fetchCounter *connector.FetchCounter

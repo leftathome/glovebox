@@ -18,7 +18,7 @@ import (
 // the Microsoft Graph API.
 type TeamsConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

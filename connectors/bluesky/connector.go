@@ -21,7 +21,7 @@ type BlueskyConnector struct {
 	config       Config
 	identifier   string
 	appPassword  string
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

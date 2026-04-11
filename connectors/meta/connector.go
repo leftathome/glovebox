@@ -16,7 +16,7 @@ import (
 // MetaConnector polls Meta Graph API page feeds and handles webhooks.
 type MetaConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

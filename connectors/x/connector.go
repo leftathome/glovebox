@@ -19,7 +19,7 @@ import (
 // XConnector polls X (Twitter) API v2 for user mentions and handles webhooks.
 type XConnector struct {
 	config        Config
-	writer        *connector.StagingWriter
+	writer        connector.StagingBackend
 	matcher       *connector.RuleMatcher
 	fetchCounter  *connector.FetchCounter
 	httpClient    *http.Client

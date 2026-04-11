@@ -20,7 +20,7 @@ type TrelloConnector struct {
 	config       Config
 	apiKey       string
 	token        string
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	baseURL      string
