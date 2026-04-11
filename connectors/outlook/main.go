@@ -159,10 +159,10 @@ func main() {
 		ConfigFile: cfgFile,
 		Connector:  c,
 		Setup: func(cc connector.ConnectorContext) error {
-			c.writer = cc.Writer
+			c.writer = cc.Backend
 			c.matcher = cc.Matcher
 			c.fetchCounter = cc.FetchCounter
-			if cfg.ConfigIdentity != nil {
+			if cfg.ConfigIdentity != nil && cc.Writer != nil {
 				cc.Writer.SetConfigIdentity(cfg.ConfigIdentity)
 			}
 			return nil

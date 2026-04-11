@@ -18,7 +18,7 @@ const defaultBaseURL = "https://hacker-news.firebaseio.com"
 // HNConnector polls the Hacker News API and stages stories.
 type HNConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	fetchCounter *connector.FetchCounter

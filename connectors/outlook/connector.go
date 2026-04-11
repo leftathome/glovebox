@@ -14,7 +14,7 @@ import (
 // It polls configured mail folders for new messages and stages them for processing.
 type OutlookConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	client       OutlookClient
 	fetchCounter *connector.FetchCounter

@@ -19,7 +19,7 @@ import (
 // GitLabConnector polls GitLab project events and stages new entries.
 type GitLabConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	tokenSource  connector.TokenSource

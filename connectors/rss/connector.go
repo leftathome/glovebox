@@ -29,7 +29,7 @@ var entryTimeFormats = []string{
 // RSSConnector polls RSS and Atom feeds and stages new entries.
 type RSSConnector struct {
 	config        Config
-	writer        *connector.StagingWriter
+	writer        connector.StagingBackend
 	matcher       *connector.RuleMatcher
 	linkPolicy    *content.LinkPolicy
 	httpClient    *http.Client

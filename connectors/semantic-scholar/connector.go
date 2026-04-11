@@ -20,7 +20,7 @@ const defaultBaseURL = "https://api.semanticscholar.org/graph/v1"
 // matching configured search queries.
 type SemanticScholarConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	fetchCounter *connector.FetchCounter

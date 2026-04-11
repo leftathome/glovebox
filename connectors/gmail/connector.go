@@ -17,7 +17,7 @@ import (
 // It polls configured labels for new messages and stages them for processing.
 type GmailConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	client       GmailClient
 	fetchCounter *connector.FetchCounter

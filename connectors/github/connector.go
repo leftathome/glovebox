@@ -16,7 +16,7 @@ import (
 // GitHubConnector polls GitHub repository events and handles webhooks.
 type GitHubConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client

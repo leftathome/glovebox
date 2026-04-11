@@ -16,7 +16,7 @@ import (
 // LinkedInConnector polls LinkedIn shares via the REST API v2.
 type LinkedInConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	httpClient   *http.Client
 	tokenSource  connector.TokenSource

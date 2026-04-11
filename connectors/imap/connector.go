@@ -16,7 +16,7 @@ import (
 // It polls IMAP folders for new messages and stages them for processing.
 type IMAPConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	imapUsername  string
 	newClient    func() IMAPClient

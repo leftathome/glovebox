@@ -15,7 +15,7 @@ import (
 // OneDriveConnector polls the Microsoft Graph delta API for drive file activity.
 type OneDriveConnector struct {
 	config       Config
-	writer       *connector.StagingWriter
+	writer       connector.StagingBackend
 	matcher      *connector.RuleMatcher
 	fetchCounter *connector.FetchCounter
 	httpClient   *http.Client
