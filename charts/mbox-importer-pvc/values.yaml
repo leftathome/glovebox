@@ -1,0 +1,17 @@
+# Size of the PVC used to stage the mbox archive. Pick a value large enough
+# to hold the source file plus its sidecars (survey, filter, manifest, checkpoint).
+size: "20Gi"
+
+# Storage class for the PVC. Empty string uses the cluster's default storage class.
+storageClass: ""
+
+# Access modes for the PVC. ReadWriteOnce is sufficient because the importer
+# runs as a single Job pod reading and writing the archive plus its sidecars.
+accessModes:
+  - ReadWriteOnce
+
+# Namespace for the PVC. Empty string uses the Helm release namespace.
+namespace: ""
+
+# Optional override for the PVC name. Empty string derives the name from the release.
+name: ""

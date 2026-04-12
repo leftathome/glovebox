@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mbox-importer-pvc
+description: PersistentVolumeClaim for staging an mbox archive consumed by the mbox-importer Job. Separated from charts/mbox-importer/ because archive volumes typically outlive the one-shot import Job.
+type: application
+version: 0.1.0
+appVersion: "0.3.5"
