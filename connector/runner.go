@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +13,9 @@ import (
 	"time"
 )
 
+// BaseConfig is the shared JSON shape every connector config starts from.
+// Connector-specific configs embed BaseConfig to pick up rules, identity,
+// and fetch limits without re-declaring them.
 type BaseConfig struct {
 	Rules          []Rule          `json:"rules"`
 	Routes         []Rule          `json:"routes"`
@@ -21,192 +23,114 @@ type BaseConfig struct {
 	FetchLimits    FetchLimits     `json:"fetch_limits"`
 }
 
+// Run is a backwards-compatible entry point that wires together
+// NewFramework, RunPollLoop / RunWatchLoop, signal handling, and
+// Framework.Shutdown for a long-running connector binary.
+//
+// New callers (including importers) should prefer NewFramework +
+// the specific Run*Loop function for the execution shape they need,
+// since that gives them control over signal handling, extra servers,
+// and shutdown ordering. Run(opts) is kept so existing connectors
+// under connectors/* continue to compile and behave as before.
 func Run(opts Options) {
-	if opts.HealthPort == 0 {
-		opts.HealthPort = 8080
-	}
-
-	logger := slog.Default().With("connector", opts.Name)
-	logger.Info("starting connector")
-
-	// Load config
-	var baseCfg BaseConfig
-	if opts.ConfigFile != "" {
-		data, err := os.ReadFile(opts.ConfigFile)
-		if err != nil {
-			logger.Error("load config", "error", err)
-			os.Exit(1)
-		}
-		if err := json.Unmarshal(data, &baseCfg); err != nil {
-			logger.Error("parse config", "error", err)
-			os.Exit(1)
-		}
-	}
-
-	// Backward-compatible migration: "routes" -> "rules"
-	if len(baseCfg.Rules) == 0 && len(baseCfg.Routes) > 0 {
-		baseCfg.Rules = baseCfg.Routes
-		logger.Warn("config key 'routes' is deprecated, use 'rules' instead")
-	}
-
-	matcher := NewRuleMatcher(baseCfg.Rules)
-	if len(baseCfg.Rules) > 0 {
-		hasWildcard := false
-		for _, r := range baseCfg.Rules {
-			if r.Match == "*" {
-				hasWildcard = true
-				break
-			}
-		}
-		if !hasWildcard {
-			logger.Warn("no wildcard rule defined -- unmatched items will be skipped")
-		}
-	}
-
-	// Init checkpoint
-	cp, err := NewCheckpoint(opts.StateDir)
+	fw, err := NewFramework(opts)
 	if err != nil {
-		logger.Error("init checkpoint", "error", err)
+		slog.Default().With("connector", opts.Name).Error("bootstrap failed", "error", err)
 		os.Exit(1)
 	}
-
-	// Select staging backend
-	ingestURL := os.Getenv("GLOVEBOX_INGEST_URL")
-	backend, writer, err := selectBackend(opts.Name, ingestURL, opts.StagingDir, logger)
-	if err != nil {
-		logger.Error("backend selection failed", "error", err)
-		os.Exit(1)
-	}
-
-	// Init metrics
-	metrics, err := NewMetrics(opts.Name)
-	if err != nil {
-		logger.Error("init metrics", "error", err)
-		os.Exit(1)
-	}
-	defer metrics.Shutdown()
-
-	// Init fetch counter
-	fetchCounter := NewFetchCounter(baseCfg.FetchLimits)
-
-	// Pass resources to connector via setup callback
-	if opts.Setup != nil {
-		if err := opts.Setup(ConnectorContext{
-			Writer:       writer,
-			Backend:      backend,
-			Matcher:      matcher,
-			Metrics:      metrics,
-			FetchCounter: fetchCounter,
-		}); err != nil {
-			logger.Error("connector setup", "error", err)
-			os.Exit(1)
-		}
-	}
+	defer fw.Shutdown()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var ready atomic.Bool
-
-	// Health endpoints
-	healthMux := http.NewServeMux()
-	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-	healthMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if ready.Load() {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("not ready"))
-		}
-	})
-	healthMux.Handle("/metrics", metrics.Handler())
-
-	healthServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", opts.HealthPort),
-		Handler: healthMux,
-	}
-	go func() {
-		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("health server", "error", err)
-		}
-	}()
-
-	// Determine execution mode
-	watcher, isWatcher := opts.Connector.(Watcher)
-	listener, isListener := opts.Connector.(Listener)
-
-	// Start listener if applicable
-	if isListener {
-		listenerServer := &http.Server{
-			Addr:    fmt.Sprintf(":%d", opts.HealthPort+1),
-			Handler: listener.Handler(),
-		}
-		go func() {
-			logger.Info("listener started", "port", opts.HealthPort+1)
-			if err := listenerServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("listener server", "error", err)
-			}
-		}()
-		defer func() {
-			shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutCancel()
-			listenerServer.Shutdown(shutCtx)
-		}()
-	}
-
-	// Signal handling
+	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
 	go func() {
 		sig := <-sigCh
-		logger.Info("received signal, shutting down", "signal", sig)
+		fw.Logger.Info("received signal, shutting down", "signal", sig)
 		cancel()
 	}()
 
-	// Initial poll
-	logger.Info("running initial poll")
-	if err := runPoll(ctx, opts.Connector, cp, metrics, logger, fetchCounter); err != nil {
+	// Determine execution mode from the Connector implementation.
+	watcher, isWatcher := opts.Connector.(Watcher)
+	_, isListener := opts.Connector.(Listener)
+
+	// Initial poll.
+	fw.Logger.Info("running initial poll")
+	if err := runPoll(ctx, opts.Connector, fw.Checkpoint, fw.Metrics, fw.Logger, fw.FetchCounter); err != nil {
 		if IsPermanent(err) {
-			logger.Error("permanent error during initial poll", "error", err)
+			fw.Logger.Error("permanent error during initial poll", "error", err)
 			os.Exit(1)
 		}
-		logger.Warn("transient error during initial poll", "error", err)
+		fw.Logger.Warn("transient error during initial poll", "error", err)
 	} else {
-		ready.Store(true)
-		logger.Info("initial poll complete, connector ready")
+		fw.Ready.Store(true)
+		fw.Logger.Info("initial poll complete, connector ready")
 	}
 
 	if ctx.Err() != nil {
-		shutdown(healthServer, logger)
 		return
 	}
 
-	// Poll-once mode: PollInterval == 0 and no watcher/listener
+	// Poll-once mode: PollInterval == 0 and no watcher/listener.
 	if opts.PollInterval == 0 && !isWatcher && !isListener {
-		shutdown(healthServer, logger)
 		return
 	}
 
-	// Long-running mode needs a poll interval
+	// Long-running mode needs a poll interval.
 	if opts.PollInterval == 0 {
 		opts.PollInterval = 5 * time.Minute
+		fw.PollInterval = opts.PollInterval
 	}
 
 	if isWatcher {
-		runWatchLoop(ctx, opts, watcher, cp, metrics, &ready, logger, fetchCounter)
+		RunWatchLoop(ctx, fw, watcher)
 	} else {
-		runPollLoop(ctx, opts, cp, metrics, &ready, logger, fetchCounter)
+		RunPollLoop(ctx, fw, opts.Connector)
 	}
 
-	shutdown(healthServer, logger)
-	logger.Info("connector stopped")
+	fw.Logger.Info("connector stopped")
 }
 
+// RunPollLoop drives a Connector on a periodic poll schedule. It
+// returns when ctx is cancelled. This is a standalone entry point
+// for callers who built their own Framework via NewFramework.
+//
+// The loop uses fw.PollInterval for scheduling, fw.Checkpoint for
+// state, fw.Metrics for instrumentation, fw.FetchCounter for
+// per-poll fetch caps, and flips fw.Ready to true on the first
+// successful poll.
+func RunPollLoop(ctx context.Context, fw *Framework, c Connector) {
+	opts := fw.opts
+	opts.Connector = c
+	opts.PollInterval = fw.PollInterval
+	runPollLoop(ctx, opts, fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
+}
+
+// RunWatchLoop drives a Watcher -- a long-lived push/notification
+// consumer with a periodic re-poll safety net. Returns when ctx
+// is cancelled. Permanent errors from Watch still exit the process
+// (matching the original runWatchLoop behavior).
+func RunWatchLoop(ctx context.Context, fw *Framework, w Watcher) {
+	opts := fw.opts
+	// opts.Connector must be something that implements Poll as well --
+	// the re-poll path needs it. Callers constructing a Framework
+	// directly are expected to set Options.Connector to the same type
+	// that also satisfies Watcher.
+	if opts.Connector == nil {
+		if c, ok := w.(Connector); ok {
+			opts.Connector = c
+		}
+	}
+	opts.PollInterval = fw.PollInterval
+	runWatchLoop(ctx, opts, w, fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
+}
+
+// runPoll executes a single poll against the given Connector,
+// resetting the fetch counter, recording duration/result metrics,
+// and propagating any error. Exit shape (transient vs permanent)
+// is the Connector's responsibility via PermanentError.
 func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger *slog.Logger, fc *FetchCounter) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -267,7 +191,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 					os.Exit(1)
 				}
 				logger.Warn("watch error, will re-poll and retry", "error", err)
-				// Wait with cancellation support instead of blocking sleep
+				// Wait with cancellation support instead of blocking sleep.
 				select {
 				case <-time.After(opts.PollInterval):
 				case <-ctx.Done():
@@ -341,12 +265,4 @@ func selectBackend(name, ingestURL, stagingDir string, logger *slog.Logger) (Sta
 		return w, w, nil
 	}
 	return nil, nil, fmt.Errorf("either GLOVEBOX_INGEST_URL or staging dir must be set")
-}
-
-func shutdown(server *http.Server, logger *slog.Logger) {
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutCtx); err != nil {
-		logger.Warn("health server shutdown", "error", err)
-	}
 }
