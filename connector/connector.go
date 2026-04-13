@@ -24,8 +24,8 @@ type Listener interface {
 type ConnectorContext struct {
 	// Deprecated: Use Backend instead. Writer will be removed once all
 	// connectors migrate to the StagingBackend interface.
-	Writer  *StagingWriter
-	Backend StagingBackend
+	Writer       *StagingWriter
+	Backend      StagingBackend
 	Matcher      *RuleMatcher
 	Metrics      *Metrics
 	FetchCounter *FetchCounter

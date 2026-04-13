@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -66,7 +67,7 @@ func testOptions(t *testing.T, c Connector) Options {
 	os.MkdirAll(stagingDir, 0755)
 
 	cfgPath := filepath.Join(base, "config.json")
-	os.WriteFile(cfgPath, []byte(`{"rules":[{"match":"*","destination":"messaging"}]}`), 0644)
+	os.WriteFile(cfgPath, []byte(`{"rules":[{"match":"*","destination":"messaging"}],"fetch_limits":{"per_source":5,"per_poll":100}}`), 0644)
 
 	return Options{
 		Name:         "test",
@@ -77,6 +78,20 @@ func testOptions(t *testing.T, c Connector) Options {
 		PollInterval: 50 * time.Millisecond,
 		HealthPort:   0, // will be set per test
 	}
+}
+
+// pickPort returns a free TCP port on localhost for tests that need to
+// bind the health server to a known port. Shared between runner_test
+// and framework_test.
+func pickPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port
 }
 
 func TestRunPoll_CallsConnector(t *testing.T) {
@@ -173,11 +188,7 @@ func TestRunPollLoop_PollsOnInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		runPollLoop(ctx, Options{
-			Name:         "test",
-			Connector:    mock,
-			PollInterval: 50 * time.Millisecond,
-		}, cp, nil, &ready, testLogger, nil)
+		runPollLoop(ctx, mock, 50*time.Millisecond, cp, nil, &ready, testLogger, nil)
 	}()
 
 	time.Sleep(180 * time.Millisecond)
@@ -200,11 +211,7 @@ func TestRunWatchLoop_PollsThenWatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		runWatchLoop(ctx, Options{
-			Name:         "test",
-			Connector:    mock,
-			PollInterval: 5 * time.Second,
-		}, mock, cp, nil, &ready, testLogger, nil)
+		runWatchLoop(ctx, mock, mock, 5*time.Second, cp, nil, &ready, testLogger, nil)
 	}()
 
 	select {

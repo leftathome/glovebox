@@ -26,12 +26,6 @@ type BaseConfig struct {
 // Run is a backwards-compatible entry point that wires together
 // NewFramework, RunPollLoop / RunWatchLoop, signal handling, and
 // Framework.Shutdown for a long-running connector binary.
-//
-// New callers (including importers) should prefer NewFramework +
-// the specific Run*Loop function for the execution shape they need,
-// since that gives them control over signal handling, extra servers,
-// and shutdown ordering. Run(opts) is kept so existing connectors
-// under connectors/* continue to compile and behave as before.
 func Run(opts Options) {
 	fw, err := NewFramework(opts)
 	if err != nil {
@@ -43,20 +37,22 @@ func Run(opts Options) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 	go func() {
-		sig := <-sigCh
-		fw.Logger.Info("received signal, shutting down", "signal", sig)
-		cancel()
+		select {
+		case sig := <-sigCh:
+			fw.Logger.Info("received signal, shutting down", "signal", sig)
+			cancel()
+		case <-ctx.Done():
+			return
+		}
 	}()
 
-	// Determine execution mode from the Connector implementation.
-	watcher, isWatcher := opts.Connector.(Watcher)
+	_, isWatcher := opts.Connector.(Watcher)
 	_, isListener := opts.Connector.(Listener)
 
-	// Initial poll.
 	fw.Logger.Info("running initial poll")
 	if err := runPoll(ctx, opts.Connector, fw.Checkpoint, fw.Metrics, fw.Logger, fw.FetchCounter); err != nil {
 		if IsPermanent(err) {
@@ -78,14 +74,14 @@ func Run(opts Options) {
 		return
 	}
 
-	// Long-running mode needs a poll interval.
-	if opts.PollInterval == 0 {
-		opts.PollInterval = 5 * time.Minute
-		fw.PollInterval = opts.PollInterval
+	// Long-running mode needs a poll interval; fall back to 5m if
+	// the caller didn't configure one but did register a watcher/listener.
+	if fw.opts.PollInterval == 0 {
+		fw.opts.PollInterval = 5 * time.Minute
 	}
 
 	if isWatcher {
-		RunWatchLoop(ctx, fw, watcher)
+		RunWatchLoop(ctx, fw, opts.Connector)
 	} else {
 		RunPollLoop(ctx, fw, opts.Connector)
 	}
@@ -96,35 +92,22 @@ func Run(opts Options) {
 // RunPollLoop drives a Connector on a periodic poll schedule. It
 // returns when ctx is cancelled. This is a standalone entry point
 // for callers who built their own Framework via NewFramework.
-//
-// The loop uses fw.PollInterval for scheduling, fw.Checkpoint for
-// state, fw.Metrics for instrumentation, fw.FetchCounter for
-// per-poll fetch caps, and flips fw.Ready to true on the first
-// successful poll.
 func RunPollLoop(ctx context.Context, fw *Framework, c Connector) {
-	opts := fw.opts
-	opts.Connector = c
-	opts.PollInterval = fw.PollInterval
-	runPollLoop(ctx, opts, fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
+	runPollLoop(ctx, c, fw.PollInterval(), fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
 }
 
 // RunWatchLoop drives a Watcher -- a long-lived push/notification
-// consumer with a periodic re-poll safety net. Returns when ctx
-// is cancelled. Permanent errors from Watch still exit the process
-// (matching the original runWatchLoop behavior).
-func RunWatchLoop(ctx context.Context, fw *Framework, w Watcher) {
-	opts := fw.opts
-	// opts.Connector must be something that implements Poll as well --
-	// the re-poll path needs it. Callers constructing a Framework
-	// directly are expected to set Options.Connector to the same type
-	// that also satisfies Watcher.
-	if opts.Connector == nil {
-		if c, ok := w.(Connector); ok {
-			opts.Connector = c
-		}
+// consumer with a periodic re-poll safety net. The connector argument
+// must implement both Poll (Connector) and Watch (Watcher); the re-poll
+// path needs Poll. Returns when ctx is cancelled. Permanent errors
+// from Watch still exit the process.
+func RunWatchLoop(ctx context.Context, fw *Framework, c Connector) {
+	w, ok := c.(Watcher)
+	if !ok {
+		fw.Logger.Error("RunWatchLoop: connector does not implement Watcher")
+		return
 	}
-	opts.PollInterval = fw.PollInterval
-	runWatchLoop(ctx, opts, w, fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
+	runWatchLoop(ctx, c, w, fw.PollInterval(), fw.Checkpoint, fw.Metrics, fw.Ready, fw.Logger, fw.FetchCounter)
 }
 
 // runPoll executes a single poll against the given Connector,
@@ -156,8 +139,8 @@ func runPoll(ctx context.Context, c Connector, cp Checkpoint, m *Metrics, logger
 	return err
 }
 
-func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
-	pollTicker := time.NewTicker(opts.PollInterval)
+func runWatchLoop(ctx context.Context, c Connector, watcher Watcher, interval time.Duration, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
+	pollTicker := time.NewTicker(interval)
 	defer pollTicker.Stop()
 
 	var wg sync.WaitGroup
@@ -193,11 +176,11 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 				logger.Warn("watch error, will re-poll and retry", "error", err)
 				// Wait with cancellation support instead of blocking sleep.
 				select {
-				case <-time.After(opts.PollInterval):
+				case <-time.After(interval):
 				case <-ctx.Done():
 					return
 				}
-				if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
+				if err := runPoll(ctx, c, cp, m, logger, fc); err != nil {
 					if IsPermanent(err) {
 						logger.Error("permanent error during re-poll", "error", err)
 						os.Exit(1)
@@ -212,7 +195,7 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 			watchCancel()
 			wg.Wait()
 			logger.Info("periodic re-poll")
-			if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
+			if err := runPoll(ctx, c, cp, m, logger, fc); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent error during re-poll", "error", err)
 					os.Exit(1)
@@ -223,8 +206,8 @@ func runWatchLoop(ctx context.Context, opts Options, watcher Watcher, cp Checkpo
 	}
 }
 
-func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
-	ticker := time.NewTicker(opts.PollInterval)
+func runPollLoop(ctx context.Context, c Connector, interval time.Duration, cp Checkpoint, m *Metrics, ready *atomic.Bool, logger *slog.Logger, fc *FetchCounter) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -233,7 +216,7 @@ func runPollLoop(ctx context.Context, opts Options, cp Checkpoint, m *Metrics, r
 			return
 		case <-ticker.C:
 			logger.Info("scheduled poll")
-			if err := runPoll(ctx, opts.Connector, cp, m, logger, fc); err != nil {
+			if err := runPoll(ctx, c, cp, m, logger, fc); err != nil {
 				if IsPermanent(err) {
 					logger.Error("permanent poll error", "error", err)
 					os.Exit(1)

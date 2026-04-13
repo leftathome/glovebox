@@ -36,11 +36,6 @@ type Framework struct {
 	// GLOVEBOX_INGEST_URL / StagingDir (per spec 08).
 	Backend StagingBackend
 
-	// Writer is the filesystem staging writer, or nil when operating in
-	// HTTP-ingest mode. Kept for backwards compatibility with connectors
-	// that have not yet migrated to the Backend interface.
-	Writer *StagingWriter
-
 	// Metrics is the Prometheus metrics registry for this process.
 	Metrics *Metrics
 
@@ -57,35 +52,28 @@ type Framework struct {
 	// successful poll. /readyz returns 503 until Ready is true.
 	Ready *atomic.Bool
 
-	// PollInterval is carried from the Options so the poll-loop and
-	// watch-loop functions can see it without re-threading Options.
-	PollInterval time.Duration
-
-	// opts is the original Options the caller passed in. It is retained so
-	// backwards-compatibility helpers (e.g. the legacy Run shim) can still
-	// reach the Connector implementation and Setup callback.
 	opts Options
 
-	// healthServer runs /healthz, /readyz, and /metrics.
-	healthServer *http.Server
-
-	// listenerServer runs an optional webhook/listener HTTP handler on
-	// HealthPort+1 when the Connector implements Listener.
+	healthServer   *http.Server
 	listenerServer *http.Server
 
 	shutdownOnce sync.Once
 }
 
-// NewFramework performs all connector bootstrap work that used to live
-// inside Run(opts): config loading, backend selection, rule matcher,
-// metrics, fetch counter, checkpoint, and starting the health/metrics
-// HTTP server. It also starts an optional listener HTTP server if the
-// Connector passed in Options implements Listener.
+// PollInterval returns the poll interval configured for this Framework.
+func (f *Framework) PollInterval() time.Duration {
+	return f.opts.PollInterval
+}
+
+// NewFramework performs connector bootstrap: config loading, backend
+// selection, rule matcher, metrics, fetch counter, checkpoint, and
+// starting the health/metrics HTTP server. If the Connector in opts
+// implements Listener, an additional HTTP server is started on
+// HealthPort+1.
 //
-// NewFramework does NOT install signal handlers and does NOT run the
-// poll/watch loop. Callers are responsible for driving the runtime
-// (connector or importer) on top of the returned Framework, and must
-// call (*Framework).Shutdown when finished.
+// NewFramework does not install signal handlers and does not run the
+// poll/watch loop. Callers drive the runtime on top of the returned
+// Framework and must call (*Framework).Shutdown when finished.
 func NewFramework(opts Options) (*Framework, error) {
 	if opts.HealthPort == 0 {
 		opts.HealthPort = 8080
@@ -94,7 +82,6 @@ func NewFramework(opts Options) (*Framework, error) {
 	logger := slog.Default().With("connector", opts.Name)
 	logger.Info("starting connector")
 
-	// Load config.
 	var baseCfg BaseConfig
 	if opts.ConfigFile != "" {
 		data, err := os.ReadFile(opts.ConfigFile)
@@ -126,29 +113,24 @@ func NewFramework(opts Options) (*Framework, error) {
 		}
 	}
 
-	// Init checkpoint.
 	cp, err := NewCheckpoint(opts.StateDir)
 	if err != nil {
 		return nil, fmt.Errorf("init checkpoint: %w", err)
 	}
 
-	// Select staging backend.
 	ingestURL := os.Getenv("GLOVEBOX_INGEST_URL")
 	backend, writer, err := selectBackend(opts.Name, ingestURL, opts.StagingDir, logger)
 	if err != nil {
 		return nil, fmt.Errorf("backend selection: %w", err)
 	}
 
-	// Init metrics.
 	metrics, err := NewMetrics(opts.Name)
 	if err != nil {
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}
 
-	// Init fetch counter.
 	fetchCounter := NewFetchCounter(baseCfg.FetchLimits)
 
-	// Let the connector/importer receive framework-initialized resources.
 	if opts.Setup != nil {
 		if err := opts.Setup(ConnectorContext{
 			Writer:       writer,
@@ -164,7 +146,6 @@ func NewFramework(opts Options) (*Framework, error) {
 
 	ready := &atomic.Bool{}
 
-	// Health endpoints (/healthz, /readyz, /metrics).
 	healthMux := http.NewServeMux()
 	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -191,7 +172,6 @@ func NewFramework(opts Options) (*Framework, error) {
 		}
 	}()
 
-	// Optional listener server, if the Connector implements Listener.
 	var listenerServer *http.Server
 	if opts.Connector != nil {
 		if listener, ok := opts.Connector.(Listener); ok {
@@ -214,13 +194,11 @@ func NewFramework(opts Options) (*Framework, error) {
 		BaseConfig:     baseCfg,
 		Matcher:        matcher,
 		Backend:        backend,
-		Writer:         writer,
 		Metrics:        metrics,
 		FetchCounter:   fetchCounter,
 		Checkpoint:     cp,
 		HealthPort:     opts.HealthPort,
 		Ready:          ready,
-		PollInterval:   opts.PollInterval,
 		opts:           opts,
 		healthServer:   healthServer,
 		listenerServer: listenerServer,
