@@ -9,7 +9,7 @@ import (
 func TestRunPollLoop_ExportedWrapperPollsConnector(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-runpoll", port, mock)
+	opts := frameworkTestOpts(t, "fw-runpoll", port, mock)
 	opts.PollInterval = 50 * time.Millisecond
 
 	fw, err := NewFramework(opts)
@@ -41,7 +41,7 @@ func TestRunWatchLoop_ExportedWrapperStartsWatch(t *testing.T) {
 	port := pickPort(t)
 	watchStarted := make(chan struct{})
 	mock := &mockWatchConnector{watchStarted: watchStarted}
-	opts := newFrameworkTestOpts(t, "fw-runwatch", port, mock)
+	opts := frameworkTestOpts(t, "fw-runwatch", port, mock)
 	opts.PollInterval = 5 * time.Second
 
 	fw, err := NewFramework(opts)

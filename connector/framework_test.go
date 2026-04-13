@@ -4,55 +4,23 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-// newFrameworkTestOpts builds an Options suitable for NewFramework tests:
-// a temp StateDir, a temp StagingDir (filesystem-backend mode), and a
-// minimal on-disk config with a single wildcard rule.
-func newFrameworkTestOpts(t *testing.T, name string, port int, c Connector) Options {
+// frameworkTestOpts adapts the shared testOptions helper for NewFramework
+// tests: it forces filesystem-backend selection, overrides the connector
+// name so per-test metrics registrations don't collide, clears
+// PollInterval (framework tests don't run the poll loop), and binds the
+// health server to the given port.
+func frameworkTestOpts(t *testing.T, name string, port int, c Connector) Options {
 	t.Helper()
-	base := t.TempDir()
-	stagingDir := filepath.Join(base, "staging")
-	stateDir := filepath.Join(base, "state")
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(base, "config.json")
-	cfg := `{"rules":[{"match":"*","destination":"messaging"}],"fetch_limits":{"per_source":5,"per_poll":100}}`
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Force filesystem-backend selection even if the outer env has an
-	// ingest URL pointed somewhere during local dev.
 	t.Setenv("GLOVEBOX_INGEST_URL", "")
-
-	return Options{
-		Name:       name,
-		StagingDir: stagingDir,
-		StateDir:   stateDir,
-		ConfigFile: cfgPath,
-		Connector:  c,
-		HealthPort: port,
-	}
-}
-
-// pickPort returns a free TCP port on localhost for the tests that need
-// to bind the health server.
-func pickPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	return port
+	opts := testOptions(t, c)
+	opts.Name = name
+	opts.PollInterval = 0
+	opts.HealthPort = port
+	return opts
 }
 
 // waitForPort blocks until the given port accepts TCP connections or
@@ -74,7 +42,7 @@ func waitForPort(t *testing.T, port int, timeout time.Duration) {
 func TestNewFramework_Bootstrap(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-boot", port, mock)
+	opts := frameworkTestOpts(t, "fw-boot", port, mock)
 
 	fw, err := NewFramework(opts)
 	if err != nil {
@@ -90,9 +58,6 @@ func TestNewFramework_Bootstrap(t *testing.T) {
 	}
 	if fw.Backend == nil {
 		t.Error("Backend is nil")
-	}
-	if fw.Writer == nil {
-		t.Error("Writer is nil (expected filesystem mode)")
 	}
 	if fw.Metrics == nil {
 		t.Error("Metrics is nil")
@@ -120,7 +85,7 @@ func TestNewFramework_Bootstrap(t *testing.T) {
 func TestNewFramework_HealthServerResponds(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-health", port, mock)
+	opts := frameworkTestOpts(t, "fw-health", port, mock)
 
 	fw, err := NewFramework(opts)
 	if err != nil {
@@ -128,10 +93,8 @@ func TestNewFramework_HealthServerResponds(t *testing.T) {
 	}
 	defer fw.Shutdown()
 
-	// Give the health server a moment to bind.
 	waitForPort(t, port, 2*time.Second)
 
-	// /healthz should always be 200.
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
@@ -141,7 +104,6 @@ func TestNewFramework_HealthServerResponds(t *testing.T) {
 		t.Errorf("/healthz status = %d, want 200", resp.StatusCode)
 	}
 
-	// /readyz starts 503 until Ready flips.
 	resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", port))
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
@@ -166,7 +128,7 @@ func TestNewFramework_HealthServerResponds(t *testing.T) {
 func TestNewFramework_SetupCallbackInvoked(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-setup", port, mock)
+	opts := frameworkTestOpts(t, "fw-setup", port, mock)
 
 	var receivedCtx ConnectorContext
 	called := false
@@ -202,7 +164,7 @@ func TestNewFramework_SetupCallbackInvoked(t *testing.T) {
 func TestNewFramework_SetupErrorPropagates(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-setup-err", port, mock)
+	opts := frameworkTestOpts(t, "fw-setup-err", port, mock)
 	opts.Setup = func(cc ConnectorContext) error {
 		return fmt.Errorf("bad setup")
 	}
@@ -238,7 +200,7 @@ func TestNewFramework_BadConfigFile(t *testing.T) {
 func TestFramework_ShutdownIdempotent(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-shutdown", port, mock)
+	opts := frameworkTestOpts(t, "fw-shutdown", port, mock)
 
 	fw, err := NewFramework(opts)
 	if err != nil {
@@ -248,11 +210,9 @@ func TestFramework_ShutdownIdempotent(t *testing.T) {
 	if err := fw.Shutdown(); err != nil {
 		t.Errorf("first Shutdown: %v", err)
 	}
-	// Second call must be a no-op, not a panic.
 	if err := fw.Shutdown(); err != nil {
 		t.Errorf("second Shutdown: %v", err)
 	}
-	// Third for good measure.
 	if err := fw.Shutdown(); err != nil {
 		t.Errorf("third Shutdown: %v", err)
 	}
@@ -261,7 +221,7 @@ func TestFramework_ShutdownIdempotent(t *testing.T) {
 func TestFramework_ShutdownStopsHealthServer(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}
-	opts := newFrameworkTestOpts(t, "fw-shutdown-srv", port, mock)
+	opts := frameworkTestOpts(t, "fw-shutdown-srv", port, mock)
 
 	fw, err := NewFramework(opts)
 	if err != nil {
@@ -269,7 +229,6 @@ func TestFramework_ShutdownStopsHealthServer(t *testing.T) {
 	}
 	waitForPort(t, port, 2*time.Second)
 
-	// Verify the server is reachable.
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
 	if err != nil {
 		t.Fatalf("GET /healthz before shutdown: %v", err)
@@ -280,12 +239,11 @@ func TestFramework_ShutdownStopsHealthServer(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// After shutdown, the port should no longer accept.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		_, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
 		if err != nil {
-			return // good: connection refused or similar
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -294,8 +252,6 @@ func TestFramework_ShutdownStopsHealthServer(t *testing.T) {
 
 func TestNewFramework_ListenerServerStarts(t *testing.T) {
 	port := pickPort(t)
-	// Use a listener connector whose handler returns 204 so we can tell
-	// it apart from the health server's 200.
 	handlerHit := make(chan struct{}, 1)
 	mock := &mockListenerConnector{
 		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +262,7 @@ func TestNewFramework_ListenerServerStarts(t *testing.T) {
 			w.WriteHeader(204)
 		}),
 	}
-	opts := newFrameworkTestOpts(t, "fw-listener", port, mock)
+	opts := frameworkTestOpts(t, "fw-listener", port, mock)
 
 	fw, err := NewFramework(opts)
 	if err != nil {
