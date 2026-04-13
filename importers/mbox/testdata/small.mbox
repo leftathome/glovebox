@@ -1,0 +1,92 @@
+From MAILER-DAEMON Mon Apr 11 10:00:00 2026
+Message-ID: <plain-001@example.com>
+Date: Mon, 11 Apr 2026 10:00:00 +0000
+From: Alice Example <alice@example.com>
+To: bob@example.com
+Subject: Plain message one
+
+Hello Bob,
+
+This is the first plain message. Nothing special.
+
+Regards,
+Alice
+
+From MAILER-DAEMON Mon Apr 11 10:05:00 2026
+Message-ID: <multipart-002@example.com>
+Date: Mon, 11 Apr 2026 10:05:00 +0000
+From: "Carol D." <carol@example.com>
+To: dan@example.com
+Subject: Multipart alternative
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: text/plain; charset=utf-8
+
+Plain text version.
+
+--BOUNDARY
+Content-Type: text/html; charset=utf-8
+
+<p>HTML version.</p>
+
+--BOUNDARY--
+
+From MAILER-DAEMON Mon Apr 11 10:10:00 2026
+Message-ID: <gmail-003@example.com>
+Date: Mon, 11 Apr 2026 10:10:00 +0000
+From: gmail-sender@example.com
+To: me@example.com
+Subject: Gmail labeled message
+X-Gmail-Labels: INBOX,IMPORTANT,Category/Updates
+
+This message has three Gmail labels.
+
+From MAILER-DAEMON Mon Apr 11 10:15:00 2026
+Message-ID: <list-004@example.com>
+Date: Mon, 11 Apr 2026 10:15:00 +0000
+From: dev-poster@example.com
+To: dev@example.com
+Subject: On the dev list
+List-Id: <dev.example.com>
+
+Body of a list message with a List-Id header.
+
+From MAILER-DAEMON Mon Apr 11 10:20:00 2026
+Message-ID: <listpost-005@example.com>
+Date: Mon, 11 Apr 2026 10:20:00 +0000
+From: announcer@example.com
+To: list@example.com
+Subject: Announce list post
+List-Post: <mailto:list@example.com>
+
+This list message has no List-Id, only List-Post.
+
+From MAILER-DAEMON Mon Apr 11 10:25:00 2026
+Message-ID: <quotedfrom-006@example.com>
+Date: Mon, 11 Apr 2026 10:25:00 +0000
+From: quoter@example.com
+To: recipient@example.com
+Subject: Contains escaped From line in body
+
+Here is an example of a quoted email body. Below is a mbox-escaped
+From-line that proper mbox writers produce:
+
+>From somebody@example.com Wed Jan 01 00:00:00 2020
+>Subject: quoted inner message
+
+The preceding escaped line must NOT be treated as a message separator.
+
+Best,
+Quoter
+
+From MAILER-DAEMON Mon Apr 11 10:30:00 2026
+Message-ID: <final-007@example.com>
+Date: Mon, 11 Apr 2026 10:30:00 +0000
+From: last@example.com
+To: first@example.com
+Subject: Final message
+
+Last message in the fixture. Tests verify we handle a trailing message
+without a following From_ separator.

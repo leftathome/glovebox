@@ -1,0 +1,17 @@
+From MAILER-DAEMON Mon Apr 11 12:00:00 2026
+Message-ID: <truncated-001@example.com>
+Date: Mon, 11 Apr 2026 12:00:00 +0000
+From: complete@example.com
+To: me@example.com
+Subject: First message is complete
+
+This first message is fully formed.
+
+From MAILER-DAEMON Mon Apr 11 12:05:00 2026
+Message-ID: <truncated-002@example.com>
+Date: Mon, 11 Apr 2026 12:05:00 +0000
+From: cut@example.com
+To: me@example.com
+Subject: This message is truncated mid-body
+
+The body of this message ends abruptly without a
