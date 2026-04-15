@@ -53,18 +53,28 @@ type ResumeDecision struct {
 
 // Decide implements the pure-function resume table from spec §3.1.1.
 //
-// manifestStatus is one of "", "in_progress", "complete", "interrupted",
-// "failed" -- "" signals an absent manifest. checkpointExists reports
-// whether a checkpoint file sits next to the source. resumeOverride is
+// manifest may be nil (no prior manifest on disk) or a loaded Manifest.
+// The "checkpoint exists" signal is derived from manifest.ByteOffset() > 0:
+// a non-zero resume offset in the manifest's resume_state IS the
+// checkpoint indicator; spec §3.1.1's talk of a distinct checkpoint
+// file is functionally equivalent (byte_offset=0 means "resume from the
+// beginning" which is the same as "no checkpoint"). resumeOverride is
 // the CLI --resume flag: nil means "do whatever the rule says",
 // *false forces fresh start, *true forces resume semantics (including
 // for failed status).
 //
 // Note on ByteOffset / PreservedMessageIDs: this function is concerned
 // only with the Action. The concrete offset and dedup set live in the
-// format-specific manifest/checkpoint files and are looked up by
-// RunOneShot after Decide returns Resume.
-func Decide(manifestStatus string, checkpointExists bool, resumeOverride *bool) ResumeDecision {
+// format-specific manifest and are looked up by RunOneShot after Decide
+// returns Resume.
+func Decide(manifest Manifest, resumeOverride *bool) ResumeDecision {
+	var status ManifestStatus
+	checkpointExists := false
+	if manifest != nil {
+		status = manifest.Status()
+		checkpointExists = manifest.ByteOffset() > 0
+	}
+
 	// Explicit --resume=false: per spec §3.1.1, "forces a fresh start
 	// (deletes existing manifest and checkpoint)" -- overrides any
 	// status, including complete. An operator who passes --resume=false
@@ -74,7 +84,7 @@ func Decide(manifestStatus string, checkpointExists bool, resumeOverride *bool) 
 	}
 
 	// Complete always wins before any other resume semantics.
-	if manifestStatus == "complete" {
+	if status == StatusComplete {
 		return ResumeDecision{Action: ExitComplete}
 	}
 
@@ -88,15 +98,15 @@ func Decide(manifestStatus string, checkpointExists bool, resumeOverride *bool) 
 	}
 
 	// No override: apply the default table.
-	switch manifestStatus {
-	case "interrupted":
+	switch status {
+	case StatusInterrupted:
 		if checkpointExists {
 			return ResumeDecision{Action: Resume}
 		}
 		return ResumeDecision{Action: StartFresh}
-	case "failed":
+	case StatusFailed:
 		return ResumeDecision{Action: RequireExplicitResume}
-	case "in_progress", "":
+	case StatusInProgress, "":
 		return ResumeDecision{Action: StartFresh}
 	default:
 		// Unknown status -- treat conservatively as "previous run died".

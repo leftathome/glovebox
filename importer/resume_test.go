@@ -4,90 +4,87 @@ import "testing"
 
 func boolPtr(b bool) *bool { return &b }
 
+// decideFakeManifest is a minimal Manifest used by the Decide tests. It
+// carries just enough state to exercise the status / byte-offset branches.
+type decideFakeManifest struct {
+	status ManifestStatus
+	offset int64
+}
+
+func (m *decideFakeManifest) Status() ManifestStatus { return m.status }
+func (m *decideFakeManifest) ByteOffset() int64      { return m.offset }
+func (m *decideFakeManifest) MessageIDs() []string   { return nil }
+
 // TestDecide covers every rule in docs/specs/09-mbox-importer-design.md §3.1.1.
 //
+// A non-zero byte offset in the manifest's resume_state is the canonical
+// "checkpoint exists" signal (see Decide doc comment).
+//
 // Base rules (no override):
-//   - status == "complete"                       -> ExitComplete
-//   - status == "interrupted" && checkpoint      -> Resume
-//   - status == "interrupted" && !checkpoint     -> StartFresh (stale checkpoint ignored)
-//   - status == "failed"                         -> RequireExplicitResume
-//   - status == "in_progress"                    -> StartFresh
-//   - status == "" (manifest absent)             -> StartFresh
+//   - status == StatusComplete                   -> ExitComplete
+//   - status == StatusInterrupted && offset > 0  -> Resume
+//   - status == StatusInterrupted && offset == 0 -> StartFresh
+//   - status == StatusFailed                     -> RequireExplicitResume
+//   - status == StatusInProgress                 -> StartFresh
+//   - manifest == nil                            -> StartFresh
 //
 // Override rules:
 //   - resumeOverride == false                    -> always StartFresh (fresh restart)
-//   - resumeOverride == true && checkpoint       -> Resume (even for failed)
-//   - resumeOverride == true && !checkpoint      -> StartFresh (nothing to resume from)
+//   - resumeOverride == true && offset > 0       -> Resume (even for failed)
+//   - resumeOverride == true && offset == 0      -> StartFresh (nothing to resume from)
 func TestDecide(t *testing.T) {
 	tests := []struct {
-		name            string
-		status          string
-		checkpoint      bool
-		override        *bool
-		wantAction      ResumeAction
-		wantDescription string
+		name       string
+		manifest   Manifest
+		override   *bool
+		wantAction ResumeAction
 	}{
 		// --- Base rules, no override ---
 		{
 			name:       "complete exits immediately",
-			status:     "complete",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusComplete},
 			override:   nil,
 			wantAction: ExitComplete,
 		},
 		{
 			name:       "complete with stale checkpoint still exits",
-			status:     "complete",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusComplete, offset: 100},
 			override:   nil,
 			wantAction: ExitComplete,
 		},
 		{
 			name:       "interrupted with checkpoint resumes",
-			status:     "interrupted",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusInterrupted, offset: 12345},
 			override:   nil,
 			wantAction: Resume,
 		},
 		{
 			name:       "interrupted without checkpoint starts fresh",
-			status:     "interrupted",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusInterrupted, offset: 0},
 			override:   nil,
 			wantAction: StartFresh,
 		},
 		{
 			name:       "failed requires explicit resume",
-			status:     "failed",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusFailed, offset: 5000},
 			override:   nil,
 			wantAction: RequireExplicitResume,
 		},
 		{
 			name:       "failed without checkpoint still requires explicit resume",
-			status:     "failed",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusFailed, offset: 0},
 			override:   nil,
 			wantAction: RequireExplicitResume,
 		},
 		{
 			name:       "in_progress starts fresh (died before writing terminal status)",
-			status:     "in_progress",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusInProgress, offset: 2000},
 			override:   nil,
 			wantAction: StartFresh,
 		},
 		{
 			name:       "missing manifest starts fresh",
-			status:     "",
-			checkpoint: false,
-			override:   nil,
-			wantAction: StartFresh,
-		},
-		{
-			name:       "missing manifest with stale checkpoint starts fresh",
-			status:     "",
-			checkpoint: true,
+			manifest:   nil,
 			override:   nil,
 			wantAction: StartFresh,
 		},
@@ -95,22 +92,19 @@ func TestDecide(t *testing.T) {
 		// --- Override == false forces fresh start regardless of state ---
 		{
 			name:       "override false forces fresh from complete",
-			status:     "complete",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusComplete},
 			override:   boolPtr(false),
 			wantAction: StartFresh,
 		},
 		{
 			name:       "override false forces fresh from interrupted",
-			status:     "interrupted",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusInterrupted, offset: 12345},
 			override:   boolPtr(false),
 			wantAction: StartFresh,
 		},
 		{
 			name:       "override false forces fresh from failed",
-			status:     "failed",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusFailed, offset: 12345},
 			override:   boolPtr(false),
 			wantAction: StartFresh,
 		},
@@ -118,29 +112,25 @@ func TestDecide(t *testing.T) {
 		// --- Override == true forces resume semantics ---
 		{
 			name:       "override true resumes failed",
-			status:     "failed",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusFailed, offset: 500},
 			override:   boolPtr(true),
 			wantAction: Resume,
 		},
 		{
 			name:       "override true resumes interrupted",
-			status:     "interrupted",
-			checkpoint: true,
+			manifest:   &decideFakeManifest{status: StatusInterrupted, offset: 500},
 			override:   boolPtr(true),
 			wantAction: Resume,
 		},
 		{
 			name:       "override true without checkpoint starts fresh",
-			status:     "failed",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusFailed, offset: 0},
 			override:   boolPtr(true),
 			wantAction: StartFresh,
 		},
 		{
 			name:       "override true on complete still exits complete",
-			status:     "complete",
-			checkpoint: false,
+			manifest:   &decideFakeManifest{status: StatusComplete},
 			override:   boolPtr(true),
 			wantAction: ExitComplete,
 		},
@@ -148,10 +138,10 @@ func TestDecide(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Decide(tt.status, tt.checkpoint, tt.override)
+			got := Decide(tt.manifest, tt.override)
 			if got.Action != tt.wantAction {
-				t.Fatalf("Decide(%q, checkpoint=%v, override=%v).Action = %v, want %v",
-					tt.status, tt.checkpoint, tt.override, got.Action, tt.wantAction)
+				t.Fatalf("Decide(%+v, override=%v).Action = %v, want %v",
+					tt.manifest, tt.override, got.Action, tt.wantAction)
 			}
 		})
 	}

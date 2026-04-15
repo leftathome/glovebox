@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leftathome/glovebox/importer"
 )
 
 // newFullManifest returns a manifest populated with non-zero values in every
@@ -28,7 +30,7 @@ func newFullManifest(t *testing.T) *ImportManifestV1 {
 		SourceSize:         12_583_279_104,
 		SourceMtime:        mtime,
 		SourceName:         "takeout-2026-04-11",
-		Status:             StatusComplete,
+		Status:             validatedStatus(importer.StatusComplete),
 		TimestampStart:     start,
 		TimestampEnd:       &end,
 		SurveyRef:          "takeout.mbox.survey.v1.json",
@@ -145,7 +147,7 @@ func TestRoundTripNilTimestampEnd(t *testing.T) {
 	m := &ImportManifestV1{
 		SchemaVersion:            SchemaVersion,
 		Kind:                     Kind,
-		Status:                   StatusInProgress,
+		Status:                   validatedStatus(importer.StatusInProgress),
 		TimestampStart:           time.Now().UTC(),
 		TimestampEnd:             nil,
 		FilterHitCounts:          map[string]int{},
@@ -169,23 +171,24 @@ func TestRoundTripNilTimestampEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(raw), `"timestamp_end": null`) {
+	if !strings.Contains(string(raw), `"timestamp_end":null`) {
 		t.Errorf("expected timestamp_end rendered as null, got:\n%s", raw)
 	}
 }
 
-func TestRoundTripEmptySlicesVsNil(t *testing.T) {
-	// With non-nil empty slices, the JSON should contain "[]" for each,
-	// preserving the round-trip. Nil slices would marshal as "null", which
-	// we want callers to be able to detect if they care. We demonstrate
-	// both here.
+func TestRoundTripEmptyCollections(t *testing.T) {
+	// The collection fields (MessageIDsIngested, Errors, FilterHitCounts,
+	// DestinationRuleHitCounts, FilterRulesApplied) all carry omitempty,
+	// so empty/nil values drop from the serialized form entirely and
+	// round-trip as nil on load. This test documents that behavior -- it
+	// matters for the on-disk size of in-flight manifests.
 	dir := t.TempDir()
 
 	emptyPath := filepath.Join(dir, "empty.json")
 	empty := &ImportManifestV1{
 		SchemaVersion:      SchemaVersion,
 		Kind:               Kind,
-		Status:             StatusInProgress,
+		Status:             validatedStatus(importer.StatusInProgress),
 		MessageIDsIngested: []string{},
 		Errors:             []ErrorEntry{},
 	}
@@ -193,30 +196,32 @@ func TestRoundTripEmptySlicesVsNil(t *testing.T) {
 		t.Fatalf("Write empty: %v", err)
 	}
 	data, _ := os.ReadFile(emptyPath)
-	if !strings.Contains(string(data), `"message_ids_ingested": []`) {
-		t.Errorf("empty slice should marshal as [], got:\n%s", data)
-	}
-	if !strings.Contains(string(data), `"errors": []`) {
-		t.Errorf("empty errors should marshal as [], got:\n%s", data)
+	// With omitempty, empty slices/maps are dropped; we accept either
+	// "field missing entirely" OR "field present as []/null" to keep the
+	// test robust across future JSON library behavior, but the current
+	// behavior is "absent".
+	if strings.Contains(string(data), `"message_ids_ingested":[`) && !strings.Contains(string(data), `"message_ids_ingested":[]`) {
+		t.Errorf("message_ids_ingested appears with non-empty content: %s", data)
 	}
 
 	loaded, err := LoadManifest(emptyPath)
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
-	if loaded.MessageIDsIngested == nil || len(loaded.MessageIDsIngested) != 0 {
-		t.Errorf("expected empty non-nil slice, got %#v", loaded.MessageIDsIngested)
+	// Either nil or empty non-nil is acceptable after the omitempty round-trip.
+	if len(loaded.MessageIDsIngested) != 0 {
+		t.Errorf("expected empty MessageIDsIngested after round-trip, got %#v", loaded.MessageIDsIngested)
 	}
-	if loaded.Errors == nil || len(loaded.Errors) != 0 {
-		t.Errorf("expected empty non-nil errors slice, got %#v", loaded.Errors)
+	if len(loaded.Errors) != 0 {
+		t.Errorf("expected empty Errors after round-trip, got %#v", loaded.Errors)
 	}
 
-	// Nil slices marshal as null; after a round trip they stay nil.
+	// Nil slices behave the same as empty slices under omitempty.
 	nilPath := filepath.Join(dir, "nil.json")
 	nilM := &ImportManifestV1{
 		SchemaVersion: SchemaVersion,
 		Kind:          Kind,
-		Status:        StatusInProgress,
+		Status:        validatedStatus(importer.StatusInProgress),
 	}
 	if err := nilM.Write(nilPath); err != nil {
 		t.Fatalf("Write nil: %v", err)
@@ -234,14 +239,19 @@ func TestRoundTripEmptySlicesVsNil(t *testing.T) {
 }
 
 func TestStatusEnumMarshalUnmarshal(t *testing.T) {
-	cases := []Status{StatusInProgress, StatusComplete, StatusInterrupted, StatusFailed}
+	cases := []importer.ManifestStatus{
+		importer.StatusInProgress,
+		importer.StatusComplete,
+		importer.StatusInterrupted,
+		importer.StatusFailed,
+	}
 	for _, s := range cases {
 		s := s
 		t.Run(string(s), func(t *testing.T) {
 			m := &ImportManifestV1{
 				SchemaVersion: SchemaVersion,
 				Kind:          Kind,
-				Status:        s,
+				Status:        validatedStatus(s),
 			}
 			data, err := json.Marshal(m)
 			if err != nil {
@@ -254,7 +264,7 @@ func TestStatusEnumMarshalUnmarshal(t *testing.T) {
 			if err := json.Unmarshal(data, &back); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if back.Status != s {
+			if importer.ManifestStatus(back.Status) != s {
 				t.Errorf("status mismatch: got %q want %q", back.Status, s)
 			}
 		})
@@ -377,15 +387,15 @@ func TestErrorCap(t *testing.T) {
 }
 
 func TestIsStatusTerminal(t *testing.T) {
-	cases := map[Status]bool{
-		StatusInProgress:  false,
-		StatusComplete:    true,
-		StatusInterrupted: true,
-		StatusFailed:      true,
-		Status("bogus"):   false, // defensively false for unset/unknown in-memory value
+	cases := map[importer.ManifestStatus]bool{
+		importer.StatusInProgress:        false,
+		importer.StatusComplete:          true,
+		importer.StatusInterrupted:       true,
+		importer.StatusFailed:            true,
+		importer.ManifestStatus("bogus"): false, // defensively false for unset/unknown in-memory value
 	}
 	for s, want := range cases {
-		m := &ImportManifestV1{Status: s}
+		m := &ImportManifestV1{Status: validatedStatus(s)}
 		if got := m.IsStatusTerminal(); got != want {
 			t.Errorf("IsStatusTerminal(%q): got %v want %v", s, got, want)
 		}

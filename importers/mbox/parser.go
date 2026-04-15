@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"io"
 	"net/mail"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -27,6 +28,10 @@ import (
 // Large messages (notably those with inline attachments) can exceed the
 // stdlib bufio.Scanner default of 64 KiB, so we default to 64 MiB.
 const DefaultBufferSize = 64 * 1024 * 1024
+
+// initialBufferSize is the starting capacity of the bufio.Scanner buffer.
+// The scanner will grow this up to DefaultBufferSize on demand.
+const initialBufferSize = 64 * 1024
 
 // Message represents a single parsed message from an mbox stream.
 type Message struct {
@@ -64,10 +69,12 @@ type Message struct {
 	// Size is len(Raw).
 	Size int
 
-	// ParseError is non-nil if the header block could not be fully parsed
-	// by net/mail. The message is still emitted with whatever fields
-	// could be salvaged (or with empty fields).
-	ParseError error
+	// HeaderParseError is non-nil if the RFC 5322 header block could not be
+	// fully parsed by net/mail. Informational only; the message has
+	// best-effort extracted headers (via a forgiving manual pass) and
+	// should be processed normally. This is not a signal that the message
+	// is broken.
+	HeaderParseError error
 }
 
 // Scanner streams messages from an mbox input.
@@ -169,7 +176,7 @@ func (s *Scanner) start() {
 	// Allocate the buffer at the configured max size. We pass the same
 	// value as both initial buffer capacity and max to avoid surprising
 	// growth behavior.
-	buf := make([]byte, 0, 64*1024)
+	buf := make([]byte, 0, initialBufferSize)
 	sc.Buffer(buf, s.bufSize)
 	sc.Split(splitMbox)
 	s.scanner = sc
@@ -271,8 +278,8 @@ func trimTrailingMboxBlank(b []byte) []byte {
 }
 
 // parseHeaders populates m's header-derived fields from m.Raw. If
-// net/mail.ReadMessage fails, m.ParseError is set and we fall back to a
-// best-effort line scan to extract as many headers as possible.
+// net/mail.ReadMessage fails, m.HeaderParseError is set and we fall back
+// to a best-effort line scan to extract as many headers as possible.
 func parseHeaders(m *Message) {
 	// Try net/mail first.
 	msg, err := mail.ReadMessage(bytes.NewReader(m.Raw))
@@ -280,7 +287,7 @@ func parseHeaders(m *Message) {
 		applyHeaders(m, msg.Header)
 		return
 	}
-	m.ParseError = err
+	m.HeaderParseError = err
 
 	// Fallback: manually extract the header block (up to the first blank
 	// line) and populate a mail.Header ourselves, skipping any line that
@@ -338,36 +345,13 @@ func manualParseHeaders(raw []byte) mail.Header {
 			continue
 		}
 		flush()
-		curKey = textprotoCanonical(string(ln[:colon]))
+		curKey = textproto.CanonicalMIMEHeaderKey(string(ln[:colon]))
 		v := ln[colon+1:]
 		v = bytes.TrimLeft(v, " \t")
 		curVal.Write(v)
 	}
 	flush()
 	return hdr
-}
-
-// textprotoCanonical mirrors textproto.CanonicalMIMEHeaderKey on an ASCII
-// header name. We avoid pulling in net/textproto for a trivial function;
-// this handles the common cases (hyphen-separated tokens).
-func textprotoCanonical(s string) string {
-	var b strings.Builder
-	upper := true
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if upper {
-			if c >= 'a' && c <= 'z' {
-				c -= 'a' - 'A'
-			}
-		} else {
-			if c >= 'A' && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-		}
-		b.WriteByte(c)
-		upper = c == '-'
-	}
-	return b.String()
 }
 
 // applyHeaders fills m's fields from a mail.Header.
@@ -440,4 +424,3 @@ func stripAngleBrackets(s string) string {
 	}
 	return s
 }
-

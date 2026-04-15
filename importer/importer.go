@@ -19,6 +19,34 @@ package importer
 
 import "context"
 
+// ManifestStatus is the life-cycle status field recorded in a format's
+// import manifest. The four legal values (plus the empty zero value,
+// which signals "no manifest present") drive the resume decision in
+// Decide and appear verbatim in the on-disk manifest JSON. See spec
+// §3.6.1 for the shared vocabulary.
+type ManifestStatus string
+
+const (
+	// StatusInProgress: a run is mid-flight (or the process died before
+	// writing a terminal status). Treated as "start fresh" by Decide
+	// since an in_progress-at-load manifest means a prior crash.
+	StatusInProgress ManifestStatus = "in_progress"
+
+	// StatusComplete: the archive has been fully imported. Decide
+	// short-circuits to ExitComplete.
+	StatusComplete ManifestStatus = "complete"
+
+	// StatusInterrupted: the run was cleanly interrupted (SIGTERM,
+	// ctx cancel) and flushed its resume_state. Decide returns
+	// Resume if the manifest records a non-zero byte offset.
+	StatusInterrupted ManifestStatus = "interrupted"
+
+	// StatusFailed: the run hit a terminal error worth investigating.
+	// Decide returns RequireExplicitResume unless the operator
+	// passes --resume=true.
+	StatusFailed ManifestStatus = "failed"
+)
+
 // Importer is the contract a format-specific handler implements to
 // plug into RunOneShot. The orchestration runtime calls these methods
 // in a fixed order; implementations own all format-specific I/O
@@ -46,12 +74,6 @@ type Importer interface {
 	// source, or (nil, nil) if none exists. A non-nil error is
 	// reserved for I/O or parse failures.
 	LoadManifest(path string) (Manifest, error)
-
-	// CheckpointExists reports whether a resume checkpoint sits next
-	// to the archive. Callers must treat this as a hint to combine
-	// with the manifest status in Decide; a "stale" checkpoint
-	// without a matching manifest is overwritten per spec §3.1.1.
-	CheckpointExists(path string) bool
 
 	// LoadFilter parses the user-authored filter config at filterPath
 	// and returns an opaque FilterConfig handed back into Import.
@@ -98,12 +120,16 @@ type FilterConfig interface{}
 // RunOneShot can call Decide without knowing the format-specific
 // schema.
 type Manifest interface {
-	// Status returns the manifest status field: one of "in_progress",
-	// "complete", "interrupted", or "failed" per spec §3.6.1.
-	Status() string
+	// Status returns the manifest status field. One of StatusInProgress,
+	// StatusComplete, StatusInterrupted, or StatusFailed per spec
+	// §3.6.1. The empty ManifestStatus is reserved for "no manifest"
+	// and implementations should never return it.
+	Status() ManifestStatus
 
 	// ByteOffset returns the resume offset recorded in the manifest's
-	// resume_state. Zero if no resume state is present.
+	// resume_state. Zero if no resume state is present; a non-zero
+	// value is also the canonical "checkpoint exists" signal that
+	// Decide consults.
 	ByteOffset() int64
 
 	// MessageIDs returns the manifest's message_ids_ingested set

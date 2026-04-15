@@ -24,14 +24,14 @@ func (s *fakeSurvey) IsStale(sourcePath string) (bool, error) {
 }
 
 type fakeManifest struct {
-	status string
+	status ManifestStatus
 	offset int64
 	ids    []string
 }
 
-func (m *fakeManifest) Status() string       { return m.status }
-func (m *fakeManifest) ByteOffset() int64    { return m.offset }
-func (m *fakeManifest) MessageIDs() []string { return m.ids }
+func (m *fakeManifest) Status() ManifestStatus { return m.status }
+func (m *fakeManifest) ByteOffset() int64      { return m.offset }
+func (m *fakeManifest) MessageIDs() []string   { return m.ids }
 
 // mockImporter records every orchestration callback so tests can
 // assert RunOneShot drove the right sequence. Each Fn field can be
@@ -40,7 +40,6 @@ type mockImporter struct {
 	// canned returns
 	existingSurvey   SurveyFile
 	existingManifest Manifest
-	checkpointExists bool
 	filterCfg        FilterConfig
 
 	// error injection
@@ -58,7 +57,6 @@ type mockImporter struct {
 	surveyCalls   int32
 	loadSurvey    int32
 	loadManifest  int32
-	ckptChecks    int32
 	loadFilter    int32
 	clearState    int32
 	importCalls   int32
@@ -94,11 +92,6 @@ func (m *mockImporter) LoadManifest(path string) (Manifest, error) {
 	return m.existingManifest, nil
 }
 
-func (m *mockImporter) CheckpointExists(path string) bool {
-	atomic.AddInt32(&m.ckptChecks, 1)
-	return m.checkpointExists
-}
-
 func (m *mockImporter) LoadFilter(filterPath string) (FilterConfig, error) {
 	atomic.AddInt32(&m.loadFilter, 1)
 	if m.filterErr != nil {
@@ -120,6 +113,15 @@ func (m *mockImporter) Import(ctx context.Context, path string, survey SurveyFil
 	return m.importErr
 }
 
+// newMockImporter constructs a mockImporter pre-populated with a fresh
+// survey and no manifest; individual tests override just the fields
+// they care about via the returned pointer.
+func newMockImporter() *mockImporter {
+	return &mockImporter{
+		existingSurvey: &fakeSurvey{stale: false},
+	}
+}
+
 // testFramework returns a Framework value sufficient for RunOneShot's
 // current needs. RunOneShot only reads fw.Logger; this keeps tests
 // independent of the backend/metrics/health-server bootstrap.
@@ -130,7 +132,84 @@ func testFramework() *connector.Framework {
 	}
 }
 
-// --- Fresh-start scenarios ---------------------------------------------------
+// --- Survey handling (table-driven) ------------------------------------------
+
+// TestRunOneShot_SurveyHandling consolidates the three previous
+// "existing fresh survey / stale survey regenerated / RegenerateSurvey
+// forces resurvey" cases into one table-driven test since they all
+// assert the same shape (wantSurveyCalls, wantImportSurvey).
+func TestRunOneShot_SurveyHandling(t *testing.T) {
+	existing := &fakeSurvey{id: "existing", stale: false}
+	staleExisting := &fakeSurvey{id: "existing", stale: true}
+	regenerated := &fakeSurvey{id: "regenerated", stale: false}
+
+	tests := []struct {
+		name             string
+		existingSurvey   SurveyFile
+		surveyReturn     SurveyFile
+		regenerateSurvey bool
+		wantSurveyCalls  int32
+		wantImportSurvey SurveyFile
+	}{
+		{
+			name:             "no existing survey generates one",
+			existingSurvey:   nil,
+			surveyReturn:     nil, // mock falls back to default generated survey
+			regenerateSurvey: false,
+			wantSurveyCalls:  1,
+			wantImportSurvey: nil, // don't compare pointer identity when generated
+		},
+		{
+			name:             "fresh existing survey reused",
+			existingSurvey:   existing,
+			regenerateSurvey: false,
+			wantSurveyCalls:  0,
+			wantImportSurvey: existing,
+		},
+		{
+			name:             "stale survey triggers regeneration",
+			existingSurvey:   staleExisting,
+			surveyReturn:     regenerated,
+			regenerateSurvey: false,
+			wantSurveyCalls:  1,
+			wantImportSurvey: regenerated,
+		},
+		{
+			name:             "RegenerateSurvey=true forces resurvey even when fresh",
+			existingSurvey:   existing,
+			surveyReturn:     regenerated,
+			regenerateSurvey: true,
+			wantSurveyCalls:  1,
+			wantImportSurvey: regenerated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockImporter{
+				existingSurvey: tt.existingSurvey,
+				surveyReturn:   tt.surveyReturn,
+			}
+			err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
+				SourcePath:       "/tmp/archive.mbox",
+				RegenerateSurvey: tt.regenerateSurvey,
+			})
+			if err != nil {
+				t.Fatalf("RunOneShot: %v", err)
+			}
+			if m.surveyCalls != tt.wantSurveyCalls {
+				t.Errorf("Survey calls = %d, want %d", m.surveyCalls, tt.wantSurveyCalls)
+			}
+			if m.importCalls != 1 {
+				t.Fatalf("Import not called")
+			}
+			if tt.wantImportSurvey != nil && m.importSurvey != tt.wantImportSurvey {
+				t.Errorf("Import received wrong survey object: got %+v, want %+v",
+					m.importSurvey, tt.wantImportSurvey)
+			}
+		})
+	}
+}
 
 func TestRunOneShot_FreshStartGeneratesSurveyAndImports(t *testing.T) {
 	m := &mockImporter{}
@@ -148,63 +227,6 @@ func TestRunOneShot_FreshStartGeneratesSurveyAndImports(t *testing.T) {
 	}
 	if m.importDecided.Action != StartFresh {
 		t.Errorf("Import decision = %v, want StartFresh", m.importDecided.Action)
-	}
-}
-
-func TestRunOneShot_UsesExistingFreshSurvey(t *testing.T) {
-	existing := &fakeSurvey{id: "existing", stale: false}
-	m := &mockImporter{existingSurvey: existing}
-	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
-		SourcePath: "/tmp/archive.mbox",
-	})
-	if err != nil {
-		t.Fatalf("RunOneShot: %v", err)
-	}
-	if m.surveyCalls != 0 {
-		t.Errorf("Survey regenerated unexpectedly (calls=%d)", m.surveyCalls)
-	}
-	if m.importCalls != 1 {
-		t.Errorf("Import not called")
-	}
-	if m.importSurvey != existing {
-		t.Errorf("Import received wrong survey object")
-	}
-}
-
-func TestRunOneShot_StaleSurveyIsRegenerated(t *testing.T) {
-	existing := &fakeSurvey{id: "existing", stale: true}
-	regenerated := &fakeSurvey{id: "regenerated", stale: false}
-	m := &mockImporter{existingSurvey: existing, surveyReturn: regenerated}
-	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
-		SourcePath: "/tmp/archive.mbox",
-	})
-	if err != nil {
-		t.Fatalf("RunOneShot: %v", err)
-	}
-	if m.surveyCalls != 1 {
-		t.Errorf("Survey should regenerate for stale survey (calls=%d)", m.surveyCalls)
-	}
-	if m.importSurvey != regenerated {
-		t.Errorf("Import should receive regenerated survey")
-	}
-}
-
-func TestRunOneShot_RegenerateSurveyForcesResurvey(t *testing.T) {
-	existing := &fakeSurvey{id: "existing", stale: false} // fresh!
-	regenerated := &fakeSurvey{id: "regenerated"}
-	m := &mockImporter{existingSurvey: existing, surveyReturn: regenerated}
-	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
-		SourcePath:       "/tmp/archive.mbox",
-		RegenerateSurvey: true,
-	})
-	if err != nil {
-		t.Fatalf("RunOneShot: %v", err)
-	}
-	if m.surveyCalls != 1 {
-		t.Errorf("Survey should regenerate when RegenerateSurvey=true even if fresh")
-	}
-	if m.importSurvey != regenerated {
-		t.Errorf("Import should receive regenerated survey")
 	}
 }
 
@@ -231,10 +253,8 @@ func TestRunOneShot_SurveyOnlyExitsBeforeImport(t *testing.T) {
 }
 
 func TestRunOneShot_CompleteManifestExitsImmediately(t *testing.T) {
-	m := &mockImporter{
-		existingSurvey:   &fakeSurvey{stale: false},
-		existingManifest: &fakeManifest{status: "complete"},
-	}
+	m := newMockImporter()
+	m.existingManifest = &fakeManifest{status: StatusComplete}
 	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
 		SourcePath: "/tmp/archive.mbox",
 	})
@@ -249,11 +269,8 @@ func TestRunOneShot_CompleteManifestExitsImmediately(t *testing.T) {
 // --- Resume scenarios --------------------------------------------------------
 
 func TestRunOneShot_ResumeFromInterrupted(t *testing.T) {
-	m := &mockImporter{
-		existingSurvey:   &fakeSurvey{stale: false},
-		existingManifest: &fakeManifest{status: "interrupted", offset: 12345, ids: []string{"<a>", "<b>"}},
-		checkpointExists: true,
-	}
+	m := newMockImporter()
+	m.existingManifest = &fakeManifest{status: StatusInterrupted, offset: 12345, ids: []string{"<a>", "<b>"}}
 	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
 		SourcePath: "/tmp/archive.mbox",
 	})
@@ -275,11 +292,8 @@ func TestRunOneShot_ResumeFromInterrupted(t *testing.T) {
 }
 
 func TestRunOneShot_FailedRequiresExplicitResume(t *testing.T) {
-	m := &mockImporter{
-		existingSurvey:   &fakeSurvey{stale: false},
-		existingManifest: &fakeManifest{status: "failed"},
-		checkpointExists: true,
-	}
+	m := newMockImporter()
+	m.existingManifest = &fakeManifest{status: StatusFailed, offset: 999}
 	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
 		SourcePath: "/tmp/archive.mbox",
 	})
@@ -293,11 +307,8 @@ func TestRunOneShot_FailedRequiresExplicitResume(t *testing.T) {
 
 func TestRunOneShot_FailedWithExplicitResumeContinues(t *testing.T) {
 	yes := true
-	m := &mockImporter{
-		existingSurvey:   &fakeSurvey{stale: false},
-		existingManifest: &fakeManifest{status: "failed", offset: 999, ids: []string{"<x>"}},
-		checkpointExists: true,
-	}
+	m := newMockImporter()
+	m.existingManifest = &fakeManifest{status: StatusFailed, offset: 999, ids: []string{"<x>"}}
 	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
 		SourcePath:     "/tmp/archive.mbox",
 		ResumeOverride: &yes,
@@ -318,11 +329,8 @@ func TestRunOneShot_FailedWithExplicitResumeContinues(t *testing.T) {
 
 func TestRunOneShot_OverrideFalseClearsStateAndStartsFresh(t *testing.T) {
 	no := false
-	m := &mockImporter{
-		existingSurvey:   &fakeSurvey{stale: false},
-		existingManifest: &fakeManifest{status: "interrupted", offset: 5555},
-		checkpointExists: true,
-	}
+	m := newMockImporter()
+	m.existingManifest = &fakeManifest{status: StatusInterrupted, offset: 5555}
 	err := RunOneShot(context.Background(), testFramework(), m, RunConfig{
 		SourcePath:     "/tmp/archive.mbox",
 		ResumeOverride: &no,
