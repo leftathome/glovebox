@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/leftathome/glovebox/importer"
 )
 
 // SchemaVersion is the on-disk schema version written into every manifest.
@@ -34,36 +36,33 @@ const DefaultErrorCap = 1000
 // manifestSuffix is appended to the source path to form the manifest path.
 const manifestSuffix = ".import-manifest.v1.json"
 
-// Status enumerates the life-cycle states of an import run.
-//
-// Transitions: in_progress -> (complete | interrupted | failed). Terminal
-// states never transition further without a new run. See spec §3.6.1.
-type Status string
+// The life-cycle status of an import run is represented by the shared
+// importer.ManifestStatus enum. Transitions: StatusInProgress ->
+// (StatusComplete | StatusInterrupted | StatusFailed); terminal states
+// never transition further without a new run. See spec §3.6.1.
 
-const (
-	StatusInProgress  Status = "in_progress"
-	StatusComplete    Status = "complete"
-	StatusInterrupted Status = "interrupted"
-	StatusFailed      Status = "failed"
-)
+// validatedStatus is a JSON-level wrapper around importer.ManifestStatus
+// that rejects unknown strings at parse time so a corrupt or future-schema
+// manifest fails loud rather than being silently accepted. We only need
+// the custom UnmarshalJSON; marshaling is delegated to the underlying
+// string.
+type validatedStatus importer.ManifestStatus
 
-// isValid reports whether s is one of the four known status values.
-func (s Status) isValid() bool {
-	switch s {
-	case StatusInProgress, StatusComplete, StatusInterrupted, StatusFailed:
+func (s validatedStatus) isValid() bool {
+	switch importer.ManifestStatus(s) {
+	case importer.StatusInProgress, importer.StatusComplete,
+		importer.StatusInterrupted, importer.StatusFailed:
 		return true
 	}
 	return false
 }
 
-// UnmarshalJSON rejects unknown status strings at parse time so that a corrupt
-// or future-schema manifest fails loud rather than being silently accepted.
-func (s *Status) UnmarshalJSON(data []byte) error {
+func (s *validatedStatus) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	candidate := Status(raw)
+	candidate := validatedStatus(raw)
 	if !candidate.isValid() {
 		return fmt.Errorf("mbox manifest: unknown status %q", raw)
 	}
@@ -84,9 +83,9 @@ type ImportManifestV1 struct {
 	SourceMtime time.Time `json:"source_mtime"`
 	SourceName  string    `json:"source_name"`
 
-	Status         Status     `json:"status"`
-	TimestampStart time.Time  `json:"timestamp_start"`
-	TimestampEnd   *time.Time `json:"timestamp_end"` // nil until the run reaches a terminal state
+	Status         validatedStatus `json:"status"`
+	TimestampStart time.Time       `json:"timestamp_start"`
+	TimestampEnd   *time.Time      `json:"timestamp_end"` // nil until the run reaches a terminal state
 
 	SurveyRef string `json:"survey_ref"`
 	FilterRef string `json:"filter_ref"`
@@ -98,12 +97,12 @@ type ImportManifestV1 struct {
 	FilterRulesApplied json.RawMessage `json:"filter_rules_applied,omitempty"`
 
 	Counts                   Counts         `json:"counts"`
-	FilterHitCounts          map[string]int `json:"filter_hit_counts"`
-	DestinationRuleHitCounts map[string]int `json:"destination_rule_hit_counts"`
+	FilterHitCounts          map[string]int `json:"filter_hit_counts,omitempty"`
+	DestinationRuleHitCounts map[string]int `json:"destination_rule_hit_counts,omitempty"`
 
-	MessageIDsIngested []string `json:"message_ids_ingested"`
+	MessageIDsIngested []string `json:"message_ids_ingested,omitempty"`
 
-	Errors              []ErrorEntry `json:"errors"`
+	Errors              []ErrorEntry `json:"errors,omitempty"`
 	TruncatedErrorCount int          `json:"truncated_error_count"`
 
 	ResumeState ResumeState `json:"resume_state"`
@@ -166,8 +165,13 @@ func LoadManifest(path string) (*ImportManifestV1, error) {
 // renames, so a kill -9 can occur at any point without leaving a partially
 // written manifest. A kill during the tmp-file phase leaves behind a stray
 // `.tmp-*` sibling which we best-effort clean up on our own error paths.
+//
+// The output is compact (no indentation): Write is called every N
+// messages during an in-flight import, and pretty-printing a manifest
+// with 25k+ message IDs produces a 2+ MB file. Tools like jq can
+// pretty-print on demand if a human wants to read it.
 func (m *ImportManifestV1) Write(path string) error {
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("mbox manifest: marshal: %w", err)
 	}
@@ -210,22 +214,27 @@ func (m *ImportManifestV1) Write(path string) error {
 
 // AddError appends entry to the Errors slice, capped at DefaultErrorCap.
 // Overflows increment TruncatedErrorCount and are dropped. See spec §3.6.2.
-func (m *ImportManifestV1) AddError(entry ErrorEntry) {
+//
+// Returns true when the entry was appended, false when the cap had
+// already been reached and TruncatedErrorCount was incremented instead.
+// Callers can use the return value to, e.g., log the first retained
+// error at INFO and suppress further identical ones.
+func (m *ImportManifestV1) AddError(entry ErrorEntry) (appended bool) {
 	if len(m.Errors) >= DefaultErrorCap {
 		m.TruncatedErrorCount++
-		return
+		return false
 	}
 	m.Errors = append(m.Errors, entry)
+	return true
 }
 
 // IsStatusTerminal reports whether the manifest's Status is one of the
 // terminal values (complete, interrupted, failed). Used by resume logic to
 // decide whether the previous run ended cleanly.
 func (m *ImportManifestV1) IsStatusTerminal() bool {
-	switch m.Status {
-	case StatusComplete, StatusInterrupted, StatusFailed:
+	switch importer.ManifestStatus(m.Status) {
+	case importer.StatusComplete, importer.StatusInterrupted, importer.StatusFailed:
 		return true
 	}
 	return false
 }
-

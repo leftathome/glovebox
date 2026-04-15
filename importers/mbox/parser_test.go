@@ -51,8 +51,8 @@ func TestScanner_SmallMbox_FirstMessage_PlainHeaders(t *testing.T) {
 	if m.Date.IsZero() {
 		t.Errorf("Date is zero, want parsed")
 	}
-	if m.ParseError != nil {
-		t.Errorf("unexpected ParseError: %v", m.ParseError)
+	if m.HeaderParseError != nil {
+		t.Errorf("unexpected HeaderParseError: %v", m.HeaderParseError)
 	}
 	if m.Size != len(m.Raw) {
 		t.Errorf("Size %d != len(Raw) %d", m.Size, len(m.Raw))
@@ -179,28 +179,28 @@ func TestScanner_SmallMbox_ErrNilAfterSuccess(t *testing.T) {
 	}
 }
 
-func TestScanner_MalformedMbox_ParseErrorAndContinues(t *testing.T) {
+func TestScanner_MalformedMbox_HeaderParseErrorAndContinues(t *testing.T) {
 	msgs := scanAll(t, filepath.Join("testdata", "malformed.mbox"))
 	if got, want := len(msgs), 3; got != want {
 		t.Fatalf("message count = %d, want %d (malformed should still be emitted)", got, want)
 	}
 
 	// First message parses cleanly.
-	if msgs[0].ParseError != nil {
-		t.Errorf("msgs[0].ParseError = %v, want nil", msgs[0].ParseError)
+	if msgs[0].HeaderParseError != nil {
+		t.Errorf("msgs[0].HeaderParseError = %v, want nil", msgs[0].HeaderParseError)
 	}
 	if msgs[0].MessageID != "<good-001@example.com>" {
 		t.Errorf("msgs[0].MessageID = %q", msgs[0].MessageID)
 	}
 
 	// Second message has malformed headers (no colons).
-	if msgs[1].ParseError == nil {
-		t.Errorf("msgs[1].ParseError = nil, want non-nil for malformed headers")
+	if msgs[1].HeaderParseError == nil {
+		t.Errorf("msgs[1].HeaderParseError = nil, want non-nil for malformed headers")
 	}
 
 	// Third message parses cleanly after the malformed one.
-	if msgs[2].ParseError != nil {
-		t.Errorf("msgs[2].ParseError = %v, want nil", msgs[2].ParseError)
+	if msgs[2].HeaderParseError != nil {
+		t.Errorf("msgs[2].HeaderParseError = %v, want nil", msgs[2].HeaderParseError)
 	}
 	if msgs[2].MessageID != "<good-003@example.com>" {
 		t.Errorf("msgs[2].MessageID = %q", msgs[2].MessageID)

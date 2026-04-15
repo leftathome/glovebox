@@ -99,21 +99,22 @@ func RunOneShot(ctx context.Context, fw *connector.Framework, i Importer, cfg Ru
 	if err != nil {
 		return fmt.Errorf("importer: load manifest: %w", err)
 	}
-	status := ""
-	var preservedOffset int64
-	var preservedIDs []string
+	var (
+		status          ManifestStatus
+		preservedOffset int64
+		preservedIDs    []string
+	)
 	if manifest != nil {
 		status = manifest.Status()
 		preservedOffset = manifest.ByteOffset()
 		preservedIDs = manifest.MessageIDs()
 	}
-	ckpt := i.CheckpointExists(cfg.SourcePath)
 
-	decision := Decide(status, ckpt, cfg.ResumeOverride)
+	decision := Decide(manifest, cfg.ResumeOverride)
 	if log != nil {
 		log.Info("resume decision",
-			"status", status,
-			"checkpoint", ckpt,
+			"status", string(status),
+			"byte_offset", preservedOffset,
 			"action", decision.Action.String())
 	}
 
@@ -135,13 +136,12 @@ func RunOneShot(ctx context.Context, fw *connector.Framework, i Importer, cfg Ru
 		decision.PreservedMessageIDs = preservedIDs
 
 	case StartFresh:
-		// If prior state exists (manifest or checkpoint) and the
-		// caller explicitly asked for a fresh restart via
-		// --resume=false, wipe it. If manifest/checkpoint existed
-		// only incidentally (e.g. in_progress from a crashed run),
-		// we also want ClearState so the implementation can start
-		// from zero without stale files underfoot.
-		if manifest != nil || ckpt {
+		// If prior state exists (manifest or its embedded resume
+		// checkpoint) and we're starting fresh, wipe it so the
+		// implementation starts from zero without stale files
+		// underfoot. Covers both explicit --resume=false and the
+		// implicit "crashed in_progress" case.
+		if manifest != nil {
 			if err := i.ClearState(cfg.SourcePath); err != nil {
 				return fmt.Errorf("importer: clear prior state: %w", err)
 			}
