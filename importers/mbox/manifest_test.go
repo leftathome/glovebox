@@ -30,7 +30,7 @@ func newFullManifest(t *testing.T) *ImportManifestV1 {
 		SourceSize:         12_583_279_104,
 		SourceMtime:        mtime,
 		SourceName:         "takeout-2026-04-11",
-		Status:             validatedStatus(importer.StatusComplete),
+		StatusValue:        validatedStatus(importer.StatusComplete),
 		TimestampStart:     start,
 		TimestampEnd:       &end,
 		SurveyRef:          "takeout.mbox.survey.v1.json",
@@ -147,7 +147,7 @@ func TestRoundTripNilTimestampEnd(t *testing.T) {
 	m := &ImportManifestV1{
 		SchemaVersion:            SchemaVersion,
 		Kind:                     Kind,
-		Status:                   validatedStatus(importer.StatusInProgress),
+		StatusValue:              validatedStatus(importer.StatusInProgress),
 		TimestampStart:           time.Now().UTC(),
 		TimestampEnd:             nil,
 		FilterHitCounts:          map[string]int{},
@@ -188,7 +188,7 @@ func TestRoundTripEmptyCollections(t *testing.T) {
 	empty := &ImportManifestV1{
 		SchemaVersion:      SchemaVersion,
 		Kind:               Kind,
-		Status:             validatedStatus(importer.StatusInProgress),
+		StatusValue:        validatedStatus(importer.StatusInProgress),
 		MessageIDsIngested: []string{},
 		Errors:             []ErrorEntry{},
 	}
@@ -221,7 +221,7 @@ func TestRoundTripEmptyCollections(t *testing.T) {
 	nilM := &ImportManifestV1{
 		SchemaVersion: SchemaVersion,
 		Kind:          Kind,
-		Status:        validatedStatus(importer.StatusInProgress),
+		StatusValue:   validatedStatus(importer.StatusInProgress),
 	}
 	if err := nilM.Write(nilPath); err != nil {
 		t.Fatalf("Write nil: %v", err)
@@ -251,7 +251,7 @@ func TestStatusEnumMarshalUnmarshal(t *testing.T) {
 			m := &ImportManifestV1{
 				SchemaVersion: SchemaVersion,
 				Kind:          Kind,
-				Status:        validatedStatus(s),
+				StatusValue:   validatedStatus(s),
 			}
 			data, err := json.Marshal(m)
 			if err != nil {
@@ -264,8 +264,8 @@ func TestStatusEnumMarshalUnmarshal(t *testing.T) {
 			if err := json.Unmarshal(data, &back); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if importer.ManifestStatus(back.Status) != s {
-				t.Errorf("status mismatch: got %q want %q", back.Status, s)
+			if importer.ManifestStatus(back.StatusValue) != s {
+				t.Errorf("status mismatch: got %q want %q", back.StatusValue, s)
 			}
 		})
 	}
@@ -395,7 +395,7 @@ func TestIsStatusTerminal(t *testing.T) {
 		importer.ManifestStatus("bogus"): false, // defensively false for unset/unknown in-memory value
 	}
 	for s, want := range cases {
-		m := &ImportManifestV1{Status: validatedStatus(s)}
+		m := &ImportManifestV1{StatusValue: validatedStatus(s)}
 		if got := m.IsStatusTerminal(); got != want {
 			t.Errorf("IsStatusTerminal(%q): got %v want %v", s, got, want)
 		}

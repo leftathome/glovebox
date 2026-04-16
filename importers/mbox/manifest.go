@@ -83,7 +83,12 @@ type ImportManifestV1 struct {
 	SourceMtime time.Time `json:"source_mtime"`
 	SourceName  string    `json:"source_name"`
 
-	Status         validatedStatus `json:"status"`
+	// StatusValue holds the manifest life-cycle status. The field is
+	// named StatusValue rather than Status so that the Status() method
+	// below (which satisfies importer.Manifest) does not collide with
+	// the field name. JSON encoding is unchanged: the `status` key is
+	// preserved by the struct tag.
+	StatusValue validatedStatus `json:"status"`
 	TimestampStart time.Time       `json:"timestamp_start"`
 	TimestampEnd   *time.Time      `json:"timestamp_end"` // nil until the run reaches a terminal state
 
@@ -232,9 +237,37 @@ func (m *ImportManifestV1) AddError(entry ErrorEntry) (appended bool) {
 // terminal values (complete, interrupted, failed). Used by resume logic to
 // decide whether the previous run ended cleanly.
 func (m *ImportManifestV1) IsStatusTerminal() bool {
-	switch importer.ManifestStatus(m.Status) {
+	switch importer.ManifestStatus(m.StatusValue) {
 	case importer.StatusComplete, importer.StatusInterrupted, importer.StatusFailed:
 		return true
 	}
 	return false
 }
+
+// The following three methods let *ImportManifestV1 satisfy the
+// importer.Manifest interface (see importer/importer.go). RunOneShot
+// consults them via that interface to drive the resume decision table
+// in spec §3.1.1 without depending on the concrete mbox schema.
+
+// Status returns the validated status field as the shared
+// importer.ManifestStatus enum.
+func (m *ImportManifestV1) Status() importer.ManifestStatus {
+	return importer.ManifestStatus(m.StatusValue)
+}
+
+// ByteOffset returns the resume_state.byte_offset. A non-zero return is
+// also the canonical "checkpoint exists" signal that importer.Decide
+// consults (see importer/resume.go).
+func (m *ImportManifestV1) ByteOffset() int64 {
+	return m.ResumeState.ByteOffset
+}
+
+// MessageIDs returns the manifest's message_ids_ingested set, preserved
+// across resume for dedup across the checkpoint boundary.
+func (m *ImportManifestV1) MessageIDs() []string {
+	return m.MessageIDsIngested
+}
+
+// Compile-time guarantee that *ImportManifestV1 satisfies the
+// importer.Manifest contract RunOneShot depends on.
+var _ importer.Manifest = (*ImportManifestV1)(nil)
