@@ -349,8 +349,11 @@ separate validation pass; extend the existing one.
 
 Rules:
 
-- `data_subject`: if present, ≤256 chars, no control characters. Empty string
-  is rejected (use omission instead).
+- `data_subject`: if present, ≤256 chars, no control characters. The Go
+  zero value (empty string) is treated as omission -- the library cannot
+  distinguish "explicit empty string" from "field absent" without adopting
+  `*string` everywhere, which adds friction for no behavioral difference
+  once merged.
 - `audience`: if present, each element must be one of the enum tokens
   (§3.4); no duplicates; ≤16 entries; non-empty array.
 - Cross-field rules from §3.5:
