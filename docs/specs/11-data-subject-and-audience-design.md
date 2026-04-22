@@ -263,9 +263,9 @@ type MatchResult struct {
 ```
 
 This is the **primary pathway** for Schoology and PowerSchool: a rule like
-`"schoology:bee:grade" -> {destination: school, data_subject: bee, audience:
-[subject, parents]}` encodes the visibility policy declaratively per content
-type.
+`"schoology:bee:grade" -> {destination: "school", data_subject: "bee",
+audience: ["subject", "parents"]}` encodes the visibility policy declaratively
+per content type.
 
 Example (schoology) -- note `data_subject` on the rule object vs the
 `"subject"` token inside `audience`:
@@ -485,6 +485,11 @@ per §3.4.
 Connector code emits items with match keys like `schoology:bee:assignment`
 for Bee's assignments, and the rule matcher fills in `data_subject` and
 `audience`.
+
+The `schoology:*:flyer` and `*` rules deliberately omit `data_subject`:
+flyers are genuinely subjectless (they concern the school or class, not a
+specific kid), and the catch-all safety net intentionally drops to the
+default `household` audience without forcing a specific subject.
 
 ### 9.3 Existing Connector (IMAP, Unchanged)
 
