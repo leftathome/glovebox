@@ -46,21 +46,21 @@ Each file has **one clear responsibility**. Tasks are ordered so each produces a
 ## Dependency Graph
 
 ```
-1 (o3sh: audience primitive) ────┐
-                                 ├── 3 (hcm2: commit validation) ──┐
-2 (4ahf: ItemMetadata fields) ───┤                                  │
-                                 └── 7 (ibzt: AuditEntry) ──┐       │
-                                                            │       │
-4 (82kv: Rule extension) ──────────────────────────────────┼───────┤
-                                                            │       │
-1 ──→ 5 (q8m0: BaseConfig defaults) ───────────────────────┼───────┤
-                                                            │       │
-                                             6 (u1sv: merge)┴───────┤
-                                                                    │
-                                             8 (2rdq: integration)──┘
+2 (4ahf: ItemMetadata fields) ──→ 1 (o3sh: audience primitive) ──┐
+                                                                 ├── 3 (hcm2: commit validation) ──┐
+2 ──────────────────────────────────────────────────────────────┤                                  │
+                                                                 └── 7 (ibzt: AuditEntry) ──┐       │
+                                                                                            │       │
+4 (82kv: Rule extension) ──────────────────────────────────────────────────────────────────┼──────┤
+                                                                                            │       │
+1 ──→ 5 (q8m0: BaseConfig defaults) ───────────────────────────────────────────────────────┼──────┤
+                                                                                            │       │
+                                                             6 (u1sv: merge) ───────────────┴──────┤
+                                                                                                    │
+                                                             8 (2rdq: integration) ─────────────────┘
 ```
 
-Ready to start in parallel at T=0: Tasks 1, 2, 4. After those land, Tasks 3, 5, 7 unblock. Task 6 gates on 2+3+4+5. Task 8 is terminal.
+Ready to start in parallel at T=0: Tasks 2 and 4. Task 1 unblocks as soon as Task 2 lands (Task 1's `EffectiveAudience` test references `ItemMetadata.Audience`, which Task 2 adds). Tasks 3, 5, 7 unblock after their upstream tasks land. Task 6 gates on 2+3+4+5. Task 8 is terminal.
 
 ---
 
@@ -79,7 +79,7 @@ Ready to start in parallel at T=0: Tasks 1, 2, 4. After those land, Tasks 3, 5, 
 ## Task 1: Audience Enum + Validator + Reader-Side Default
 
 **Beads:** `glovebox-o3sh`
-**Depends on:** (none — foundation)
+**Depends on:** `glovebox-4ahf` (test-compile: `EffectiveAudience` tests reference `ItemMetadata.Audience`)
 **Blocks:** 3, 5
 
 **Files:**
@@ -999,7 +999,18 @@ type BaseConfig struct {
 "github.com/leftathome/glovebox/internal/staging"
 ```
 
-- [ ] Add the validator function in `runner.go` (near the other config-related code):
+**Note:** `hasControlChars` in `internal/staging/metadata.go` is currently lowercase (unexported). First, add a thin exported wrapper to `internal/staging/metadata.go` so the connector package can reuse the same policy (don't duplicate the byte-range check):
+
+```go
+// HasControlChars is the exported wrapper around the package-internal
+// control-char predicate. Used by the connector package's config-load
+// validator. Whitelists \n \r \t per the internal policy.
+func HasControlChars(s string) bool {
+	return hasControlChars(s)
+}
+```
+
+- [ ] Then add the validator function in `runner.go` (near the other config-related code):
 
 ```go
 // ValidateBaseConfig enforces spec 11 §5.1 startup-time rules on the
@@ -1009,7 +1020,7 @@ func ValidateBaseConfig(c *BaseConfig) error {
 	if len(c.DataSubjectDefault) > 256 {
 		return fmt.Errorf("data_subject_default exceeds 256 characters")
 	}
-	if staging.HasControlCharsExported(c.DataSubjectDefault) {
+	if staging.HasControlChars(c.DataSubjectDefault) {
 		return fmt.Errorf("data_subject_default contains control characters")
 	}
 	hasSubject := c.DataSubjectDefault != ""
@@ -1019,19 +1030,6 @@ func ValidateBaseConfig(c *BaseConfig) error {
 	return nil
 }
 ```
-
-**Note:** `hasControlChars` in `internal/staging/metadata.go` is currently lowercase (unexported). To call it from the `connector` package, either (a) add a thin exported wrapper `HasControlCharsExported` in `internal/staging/` (preferred: keeps the existing unexported helper internal to staging), or (b) inline the same byte-range check in `connector/runner.go`. **Preferred (a).** Add to `internal/staging/metadata.go`:
-
-```go
-// HasControlChars is the exported wrapper around the package-internal
-// control-char predicate, used by the connector package's config-load
-// validator. Whitelists \n \r \t per the internal policy.
-func HasControlChars(s string) bool {
-	return hasControlChars(s)
-}
-```
-
-Then use `staging.HasControlChars(c.DataSubjectDefault)` in the validator.
 
 - [ ] Locate the `Run()` (or equivalent top-level) function in `runner.go` that loads the config. Immediately after the successful `json.Unmarshal` into `BaseConfig`, and before any other initialization, add:
 
