@@ -27,6 +27,8 @@ type ItemMetadata struct {
 	AuthFailure      bool              `json:"auth_failure"`
 	Identity         *ItemIdentity     `json:"identity,omitempty"`
 	Tags             map[string]string `json:"tags,omitempty"`
+	DataSubject      string            `json:"data_subject,omitempty"`
+	Audience         []string          `json:"audience,omitempty"`
 }
 
 // StagingItem represents a validated item read from the staging directory.
