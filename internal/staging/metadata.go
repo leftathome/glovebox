@@ -115,6 +115,22 @@ func Validate(meta ItemMetadata, allowlist []string) []ValidationError {
 		errs = append(errs, validateTags(meta.Tags)...)
 	}
 
+	// data_subject validation (spec 11 §6).
+	if meta.DataSubject != "" {
+		if len(meta.DataSubject) > 256 {
+			errs = append(errs, ValidationError{"data_subject", "exceeds 256 characters"})
+		}
+		if hasControlChars(meta.DataSubject) {
+			errs = append(errs, ValidationError{"data_subject", "contains control characters"})
+		}
+	}
+
+	// audience validation (spec 11 §3.5). Delegates to the audience primitive
+	// and converts any single error into a ValidationError entry.
+	if err := ValidateAudience(meta.Audience, meta.DataSubject != ""); err != nil {
+		errs = append(errs, ValidationError{"audience", err.Error()})
+	}
+
 	if meta.AuthFailure {
 		errs = append(errs, ValidationError{"auth_failure", "source authentication failed"})
 	}
