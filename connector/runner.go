@@ -11,16 +11,37 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 // BaseConfig is the shared JSON shape every connector config starts from.
 // Connector-specific configs embed BaseConfig to pick up rules, identity,
 // and fetch limits without re-declaring them.
 type BaseConfig struct {
-	Rules          []Rule          `json:"rules"`
-	Routes         []Rule          `json:"routes"`
-	ConfigIdentity *ConfigIdentity `json:"identity,omitempty"`
-	FetchLimits    FetchLimits     `json:"fetch_limits"`
+	Rules              []Rule          `json:"rules"`
+	Routes             []Rule          `json:"routes"`
+	ConfigIdentity     *ConfigIdentity `json:"identity,omitempty"`
+	FetchLimits        FetchLimits     `json:"fetch_limits"`
+	DataSubjectDefault string          `json:"data_subject_default,omitempty"`
+	AudienceDefault    []string        `json:"audience_default,omitempty"`
+}
+
+// ValidateBaseConfig enforces spec 11 §5.1 startup-time rules on the
+// data-subject and audience defaults. Called from the config-load path
+// before the runner starts.
+func ValidateBaseConfig(c *BaseConfig) error {
+	if len(c.DataSubjectDefault) > 256 {
+		return fmt.Errorf("data_subject_default exceeds 256 characters")
+	}
+	if staging.HasControlChars(c.DataSubjectDefault) {
+		return fmt.Errorf("data_subject_default contains control characters")
+	}
+	hasSubject := c.DataSubjectDefault != ""
+	if err := staging.ValidateAudience(c.AudienceDefault, hasSubject); err != nil {
+		return fmt.Errorf("audience_default: %w", err)
+	}
+	return nil
 }
 
 // Run is a backwards-compatible entry point that wires together

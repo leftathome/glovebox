@@ -231,3 +231,10 @@ func hasControlChars(s string) bool {
 	}
 	return false
 }
+
+// HasControlChars is the exported wrapper around the package-internal
+// control-char predicate. Used by the connector package's config-load
+// validator. Whitelists \n \r \t per the internal policy.
+func HasControlChars(s string) bool {
+	return hasControlChars(s)
+}

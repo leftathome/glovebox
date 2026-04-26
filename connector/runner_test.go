@@ -458,3 +458,82 @@ func TestRunPoll_NilFetchCounterSafe(t *testing.T) {
 		t.Errorf("poll count = %d, want 1", mock.pollCount.Load())
 	}
 }
+
+func TestBaseConfig_AudienceDefaultRejectedOnLoad(t *testing.T) {
+	cases := []struct {
+		name       string
+		json       string
+		wantSubstr string
+	}{
+		{
+			"unknown-token",
+			`{"rules":[{"match":"*","destination":"a"}],"audience_default":["grandparents"]}`,
+			"unknown audience token",
+		},
+		{
+			"public-with-others",
+			`{"rules":[{"match":"*","destination":"a"}],"audience_default":["public","subject"]}`,
+			"public must appear alone",
+		},
+		{
+			"empty-array",
+			`{"rules":[{"match":"*","destination":"a"}],"audience_default":[]}`,
+			"must be omitted",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg BaseConfig
+			if err := json.Unmarshal([]byte(tc.json), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			err := ValidateBaseConfig(&cfg)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("error %q should contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestBaseConfig_DataSubjectDefaultLengthRejected(t *testing.T) {
+	cfg := BaseConfig{
+		Rules:              []Rule{{Match: "*", Destination: "a"}},
+		DataSubjectDefault: strings.Repeat("x", 300),
+	}
+	if err := ValidateBaseConfig(&cfg); err == nil {
+		t.Fatal("expected error for oversized data_subject_default")
+	}
+}
+
+func TestBaseConfig_DataSubjectDefaultControlCharsRejected(t *testing.T) {
+	cfg := BaseConfig{
+		Rules:              []Rule{{Match: "*", Destination: "a"}},
+		DataSubjectDefault: "bee\x00charlie",
+	}
+	if err := ValidateBaseConfig(&cfg); err == nil {
+		t.Fatal("expected error for control chars in data_subject_default")
+	}
+}
+
+func TestBaseConfig_GoodDefaultsAccepted(t *testing.T) {
+	cfg := BaseConfig{
+		Rules:              []Rule{{Match: "*", Destination: "a"}},
+		DataSubjectDefault: "bee",
+		AudienceDefault:    []string{"subject", "parents"},
+	}
+	if err := ValidateBaseConfig(&cfg); err != nil {
+		t.Errorf("valid defaults should pass, got %v", err)
+	}
+}
+
+func TestBaseConfig_ZeroDefaultsAccepted(t *testing.T) {
+	cfg := BaseConfig{
+		Rules: []Rule{{Match: "*", Destination: "a"}},
+	}
+	if err := ValidateBaseConfig(&cfg); err != nil {
+		t.Errorf("zero defaults should pass, got %v", err)
+	}
+}

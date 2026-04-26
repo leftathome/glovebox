@@ -91,6 +91,9 @@ func NewFramework(opts Options) (*Framework, error) {
 		if err := json.Unmarshal(data, &baseCfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
+		if err := ValidateBaseConfig(&baseCfg); err != nil {
+			return nil, PermanentError(fmt.Errorf("config validation: %w", err))
+		}
 	}
 
 	// Backward-compatible migration: "routes" -> "rules".
