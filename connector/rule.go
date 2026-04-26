@@ -10,7 +10,8 @@ type Rule struct {
 	Audience    []string          `json:"audience,omitempty"`
 }
 
-// MatchResult holds the destination and tags produced by a successful match.
+// MatchResult holds the destination, tags, data_subject, and audience
+// produced by a successful match.
 type MatchResult struct {
 	Destination string
 	Tags        map[string]string
