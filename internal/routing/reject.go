@@ -14,10 +14,14 @@ func RouteReject(itemPath string, reason string, metadata *staging.ItemMetadata,
 	source := "unknown"
 	sender := "unknown"
 	destination := "unknown"
+	var dataSubject string
+	var audience []string
 	if metadata != nil {
 		source = metadata.Source
 		sender = metadata.Sender
 		destination = metadata.DestinationAgent
+		dataSubject = metadata.DataSubject
+		audience = metadata.Audience
 	}
 
 	if err := logger.LogReject(audit.RejectEntry{
@@ -27,6 +31,8 @@ func RouteReject(itemPath string, reason string, metadata *staging.ItemMetadata,
 			Sender:      sender,
 			Verdict:     string(engine.VerdictReject),
 			Destination: destination,
+			DataSubject: dataSubject,
+			Audience:    audience,
 		},
 		Reason: reason,
 	}); err != nil {

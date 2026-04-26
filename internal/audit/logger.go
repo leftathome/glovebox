@@ -24,6 +24,8 @@ type AuditEntry struct {
 	ScanDurationMs int64                 `json:"scan_duration_ms"`
 	Identity       *staging.ItemIdentity `json:"identity,omitempty"`
 	Tags           map[string]string     `json:"tags,omitempty"`
+	DataSubject    string                `json:"data_subject,omitempty"`
+	Audience       []string              `json:"audience,omitempty"`
 }
 
 type PassEntry struct {

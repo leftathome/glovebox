@@ -50,6 +50,8 @@ func RoutePass(item staging.StagingItem, scanResult engine.ScanResult, destDir s
 		Verdict:        string(scanResult.Verdict),
 		Destination:    item.Metadata.DestinationAgent,
 		ScanDurationMs: scanDuration.Milliseconds(),
+		DataSubject:    item.Metadata.DataSubject,
+		Audience:       item.Metadata.Audience,
 	}}); err != nil {
 		return fmt.Errorf("audit log: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/engine"
@@ -275,5 +276,40 @@ func TestLogger_DegradedClearsOnSuccess(t *testing.T) {
 	})
 	if logger.InDegradedMode() {
 		t.Error("should clear degraded after successful write")
+	}
+}
+
+func TestAuditEntry_DataSubjectAndAudienceRoundtrip(t *testing.T) {
+	e := AuditEntry{
+		Timestamp:     "2026-04-22T00:00:00Z",
+		Source:        "schoology",
+		Sender:        "Mr. Rodriguez",
+		ContentHash:   "abc",
+		ContentLength: 10,
+		Verdict:       "pass",
+		Destination:   "school",
+		DataSubject:   "bee",
+		Audience:      []string{"subject", "parents"},
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"data_subject":"bee"`) {
+		t.Errorf("missing data_subject in JSON: %s", data)
+	}
+	if !strings.Contains(string(data), `"audience":["subject","parents"]`) {
+		t.Errorf("missing audience in JSON: %s", data)
+	}
+}
+
+func TestAuditEntry_OmitEmptyForNewFields(t *testing.T) {
+	e := AuditEntry{Timestamp: "t", Source: "s", Verdict: "pass", Destination: "d"}
+	data, _ := json.Marshal(e)
+	if strings.Contains(string(data), "data_subject") {
+		t.Errorf("expected data_subject omitted: %s", data)
+	}
+	if strings.Contains(string(data), "audience") {
+		t.Errorf("expected audience omitted: %s", data)
 	}
 }
