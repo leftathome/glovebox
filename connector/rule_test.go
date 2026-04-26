@@ -86,3 +86,57 @@ func TestRuleMatcher_EmptyRules(t *testing.T) {
 		t.Error("empty rules should never match")
 	}
 }
+
+func TestRuleMatcher_PropagatesDataSubjectAndAudience(t *testing.T) {
+	rules := []Rule{
+		{
+			Match:       "foo",
+			Destination: "agent-a",
+			DataSubject: "bee",
+			Audience:    []string{"subject", "parents"},
+		},
+		{
+			Match:       "*",
+			Destination: "agent-b",
+			Audience:    []string{"household"},
+		},
+	}
+	rm := NewRuleMatcher(rules)
+
+	got, ok := rm.Match("foo")
+	if !ok {
+		t.Fatal("expected match for 'foo'")
+	}
+	if got.DataSubject != "bee" {
+		t.Errorf("DataSubject: got %q, want %q", got.DataSubject, "bee")
+	}
+	if len(got.Audience) != 2 || got.Audience[0] != "subject" || got.Audience[1] != "parents" {
+		t.Errorf("Audience: got %v", got.Audience)
+	}
+
+	got, ok = rm.Match("anything-else")
+	if !ok {
+		t.Fatal("expected wildcard match")
+	}
+	if got.DataSubject != "" {
+		t.Errorf("expected empty DataSubject on wildcard rule, got %q", got.DataSubject)
+	}
+	if len(got.Audience) != 1 || got.Audience[0] != "household" {
+		t.Errorf("Audience: got %v", got.Audience)
+	}
+}
+
+func TestRuleMatcher_AudienceSliceIsCopied(t *testing.T) {
+	// Defensive: mutating the returned slice must not affect the rule.
+	rules := []Rule{
+		{Match: "*", Destination: "a", Audience: []string{"household"}},
+	}
+	rm := NewRuleMatcher(rules)
+	got, _ := rm.Match("x")
+	got.Audience[0] = "public"
+
+	got2, _ := rm.Match("x")
+	if got2.Audience[0] != "household" {
+		t.Errorf("rule audience was mutated via returned slice: got %q", got2.Audience[0])
+	}
+}

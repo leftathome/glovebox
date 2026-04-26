@@ -6,12 +6,16 @@ type Rule struct {
 	Match       string            `json:"match"`
 	Destination string            `json:"destination"`
 	Tags        map[string]string `json:"tags,omitempty"`
+	DataSubject string            `json:"data_subject,omitempty"`
+	Audience    []string          `json:"audience,omitempty"`
 }
 
 // MatchResult holds the destination and tags produced by a successful match.
 type MatchResult struct {
 	Destination string
 	Tags        map[string]string
+	DataSubject string
+	Audience    []string
 }
 
 // RuleMatcher evaluates a list of rules against a key string.
@@ -39,9 +43,15 @@ func (rm *RuleMatcher) Match(key string) (MatchResult, bool) {
 					tags[k] = v
 				}
 			}
+			var audience []string
+			if len(rule.Audience) > 0 {
+				audience = append([]string(nil), rule.Audience...)
+			}
 			return MatchResult{
 				Destination: rule.Destination,
 				Tags:        tags,
+				DataSubject: rule.DataSubject,
+				Audience:    audience,
 			}, true
 		}
 	}
