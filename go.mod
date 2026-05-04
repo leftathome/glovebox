@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.0
 	github.com/google/uuid v1.6.0
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/prometheus/client_golang v1.23.2
