@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-18
+
+### Added
+
+- `data_subject` (string) and `audience` ([]string enum) fields on
+  `metadata.json`, `ItemOptions`, `Rule`, `MatchResult`, `BaseConfig`
+  defaults, and `AuditEntry`. See
+  `docs/specs/11-data-subject-and-audience-design.md`.
+- Audience enum tokens: `subject`, `parents`, `siblings`, `household`,
+  `public`, with validated combinations (spec 11 §3.5).
+- `staging.EffectiveAudience()` reader-side helper that applies the
+  default `["household"]` when audience is omitted.
+- `staging.HasControlChars()` exported wrapper enabling consistent
+  control-char policy across connector and staging packages.
+- Commit-time validation of `data_subject` length/control-chars and
+  `audience` enum + cross-field rules.
+- Config-load-time validation of `data_subject_default` and
+  `audience_default`: malformed defaults fail startup, not first-item
+  commit.
+- End-to-end integration test `TestIntegration_DataSubjectAudienceEndToEnd`
+  exercising the full spec-11 path: rule -> match -> staging -> metadata.json
+  for both data-subject-bearing and subjectless items.
+
+### Notes
+
+- Purely additive schema extension. Existing connectors produce
+  byte-identical `metadata.json` files with no code changes.
+- V1 is metadata-only: Glovebox validates and stamps these fields but
+  does not filter or route on them. Audience-aware routing and
+  enforcement are deferred to later specs.
+
 ## [0.3.0] - 2026-04-05
 
 ### Added

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 func TestStagingWriter_CommitProducesCorrectStructure(t *testing.T) {
@@ -408,6 +410,170 @@ func TestStagingWriter_IdentityMerge_ConfigAndItem(t *testing.T) {
 	if idMap["account_id"] != "steve@github" {
 		t.Errorf("identity.account_id = %v, want steve@github (from item)", idMap["account_id"])
 	}
+}
+
+// readMetadataFromCommitted walks the staging directory, finds the single
+// committed item, and returns its parsed metadata.json.
+func readMetadataFromCommitted(t *testing.T, stagingDir string) staging.ItemMetadata {
+	t.Helper()
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatalf("readdir staging: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stagingDir, e.Name(), "metadata.json"))
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+		var m staging.ItemMetadata
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		return m
+	}
+	t.Fatal("no committed item found")
+	return staging.ItemMetadata{}
+}
+
+// newWriterWithDefaults constructs a StagingWriter with the given config
+// defaults pre-applied. Used by merge tests.
+func newWriterWithDefaults(t *testing.T, stagingDir, configSubject string, configAudience []string) *StagingWriter {
+	t.Helper()
+	w, err := NewStagingWriter(stagingDir, "test")
+	if err != nil {
+		t.Fatalf("NewStagingWriter: %v", err)
+	}
+	w.SetConfigDataSubject(configSubject)
+	w.SetConfigAudience(configAudience)
+	return w
+}
+
+// commitOneSpec11 writes and commits a single item with the given options.
+func commitOneSpec11(t *testing.T, w *StagingWriter, opts ItemOptions) {
+	t.Helper()
+	opts.Source = "test"
+	opts.Sender = "s"
+	opts.Subject = "subject"
+	opts.Timestamp = time.Now().UTC()
+	opts.DestinationAgent = "test-agent"
+	opts.ContentType = "text/plain"
+	item, err := w.NewItem(opts)
+	if err != nil {
+		t.Fatalf("NewItem: %v", err)
+	}
+	if err := item.WriteContent([]byte("x")); err != nil {
+		t.Fatalf("WriteContent: %v", err)
+	}
+	if err := item.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+func TestBuildMetadata_DataSubjectMergePrecedence(t *testing.T) {
+	cases := []struct {
+		name      string
+		configDef string
+		ruleVal   string
+		itemVal   string
+		want      string
+	}{
+		{"per-item-wins", "config", "rule", "item", "item"},
+		{"rule-wins-when-no-item", "config", "rule", "", "rule"},
+		{"config-wins-when-no-item-no-rule", "config", "", "", "config"},
+		{"empty-when-nothing-set", "", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stagingDir := t.TempDir()
+			w := newWriterWithDefaults(t, stagingDir, tc.configDef, nil)
+			commitOneSpec11(t, w, ItemOptions{
+				DataSubject:     tc.itemVal,
+				RuleDataSubject: tc.ruleVal,
+			})
+			got := readMetadataFromCommitted(t, stagingDir)
+			if got.DataSubject != tc.want {
+				t.Errorf("DataSubject: got %q, want %q", got.DataSubject, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildMetadata_AudienceMergePrecedence(t *testing.T) {
+	cases := []struct {
+		name      string
+		configDef []string
+		ruleVal   []string
+		itemVal   []string
+		want      []string
+	}{
+		{
+			"per-item-wins",
+			[]string{"household"},
+			[]string{"subject", "parents"},
+			[]string{"public"},
+			[]string{"public"},
+		},
+		{
+			"rule-wins-when-no-item",
+			[]string{"household"},
+			[]string{"subject", "parents"},
+			nil,
+			[]string{"subject", "parents"},
+		},
+		{
+			"config-wins-when-no-item-no-rule",
+			[]string{"household"},
+			nil,
+			nil,
+			[]string{"household"},
+		},
+		{
+			"nil-when-nothing-set",
+			nil,
+			nil,
+			nil,
+			nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stagingDir := t.TempDir()
+			// Pick subject based on what's needed to make the audience pass cross-field validation.
+			// "per-item-wins" expects audience [public] which validates with empty subject.
+			// "nil-when-nothing-set" expects no audience.
+			// Others need subject="bee" so role tokens validate.
+			subject := "bee"
+			if tc.name == "nil-when-nothing-set" || tc.name == "per-item-wins" {
+				subject = ""
+			}
+			w := newWriterWithDefaults(t, stagingDir, subject, tc.configDef)
+			commitOneSpec11(t, w, ItemOptions{
+				Audience:     tc.itemVal,
+				RuleAudience: tc.ruleVal,
+			})
+			got := readMetadataFromCommitted(t, stagingDir)
+			if !slicesEqualSpec11(got.Audience, tc.want) {
+				t.Errorf("Audience: got %v, want %v", got.Audience, tc.want)
+			}
+		})
+	}
+}
+
+// slicesEqualSpec11 is a local helper. If the file already has slicesEqual
+// (no spec11 suffix) with matching behavior, use that instead and remove this.
+func slicesEqualSpec11(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestStagingWriter_NoIdentityNoTags_OmittedFromMetadata(t *testing.T) {

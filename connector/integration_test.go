@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 // producerConnector is a mock that writes N items to staging during Poll.
@@ -390,3 +392,113 @@ func TestIntegration_MetricsEndpoint(t *testing.T) {
 	}
 }
 
+// TestIntegration_DataSubjectAudienceEndToEnd exercises the full spec-11 path:
+// rule -> match -> staging -> metadata.json for both a data-subject-bearing
+// item and a subjectless item.
+func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
+	stagingDir := t.TempDir()
+
+	writer, err := NewStagingWriter(stagingDir, "schoology")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rules := []Rule{
+		{
+			Match:       "schoology:bee:grade",
+			Destination: "school",
+			DataSubject: "bee",
+			Audience:    []string{"subject", "parents"},
+		},
+		{
+			Match:       "schoology:bee:flyer",
+			Destination: "school",
+			Audience:    []string{"public"},
+		},
+	}
+	matcher := NewRuleMatcher(rules)
+
+	// Item 1: Bee's grade (data_subject + role-relative audience).
+	result, _ := matcher.Match("schoology:bee:grade")
+	item, err := writer.NewItem(ItemOptions{
+		Source:           "schoology",
+		Sender:           "Mr. Rodriguez",
+		Subject:          "Math grade posted",
+		Timestamp:        time.Now().UTC(),
+		DestinationAgent: result.Destination,
+		ContentType:      "text/plain",
+		RuleDataSubject:  result.DataSubject,
+		RuleAudience:     result.Audience,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.WriteContent([]byte("87%")); err != nil {
+		t.Fatal(err)
+	}
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Item 2: flyer (subjectless, public).
+	result2, _ := matcher.Match("schoology:bee:flyer")
+	item2, err := writer.NewItem(ItemOptions{
+		Source:           "schoology",
+		Sender:           "School",
+		Subject:          "Spring carnival",
+		Timestamp:        time.Now().UTC(),
+		DestinationAgent: result2.Destination,
+		ContentType:      "text/plain",
+		RuleDataSubject:  result2.DataSubject,
+		RuleAudience:     result2.Audience,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item2.WriteContent([]byte("flyer body")); err != nil {
+		t.Fatal(err)
+	}
+	if err := item2.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify: read back metadata.json files and confirm shape.
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundGrade, foundFlyer := false, false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stagingDir, e.Name(), "metadata.json"))
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+		var m staging.ItemMetadata
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		switch m.DataSubject {
+		case "bee":
+			foundGrade = true
+			if len(m.Audience) != 2 || m.Audience[0] != "subject" || m.Audience[1] != "parents" {
+				t.Errorf("bee's grade audience: got %v, want [subject parents]", m.Audience)
+			}
+		case "":
+			foundFlyer = true
+			if len(m.Audience) != 1 || m.Audience[0] != "public" {
+				t.Errorf("flyer audience: got %v, want [public]", m.Audience)
+			}
+		default:
+			t.Errorf("unexpected data_subject %q in committed metadata", m.DataSubject)
+		}
+	}
+	if !foundGrade {
+		t.Error("did not find bee's grade in staging output")
+	}
+	if !foundFlyer {
+		t.Error("did not find flyer in staging output")
+	}
+}

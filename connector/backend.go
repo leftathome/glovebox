@@ -12,6 +12,14 @@ type StagingBackend interface {
 	// SetConfigIdentity sets default identity fields for all items.
 	// Per-item Identity fields override these defaults at Commit time.
 	SetConfigIdentity(ci *ConfigIdentity)
+
+	// SetConfigDataSubject sets the config-level data_subject default used as
+	// the final fallback in the merge chain (spec 11 §5).
+	SetConfigDataSubject(s string)
+
+	// SetConfigAudience sets the config-level audience default used as the
+	// final fallback in the merge chain (spec 11 §5).
+	SetConfigAudience(a []string)
 }
 
 // Compile-time check: *StagingWriter satisfies StagingBackend.

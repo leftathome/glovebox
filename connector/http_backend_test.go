@@ -501,3 +501,47 @@ func TestHTTPBackendSubjectSanitized(t *testing.T) {
 		t.Error("subject should have control chars stripped")
 	}
 }
+
+func TestHTTPStagingBackend_HonorsConfigDataSubjectAndAudience(t *testing.T) {
+	var got parsedIngest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = parseIngestRequest(t, r)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	backend := NewHTTPStagingBackend(srv.URL+"/v1/ingest", "test-connector", srv.Client())
+	backend.SetConfigDataSubject("bee")
+	backend.SetConfigAudience([]string{"subject", "parents"})
+
+	item, err := backend.NewItem(validHTTPOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.WriteContent([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got.metadata == nil {
+		t.Fatal("server did not receive metadata")
+	}
+
+	ds, _ := got.metadata["data_subject"].(string)
+	if ds != "bee" {
+		t.Errorf("data_subject: got %q want %q", ds, "bee")
+	}
+
+	rawAudience, ok := got.metadata["audience"].([]interface{})
+	if !ok {
+		t.Fatalf("audience: got %T (%v), want []interface{}", got.metadata["audience"], got.metadata["audience"])
+	}
+	if len(rawAudience) != 2 {
+		t.Fatalf("audience: got %d elements, want 2", len(rawAudience))
+	}
+	if rawAudience[0] != "subject" || rawAudience[1] != "parents" {
+		t.Errorf("audience: got %v want [subject parents]", rawAudience)
+	}
+}

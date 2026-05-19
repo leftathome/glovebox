@@ -303,3 +303,85 @@ func hasError(errs []ValidationError, field string) bool {
 	}
 	return false
 }
+
+// --- DataSubject and Audience validation tests (spec 11) ---
+
+func TestValidate_DataSubjectLength(t *testing.T) {
+	m := validMeta()
+	m.DataSubject = strings.Repeat("a", 257)
+	errs := Validate(m, testAllowlist)
+	if !hasError(errs, "data_subject") {
+		t.Errorf("expected data_subject error for >256 chars, got errs=%v", errs)
+	}
+}
+
+func TestValidate_DataSubjectControlChars(t *testing.T) {
+	m := validMeta()
+	m.DataSubject = "bee\x00charlie"
+	errs := Validate(m, testAllowlist)
+	if !hasError(errs, "data_subject") {
+		t.Errorf("expected data_subject error for control chars, got errs=%v", errs)
+	}
+}
+
+func TestValidate_DataSubjectEmptyIsOmitted(t *testing.T) {
+	// Per spec §6: Go zero value for data_subject is treated as omission.
+	m := validMeta()
+	m.DataSubject = ""
+	m.Audience = nil
+	errs := Validate(m, testAllowlist)
+	for _, e := range errs {
+		if e.Field == "data_subject" {
+			t.Errorf("empty data_subject should not produce an error: %v", e)
+		}
+	}
+}
+
+func TestValidate_AudienceValid(t *testing.T) {
+	cases := []struct {
+		name        string
+		dataSubject string
+		audience    []string
+	}{
+		{"subject-and-parents", "bee", []string{"subject", "parents"}},
+		{"household-with-subject", "bee", []string{"household"}},
+		{"household-without-subject", "", []string{"household"}},
+		{"public", "", []string{"public"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validMeta()
+			m.DataSubject = tc.dataSubject
+			m.Audience = tc.audience
+			errs := Validate(m, testAllowlist)
+			if hasError(errs, "audience") {
+				t.Errorf("expected no audience error, got errs=%v", errs)
+			}
+		})
+	}
+}
+
+func TestValidate_AudienceInvalid(t *testing.T) {
+	cases := []struct {
+		name        string
+		dataSubject string
+		audience    []string
+	}{
+		{"unknown-token", "bee", []string{"grandparents"}},
+		{"public-not-alone", "bee", []string{"public", "subject"}},
+		{"household-not-alone", "bee", []string{"household", "parents"}},
+		{"role-token-without-subject", "", []string{"subject"}},
+		{"empty-array", "bee", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validMeta()
+			m.DataSubject = tc.dataSubject
+			m.Audience = tc.audience
+			errs := Validate(m, testAllowlist)
+			if !hasError(errs, "audience") {
+				t.Errorf("expected audience error, got errs=%v", errs)
+			}
+		})
+	}
+}

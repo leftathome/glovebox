@@ -24,13 +24,19 @@ type ItemOptions struct {
 	Identity         *Identity
 	Tags             map[string]string
 	RuleTags         map[string]string
+	DataSubject      string
+	Audience         []string
+	RuleDataSubject  string
+	RuleAudience     []string
 }
 
 type StagingWriter struct {
-	stagingDir     string
-	connectorName  string
-	tmpDir         string
-	configIdentity *ConfigIdentity
+	stagingDir               string
+	connectorName            string
+	tmpDir                   string
+	configIdentity           *ConfigIdentity
+	configDataSubjectDefault string
+	configAudienceDefault    []string
 }
 
 func NewStagingWriter(stagingDir string, connectorName string) (*StagingWriter, error) {
@@ -51,12 +57,31 @@ func (w *StagingWriter) SetConfigIdentity(ci *ConfigIdentity) {
 	w.configIdentity = ci
 }
 
+// SetConfigDataSubject sets the config-level data_subject default used as
+// the final fallback in the merge chain (spec 11 §5).
+func (w *StagingWriter) SetConfigDataSubject(s string) {
+	w.configDataSubjectDefault = s
+}
+
+// SetConfigAudience sets the config-level audience default used as the
+// final fallback in the merge chain (spec 11 §5). The slice is copied to
+// prevent aliasing into the caller's storage.
+func (w *StagingWriter) SetConfigAudience(a []string) {
+	if len(a) == 0 {
+		w.configAudienceDefault = nil
+		return
+	}
+	w.configAudienceDefault = append([]string(nil), a...)
+}
+
 type StagingItem struct {
-	dir            string
-	stagingDir     string
-	opts           ItemOptions
-	configIdentity *ConfigIdentity
-	commitFunc     func() error
+	dir                      string
+	stagingDir               string
+	opts                     ItemOptions
+	configIdentity           *ConfigIdentity
+	configDataSubjectDefault string
+	configAudienceDefault    []string
+	commitFunc               func() error
 }
 
 func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
@@ -65,7 +90,14 @@ func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create item dir: %w", err)
 	}
-	return &StagingItem{dir: dir, stagingDir: w.stagingDir, opts: opts, configIdentity: w.configIdentity}, nil
+	return &StagingItem{
+		dir:                      dir,
+		stagingDir:               w.stagingDir,
+		opts:                     opts,
+		configIdentity:           w.configIdentity,
+		configDataSubjectDefault: w.configDataSubjectDefault,
+		configAudienceDefault:    w.configAudienceDefault,
+	}, nil
 }
 
 // WriteContent writes (or appends) content to content.raw.
@@ -119,6 +151,9 @@ func (si *StagingItem) buildMetadata() (staging.ItemMetadata, error) {
 		}
 	}
 
+	meta.DataSubject = mergeDataSubject(si.configDataSubjectDefault, si.opts.RuleDataSubject, si.opts.DataSubject)
+	meta.Audience = mergeAudience(si.configAudienceDefault, si.opts.RuleAudience, si.opts.Audience)
+
 	if meta.DestinationAgent == "" {
 		return staging.ItemMetadata{}, fmt.Errorf("metadata validation: destination_agent is required")
 	}
@@ -171,6 +206,32 @@ func mergeTags(ruleTags, itemTags map[string]string) map[string]string {
 		merged[k] = v
 	}
 	return merged
+}
+
+// mergeDataSubject applies per-item > rule > config default > empty precedence
+// per spec 11 §5.
+func mergeDataSubject(configDefault, rule, item string) string {
+	if item != "" {
+		return item
+	}
+	if rule != "" {
+		return rule
+	}
+	return configDefault
+}
+
+// mergeAudience applies per-item > rule > config default > nil precedence
+// per spec 11 §5. Returns a fresh slice to prevent aliasing.
+func mergeAudience(configDefault, rule, item []string) []string {
+	switch {
+	case len(item) > 0:
+		return append([]string(nil), item...)
+	case len(rule) > 0:
+		return append([]string(nil), rule...)
+	case len(configDefault) > 0:
+		return append([]string(nil), configDefault...)
+	}
+	return nil
 }
 
 func (w *StagingWriter) CleanOrphans() {
