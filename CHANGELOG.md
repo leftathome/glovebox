@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-05-18
+## [0.4.0] - 2026-05-18
 
 ### Added
 
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not filter or route on them. Audience-aware routing and
   enforcement are deferred to later specs.
 
-## [0.3.0-ingest-api] - 2026-04-05
+## [0.3.0] - 2026-04-05
 
 ### Added
 

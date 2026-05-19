@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26, standard library only. `go test ./...` and `go vet ./...`. No new dependencies. No staticcheck (not in CI).
 
-**Target version:** v0.3.0 (minor, additive under 0.x semver).
+**Target version:** v0.4.0 (minor, additive under 0.x semver). (Plan originally targeted v0.3.0; that version was already taken by the spec-08 HTTP ingest API release, so spec 11 ships as the next minor.)
 
 **Spec:** `docs/specs/11-data-subject-and-audience-design.md` (v1.1+).
 
@@ -37,7 +37,7 @@
 | `connector/staging.go` | modify | Add `DataSubject`, `Audience`, `RuleDataSubject`, `RuleAudience` to `ItemOptions`; add merge helpers + config-default setters on `StagingWriter`; populate in `buildMetadata()` |
 | `connector/staging_test.go` | modify | Merge precedence tests (per-item > rule > config default > omitted) for both fields |
 | `connector/integration_test.go` | modify | End-to-end: schoology-style rules → matching → staging → metadata.json has new fields |
-| `CHANGELOG.md` | modify | v0.3.0 entry |
+| `CHANGELOG.md` | modify | v0.4.0 entry |
 
 Each file has **one clear responsibility**. Tasks are ordered so each produces a compilable, testable commit; dependencies are explicit below.
 
@@ -1808,10 +1808,10 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 
 ### Step 8.6 -- Update CHANGELOG
 
-- [ ] Edit `CHANGELOG.md`. Add a new section at the top (under any existing `## Unreleased`, or as a fresh `## v0.3.0 -- 2026-04-22` block if the file uses dated version headers):
+- [ ] Edit `CHANGELOG.md`. Add a new section at the top (under any existing `## Unreleased`, or as a fresh `## v0.4.0 -- <today>` block if the file uses dated version headers). Note: v0.3.0 was already used for the spec-08 HTTP ingest API release; do NOT collide with it.
 
 ```markdown
-## v0.3.0 -- 2026-04-22
+## v0.4.0 -- <today>
 
 ### Added
 - `data_subject` (string) and `audience` ([]string enum) fields on
@@ -1843,7 +1843,7 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 ```bash
 git add connector/integration_test.go CHANGELOG.md
 git commit -m "$(cat <<'EOF'
-spec 11: end-to-end integration test + v0.3.0 CHANGELOG (glovebox-2rdq)
+spec 11: end-to-end integration test + v0.4.0 CHANGELOG (glovebox-2rdq)
 
 Exercises the full spec-11 path: rule -> match -> staging -> metadata.json
 for both a data-subject-bearing item (Child 1's grade, audience [subject,
@@ -1872,7 +1872,7 @@ After Task 8:
 - [ ] Close the parent spec bead: `bd close glovebox-m2b9 --reason="spec implemented via glovebox-{o3sh,4ahf,hcm2,82kv,q8m0,u1sv,ibzt,2rdq}"`.
 - [ ] Push: `git push`.
 - [ ] Wait for CI to pass on main.
-- [ ] **Only after CI green:** `git tag -a v0.3.0 -m "Spec 11: data_subject and audience metadata"` then `git push --tags`.
+- [ ] **Only after CI green:** `git tag -a v0.4.0 -m "Spec 11: data_subject and audience metadata"` then `git push --tags`.
   - Per the release-workflow memory: **do not tag until CI green**. The v0.2.2 incident (test files committed without source, broken immutable release) is why.
 
 ---
