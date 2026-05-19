@@ -17,12 +17,14 @@ import (
 // HTTPStagingBackend implements StagingBackend by POSTing items to the
 // scanner's /v1/ingest endpoint as multipart/form-data requests.
 type HTTPStagingBackend struct {
-	ingestURL      string
-	connectorName  string
-	httpClient     *http.Client
-	retryMax       int
-	retryBase      time.Duration
-	configIdentity *ConfigIdentity
+	ingestURL                string
+	connectorName            string
+	httpClient               *http.Client
+	retryMax                 int
+	retryBase                time.Duration
+	configIdentity           *ConfigIdentity
+	configDataSubjectDefault string
+	configAudienceDefault    []string
 }
 
 // Compile-time check: *HTTPStagingBackend satisfies StagingBackend.
@@ -58,12 +60,31 @@ func (h *HTTPStagingBackend) SetConfigIdentity(ci *ConfigIdentity) {
 	h.configIdentity = ci
 }
 
+// SetConfigDataSubject sets the config-level data_subject default used as
+// the final fallback in the merge chain (spec 11 §5).
+func (h *HTTPStagingBackend) SetConfigDataSubject(s string) {
+	h.configDataSubjectDefault = s
+}
+
+// SetConfigAudience sets the config-level audience default used as the
+// final fallback in the merge chain (spec 11 §5). The slice is copied to
+// prevent aliasing into the caller's storage.
+func (h *HTTPStagingBackend) SetConfigAudience(a []string) {
+	if len(a) == 0 {
+		h.configAudienceDefault = nil
+		return
+	}
+	h.configAudienceDefault = append([]string(nil), a...)
+}
+
 // NewItem creates a StagingItem whose Commit() POSTs to the ingest endpoint
 // instead of writing to the filesystem.
 func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
 	si := &StagingItem{
-		opts:           opts,
-		configIdentity: h.configIdentity,
+		opts:                     opts,
+		configIdentity:           h.configIdentity,
+		configDataSubjectDefault: h.configDataSubjectDefault,
+		configAudienceDefault:    h.configAudienceDefault,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "glovebox-http-*")

@@ -126,10 +126,8 @@ func NewFramework(opts Options) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend selection: %w", err)
 	}
-	if writer != nil {
-		writer.SetConfigDataSubject(baseCfg.DataSubjectDefault)
-		writer.SetConfigAudience(baseCfg.AudienceDefault)
-	}
+	backend.SetConfigDataSubject(baseCfg.DataSubjectDefault)
+	backend.SetConfigAudience(baseCfg.AudienceDefault)
 
 	metrics, err := NewMetrics(opts.Name)
 	if err != nil {
