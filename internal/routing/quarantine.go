@@ -85,6 +85,8 @@ func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, qua
 			Verdict:        string(engine.VerdictQuarantine),
 			Destination:    item.Metadata.DestinationAgent,
 			ScanDurationMs: scanDuration.Milliseconds(),
+			DataSubject:    item.Metadata.DataSubject,
+			Audience:       item.Metadata.Audience,
 		},
 		Reason: reason,
 	}); err != nil {

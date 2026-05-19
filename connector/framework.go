@@ -91,6 +91,9 @@ func NewFramework(opts Options) (*Framework, error) {
 		if err := json.Unmarshal(data, &baseCfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
+		if err := ValidateBaseConfig(&baseCfg); err != nil {
+			return nil, PermanentError(fmt.Errorf("config validation: %w", err))
+		}
 	}
 
 	// Backward-compatible migration: "routes" -> "rules".
@@ -123,6 +126,8 @@ func NewFramework(opts Options) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend selection: %w", err)
 	}
+	backend.SetConfigDataSubject(baseCfg.DataSubjectDefault)
+	backend.SetConfigAudience(baseCfg.AudienceDefault)
 
 	metrics, err := NewMetrics(opts.Name)
 	if err != nil {
