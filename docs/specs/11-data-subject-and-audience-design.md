@@ -405,7 +405,9 @@ each item, decoupling policy drift from data provenance.
 
 ### 8.2 Version Bump
 
-v0.3.0 -- minor, additive under 0.x semver. Public Go API gains:
+v0.4.0 -- minor, additive under 0.x semver. (Originally targeted v0.3.0,
+but that version was already released for the spec-08 HTTP ingest API
+before this work landed.) Public Go API gains:
 
 - `BaseConfig.DataSubjectDefault`, `BaseConfig.AudienceDefault`
 - `Rule.DataSubject`, `Rule.Audience`
@@ -557,7 +559,7 @@ destination-agent policy. Again, later spec.
 
 ## 11. Acceptance Criteria
 
-A v0.3.0 release that implements this spec must:
+A v0.4.0 release that implements this spec must:
 
 1. Accept `data_subject` (string) and `audience` (array of enum tokens) as
    optional top-level fields on `metadata.json`, validated per §6.
