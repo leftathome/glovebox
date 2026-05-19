@@ -67,6 +67,14 @@ enumerated validation, and defers all enforcement/routing work to later specs.
   data subjects.
 - Other extended-family tokens (`extended`, `grandparents`). The `caregivers`
   token landed in v1.2; see §3.4.
+- Medical-care role tokens (`spouse`, `medical_providers`, etc.) and
+  sensitivity escalators for HIPAA-grade content. Deferred until the
+  walhelm (medical/health) connector lands with concrete use cases. The
+  current household-centric tokens cover the *minor patient* case
+  (e.g., pediatrician comms about Bee) with `[guardians]` or
+  `[subject, guardians]`; the *adult patient* case (e.g., Steve's own
+  lab results) genuinely needs new tokens and we'll add them when there's
+  real content to validate against.
 - Cross-connector data-subject reconciliation (e.g., Schoology's "bee" and
   PowerSchool's "bee" being recognized as the same person). Deferred to a
   later identity-normalization spec.
@@ -130,6 +138,23 @@ supervisor or agent is in the intended audience"; downstream agents do the
 Audience metadata is forensically useful (the audit log captures intent at
 ingest time) and routing-useful (downstream agents can pre-filter), but it
 is not an ACL.
+
+#### Audience is a snapshot, not a permanent ACL
+
+Audience tokens are stamped at ingest time and **frozen** in metadata.
+Lifecycle-dependent access -- a juvenile subject reaching legal adulthood,
+a temporary caregiver's contract ending, a guardian arrangement changing,
+an item passing a retention horizon -- is the downstream agent's
+responsibility to apply against the audit-log-frozen audience tokens. The
+audit log preserves intent at ingest time so that even as access policy
+evolves, the provenance trail remains intact.
+
+Example: a pediatrician's note about Bee at age 12 is stamped
+`audience: ["guardians"]` because Bee was not the intended recipient at the
+time. When Bee turns 18, the agent serving her may decide that all
+historical items with `data_subject: "bee"` are now accessible to her
+regardless of the original audience exclusion -- that lifecycle-transition
+decision lives entirely in the agent's policy, not in Glovebox metadata.
 
 ### 3.2 metadata.json -- Shape After This Spec
 
