@@ -1,6 +1,6 @@
 # Data Subject and Audience Metadata -- Design Specification
 
-**Version 1.1 -- April 2026**
+**Version 1.2 -- May 2026**
 
 *This document extends the metadata schema (spec 04 §5.2) and the identity/provenance model (spec 06 §5) with two additive concepts: `data_subject` (the person an item is about, distinct from the identity that authenticated) and `audience` (a set of role-relative tokens describing who the item is intended to be seen by). The extension is driven by connectors where parent credentials retrieve data about children (Schoology, PowerSchool) and where per-item visibility rules differ by content type (grades vs flyers vs submitted work). V1 is metadata-only: Glovebox validates and stamps these fields but does not filter or route on them. The schema is designed so future audience-aware routing or enforcement can be layered on without breaking callers.*
 
@@ -26,10 +26,10 @@ visibility expectations:
 
 | Content                          | Intended audience                       |
 |----------------------------------|-----------------------------------------|
-| Grades                           | student + parents                       |
-| Submitted work                   | student + parents                       |
+| Grades                           | student + guardians                     |
+| Submitted work                   | student + guardians                     |
 | Fresh/uncompleted assignments    | whole household                         |
-| Teacher messages about one kid   | student + parents                       |
+| Teacher messages about one kid   | student + guardians                     |
 | School flyers / PTA bulletins    | no restriction (already public content) |
 
 The current schema has no way to express either "who this item is about" or
@@ -61,11 +61,12 @@ enumerated validation, and defers all enforcement/routing work to later specs.
 - Audience-aware routing (rules that branch on audience value).
 - Enforcement gates (quarantine or drop items on policy violation).
 - Named audience shorthands (e.g., `"student-private"` as an alias for
-  `["subject", "parents"]`).
+  `["subject", "guardians"]`).
 - Multi-subject items (`data_subject` as an array). V1 requires emitting
   separate items if a single upstream record legitimately concerns multiple
   data subjects.
-- Extended-family tokens (`extended`, `grandparents`, `caregivers`).
+- Other extended-family tokens (`extended`, `grandparents`). The `caregivers`
+  token landed in v1.2; see §3.4.
 - Cross-connector data-subject reconciliation (e.g., Schoology's "bee" and
   PowerSchool's "bee" being recognized as the same person). Deferred to a
   later identity-normalization spec.
@@ -98,6 +99,38 @@ Downstream code and documentation SHOULD prefer the full names
 (`data_subject`, `subject` field, `subject` audience token) in any context
 where the shorter form is ambiguous.
 
+#### `guardians` vs `caregivers` (v1.2 vocabulary)
+
+Two adult-role tokens cover overlapping but distinct populations. Both
+were renamed/added in v1.2 (formerly `parents`, now split):
+
+| Token        | Population                                                                                                                                                            | Examples                                                                          |
+|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| `guardians`  | Primary responsible adults with formal legal or de-facto parental responsibility for the household's members.                                                          | Bio parents, adoptive parents, court-appointed guardians, foster parents.          |
+| `caregivers` | Delegated supervisors or care providers, formal or informal, who are NOT primary guardians but have been entrusted with some caretaking or supervisory responsibility. | Hired tutors, nannies, babysitters, AI agents in tutoring/care roles, out-of-household relatives on temporary duty (grandparent watching the kids for a week). |
+
+`caregivers` is **orthogonal** to `household` -- caregivers may be in-
+household (a live-in nanny) or out-of-household (an external tutor). For
+that reason `[household, caregivers]` is a meaningful and permitted
+combination (everyone living in the home, plus external delegated
+supervisors).
+
+#### Audience is coarse; fine-grained authorization is downstream
+
+The audience tokens encode **intended visibility scope**, not access policy.
+Glovebox makes no statement about *which* tutor is authorized for *which*
+kid's *which* subject. That fine-grained authorization (scope-bounded,
+time-bounded, identity-bounded) belongs to the downstream agents that
+actually serve content to users -- they layer their own role registries,
+time windows, and scope checks on top of the audience metadata.
+
+In other words: the audience token `caregivers` says "*some* delegated
+supervisor or agent is in the intended audience"; downstream agents do the
+"is THIS specific caregiver authorized for THIS specific content?" check.
+Audience metadata is forensically useful (the audit log captures intent at
+ingest time) and routing-useful (downstream agents can pre-filter), but it
+is not an ACL.
+
 ### 3.2 metadata.json -- Shape After This Spec
 
 Two new **top-level** fields alongside the existing `identity` block. They are
@@ -123,7 +156,7 @@ authenticator.
     },
 
     "data_subject": "bee",
-    "audience": ["subject", "parents"],
+    "audience": ["subject", "guardians"],
 
     "tags": {
         "course": "pre-algebra"
@@ -135,9 +168,9 @@ Note the three distinct uses per §3.1:
 
 - `"subject": "Math quiz retakes"` -- email-style subject line of the message.
 - `"data_subject": "bee"` -- the kid this message is about.
-- `"audience": ["subject", "parents"]` -- the `"subject"` token here is the
+- `"audience": ["subject", "guardians"]` -- the `"subject"` token here is the
   enum role meaning "the person named in `data_subject`" (Child 1), together with
-  Child 1's parents.
+  Child 1's guardians.
 
 ### 3.3 `data_subject` Field
 
@@ -171,31 +204,46 @@ school-wide flyer.
 Enum tokens (**these are audience roles, NOT references to any `metadata.json`
 field**):
 
-| Token       | Meaning                                                                       |
-|-------------|-------------------------------------------------------------------------------|
-| `subject`   | the person named in `data_subject` (see §3.1 for disambiguation)              |
-| `parents`   | the `data_subject`'s parents/guardians                                        |
-| `siblings`  | the `data_subject`'s siblings                                                 |
-| `household` | everyone in the household (effectively subject + parents + siblings combined) |
-| `public`    | no access restriction; may be shared outside the household                    |
+| Token        | Meaning                                                                                            |
+|--------------|----------------------------------------------------------------------------------------------------|
+| `subject`    | the person named in `data_subject` (see §3.1 for disambiguation)                                   |
+| `guardians`  | the `data_subject`'s primary responsible adults: bio/adoptive parents, legal guardians, foster parents. (When `data_subject` is empty, see §3.5: standalone `guardians` means "the household's guardians".) |
+| `siblings`   | the `data_subject`'s siblings                                                                      |
+| `household`  | everyone in the household (effectively subject + guardians + siblings combined)                    |
+| `caregivers` | delegated supervisors or care providers (tutors, nannies, AI agents in caretaking roles, out-of-household relatives on duty) -- orthogonal to `household` because they may be external. See §3.1 glossary. |
+| `public`     | no access restriction; may be shared outside the household                                         |
 
-Semantics are **role-relative**: tokens like `subject`, `parents`, `siblings`
-are interpreted relative to whatever identifier is in the `data_subject`
-field. Resolution ("is Steve one of Child 1's parents?") happens at the consuming
-boundary, which is each downstream agent, using whatever household model that
-agent maintains. Glovebox does not hold a family roster.
+Semantics for `subject`, `guardians`, `siblings`, `caregivers` are
+**role-relative** when `data_subject` is set -- interpreted relative to that
+identifier ("Child 1's guardians", "Child 1's siblings", "Child 1's caregivers"). When
+`data_subject` is empty, `guardians` and `caregivers` may still stand alone
+with **household-scope interpretation** ("the household's guardians", "the
+household's caregivers"); `subject` and `siblings` may not, since those
+roles are inherently subject-relative. Resolution ("is Steve one of Child 1's
+guardians? is the math-tutor agent in Child 1's caregivers?") happens at the
+consuming boundary, which is each downstream agent, using whatever
+household model and role registry that agent maintains. Glovebox does not
+hold a family roster.
 
 ### 3.5 Cross-Field Validation
 
-- If `data_subject` is empty/omitted, `audience` may not contain any of
-  `subject`, `parents`, `siblings` (these tokens are meaningless without a
-  data subject). `household` and `public` remain valid.
+- If `data_subject` is empty/omitted, `audience` may not contain `subject`
+  or `siblings` -- those tokens are inherently subject-relative and have
+  no meaning without a data subject. `guardians`, `caregivers`, `household`,
+  and `public` may all appear standalone with empty `data_subject`
+  (interpreted with household scope per §3.4).
 - `public` must appear alone. Any array that contains `public` plus any other
   token is rejected. Rationale: `public` is broader than any other; narrower
   tokens alongside it add no meaning and confuse downstream logic.
-- `household` must appear alone when combined with role-relative tokens.
-  `["household", "parents"]` is rejected: `household` already includes
-  parents. `["household"]` and `["subject", "parents"]` are both valid.
+- `household` must appear alone with respect to its **subset members**
+  (`subject`, `guardians`, `siblings`). `["household", "guardians"]` is
+  rejected -- `household` already includes guardians. `["household",
+  "caregivers"]` is **permitted**, however, because `caregivers` is
+  orthogonal to `household` (caregivers may be external).
+- `caregivers` may combine freely with `subject`, `guardians`, `siblings`,
+  and `household`. `[caregivers, guardians]` is permitted (parents + tutor);
+  `[caregivers, household]` is permitted (whole family + external tutor);
+  `[caregivers, subject]` is permitted; etc.
 - Empty array (`"audience": []`) is rejected -- it is ambiguous. Producers
   should omit the field entirely to signal "no explicit audience."
 
@@ -208,7 +256,7 @@ Glovebox does **not** materialize this default into the file at write time.
 Reading code applies the default. This keeps the on-disk schema honest about
 what the producer actually declared vs what the framework inferred.
 
-Rationale for `household` (rather than a stricter deny default) in v1:
+Rationale for `household` (rather than a stricter deny default):
 
 - Current Glovebox deployments are single-household homelabs; the operator
   and all consumers live in the household.
@@ -216,6 +264,9 @@ Rationale for `household` (rather than a stricter deny default) in v1:
   them as household-visible matches current behavior with no regressions.
 - A stricter default can be introduced in a later spec without a schema
   change, by flipping the reader-side default.
+- `household` does NOT include `caregivers`; if a deployment routinely
+  passes items to external caregivers, those items should explicitly set
+  `audience` rather than rely on the default.
 
 ## 4. Plumbing
 
@@ -264,8 +315,8 @@ type MatchResult struct {
 
 This is the **primary pathway** for Schoology and PowerSchool: a rule like
 `"schoology:bee:grade" -> {destination: "school", data_subject: "bee",
-audience: ["subject", "parents"]}` encodes the visibility policy declaratively
-per content type.
+audience: ["subject", "guardians"]}` encodes the visibility policy
+declaratively per content type.
 
 Example (schoology) -- note `data_subject` on the rule object vs the
 `"subject"` token inside `audience`:
@@ -273,10 +324,10 @@ Example (schoology) -- note `data_subject` on the rule object vs the
 ```json
 {
     "rules": [
-        {"match": "schoology:bee:grade",       "destination": "school", "data_subject": "bee",     "audience": ["subject", "parents"]},
-        {"match": "schoology:bee:submitted",   "destination": "school", "data_subject": "bee",     "audience": ["subject", "parents"]},
+        {"match": "schoology:bee:grade",       "destination": "school", "data_subject": "bee",     "audience": ["subject", "guardians"]},
+        {"match": "schoology:bee:submitted",   "destination": "school", "data_subject": "bee",     "audience": ["subject", "guardians"]},
         {"match": "schoology:bee:assignment",  "destination": "school", "data_subject": "bee",     "audience": ["household"]},
-        {"match": "schoology:charlie:grade",   "destination": "school", "data_subject": "charlie", "audience": ["subject", "parents"]},
+        {"match": "schoology:charlie:grade",   "destination": "school", "data_subject": "charlie", "audience": ["subject", "guardians"]},
         {"match": "schoology:*:flyer",         "destination": "school",                            "audience": ["public"]},
         {"match": "*",                         "destination": "school",                            "audience": ["household"]}
     ]
@@ -357,10 +408,13 @@ Rules:
 - `audience`: if present, each element must be one of the enum tokens
   (§3.4); no duplicates; ≤16 entries; non-empty array.
 - Cross-field rules from §3.5:
-  - Empty `data_subject` + `audience` containing `subject`/`parents`/
-    `siblings` → reject.
+  - Empty `data_subject` + `audience` containing `subject` or `siblings`
+    → reject. (`guardians` and `caregivers` may stand alone since v1.2,
+    interpreted with household scope.)
   - `public` combined with any other token → reject.
-  - `household` combined with `subject`/`parents`/`siblings` → reject.
+  - `household` combined with `subject`/`guardians`/`siblings` → reject
+    (those are subsets of `household`). `[household, caregivers]` is
+    permitted (caregivers are orthogonal to household).
 - Config-load-time validation applies the same rules to
   `DataSubjectDefault` and `AudienceDefault`. A malformed default fails
   startup, not first-item-commit.
@@ -403,18 +457,40 @@ each item, decoupling policy drift from data provenance.
   §5.2) is **not renamed**. The new concept takes the longer name
   `data_subject` to avoid collision; see §10 for why this choice was made.
 
-### 8.2 Version Bump
+### 8.2 Version Bumps
 
-v0.4.0 -- minor, additive under 0.x semver. (Originally targeted v0.3.0,
-but that version was already released for the spec-08 HTTP ingest API
-before this work landed.) Public Go API gains:
+This spec has shipped in two stages:
+
+**v0.4.0 (initial, 2026-05-18)** -- minor, additive under 0.x semver.
+(Originally targeted v0.3.0, but that version was already released for the
+spec-08 HTTP ingest API before this work landed.) Public Go API gained:
 
 - `BaseConfig.DataSubjectDefault`, `BaseConfig.AudienceDefault`
 - `Rule.DataSubject`, `Rule.Audience`
 - `MatchResult.DataSubject`, `MatchResult.Audience`
 - `ItemOptions.DataSubject`, `ItemOptions.Audience`
 
-No removals or renames. Existing callers compile unchanged.
+No removals or renames. Existing callers compiled unchanged.
+
+**v0.5.0 (this revision, 2026-05-19)** -- minor, breaking enum change
+under 0.x semver. Audience vocabulary refinement surfaced during spec 12
+(Schoology connector) brainstorming. Changes:
+
+- Renamed audience token `parents` → `guardians` (more inclusive
+  terminology that matches school/legal usage; the original §3.4 table
+  already documented the token as "parents/guardians" parenthetically).
+- Added audience token `caregivers` (delegated supervisors, orthogonal
+  to `household` since caregivers may be external).
+- Relaxed `guardians` and `caregivers` to allow standalone use with empty
+  `data_subject` (household-scope interpretation).
+- New permitted combination `[household, caregivers]`.
+- Go symbol `AudienceParents` → `AudienceGuardians`; new
+  `AudienceCaregivers` constant.
+
+v0.4.0 callers using the literal string `"parents"` or the constant
+`AudienceParents` need a rename. There were no external consumers at the
+time of the bump; all internal callers (Glovebox tests) were updated in
+the same release. See §10.5 for rationale.
 
 ### 8.3 Existing Connectors
 
@@ -438,7 +514,7 @@ Deploy one PowerSchool container per kid, each with:
 ```json
 {
     "data_subject_default": "bee",
-    "audience_default": ["subject", "parents"],
+    "audience_default": ["subject", "guardians"],
     "rules": [
         {"match": "grade",              "destination": "school"},
         {"match": "progress_report",    "destination": "school"},
@@ -452,7 +528,7 @@ Deploy one PowerSchool container per kid, each with:
 }
 ```
 
-Every item gets `data_subject: "bee"` and `audience: ["subject", "parents"]`
+Every item gets `data_subject: "bee"` and `audience: ["subject", "guardians"]`
 unless a specific rule overrides. Connector code typically needs no per-item
 override.
 
@@ -468,16 +544,16 @@ per §3.4.
 ```json
 {
     "rules": [
-        {"match": "schoology:bee:grade",         "data_subject": "bee",     "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:bee:submitted",     "data_subject": "bee",     "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:bee:assignment",    "data_subject": "bee",     "audience": ["household"],          "destination": "school"},
-        {"match": "schoology:bee:message",       "data_subject": "bee",     "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:charlie:grade",     "data_subject": "charlie", "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:charlie:submitted", "data_subject": "charlie", "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:charlie:assignment","data_subject": "charlie", "audience": ["household"],          "destination": "school"},
-        {"match": "schoology:charlie:message",   "data_subject": "charlie", "audience": ["subject", "parents"], "destination": "school"},
-        {"match": "schoology:*:flyer",                                      "audience": ["public"],             "destination": "school"},
-        {"match": "*",                                                      "audience": ["household"],          "destination": "school"}
+        {"match": "schoology:bee:grade",         "data_subject": "bee",     "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:bee:submitted",     "data_subject": "bee",     "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:bee:assignment",    "data_subject": "bee",     "audience": ["household"],            "destination": "school"},
+        {"match": "schoology:bee:message",       "data_subject": "bee",     "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:charlie:grade",     "data_subject": "charlie", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:charlie:submitted", "data_subject": "charlie", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:charlie:assignment","data_subject": "charlie", "audience": ["household"],            "destination": "school"},
+        {"match": "schoology:charlie:message",   "data_subject": "charlie", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:*:flyer",                                      "audience": ["public"],               "destination": "school"},
+        {"match": "*",                                                      "audience": ["household"],            "destination": "school"}
     ],
     "identity": {
         "provider":    "schoology",
@@ -557,9 +633,48 @@ If agents diverge on how they honor audience, Glovebox could grow a hard
 gate that refuses to release items whose declared audience violates a
 destination-agent policy. Again, later spec.
 
+### 10.5 Audience Vocabulary in v0.5.0 (`parents` → `guardians` + `caregivers`)
+
+The v0.4.0 audience enum used `parents` as the token for "the data subject's
+parents/guardians" (the table even noted this dual meaning parenthetically).
+During spec 12 (Schoology connector) brainstorming, two semantic gaps
+emerged that the v0.4.0 vocabulary couldn't model cleanly:
+
+1. **"Parents" undersells the role.** Schools and legal documents address
+   themselves to "parents and guardians" because the legally responsible
+   adult may be a guardian, foster parent, grandparent acting in loco
+   parentis, etc. The token name should match the inclusive meaning the
+   table already documented.
+
+2. **No way to address delegated supervisors.** A real audience for an
+   item like "Child 1's math homework" can include not just her guardians but
+   also her tutor, an AI agent given a tutoring role for math, a visiting
+   relative on duty for the week, etc. None of these fit under
+   `guardians` (they're not primary responsible adults) and none fit
+   under `household` (they may be external). They share the property
+   "delegated supervisor / care provider, formal or informal", which
+   warrants its own token.
+
+v0.5.0 resolved both:
+
+- Renamed `parents` → `guardians` (matches school terminology; inclusive
+  of bio/adoptive/foster/legal-guardian).
+- Added `caregivers` as a new orthogonal token for the delegated-supervisor
+  role.
+- Relaxed both new tokens to allow standalone use without `data_subject`
+  (household-scope interpretation).
+- Documented the architectural stance in §3.1: audience is coarse;
+  fine-grained authorization (which-tutor, which-scope, which-time-window)
+  belongs to downstream agents using their own role registries.
+
+The rename was cheap to do at v0.5.0 because v0.4.0 was less than 24 hours
+old at the time and had no external consumers of the `parents` token. Spec
+12 starts from the v0.5.0 vocabulary directly.
+
 ## 11. Acceptance Criteria
 
-A v0.4.0 release that implements this spec must:
+A v0.5.0 release that implements this spec (incorporating the v0.4.0 base
+plus the v0.5.0 vocabulary refinement) must:
 
 1. Accept `data_subject` (string) and `audience` (array of enum tokens) as
    optional top-level fields on `metadata.json`, validated per §6.
@@ -568,11 +683,15 @@ A v0.4.0 release that implements this spec must:
 3. Accept `DataSubject` and `Audience` on `ItemOptions` with per-item-wins
    merge semantics per §5.
 4. Include `DataSubject` and `Audience` on `AuditEntry` with `omitempty`.
-5. Produce clean `go vet` and `staticcheck`, pass existing tests, and add
-   new tests covering:
-   - Each valid enum token in `audience`.
-   - Each rejected combination from §3.5 (empty `data_subject` + role token,
-     `public` with extras, `household` with role tokens, empty array).
+5. Produce clean `go vet`, pass existing tests, and add new tests covering:
+   - Each valid enum token in `audience` (`subject`, `guardians`, `siblings`,
+     `household`, `caregivers`, `public`).
+   - Each rejected combination from §3.5: empty `data_subject` + `subject`
+     or `siblings` token, `public` with extras, `household` with subset
+     tokens (`subject`/`guardians`/`siblings`), empty array.
+   - Newly-permitted combinations from §3.5: `[household, caregivers]`,
+     `[guardians, caregivers]`, standalone `[guardians]` with empty
+     `data_subject`, standalone `[caregivers]` with empty `data_subject`.
    - Merge precedence (per-item > rule > config default > omitted) for both
      fields independently.
    - Reader-side default `audience = ["household"]` for items that omit the
@@ -582,3 +701,6 @@ A v0.4.0 release that implements this spec must:
 6. Leave all existing connectors unchanged in behavior and output. The
    pre-existing `subject` field (email-style subject line) must remain
    byte-identical in produced `metadata.json` files.
+7. Rename the v0.4.0 `AudienceParents` constant to `AudienceGuardians` and
+   add `AudienceCaregivers` in `internal/staging/audience.go`. Update all
+   v0.4.0-era test data referencing the literal `"parents"` to `"guardians"`.
