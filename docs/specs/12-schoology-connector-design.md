@@ -139,23 +139,27 @@ pollNow()
   ├─ for each kid in config.kids:
   │    library.switchToChild(kid.SchoologyUID)   // mutex-serialized in library
   │    ├─ library.GetOverdueSubmissions(uid)
-  │    │    for each assignment with ID > checkpoint:
+  │    │    for each assignment with ID > assignment-checkpoint:
   │    │      stage(match_key="schoology:<kid.Name>:assignment", ...)
-  │    │      checkpoint.Save("assignment:<kid.Name>:last_id", id)
+  │    │      checkpoint.Save("assignment:<kid.Name>:last_id", assignment.id)
   │    └─ library.GetFeed(uid)
-  │         for each feed post with ID > checkpoint:
+  │         for each feed post with ID > feed-checkpoint:
   │           stage(match_key="schoology:<kid.Name>:feed", ...)
-  │           for each attachment in post.Attachments:
-  │             library.DownloadAttachment(id)
+  │           for each attachment in post.Attachments
+  │               with attachment.id > feed-attachment-checkpoint:
+  │             library.DownloadAttachment(attachment.id)
   │             stage(match_key="schoology:<kid.Name>:attachment", ...)
-  │           checkpoint.Save("feed:<kid.Name>:last_id", id)
+  │             checkpoint.Save("feed-attachment:<kid.Name>:last_id", attachment.id)
+  │           checkpoint.Save("feed:<kid.Name>:last_id", post.id)
   └─ library.GetInbox()                          // parent-level; no kid switch
-       for each message with ID > checkpoint:
+       for each message with ID > message-checkpoint:
          stage(match_key="schoology:message", ...)
-         for each attachment in message.Attachments:
-           library.DownloadAttachment(id)
+         for each attachment in message.Attachments
+             with attachment.id > message-attachment-checkpoint:
+           library.DownloadAttachment(attachment.id)
            stage(match_key="schoology:message-attachment", ...)
-         checkpoint.Save("message:last_id", id)
+           checkpoint.Save("message-attachment:last_id", attachment.id)
+         checkpoint.Save("message:last_id", message.id)
 ```
 
 Each `stage()` is a `StagingWriter.NewItem()` + `WriteContent()` + `Commit()`
@@ -499,9 +503,18 @@ iteration does not stall the others.
 
 ### 8.2 Dedup Strategy
 
-Highest-ID strategy. On each poll, iterate library response from newest
+Highest-ID strategy applied independently to each content surface
+(assignments, feed posts, messages, feed-attachments, message-
+attachments). On each poll, iterate library response from newest
 to oldest; stop when current ID ≤ `last_id`; for IDs > `last_id`, stage
 the item and advance the checkpoint.
+
+**Attachments are dedup'd by their own unique Schoology attachment ID**,
+NOT inherited from the parent post/message. This matters because a
+single parent item could be re-fetched on a later poll (e.g., it was
+edited and re-emerges in the library response) without the attachments
+having changed -- the per-attachment ID dedup avoids re-staging
+identical bytes.
 
 **Risk**: Schoology IDs *should* be monotonic but might not always be
 (backdated edits, etc.). v1 mitigation: log a warning when the library
