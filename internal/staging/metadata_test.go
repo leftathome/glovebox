@@ -347,6 +347,12 @@ func TestValidate_AudienceValid(t *testing.T) {
 		{"household-with-subject", "bee", []string{"household"}},
 		{"household-without-subject", "", []string{"household"}},
 		{"public", "", []string{"public"}},
+		// v0.5.0 (spec 11 v1.2): caregivers, standalone relaxations.
+		{"guardians-alone-no-subject", "", []string{"guardians"}},
+		{"caregivers-alone-no-subject", "", []string{"caregivers"}},
+		{"caregivers-alone-with-subject", "bee", []string{"caregivers"}},
+		{"household-and-caregivers", "bee", []string{"household", "caregivers"}},
+		{"guardians-and-caregivers", "bee", []string{"guardians", "caregivers"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

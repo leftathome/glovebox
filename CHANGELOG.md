@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-19
+
+### Added
+
+- New audience enum token `caregivers` -- delegated supervisors and care
+  providers (tutors, nannies, AI agents in caretaking roles,
+  out-of-household relatives on duty). Orthogonal to `household`; the
+  combination `[household, caregivers]` is permitted. See spec 11 v1.2
+  §3.4 and the §3.1 glossary.
+
+### Changed (breaking)
+
+- Renamed audience enum token `parents` → `guardians`. Same semantics
+  (spec 11 v0.4.0's §3.4 table already documented the token as
+  "parents/guardians" parenthetically); the new name matches school and
+  legal terminology and is inclusive of bio/adoptive/foster parents and
+  legal guardians. The Go constant `AudienceParents` was renamed to
+  `AudienceGuardians`. v0.4.0 was less than 24 hours old with no
+  external consumers when this change landed; in-repo callers were
+  migrated in the same release.
+- `guardians` and `caregivers` may now appear standalone in `audience`
+  with empty `data_subject` (household-scope interpretation). Prior to
+  v0.5.0, role-relative tokens uniformly required `data_subject` to be
+  set. `subject` and `siblings` retain that requirement -- they are
+  inherently subject-relative.
+
+### Notes
+
+- Spec 11 §3.1 was extended with a `guardians`-vs-`caregivers` glossary
+  entry, an architectural stance documenting Glovebox audience as
+  coarse (with fine-grained authorization deferred to downstream
+  agents), and an "Audience is a snapshot, not a permanent ACL"
+  subsection clarifying that lifecycle-dependent access (juvenile →
+  adult transition, caregiver contract endings, retention horizons) is
+  the downstream agent's responsibility to apply against frozen
+  audit-log audience tokens.
+- Spec 11 §2.2 explicitly defers medical-care role tokens (`spouse`,
+  `medical_providers`, HIPAA-grade sensitivity escalators) until a
+  medical-content connector lands with concrete use cases to validate
+  against.
+
 ## [0.4.0] - 2026-05-18
 
 ### Added
