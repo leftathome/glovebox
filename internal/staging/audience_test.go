@@ -33,6 +33,15 @@ func TestValidateAudience_ValidCombinations(t *testing.T) {
 		{"public-without-subject", []string{"public"}, false},
 		{"nil-with-subject", nil, true},
 		{"nil-without-subject", nil, false},
+		// v0.5.0 relaxations: guardians and caregivers may stand alone
+		// without data_subject (household-scope interpretation).
+		{"guardians-alone-without-data-subject", []string{"guardians"}, false},
+		{"caregivers-alone-without-data-subject", []string{"caregivers"}, false},
+		{"caregivers-alone-with-data-subject", []string{"caregivers"}, true},
+		{"household-and-caregivers", []string{"household", "caregivers"}, true},
+		{"household-and-caregivers-without-data-subject", []string{"household", "caregivers"}, false},
+		{"guardians-and-caregivers", []string{"guardians", "caregivers"}, true},
+		{"subject-guardians-caregivers", []string{"subject", "guardians", "caregivers"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,8 +68,8 @@ func TestValidateAudience_RejectedCombinations(t *testing.T) {
 		{"household-with-guardians", []string{"household", "guardians"}, true, "household must appear alone"},
 		{"household-with-subject-token", []string{"household", "subject"}, true, "household must appear alone"},
 		{"subject-token-without-data-subject", []string{"subject"}, false, "requires data_subject"},
-		{"guardians-without-data-subject", []string{"guardians"}, false, "requires data_subject"},
 		{"role-plus-household-without-data-subject", []string{"siblings"}, false, "requires data_subject"},
+		{"household-with-caregivers-and-subset", []string{"household", "guardians", "caregivers"}, true, "household must appear alone"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
