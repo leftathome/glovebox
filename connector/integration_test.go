@@ -408,7 +408,7 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 			Match:       "schoology:bee:grade",
 			Destination: "school",
 			DataSubject: "bee",
-			Audience:    []string{"subject", "parents"},
+			Audience:    []string{"subject", "guardians"},
 		},
 		{
 			Match:       "schoology:bee:flyer",
@@ -483,8 +483,8 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 		switch m.DataSubject {
 		case "bee":
 			foundGrade = true
-			if len(m.Audience) != 2 || m.Audience[0] != "subject" || m.Audience[1] != "parents" {
-				t.Errorf("bee's grade audience: got %v, want [subject parents]", m.Audience)
+			if len(m.Audience) != 2 || m.Audience[0] != "subject" || m.Audience[1] != "guardians" {
+				t.Errorf("bee's grade audience: got %v, want [subject guardians]", m.Audience)
 			}
 		case "":
 			foundFlyer = true

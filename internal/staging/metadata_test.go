@@ -343,7 +343,7 @@ func TestValidate_AudienceValid(t *testing.T) {
 		dataSubject string
 		audience    []string
 	}{
-		{"subject-and-parents", "bee", []string{"subject", "parents"}},
+		{"subject-and-guardians", "bee", []string{"subject", "guardians"}},
 		{"household-with-subject", "bee", []string{"household"}},
 		{"household-without-subject", "", []string{"household"}},
 		{"public", "", []string{"public"}},
@@ -369,7 +369,7 @@ func TestValidate_AudienceInvalid(t *testing.T) {
 	}{
 		{"unknown-token", "bee", []string{"grandparents"}},
 		{"public-not-alone", "bee", []string{"public", "subject"}},
-		{"household-not-alone", "bee", []string{"household", "parents"}},
+		{"household-not-alone", "bee", []string{"household", "guardians"}},
 		{"role-token-without-subject", "", []string{"subject"}},
 		{"empty-array", "bee", []string{}},
 	}
