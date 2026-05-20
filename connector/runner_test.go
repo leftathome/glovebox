@@ -522,7 +522,7 @@ func TestBaseConfig_GoodDefaultsAccepted(t *testing.T) {
 	cfg := BaseConfig{
 		Rules:              []Rule{{Match: "*", Destination: "a"}},
 		DataSubjectDefault: "bee",
-		AudienceDefault:    []string{"subject", "parents"},
+		AudienceDefault:    []string{"subject", "guardians"},
 	}
 	if err := ValidateBaseConfig(&cfg); err != nil {
 		t.Errorf("valid defaults should pass, got %v", err)
