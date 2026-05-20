@@ -91,7 +91,7 @@ func TestItemMetadata_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 		DestinationAgent: "school",
 		ContentType:      "text/plain",
 		DataSubject:      "bee",
-		Audience:         []string{"subject", "parents"},
+		Audience:         []string{"subject", "guardians"},
 	}
 	data, err := json.Marshal(original)
 	if err != nil {
@@ -100,7 +100,7 @@ func TestItemMetadata_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 	if !strings.Contains(string(data), `"data_subject":"bee"`) {
 		t.Errorf("marshaled JSON missing data_subject: %s", data)
 	}
-	if !strings.Contains(string(data), `"audience":["subject","parents"]`) {
+	if !strings.Contains(string(data), `"audience":["subject","guardians"]`) {
 		t.Errorf("marshaled JSON missing audience: %s", data)
 	}
 
@@ -111,7 +111,7 @@ func TestItemMetadata_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 	if roundtripped.DataSubject != "bee" {
 		t.Errorf("data_subject lost in roundtrip: got %q", roundtripped.DataSubject)
 	}
-	if len(roundtripped.Audience) != 2 || roundtripped.Audience[0] != "subject" || roundtripped.Audience[1] != "parents" {
+	if len(roundtripped.Audience) != 2 || roundtripped.Audience[0] != "subject" || roundtripped.Audience[1] != "guardians" {
 		t.Errorf("audience lost in roundtrip: got %v", roundtripped.Audience)
 	}
 }

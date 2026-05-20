@@ -2,10 +2,13 @@ package staging
 
 import "fmt"
 
-// Audience role tokens per spec 11 §3.4.
+// Audience role tokens per spec 11 §3.4. Renamed in v0.5.0: AudienceParents
+// was the v0.4.0 name; v0.5.0 uses AudienceGuardians (matches school and
+// legal terminology; v0.4.0's §3.4 table already documented the token as
+// "parents/guardians" parenthetically).
 const (
 	AudienceSubject   = "subject"
-	AudienceParents   = "parents"
+	AudienceGuardians = "guardians"
 	AudienceSiblings  = "siblings"
 	AudienceHousehold = "household"
 	AudiencePublic    = "public"
@@ -15,7 +18,7 @@ const maxAudienceEntries = 16
 
 var validAudienceTokens = map[string]bool{
 	AudienceSubject:   true,
-	AudienceParents:   true,
+	AudienceGuardians: true,
 	AudienceSiblings:  true,
 	AudienceHousehold: true,
 	AudiencePublic:    true,
@@ -24,9 +27,9 @@ var validAudienceTokens = map[string]bool{
 // roleRelativeTokens are tokens that require a data_subject to be meaningful
 // per spec 11 §3.5.
 var roleRelativeTokens = map[string]bool{
-	AudienceSubject:  true,
-	AudienceParents:  true,
-	AudienceSiblings: true,
+	AudienceSubject:   true,
+	AudienceGuardians: true,
+	AudienceSiblings:  true,
 }
 
 // ValidateAudience enforces the spec 11 §3.5 cross-field rules on an audience
@@ -72,7 +75,7 @@ func ValidateAudience(audience []string, hasDataSubject bool) error {
 		return fmt.Errorf("public must appear alone in audience")
 	}
 	if hasHousehold && hasRoleRelative {
-		return fmt.Errorf("household must appear alone; it already includes subject/parents/siblings")
+		return fmt.Errorf("household must appear alone; it already includes subject/guardians/siblings")
 	}
 	if !hasDataSubject && hasRoleRelative {
 		return fmt.Errorf("audience token requires data_subject to be set")

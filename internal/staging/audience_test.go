@@ -22,10 +22,10 @@ func TestValidateAudience_ValidCombinations(t *testing.T) {
 		audience       []string
 		hasDataSubject bool
 	}{
-		{"subject-and-parents", []string{"subject", "parents"}, true},
-		{"all-role-tokens", []string{"subject", "parents", "siblings"}, true},
+		{"subject-and-guardians", []string{"subject", "guardians"}, true},
+		{"all-role-tokens", []string{"subject", "guardians", "siblings"}, true},
 		{"subject-only", []string{"subject"}, true},
-		{"parents-only", []string{"parents"}, true},
+		{"guardians-only", []string{"guardians"}, true},
 		{"siblings-only", []string{"siblings"}, true},
 		{"household-with-subject", []string{"household"}, true},
 		{"household-without-subject", []string{"household"}, false},
@@ -56,10 +56,10 @@ func TestValidateAudience_RejectedCombinations(t *testing.T) {
 		{"too-many", makeAudience(17), true, "too many"},
 		{"public-with-subject-token", []string{"public", "subject"}, true, "public must appear alone"},
 		{"public-with-household", []string{"public", "household"}, true, "public must appear alone"},
-		{"household-with-parents", []string{"household", "parents"}, true, "household must appear alone"},
+		{"household-with-guardians", []string{"household", "guardians"}, true, "household must appear alone"},
 		{"household-with-subject-token", []string{"household", "subject"}, true, "household must appear alone"},
 		{"subject-token-without-data-subject", []string{"subject"}, false, "requires data_subject"},
-		{"parents-without-data-subject", []string{"parents"}, false, "requires data_subject"},
+		{"guardians-without-data-subject", []string{"guardians"}, false, "requires data_subject"},
 		{"role-plus-household-without-data-subject", []string{"siblings"}, false, "requires data_subject"},
 	}
 	for _, tc := range cases {
@@ -84,9 +84,9 @@ func TestEffectiveAudience_DefaultWhenNil(t *testing.T) {
 }
 
 func TestEffectiveAudience_PassthroughWhenSet(t *testing.T) {
-	m := ItemMetadata{Audience: []string{"subject", "parents"}}
+	m := ItemMetadata{Audience: []string{"subject", "guardians"}}
 	got := EffectiveAudience(m)
-	if len(got) != 2 || got[0] != "subject" || got[1] != "parents" {
-		t.Errorf("expected [subject parents], got %v", got)
+	if len(got) != 2 || got[0] != "subject" || got[1] != "guardians" {
+		t.Errorf("expected [subject guardians], got %v", got)
 	}
 }
