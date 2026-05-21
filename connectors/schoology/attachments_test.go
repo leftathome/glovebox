@@ -102,12 +102,13 @@ func TestProcessAttachments_HappyPath(t *testing.T) {
 		sampleAttachment(102, "rubric.pdf"),
 	}
 
-	staged := ProcessAttachments(
+	staged, skipped := ProcessAttachments(
 		context.Background(),
 		client,
 		writer,
 		matcher,
 		cp,
+		nil, // metrics not required for this test
 		atts,
 		/*parentID*/ 9001,
 		/*parentType*/ "feed_post",
@@ -118,7 +119,10 @@ func TestProcessAttachments_HappyPath(t *testing.T) {
 	)
 
 	if staged != 2 {
-		t.Errorf("ProcessAttachments returned %d, want 2", staged)
+		t.Errorf("ProcessAttachments staged %d, want 2", staged)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("happy path should have no skipped attachments, got %v", skipped)
 	}
 	if got := stagingDirCount(t, stagingDir); got != 2 {
 		t.Errorf("staging dir has %d items, want 2", got)
@@ -147,12 +151,13 @@ func TestProcessAttachments_SizeCap(t *testing.T) {
 
 	atts := []Attachment{sampleAttachment(200, "huge.bin")}
 
-	staged := ProcessAttachments(
+	staged, skipped := ProcessAttachments(
 		context.Background(),
 		client,
 		writer,
 		matcher,
 		cp,
+		nil, // metrics not required for this test
 		atts,
 		/*parentID*/ 9001,
 		/*parentType*/ "message",
@@ -163,7 +168,10 @@ func TestProcessAttachments_SizeCap(t *testing.T) {
 	)
 
 	if staged != 0 {
-		t.Errorf("ProcessAttachments returned %d, want 0", staged)
+		t.Errorf("ProcessAttachments staged %d, want 0", staged)
+	}
+	if len(skipped) != 1 || skipped[0].Reason != SkipSizeExceeded || skipped[0].ID != 200 {
+		t.Errorf("expected one size_exceeded skip for id=200, got %v", skipped)
 	}
 	if got := stagingDirCount(t, stagingDir); got != 0 {
 		t.Errorf("staging dir has %d items, want 0", got)
@@ -189,20 +197,28 @@ func TestProcessAttachments_Dedup(t *testing.T) {
 
 	atts := []Attachment{sampleAttachment(300, "notes.pdf")}
 
-	first := ProcessAttachments(
-		context.Background(), client, writer, matcher, cp,
+	first, firstSkipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, nil,
 		atts, 7, "feed_post", "feed", "feed_attachments", "kid2", 8,
 	)
 	if first != 1 {
 		t.Fatalf("first call staged %d, want 1", first)
 	}
+	if len(firstSkipped) != 0 {
+		t.Errorf("first call should have no skipped, got %v", firstSkipped)
+	}
 
-	second := ProcessAttachments(
-		context.Background(), client, writer, matcher, cp,
+	second, secondSkipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, nil,
 		atts, 7, "feed_post", "feed", "feed_attachments", "kid2", 8,
 	)
 	if second != 0 {
 		t.Errorf("second call staged %d, want 0 (dedup)", second)
+	}
+	// Dedup-skipped attachments are NOT failures; they should not appear
+	// in the skipped slice (which is reserved for actionable failures).
+	if len(secondSkipped) != 0 {
+		t.Errorf("dedup-skipped should not appear in skipped slice, got %v", secondSkipped)
 	}
 
 	if got := stagingDirCount(t, stagingDir); got != 1 {
@@ -231,14 +247,17 @@ func TestProcessAttachments_DownloadError(t *testing.T) {
 	bad.URL = failURL
 	good := sampleAttachment(401, "good.pdf")
 
-	staged := ProcessAttachments(
-		context.Background(), client, writer, matcher, cp,
+	staged, skipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, nil,
 		[]Attachment{bad, good},
 		9, "feed_post", "feed", "feed_attachments", "kid3", 8,
 	)
 
 	if staged != 1 {
-		t.Errorf("ProcessAttachments returned %d, want 1", staged)
+		t.Errorf("ProcessAttachments staged %d, want 1", staged)
+	}
+	if len(skipped) != 1 || skipped[0].Reason != SkipDownloadError || skipped[0].ID != 400 {
+		t.Errorf("expected one download_error skip for id=400, got %v", skipped)
 	}
 	if got := stagingDirCount(t, stagingDir); got != 1 {
 		t.Errorf("staging dir has %d items, want 1", got)
@@ -262,5 +281,102 @@ func TestProcessAttachments_DownloadError(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(stagingDir, e.Name(), "metadata.json")); err != nil {
 			t.Errorf("metadata.json missing for %s: %v", e.Name(), err)
 		}
+	}
+}
+
+// TestProcessAttachments_NoRuleMatch skips an attachment when the
+// matcher returns ok=false, records it in skipped, and does NOT
+// advance the checkpoint.
+func TestProcessAttachments_NoRuleMatch(t *testing.T) {
+	writer, stagingDir := newTestWriter(t)
+	// Matcher with an explicit rule that does NOT match our key.
+	matcher := connector.NewRuleMatcher([]connector.Rule{
+		{Match: "totally-other-key", Destination: "messaging"},
+	})
+	cp := newTestCheckpoint(t)
+	client := &fakeClient{
+		DownloadFunc: fixedBodyDownloader([]byte("payload")),
+	}
+
+	atts := []Attachment{sampleAttachment(500, "orphan.pdf")}
+	staged, skipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, nil,
+		atts, 11, "feed_post", "unmatched-key", "feed_attachments", "kid4", 8,
+	)
+
+	if staged != 0 {
+		t.Errorf("staged %d, want 0", staged)
+	}
+	if len(skipped) != 1 || skipped[0].Reason != SkipNoRuleMatch {
+		t.Errorf("expected one no_rule_match skip, got %v", skipped)
+	}
+	if got := stagingDirCount(t, stagingDir); got != 0 {
+		t.Errorf("staging dir has %d items, want 0", got)
+	}
+	last, _ := LastSeenID(cp, "feed_attachments", "kid4")
+	if last != 0 {
+		t.Errorf("checkpoint must not advance on no-rule-match, got %d", last)
+	}
+}
+
+// TestProcessAttachments_CorruptedCheckpoint exercises the
+// ShouldStage-returns-error path. The attachment is skipped and the
+// poll continues with the next attachment.
+func TestProcessAttachments_CorruptedCheckpoint(t *testing.T) {
+	writer, stagingDir := newTestWriter(t)
+	matcher := matchAllMatcher()
+	cp := newTestCheckpoint(t)
+	// Corrupt the checkpoint for the first attachment's surface/scope.
+	if err := cp.Save(CheckpointKey("feed_attachments", "kid5"), "not-a-number"); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{
+		DownloadFunc: fixedBodyDownloader([]byte("ok")),
+	}
+
+	atts := []Attachment{sampleAttachment(600, "broken.pdf")}
+	staged, skipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, nil,
+		atts, 12, "feed_post", "feed", "feed_attachments", "kid5", 8,
+	)
+
+	if staged != 0 {
+		t.Errorf("staged %d, want 0", staged)
+	}
+	if len(skipped) != 1 || skipped[0].Reason != SkipCheckpointReadFailed {
+		t.Errorf("expected one checkpoint_read_failed skip, got %v", skipped)
+	}
+	if got := stagingDirCount(t, stagingDir); got != 0 {
+		t.Errorf("staging dir has %d items, want 0", got)
+	}
+}
+
+// TestProcessAttachments_MetricsRecorded verifies the optional metrics
+// parameter is invoked for each skip type. Uses a real
+// connector.Metrics; we cannot easily inspect counter state but we
+// can confirm the call does not panic.
+func TestProcessAttachments_MetricsRecorded(t *testing.T) {
+	metrics, err := connector.NewMetrics("schoology-test")
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	defer metrics.Shutdown()
+
+	writer, _ := newTestWriter(t)
+	matcher := matchAllMatcher()
+	cp := newTestCheckpoint(t)
+	client := &fakeClient{
+		DownloadFunc: func(ctx context.Context, url string) (io.ReadCloser, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	atts := []Attachment{sampleAttachment(700, "any.pdf")}
+	staged, skipped := ProcessAttachments(
+		context.Background(), client, writer, matcher, cp, metrics,
+		atts, 13, "feed_post", "feed", "feed_attachments", "kid6", 8,
+	)
+	if staged != 0 || len(skipped) != 1 || skipped[0].Reason != SkipDownloadError {
+		t.Errorf("expected one download_error skip; staged=%d skipped=%v", staged, skipped)
 	}
 }
