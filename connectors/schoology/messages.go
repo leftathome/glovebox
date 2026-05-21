@@ -65,10 +65,18 @@ func ProcessMessages(
 		// Observe before emit so AffectedCount reflects reality; mirrors
 		// the assignments + feed processors so a shared dedup tracker
 		// behaves consistently across surfaces.
-		if dedup.Observe("messages", errorClass, "") {
+		receiptEmitted := dedup.Observe("messages", errorClass, "")
+		if receiptEmitted {
 			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", errorClass, err.Error())
 			tel.RecordParseFailureReceipt("messages", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "messages",
+			"error_class", errorClass,
+			"kid", "",
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("messages", errorClass),
+		)
 		return 0, errsLogged
 	}
 
@@ -77,14 +85,19 @@ func ProcessMessages(
 			continue
 		}
 		tel.RecordParseFailure("messages", "row_parse", "", "message")
-		if dedup.Observe("messages", "row_parse", "") {
+		receiptEmitted := dedup.Observe("messages", "row_parse", "")
+		errsLogged = true
+		if receiptEmitted {
 			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", "row_parse", pe.Error())
 			tel.RecordParseFailureReceipt("messages", "row_parse")
-			errsLogged = true
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "messages",
+			"error_class", "row_parse",
+			"kid", "",
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("messages", "row_parse"),
+		)
 	}
 
 	result, ok := matcher.Match("schoology:message")

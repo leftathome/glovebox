@@ -52,10 +52,18 @@ func ProcessAssignments(
 		// Observe so the receipt records the affected count; if Observe
 		// returns false the receipt was already emitted this poll and we
 		// must not duplicate it.
-		if dedup.Observe("assignments", errorClass, "") {
+		receiptEmitted := dedup.Observe("assignments", errorClass, "")
+		if receiptEmitted {
 			emitAssignmentsTopLevelReceipt(writer, matcher, kid, libVersion, err, errorClass, dedup)
 			tel.RecordParseFailureReceipt("assignments", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "assignments",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("assignments", errorClass),
+		)
 		return 0, errsLogged
 	}
 
@@ -68,14 +76,19 @@ func ProcessAssignments(
 		}
 		const errorClass = "row_parse"
 		tel.RecordParseFailure("assignments", errorClass, kid.Name, "assignment")
-		if dedup.Observe("assignments", errorClass, "") {
-			errsLogged = true
+		receiptEmitted := dedup.Observe("assignments", errorClass, "")
+		errsLogged = true
+		if receiptEmitted {
 			emitAssignmentsRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
 			tel.RecordParseFailureReceipt("assignments", errorClass)
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "assignments",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("assignments", errorClass),
+		)
 	}
 
 	matchKey := "schoology:" + kid.Name + ":" + assignmentSurface
