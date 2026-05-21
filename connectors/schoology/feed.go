@@ -58,10 +58,18 @@ func ProcessFeed(
 		// returns false the receipt was already emitted this poll and we
 		// must not duplicate it. Mirrors the assignments processor so
 		// processors that share a dedup tracker behave consistently.
-		if dedup.Observe("feed", errorClass, "") {
+		receiptEmitted := dedup.Observe("feed", errorClass, "")
+		if receiptEmitted {
 			emitFeedTopLevelReceipt(writer, matcher, kid, libVersion, err, errorClass)
 			tel.RecordParseFailureReceipt("feed", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "feed",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("feed", errorClass),
+		)
 		return 0, 0, errsLogged
 	}
 
@@ -77,14 +85,19 @@ func ProcessFeed(
 		const errorClass = "row_parse"
 		// Per-occurrence failure counter — fires for every row parse error.
 		tel.RecordParseFailure("feed", errorClass, kid.Name, "feed")
-		if dedup.Observe("feed", errorClass, "") {
-			errsLogged = true
+		receiptEmitted := dedup.Observe("feed", errorClass, "")
+		errsLogged = true
+		if receiptEmitted {
 			emitFeedRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
 			tel.RecordParseFailureReceipt("feed", errorClass)
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "feed",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("feed", errorClass),
+		)
 	}
 
 	matchKey := "schoology:" + kid.Name + ":" + feedSurface
