@@ -1,16 +1,22 @@
 package schoology
 
 import (
+	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
 
 // TriggerHandler implements connector.Listener for the POST /v1/poll
-// endpoint. Bearer-token auth, 60-second debounce by default. On accepted
-// requests, signals the connector to poll via the supplied channel.
+// endpoint. Bearer-token auth with constant-time comparison, configurable
+// debounce. On accepted requests, signals the connector to poll via the
+// supplied channel.
+//
+// Fields are set once before serving and not mutated thereafter; the
+// handler itself uses a mutex to guard lastTrigger across concurrent
+// requests.
 //
 // TODO: candidate for extraction to connector primitive base type
 // (any read-mostly connector might want a trigger endpoint).
@@ -44,9 +50,9 @@ func (h *TriggerHandler) handlePoll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	auth := r.Header.Get("Authorization")
-	expected := "Bearer " + h.BearerToken
-	if auth != expected {
+	auth := []byte(r.Header.Get("Authorization"))
+	expected := []byte("Bearer " + h.BearerToken)
+	if subtle.ConstantTimeCompare(auth, expected) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -55,24 +61,28 @@ func (h *TriggerHandler) handlePoll(w http.ResponseWriter, r *http.Request) {
 	since := time.Since(h.lastTrigger)
 	if since < h.DebounceDuration {
 		remaining := h.DebounceDuration - since
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(remaining.Seconds())+1))
 		h.mu.Unlock()
+		// Ceil to the next whole second so Retry-After never undershoots.
+		secs := int((remaining + time.Second - 1) / time.Second)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
 	}
-	h.lastTrigger = time.Now()
-	h.mu.Unlock()
 
-	// Non-blocking send; drop if the channel buffer is full (the consumer
-	// is already going to poll).
+	now := time.Now()
+	// Non-blocking send. Only advance lastTrigger if the signal actually
+	// queues; if the consumer's buffer is full, the trigger coalesces
+	// with the pending one rather than poisoning the debounce window.
 	select {
 	case h.PollSignal <- struct{}{}:
+		h.lastTrigger = now
 	default:
 	}
+	h.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
-		"poll_queued_at": time.Now().UTC().Format(time.RFC3339),
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"poll_queued_at": now.UTC().Format(time.RFC3339),
 	})
 }

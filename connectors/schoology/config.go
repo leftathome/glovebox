@@ -109,11 +109,6 @@ func ValidateConfig(c *Config) error {
 	return nil
 }
 
-func validateTimeOfDay(s string) error {
-	_, err := parseTimeOfDay(s)
-	return err
-}
-
 // parseTimeOfDay parses an HH:MM local-time string into minutes-of-day
 // (0..1439). Returns an error if the format or numeric ranges are invalid.
 func parseTimeOfDay(s string) (int, error) {

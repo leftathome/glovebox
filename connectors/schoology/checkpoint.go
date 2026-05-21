@@ -2,7 +2,6 @@ package schoology
 
 import (
 	"fmt"
-	"log/slog"
 	"strconv"
 
 	"github.com/leftathome/glovebox/connector"
@@ -19,20 +18,22 @@ func CheckpointKey(surface, scope string) string {
 	return surface + ":" + scope + ":last_id"
 }
 
-// LastSeenID reads the highest-seen ID for a content surface. Returns 0
-// when the checkpoint is fresh (i.e., first poll).
-func LastSeenID(cp connector.Checkpoint, surface, scope string) int64 {
-	v, ok := cp.Load(CheckpointKey(surface, scope))
+// LastSeenID reads the highest-seen ID for a content surface.
+// Returns (0, nil) when the checkpoint is fresh (i.e. first poll).
+// Returns (0, err) when the stored value is unparseable -- callers
+// must decide whether to abort the poll or replay from zero; defaulting
+// to zero would silently re-emit every previously-seen item.
+func LastSeenID(cp connector.Checkpoint, surface, scope string) (int64, error) {
+	key := CheckpointKey(surface, scope)
+	v, ok := cp.Load(key)
 	if !ok {
-		return 0
+		return 0, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		slog.Warn("schoology checkpoint parse error",
-			"key", CheckpointKey(surface, scope), "value", v, "error", err)
-		return 0
+		return 0, fmt.Errorf("checkpoint parse error key=%s value=%q: %w", key, v, err)
 	}
-	return n
+	return n, nil
 }
 
 // SaveLastSeenID advances the checkpoint after a successful Commit().
@@ -42,32 +43,64 @@ func SaveLastSeenID(cp connector.Checkpoint, surface, scope string, id int64) er
 	return cp.Save(CheckpointKey(surface, scope), strconv.FormatInt(id, 10))
 }
 
-// ShouldStage returns true when an item's ID is strictly greater than
-// the checkpoint. When false (id <= last seen), logs a warning if id
-// is non-zero but below the threshold (likely out-of-order arrival).
-// The dropped-below-checkpoint metric is incremented by the caller
-// since it owns the connector's Metrics handle.
+// StageDecision is the outcome of ShouldStage. Callers can label
+// metrics by Decision.String() and decide whether to emit the item
+// (only StageAccept means emit).
+type StageDecision int
+
+const (
+	StageAccept        StageDecision = iota // id > last seen; emit
+	StageSkipZero                           // item id was 0; ignore
+	StageSkipDuplicate                      // id == last seen; likely a retry
+	StageSkipBelow                          // id < last seen; likely out-of-order arrival
+)
+
+// String returns a snake_case label suitable for metric labels and log
+// fields. Stable across releases (callers may key dashboards on it).
+func (d StageDecision) String() string {
+	switch d {
+	case StageAccept:
+		return "accept"
+	case StageSkipZero:
+		return "skip_zero_id"
+	case StageSkipDuplicate:
+		return "skip_duplicate"
+	case StageSkipBelow:
+		return "skip_below_checkpoint"
+	}
+	return "unknown"
+}
+
+// Accept reports whether the decision means "emit the item". Convenience
+// for callsites that only care about the binary outcome.
+func (d StageDecision) Accept() bool { return d == StageAccept }
+
+// ShouldStage classifies an item's ID against the checkpoint for its
+// surface. Returns an error when the checkpoint store can't be read
+// (corrupted value); callers should treat that as a poll-abort condition.
 //
 // TODO: candidate for extraction to connector primitive base type
 // (highest-ID dedup is shared with PowerSchool and future LMS connectors).
-func ShouldStage(cp connector.Checkpoint, surface, scope string, id int64) bool {
+func ShouldStage(cp connector.Checkpoint, surface, scope string, id int64) (StageDecision, error) {
 	if id == 0 {
-		return false
+		return StageSkipZero, nil
 	}
-	last := LastSeenID(cp, surface, scope)
-	if id > last {
-		return true
+	last, err := LastSeenID(cp, surface, scope)
+	if err != nil {
+		return 0, err
 	}
-	if last > 0 && id < last {
-		slog.Warn("schoology item below checkpoint",
-			"surface", surface, "scope", scope,
-			"item_id", id, "checkpoint", last)
+	switch {
+	case id > last:
+		return StageAccept, nil
+	case id == last:
+		return StageSkipDuplicate, nil
+	default:
+		return StageSkipBelow, nil
 	}
-	return false
 }
 
-// FormatID parses a string ID into int64.
-func FormatID(s string) (int64, error) {
+// ParseID parses a string ID into int64.
+func ParseID(s string) (int64, error) {
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("parse id %q: %w", s, err)
