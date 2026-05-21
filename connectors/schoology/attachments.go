@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/leftathome/glovebox/connector"
 )
 
@@ -55,15 +57,17 @@ type AttachmentSkip struct {
 //
 // Per-attachment failures (checkpoint read, download, oversized, no
 // matching rule, stage failure) are logged and skipped; the poll
-// continues. metrics is optional (nil-safe); when non-nil, each skip
-// increments connector_items_dropped_total{reason}.
+// continues. tel is optional (nil-safe); when non-nil, each skip emits
+// both the framework connector_items_dropped_total{reason} counter and
+// the schoology-specific schoology_attachments_skipped_total{reason}
+// counter (spec §13.1).
 func ProcessAttachments(
 	ctx context.Context,
 	client SchoologyClient,
 	writer *connector.StagingWriter,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
-	metrics *connector.Metrics,
+	tel *Telemetry,
 	atts []Attachment,
 	parentID int64,
 	parentType string,
@@ -80,7 +84,8 @@ func ProcessAttachments(
 				"surface", checkpointSurface, "scope", checkpointScope,
 				"attachment_id", a.ID, "error", err)
 			skipped = append(skipped, AttachmentSkip{ID: a.ID, Filename: a.Filename, Reason: SkipCheckpointReadFailed})
-			recordDrop(metrics, SkipCheckpointReadFailed)
+			tel.RecordItemDropped(SkipCheckpointReadFailed)
+			tel.RecordAttachmentSkipped(SkipCheckpointReadFailed)
 			continue
 		}
 		if !d.Accept() {
@@ -88,12 +93,13 @@ func ProcessAttachments(
 			// a failure -- no entry in skipped[], no metric.
 			continue
 		}
-		data, downloadErr := downloadCapped(ctx, client, a, maxBytes)
+		data, downloadErr := downloadAttachmentCapped(ctx, client, tel, a, maxBytes)
 		if downloadErr != nil {
 			slog.Warn("schoology attachment download failed",
 				"attachment_id", a.ID, "filename", a.Filename, "error", downloadErr)
 			skipped = append(skipped, AttachmentSkip{ID: a.ID, Filename: a.Filename, Reason: SkipDownloadError})
-			recordDrop(metrics, SkipDownloadError)
+			tel.RecordItemDropped(SkipDownloadError)
+			tel.RecordAttachmentSkipped(SkipDownloadError)
 			continue
 		}
 		if int64(len(data)) > maxBytes {
@@ -101,7 +107,8 @@ func ProcessAttachments(
 				"attachment_id", a.ID, "filename", a.Filename,
 				"size_bytes", len(data), "max_bytes", maxBytes)
 			skipped = append(skipped, AttachmentSkip{ID: a.ID, Filename: a.Filename, Reason: SkipSizeExceeded})
-			recordDrop(metrics, SkipSizeExceeded)
+			tel.RecordItemDropped(SkipSizeExceeded)
+			tel.RecordAttachmentSkipped(SkipSizeExceeded)
 			continue
 		}
 		result, ok := matcher.Match(matchKey)
@@ -109,7 +116,8 @@ func ProcessAttachments(
 			slog.Debug("schoology attachment no rule match",
 				"match_key", matchKey, "attachment_id", a.ID, "filename", a.Filename)
 			skipped = append(skipped, AttachmentSkip{ID: a.ID, Filename: a.Filename, Reason: SkipNoRuleMatch})
-			recordDrop(metrics, SkipNoRuleMatch)
+			tel.RecordItemDropped(SkipNoRuleMatch)
+			tel.RecordAttachmentSkipped(SkipNoRuleMatch)
 			continue
 		}
 		opts := connector.ItemOptions{
@@ -128,11 +136,12 @@ func ProcessAttachments(
 			DataSubject: result.DataSubject,
 			Audience:    result.Audience,
 		}
-		if err := stageContent(writer, opts, data); err != nil {
+		if err := stageAttachmentContent(ctx, tel, writer, opts, data, a); err != nil {
 			slog.Warn("schoology attachment stage failed",
 				"attachment_id", a.ID, "filename", a.Filename, "error", err)
 			skipped = append(skipped, AttachmentSkip{ID: a.ID, Filename: a.Filename, Reason: SkipStageFailed})
-			recordDrop(metrics, SkipStageFailed)
+			tel.RecordItemDropped(SkipStageFailed)
+			tel.RecordAttachmentSkipped(SkipStageFailed)
 			continue
 		}
 		if err := SaveLastSeenID(cp, checkpointSurface, checkpointScope, a.ID); err != nil {
@@ -144,23 +153,52 @@ func ProcessAttachments(
 				"attachment_id", a.ID, "filename", a.Filename,
 				"duplicate_risk", true, "error", err)
 		}
+		// Successfully staged: record byte volume per spec §13.1
+		// schoology_attachments_downloaded_bytes_total{kid, content_type}.
+		// We use checkpointScope as the kid label because that's the per-
+		// kid scope used by the feed/message callers; for the v1 surfaces
+		// it always matches the kid name.
+		tel.RecordAttachmentBytes(checkpointScope, a.MimeType, int64(len(data)))
 		staged++
 	}
 	return staged, skipped
 }
 
-// downloadCapped reads at most maxBytes+1 bytes from the attachment so
-// the caller can detect "exceeded" by comparing len(data) > maxBytes.
-func downloadCapped(ctx context.Context, client SchoologyClient, a Attachment, maxBytes int64) ([]byte, error) {
+// downloadAttachmentCapped reads at most maxBytes+1 bytes from the
+// attachment so the caller can detect "exceeded" by comparing
+// len(data) > maxBytes. The schoology.lib.DownloadAttachment span (spec
+// §13.2) wraps this call.
+func downloadAttachmentCapped(ctx context.Context, client SchoologyClient, tel *Telemetry, a Attachment, maxBytes int64) ([]byte, error) {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.DownloadAttachment",
+		attribute.Int64("attachment_id", a.ID),
+	)
+	defer span.End()
+
 	rc, err := client.DownloadAttachment(ctx, a.URL)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, maxBytes+1))
+	data, err := io.ReadAll(io.LimitReader(rc, maxBytes+1))
+	if err == nil {
+		span.SetAttributes(attribute.Int64("bytes", int64(len(data))))
+	}
+	return data, err
 }
 
-func stageContent(writer *connector.StagingWriter, opts connector.ItemOptions, data []byte) error {
+// stageAttachmentContent writes the staging item under a
+// schoology.staging.commit span (spec §13.2). The parse_status attr is
+// "normal" because attachment items don't carry a degraded shape -- the
+// raw bytes are the content, with no separate parser.
+func stageAttachmentContent(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, data []byte, a Attachment) error {
+	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
+		attribute.Int64("item_id", a.ID),
+		attribute.String("destination", opts.DestinationAgent),
+		attribute.String("data_subject", opts.DataSubject),
+		attribute.String("parse_status", "normal"),
+	)
+	defer span.End()
+
 	item, err := writer.NewItem(opts)
 	if err != nil {
 		return err
@@ -169,14 +207,4 @@ func stageContent(writer *connector.StagingWriter, opts connector.ItemOptions, d
 		return err
 	}
 	return item.Commit()
-}
-
-// recordDrop increments connector_items_dropped_total{reason} when
-// metrics is non-nil. Task 12 (telemetry) may extend this to also emit
-// the schoology-specific attachments_skipped_total counter.
-func recordDrop(metrics *connector.Metrics, reason string) {
-	if metrics == nil {
-		return
-	}
-	metrics.RecordItemDropped(reason)
 }

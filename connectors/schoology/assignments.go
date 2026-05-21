@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/leftathome/glovebox/connector"
 	schoologylib "github.com/leftathome/schoology-go"
 )
@@ -35,19 +37,33 @@ func ProcessAssignments(
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	dedup *ReceiptDedup,
+	tel *Telemetry,
 	kid Kid,
 	libVersion string,
 ) (staged int, errsLogged bool) {
-	assignments, parseErrs, err := client.GetOverdueSubmissions(ctx, kid.SchoologyUID)
+	assignments, parseErrs, err := getOverdueSubmissionsTraced(ctx, client, tel, kid)
 	if err != nil {
 		errsLogged = true
 		errorClass := classifyAssignmentsErr(err)
+		// schoology_parse_failures_total fires on EVERY occurrence per
+		// spec §13.1; the receipt counter fires only when a receipt is
+		// actually emitted (Observe-returns-true path).
+		tel.RecordParseFailure("assignments", errorClass, kid.Name, "assignment")
 		// Observe so the receipt records the affected count; if Observe
 		// returns false the receipt was already emitted this poll and we
 		// must not duplicate it.
-		if dedup.Observe("assignments", errorClass, "") {
+		receiptEmitted := dedup.Observe("assignments", errorClass, "")
+		if receiptEmitted {
 			emitAssignmentsTopLevelReceipt(writer, matcher, kid, libVersion, err, errorClass, dedup)
+			tel.RecordParseFailureReceipt("assignments", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "assignments",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("assignments", errorClass),
+		)
 		return 0, errsLogged
 	}
 
@@ -59,13 +75,20 @@ func ProcessAssignments(
 			continue
 		}
 		const errorClass = "row_parse"
-		if dedup.Observe("assignments", errorClass, "") {
-			errsLogged = true
+		tel.RecordParseFailure("assignments", errorClass, kid.Name, "assignment")
+		receiptEmitted := dedup.Observe("assignments", errorClass, "")
+		errsLogged = true
+		if receiptEmitted {
 			emitAssignmentsRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
+			tel.RecordParseFailureReceipt("assignments", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "assignments",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("assignments", errorClass),
+		)
 	}
 
 	matchKey := "schoology:" + kid.Name + ":" + assignmentSurface
@@ -94,19 +117,8 @@ func ProcessAssignments(
 		opts := buildAssignmentItemOptions(a, rule)
 		body := []byte(buildAssignmentBody(a))
 
-		item, err := writer.NewItem(opts)
-		if err != nil {
-			slog.Warn("schoology assignment new item failed",
-				"kid", kid.Name, "assignment_id", a.ID, "error", err)
-			continue
-		}
-		if err := item.WriteContent(body); err != nil {
-			slog.Warn("schoology assignment write content failed",
-				"kid", kid.Name, "assignment_id", a.ID, "error", err)
-			continue
-		}
-		if err := item.Commit(); err != nil {
-			slog.Warn("schoology assignment commit failed",
+		if err := stageAssignmentItem(ctx, tel, writer, opts, body, a.ID); err != nil {
+			slog.Warn("schoology assignment stage failed",
 				"kid", kid.Name, "assignment_id", a.ID, "error", err)
 			continue
 		}
@@ -122,6 +134,39 @@ func ProcessAssignments(
 	}
 
 	return staged, errsLogged
+}
+
+// getOverdueSubmissionsTraced wraps client.GetOverdueSubmissions in the
+// schoology.lib.GetOverdueSubmissions span (spec §13.2).
+func getOverdueSubmissionsTraced(ctx context.Context, client SchoologyClient, tel *Telemetry, kid Kid) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.GetOverdueSubmissions",
+		attribute.Int64("uid", kid.SchoologyUID),
+	)
+	defer span.End()
+	return client.GetOverdueSubmissions(ctx, kid.SchoologyUID)
+}
+
+// stageAssignmentItem writes the staging item under a schoology.staging.commit
+// span. parse_status is "normal" because the assignments processor stages
+// only fully-parsed assignments; degraded receipts go through the receipt
+// path with their own emission helpers.
+func stageAssignmentItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, itemID int64) error {
+	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
+		attribute.Int64("item_id", itemID),
+		attribute.String("destination", opts.DestinationAgent),
+		attribute.String("data_subject", opts.DataSubject),
+		attribute.String("parse_status", "normal"),
+	)
+	defer span.End()
+
+	item, err := writer.NewItem(opts)
+	if err != nil {
+		return err
+	}
+	if err := item.WriteContent(body); err != nil {
+		return err
+	}
+	return item.Commit()
 }
 
 // buildAssignmentItemOptions composes ItemOptions for one assignment per

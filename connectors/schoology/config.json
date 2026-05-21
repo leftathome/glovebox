@@ -1,0 +1,37 @@
+{
+    "kids": [
+        {"name": "k1", "schoology_uid": 11111111},
+        {"name": "k2", "schoology_uid": 22222222}
+    ],
+    "poll_schedule": {
+        "weekdays_only": true,
+        "windows": [
+            {"start": "07:00", "end": "09:00"},
+            {"start": "15:30", "end": "17:30"}
+        ]
+    },
+    "trigger": {
+        "debounce_seconds": 60,
+        "listen_port": 8081
+    },
+    "attachments": {
+        "max_size_mb": 25
+    },
+    "parse_failure_threshold": 10,
+    "rules": [
+        {"match": "schoology:k1:assignment",        "data_subject": "k1", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:k1:feed",              "data_subject": "k1", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:k1:attachment",        "data_subject": "k1", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:k2:assignment",        "data_subject": "k2", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:k2:feed",              "data_subject": "k2", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:k2:attachment",        "data_subject": "k2", "audience": ["household"], "destination": "school"},
+        {"match": "schoology:message",                                    "audience": ["guardians"], "destination": "school"},
+        {"match": "schoology:message-attachment",                         "audience": ["guardians"], "destination": "school"},
+        {"match": "schoology-parse-failure:*",                            "audience": ["guardians"], "destination": "school"}
+    ],
+    "identity": {
+        "provider": "schoology",
+        "auth_method": "session_cookie",
+        "tenant": "example-home"
+    }
+}

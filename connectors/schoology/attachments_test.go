@@ -108,7 +108,7 @@ func TestProcessAttachments_HappyPath(t *testing.T) {
 		writer,
 		matcher,
 		cp,
-		nil, // metrics not required for this test
+		nil, // tel optional
 		atts,
 		/*parentID*/ 9001,
 		/*parentType*/ "feed_post",
@@ -157,7 +157,7 @@ func TestProcessAttachments_SizeCap(t *testing.T) {
 		writer,
 		matcher,
 		cp,
-		nil, // metrics not required for this test
+		nil, // tel optional
 		atts,
 		/*parentID*/ 9001,
 		/*parentType*/ "message",
@@ -351,16 +351,12 @@ func TestProcessAttachments_CorruptedCheckpoint(t *testing.T) {
 	}
 }
 
-// TestProcessAttachments_MetricsRecorded verifies the optional metrics
-// parameter is invoked for each skip type. Uses a real
-// connector.Metrics; we cannot easily inspect counter state but we
-// can confirm the call does not panic.
+// TestProcessAttachments_MetricsRecorded verifies the optional tel
+// parameter is invoked for each skip type. Uses a real Telemetry; we
+// cannot easily inspect counter state but we can confirm the call
+// does not panic.
 func TestProcessAttachments_MetricsRecorded(t *testing.T) {
-	metrics, err := connector.NewMetrics("schoology-test")
-	if err != nil {
-		t.Fatalf("NewMetrics: %v", err)
-	}
-	defer metrics.Shutdown()
+	tel := NewTestTelemetry(t)
 
 	writer, _ := newTestWriter(t)
 	matcher := matchAllMatcher()
@@ -373,7 +369,7 @@ func TestProcessAttachments_MetricsRecorded(t *testing.T) {
 
 	atts := []Attachment{sampleAttachment(700, "any.pdf")}
 	staged, skipped := ProcessAttachments(
-		context.Background(), client, writer, matcher, cp, metrics,
+		context.Background(), client, writer, matcher, cp, tel,
 		atts, 13, "feed_post", "feed", "feed_attachments", "kid6", 8,
 	)
 	if staged != 0 || len(skipped) != 1 || skipped[0].Reason != SkipDownloadError {
