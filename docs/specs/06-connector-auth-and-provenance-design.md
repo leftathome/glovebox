@@ -576,8 +576,8 @@ fallback.
 
 The refresher comprises four artifacts:
 
-1. **`cmd/glovebox-schoology-auth-refresher/main.go`** -- a small Go
-   binary (~180 lines) that:
+1. **`connectors/schoology-auth-refresher/main.go`** -- a small Go
+   binary (~330 lines, including test seams) that:
    - Reads `SCHOOLOGY_HOST`, `SCHOOLOGY_USERNAME`, `SCHOOLOGY_PASSWORD`
      from environment variables (projected by K8s from a Secret that
      ESO synced from `secret/glovebox/schoology/<household>/credentials`).
@@ -595,29 +595,36 @@ The refresher comprises four artifacts:
      `KVv2(mount).Put(ctx, path, ...)`.
    - Exits 0 on success, non-zero on any failure. K8s Job semantics
      handle retry + backoff.
-2. **`build/refresher/Dockerfile`** -- a multi-stage image. Stage 1
-   builds the Go binary against the project's Go toolchain; stage 2 is
-   a minimal Debian-slim runtime that includes a Chromium binary so
-   `go-rod` doesn't download one at runtime in-cluster. Distroless is
-   tempting but doesn't ship Chromium's runtime deps; Debian-slim +
-   `chromium` adds ~150 MiB but matches what the manual flow does on
-   an operator's workstation.
-3. **`deploy/k8s/schoology/cronjob-auth-refresher.yaml`** -- a
-   `CronJob` running every 12 days (`schedule: "0 6 */12 * *"`)
-   roughly 48 hours before the 14-day session expiry window. Job
-   `backoffLimit: 3`, `activeDeadlineSeconds: 600` (10 minutes),
-   `restartPolicy: Never`. Pod uses a dedicated ServiceAccount bound
+2. **`connectors/schoology-auth-refresher/Dockerfile`** -- a multi-
+   stage image. Stage 1 builds the Go binary against the project's Go
+   toolchain (matches `connectors/*/Dockerfile` conventions); stage 2
+   is a minimal Debian-slim runtime that includes a Chromium binary
+   so `go-rod` doesn't download one at runtime in-cluster. Distroless
+   is tempting but doesn't ship Chromium's runtime deps; Debian-slim
+   + `chromium` adds ~150 MiB but matches what the manual flow does
+   on an operator's workstation.
+3. **`charts/glovebox/templates/schoology-auth-refresher-cronjob.yaml`**
+   -- a Helm-templated `CronJob` running every 12 days
+   (`schedule: "0 6 */12 * *"`) roughly 48 hours before the 14-day
+   session expiry window. Job `backoffLimit: 3`,
+   `activeDeadlineSeconds: 600` (10 minutes), `restartPolicy: Never`,
+   plus a `podFailurePolicy` that fails-fast on exit codes 2/3/4 so
+   the Job controller doesn't retry bad-credentials past the lockout
+   threshold (see §12.5). Pod uses a dedicated ServiceAccount bound
    to a Vault K8s auth role (`glovebox-schoology-refresher`) with
    policy granting `create + update` on the session KV path.
    Pod-level resources: 256Mi RAM request / 512Mi limit; 200m CPU
    request / 1000m limit (Chromium is bursty).
-4. **`deploy/k8s/schoology/externalsecret-credentials.yaml`** -- a
-   second `ExternalSecret` (alongside the existing session
-   `ExternalSecret`) that materialises the source credentials Secret
-   the refresher Job mounts. Sources from
-   `secret/glovebox/schoology/<household>/credentials` (KV v2 path
-   holding `username` + `password` + `host`) via the cluster's
-   existing Vault `ClusterSecretStore`.
+4. **`charts/glovebox/templates/schoology-auth-refresher-externalsecret.yaml`**
+   -- two Helm-templated `ExternalSecret` resources in one file. The
+   first materialises the refresher Job's source credentials Secret
+   from `secret/glovebox/schoology/<household>/credentials` (KV v2
+   path holding `username` + `password` + `host`). The second
+   materialises the connector's session Secret from
+   `secret/glovebox/schoology/<household>/session` (the path the
+   refresher writes). Both use the cluster's existing Vault
+   `ClusterSecretStore`. Owning both ESes in one template keeps the
+   round-trip (write at Vault → read by connector) co-located.
 
 ### 12.4 Behavior
 

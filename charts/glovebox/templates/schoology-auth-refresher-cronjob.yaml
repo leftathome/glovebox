@@ -29,6 +29,20 @@ spec:
       backoffLimit: 3
       activeDeadlineSeconds: 600
       ttlSecondsAfterFinished: 86400
+      # Lockout safety per spec 06 §12.5: the Job controller would
+      # otherwise spawn up to backoffLimit+1 replacement pods on ANY
+      # failure, regardless of exit code. We fail-fast on the three
+      # operator-fix exit codes (2 config, 3 bad_credentials, 4
+      # secret_write_failed) so a wrong password cannot trigger
+      # Schoology's account-lockout threshold via repeated retries.
+      # Requires K8s 1.31+ (GA) or 1.26+ with the JobPodFailurePolicy
+      # feature gate.
+      podFailurePolicy:
+        rules:
+          - action: FailJob
+            onExitCodes:
+              operator: In
+              values: [2, 3, 4]
       template:
         metadata:
           labels:
