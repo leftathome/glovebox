@@ -365,6 +365,20 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "audit_failure")
 	}
 
+	// Tag-driven quarantine override (spec 12 §12 / Q-EARLY): items marked
+	// with parse_status by the connector are forensic artifacts and bypass
+	// the scanner verdict directly to quarantine.
+	if routing.ShouldForceQuarantineFromTag(&resp.Item.Metadata) {
+		tagScanResult := engine.ScanResult{
+			Signals:    resp.Signals,
+			TotalScore: 0,
+			Verdict:    engine.VerdictQuarantine,
+		}
+		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
+		return routing.RouteQuarantine(resp.Item, tagScanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "parse_status_tag")
+	}
+
 	// Separate boost signals from scoring signals in a single pass
 	var boosts []engine.BoostRule
 	var scoringSignals []engine.Signal
