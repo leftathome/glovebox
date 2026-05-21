@@ -13,26 +13,10 @@ import (
 // field can be set per-test to control what the fake returns; nil
 // defaults to a "not configured" error.
 type fakeClient struct {
-	ChildrenFunc           func(ctx context.Context) ([]*schoologylib.Child, error)
-	CoursesForChildFunc    func(ctx context.Context, childUID int64) ([]*schoologylib.Course, error)
 	OverdueSubmissionsFunc func(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error)
 	FeedFunc               func(ctx context.Context, childUID int64) ([]*schoologylib.Post, schoologylib.ParseErrors, error)
 	InboxFunc              func(ctx context.Context) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error)
 	DownloadFunc           func(ctx context.Context, url string) (io.ReadCloser, error)
-}
-
-func (f *fakeClient) GetChildren(ctx context.Context) ([]*schoologylib.Child, error) {
-	if f.ChildrenFunc != nil {
-		return f.ChildrenFunc(ctx)
-	}
-	return nil, errors.New("fakeClient.GetChildren not configured")
-}
-
-func (f *fakeClient) GetCoursesForChild(ctx context.Context, childUID int64) ([]*schoologylib.Course, error) {
-	if f.CoursesForChildFunc != nil {
-		return f.CoursesForChildFunc(ctx, childUID)
-	}
-	return nil, errors.New("fakeClient.GetCoursesForChild not configured")
 }
 
 func (f *fakeClient) GetOverdueSubmissions(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {

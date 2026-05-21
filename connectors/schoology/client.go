@@ -29,8 +29,6 @@ import (
 //     the raw body without a content-type header value; callers inspect the
 //     body or use Attachment.MimeType from the owning resource.
 type SchoologyClient interface {
-	GetChildren(ctx context.Context) ([]*schoologylib.Child, error)
-	GetCoursesForChild(ctx context.Context, childUID int64) ([]*schoologylib.Course, error)
 	GetOverdueSubmissions(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error)
 	GetFeed(ctx context.Context, childUID int64) ([]*schoologylib.Post, schoologylib.ParseErrors, error)
 	GetInbox(ctx context.Context) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error)
@@ -45,14 +43,6 @@ type productionClient struct {
 // NewProductionClient wraps a schoology-go client so it satisfies SchoologyClient.
 func NewProductionClient(lib *schoologylib.Client) SchoologyClient {
 	return &productionClient{lib: lib}
-}
-
-func (p *productionClient) GetChildren(ctx context.Context) ([]*schoologylib.Child, error) {
-	return p.lib.GetChildren(ctx)
-}
-
-func (p *productionClient) GetCoursesForChild(ctx context.Context, childUID int64) ([]*schoologylib.Course, error) {
-	return p.lib.GetCoursesForChild(ctx, childUID)
 }
 
 func (p *productionClient) GetOverdueSubmissions(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {
