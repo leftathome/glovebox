@@ -44,8 +44,9 @@ that PowerSchool, Walhelm, and future LMS-shaped connectors can inherit from
   `schoology.DownloadAttachment(id)`, capped per-attachment at 25 MB, each
   emitted as its own staging item.
 - **Browser-session-cookie authentication** with credentials provisioned via
-  K8s Secret + External Secrets Operator + 1Password; session expiry surfaced
-  as `PermanentError`.
+  Vault KV v2 + External Secrets Operator + K8s Secret; session expiry
+  surfaced as `PermanentError`. An in-cluster auto-refresher (spec 06 §12)
+  replaces the manual recovery loop for the common case.
 - **Windowed polling** with random per-day splay (morning + dismissal
   windows) plus an HTTP **trigger endpoint** for on-demand polls.
 - **Per-content-type checkpointing** for dedup; highest-ID strategy.
@@ -176,9 +177,9 @@ spec 11 v1.2 rules.
 | `GLOVEBOX_STAGING_DIR` | yes | Standard framework: path to staging directory (or use `GLOVEBOX_INGEST_URL` for HTTP-staging mode per spec 08). |
 | `GLOVEBOX_STATE_DIR` | yes | Standard framework: path to checkpoint state. |
 | `GLOVEBOX_CONNECTOR_CONFIG` | no | Path to JSON config file. Default `/etc/connector/config.json`. |
-| `SCHOOLOGY_CREDENTIALS_FILE` | yes | Path to the JSON file containing `schoology-go`'s `auth.Credentials` (4 session values). Operator creates via `auth.Login` on workstation, syncs via ESO/1Password. |
+| `SCHOOLOGY_CREDENTIALS_FILE` | yes | Path to the JSON file containing `schoology-go`'s `auth.Credentials` (5 session values). Sourced from Vault via ESO; refreshed automatically by the spec 06 §12 CronJob or manually per AUTH-RECOVERY.md. |
 | `SCHOOLOGY_HOST` | yes | Schoology tenant host, e.g. `seattleschools.schoology.com`. |
-| `SCHOOLOGY_TRIGGER_TOKEN` | yes | Shared secret for the `POST /v1/poll` trigger endpoint. K8s Secret + ESO + 1Password. |
+| `SCHOOLOGY_TRIGGER_TOKEN` | yes | Shared secret for the `POST /v1/poll` trigger endpoint. Vault KV v2 + ESO + K8s Secret. |
 | `SCHOOLOGY_TIMEZONE` | no | Schedule timezone, default `America/Los_Angeles`. |
 
 ### 4.2 config.json Shape
@@ -258,8 +259,9 @@ library does not auto-refresh.
    whatever login flow the school uses (SSO, MFA, native password).
 2. Library captures the session and writes `auth.Credentials` JSON to
    disk (4 values, 0600 file).
-3. Operator updates the 1Password item `schoology-session-<household>` with
-   the new JSON.
+3. Operator writes the new JSON to Vault at
+   `secret/glovebox/schoology/<household>/session` (or runs the auto-
+   refresher Job per spec 06 §12, which performs steps 1-3 unattended).
 4. ESO syncs the secret to the K8s Secret within ~60s.
 5. K8s pod auto-restarts (pod template uses a checksum annotation on the
    Secret) and picks up the new credentials.
@@ -570,7 +572,7 @@ Schoology session expired. To recover:
 
   1. On your workstation: schoology-go auth.Login <SCHOOLOGY_HOST>
   2. Library writes fresh credentials JSON.
-  3. Update 1Password item "schoology-session-<household>" with the new JSON.
+  3. Write the new JSON to Vault at secret/glovebox/schoology/<household>/session.
   4. ESO syncs the new Secret within ~60s; the pod auto-restarts.
   5. The connector resumes from the last checkpoint.
 

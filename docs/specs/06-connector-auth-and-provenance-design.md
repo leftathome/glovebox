@@ -534,8 +534,8 @@ Spec 06 §3.5 deferred interactive auth flows to "a separate bead as a
 CLI tool." That CLI exists today for Schoology -- it is the manual
 procedure documented in `docs/AUTH-RECOVERY.md`. The operator runs a
 small Go program on a workstation that calls
-`schoology-go/auth.Login`, watches a visible Chromium window, pastes
-the resulting 5-field JSON into a 1Password item, and waits for
+`schoology-go/auth.Login`, watches a visible Chromium window, writes
+the resulting 5-field JSON into a Vault KV v2 path, and waits for
 External Secrets Operator to sync the new session into the cluster.
 
 This addendum specifies an in-cluster replacement for that workflow.
@@ -560,9 +560,9 @@ This addendum applies when ALL of the following are true:
    redirect (Google, Microsoft Entra, Okta) and **no MFA**.
 3. The IdP does not employ anti-automation defenses that fingerprint
    headless Chromium (Cloudflare Turnstile, datadome, PerimeterX, etc.).
-4. A 1Password item exists holding the source credentials and a
-   separate 1Password item holds the synced session JSON (both reached
-   via the cluster's existing ExternalSecret pipeline).
+4. A Vault KV v2 path exists holding the source credentials and a
+   separate Vault KV v2 path holds the synced session JSON (both
+   reached via the cluster's existing Vault + ExternalSecret pipeline).
 
 The Schoology connector satisfies all four for the parent-account
 flow as of the spec 12 implementation (see spec 12 §5).
@@ -577,31 +577,47 @@ fallback.
 The refresher comprises four artifacts:
 
 1. **`cmd/glovebox-schoology-auth-refresher/main.go`** -- a small Go
-   binary (~150 lines) that:
+   binary (~180 lines) that:
    - Reads `SCHOOLOGY_HOST`, `SCHOOLOGY_USERNAME`, `SCHOOLOGY_PASSWORD`
-     from environment variables (projected by K8s from a Secret).
-   - Reads `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN`, `OP_VAULT`,
-     `OP_SESSION_ITEM` for the 1Password Connect write path.
+     from environment variables (projected by K8s from a Secret that
+     ESO synced from `secret/glovebox/schoology/<household>/credentials`).
+   - Reads `VAULT_ADDR`, `VAULT_K8S_ROLE`, `VAULT_KV_MOUNT` (default
+     `secret`), and `VAULT_SESSION_PATH`
+     (e.g. `glovebox/schoology/<household>/session`) from the
+     environment.
+   - Authenticates to Vault using the Kubernetes auth method via the
+     pod's projected ServiceAccount token (no static Vault token in
+     the environment).
    - Calls
      `schoology-go/auth.LoginWithPassword(ctx, host, user, pass)`.
-   - Writes the resulting 5-field `*auth.Credentials` JSON back to the
-     named 1Password item via the 1Password Connect SDK.
+   - PUTs the resulting 5-field `*auth.Credentials` JSON to the
+     named Vault KV v2 path via `github.com/hashicorp/vault/api`'s
+     `KVv2(mount).Put(ctx, path, ...)`.
    - Exits 0 on success, non-zero on any failure. K8s Job semantics
      handle retry + backoff.
 2. **`build/refresher/Dockerfile`** -- a multi-stage image. Stage 1
-   builds the Go binary; stage 2 is a minimal runtime
-   (debian-slim or distroless-with-cacerts) that includes a Chromium
-   binary (so `go-rod` doesn't download one at runtime in-cluster).
+   builds the Go binary against the project's Go toolchain; stage 2 is
+   a minimal Debian-slim runtime that includes a Chromium binary so
+   `go-rod` doesn't download one at runtime in-cluster. Distroless is
+   tempting but doesn't ship Chromium's runtime deps; Debian-slim +
+   `chromium` adds ~150 MiB but matches what the manual flow does on
+   an operator's workstation.
 3. **`deploy/k8s/schoology/cronjob-auth-refresher.yaml`** -- a
    `CronJob` running every 12 days (`schedule: "0 6 */12 * *"`)
    roughly 48 hours before the 14-day session expiry window. Job
    `backoffLimit: 3`, `activeDeadlineSeconds: 600` (10 minutes),
-   `restartPolicy: Never`. Pod-level resources: 256Mi RAM request /
-   512Mi limit; 200m CPU request / 1000m limit (Chromium is bursty).
+   `restartPolicy: Never`. Pod uses a dedicated ServiceAccount bound
+   to a Vault K8s auth role (`glovebox-schoology-refresher`) with
+   policy granting `create + update` on the session KV path.
+   Pod-level resources: 256Mi RAM request / 512Mi limit; 200m CPU
+   request / 1000m limit (Chromium is bursty).
 4. **`deploy/k8s/schoology/externalsecret-credentials.yaml`** -- a
    second `ExternalSecret` (alongside the existing session
    `ExternalSecret`) that materialises the source credentials Secret
-   the refresher Job mounts.
+   the refresher Job mounts. Sources from
+   `secret/glovebox/schoology/<household>/credentials` (KV v2 path
+   holding `username` + `password` + `host`) via the cluster's
+   existing Vault `ClusterSecretStore`.
 
 ### 12.4 Behavior
 
@@ -609,24 +625,30 @@ Per-invocation flow:
 
 1. Validate that all required environment variables are present.
    Missing or empty values exit with code 2 (`config error`).
-2. Construct a context with a 5-minute timeout (login + write should
+2. Authenticate to Vault via the K8s auth method using the pod's
+   projected ServiceAccount token. On failure, exit code 1
+   (`transient`) -- typically a Vault outage or a misconfigured role.
+3. Construct a context with a 5-minute timeout (login + write should
    complete in <2 minutes; the buffer covers Chromium cold-start
    plus DOM-change tolerance).
-3. Invoke `auth.LoginWithPassword(ctx, host, user, pass)`. On
+4. Invoke `auth.LoginWithPassword(ctx, host, user, pass)`. On
    error:
    - `auth.ErrInvalidCredentials` (if the library distinguishes it) ->
      exit code 3 (`bad credentials`). Operator must update the source
-     1Password item. Do NOT retry.
+     Vault KV path. Do NOT retry.
    - any other error -> exit code 1 (`transient`). The Job's
      `backoffLimit` handles retry.
-4. Marshal `*Credentials` to JSON and PUT the result to the
-   `OP_SESSION_ITEM` via 1Password Connect's `items` endpoint.
-   - On 4xx: exit code 4 (`secret write rejected`). Operator
-     intervention required (vault permissions, item shape).
+5. Marshal `*Credentials` to a flat map and write it to
+   `<VAULT_KV_MOUNT>/data/<VAULT_SESSION_PATH>` via
+   `client.KVv2(mount).Put(ctx, path, data)`.
+   - On a 4xx response (permission denied, path malformed): exit code
+     4 (`secret write rejected`). Operator intervention required
+     (Vault policy, role binding).
    - On 5xx or network error: exit code 1 (`transient`). Retried by
      `backoffLimit`.
-5. On success, emit a single structured log line at INFO with the new
-   session's expiry (if the library exposes one) and exit 0.
+6. On success, emit a single structured log line at INFO with the
+   Vault path written and the response's `version` (KV v2 returns it)
+   and exit 0.
 
 The connector pod re-rolls automatically because the existing
 Deployment template carries a checksum annotation on the session
@@ -695,13 +717,15 @@ through existing K8s primitives.
   fingerprint randomization). Required only if the IdP starts
   blocking the Chrome devtools protocol; out of scope until evidence
   appears.
-- Cross-vault Secret writes. v1 writes to one 1Password vault via one
-  Connect token. Multi-tenant support is a future concern.
+- Cross-mount Secret writes. v1 writes to one Vault KV v2 mount via
+  one K8s-auth role. Multi-tenant support (one refresher per
+  household across many Vault namespaces) is a future concern.
 
 ### 12.9 Implementation Sizing
 
 This is a **one-task** addendum. The Go binary is ~150 lines; the
 Dockerfile is ~20 lines; the K8s YAML totals ~80 lines across two
-files. Tests stub `auth.LoginWithPassword` and the 1Password Connect
-client (both have natural seams) and cover: success path, bad-creds
-exit, transient-error exit, secret-write rejection.
+files. Tests stub `auth.LoginWithPassword` and the Vault HTTP API
+(via `httptest.Server`, which the Vault Go client accepts) and cover:
+success path, bad-creds exit, transient-error exit, secret-write
+rejection.
