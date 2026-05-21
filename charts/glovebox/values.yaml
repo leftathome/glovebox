@@ -347,3 +347,40 @@ connectors:
     nodeSelector: {}
     affinity: {}
     tolerations: []
+
+# Schoology browser-session refresher (spec 06 §12). Disabled by
+# default; opt-in by setting schoologyAuthRefresher.enabled=true. When
+# enabled, the chart renders a CronJob, a dedicated ServiceAccount, and
+# two ExternalSecrets (credentials + session) on top of the existing
+# Schoology connector resources.
+schoologyAuthRefresher:
+  enabled: false
+  # Every 12 days at 06:00 cluster TZ; ~48h headroom before the 14-day
+  # Schoology cookie expiry.
+  schedule: "0 6 */12 * *"
+  image:
+    repository: ghcr.io/leftathome/glovebox-schoology-auth-refresher
+    # tag defaults to .Chart.AppVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  vault:
+    addr: "http://vault.vault.svc.cluster.local:8200"
+    k8sRole: "glovebox-schoology-refresher"
+    kvMount: "secret"
+    # KV v2 path holding {host, username, password} for the parent
+    # Schoology account. Operator-provisioned; the refresher reads it.
+    credentialsPath: "glovebox/schoology/default/credentials"
+    # KV v2 path receiving the 5-field session JSON the refresher
+    # writes; ESO syncs it into the connector pod.
+    sessionPath: "glovebox/schoology/default/session"
+    refreshInterval: "1m"
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: vault-default
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
