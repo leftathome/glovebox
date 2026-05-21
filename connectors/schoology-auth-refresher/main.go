@@ -122,7 +122,7 @@ func run(ctx context.Context, cfg config, login loginFunc, vw vaultWriter, logge
 	if err != nil {
 		if isClientError(err) {
 			logger.Error("vault rejected write",
-				"outcome", "secret_write_rejected",
+				"outcome", "secret_write_failed",
 				"vault_path", cfg.VaultSessionPath,
 				"error", err.Error(),
 			)
@@ -187,8 +187,12 @@ func credentialsToMap(c *auth.Credentials) map[string]any {
 // isClientError reports whether a Vault write error is a 4xx (operator
 // must fix policy/path) versus a transient 5xx/network failure. We
 // first try to extract *vaultapi.ResponseError for a structured check,
-// then fall back to substring matching against the error message for
-// wrapped or stringified cases.
+// which covers every error the Vault client itself returns. The
+// substring fallback catches wrapped/stringified cases — but ONLY on
+// keyword markers, NEVER bare numeric codes: "400" / "403" / "404"
+// substrings appear in unrelated 5xx error messages (request IDs,
+// timestamps), which would misroute a transient failure to the
+// no-retry exit code 4.
 func isClientError(err error) bool {
 	if err == nil {
 		return false
@@ -200,11 +204,9 @@ func isClientError(err error) bool {
 	msg := err.Error()
 	for _, marker := range []string{
 		"permission denied",
-		"403",
-		"400",
-		"404",
 		"Forbidden",
 		"Bad Request",
+		"not found",
 	} {
 		if strings.Contains(msg, marker) {
 			return true
@@ -295,21 +297,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
-	// Authenticate to Vault BEFORE entering run(). A failure here is
-	// always transient (Vault outage, bad role binding, network
-	// partition). Run-time bad-config remains the responsibility of
-	// run().
-	//
-	// We tolerate run() being called without a Vault client when
-	// SCHOOLOGY_* or VAULT_* fields are missing: in that case run()
-	// returns exitConfigError before ever using the writer. To preserve
-	// that contract we still call run() with the seam set to a writer
-	// that would panic if invoked — but only when we successfully
-	// reached the writer construction step.
-	if missing := cfg.missingFields(); len(missing) > 0 {
-		// Skip the Vault login dance entirely; run() will log the
-		// config error and exit.
-		os.Exit(run(ctx, cfg, realLogin, nilWriter{}, logger))
+	// Config-error path bypasses Vault auth entirely: run() validates
+	// missingFields() first and returns exitConfigError before touching
+	// the login or writer seams, so passing nil for both is safe.
+	if len(cfg.missingFields()) > 0 {
+		os.Exit(run(ctx, cfg, nil, nil, logger))
 	}
 
 	client, err := newVaultClient(ctx, cfg)
@@ -325,14 +317,4 @@ func main() {
 
 	vw := &productionVaultWriter{client: client, mount: cfg.VaultKVMount}
 	os.Exit(run(ctx, cfg, realLogin, vw, logger))
-}
-
-// nilWriter is a stub used only on the config-error path so we never
-// pass an actual nil interface to run(). It returns a sentinel error if
-// somebody invokes it, which run() will never do when the config is
-// invalid (we return before the login step).
-type nilWriter struct{}
-
-func (nilWriter) Put(ctx context.Context, path string, data map[string]any) (int, error) {
-	return 0, errors.New("refresher: writer not initialized (config error path)")
 }

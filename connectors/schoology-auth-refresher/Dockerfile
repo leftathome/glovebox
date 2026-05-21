@@ -17,6 +17,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" \
     -o /refresher ./connectors/schoology-auth-refresher/
 
 FROM docker.io/debian:bookworm-slim
+# UID 65532 (the "nonroot" UID used by distroless images) is intentional
+# even though the rest of the chart runs as 65534 ("nobody"). 65532 is
+# the convention for "non-root in a debian-derived image with a real
+# user account", which we need for the home dir useradd creates above.
+# Using 65534 here would require a different useradd invocation and add
+# confusion without changing the security posture.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chromium \

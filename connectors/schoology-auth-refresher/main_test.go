@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"testing"
 
+	vaultapi "github.com/hashicorp/vault/api"
+
 	"github.com/leftathome/schoology-go/auth"
 )
 
@@ -227,6 +229,14 @@ func TestRun_VaultWrite_5xx(t *testing.T) {
 		{"500 internal", errors.New("error writing secret: Code: 500. Internal Server Error")},
 		{"network reset", errors.New("connection reset by peer")},
 		{"timeout", errors.New("context deadline exceeded while contacting vault")},
+		// Regression: an embedded "400" / "403" / "404" substring inside
+		// an otherwise-5xx message used to misroute to exitSecretWriteRejected
+		// because isClientError's substring fallback matched bare digits.
+		// With markers tightened to keyword-only, these now route correctly
+		// to exitTransient.
+		{"502 with 400 in request id", errors.New("Code: 502. request id a-400-b")},
+		{"503 with 403 in timestamp", errors.New("Code: 503. timestamp 2024-04-03T12:00:00Z")},
+		{"504 with 404 in trace id", errors.New("Code: 504. trace id 404aaa-bbb")},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -239,6 +249,48 @@ func TestRun_VaultWrite_5xx(t *testing.T) {
 				sw, silentLogger())
 			if got != exitTransient {
 				t.Fatalf("exit code: got %d, want %d", got, exitTransient)
+			}
+		})
+	}
+}
+
+// TestRun_VaultWrite_ResponseError_Structural exercises the primary
+// isClientError path: a *vaultapi.ResponseError with a 4xx status code.
+// In production this is what the Vault client actually returns; the
+// substring fallback (covered elsewhere) is only for wrapped/stringified
+// errors. This test locks the structural-typing branch against accidental
+// removal.
+func TestRun_VaultWrite_ResponseError_Structural(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		statusCode int
+		wantExit   int
+	}{
+		{"403 forbidden", 403, exitSecretWriteRejected},
+		{"400 bad request", 400, exitSecretWriteRejected},
+		{"404 not found", 404, exitSecretWriteRejected},
+		{"429 too many requests", 429, exitSecretWriteRejected},
+		{"500 internal server", 500, exitTransient},
+		{"503 service unavailable", 503, exitTransient},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			respErr := &vaultapi.ResponseError{
+				HTTPMethod: "PUT",
+				URL:        "https://vault.example/v1/secret/data/glovebox/schoology/test/session",
+				StatusCode: tc.statusCode,
+				Errors:     []string{"vault returned an error"},
+			}
+			sw := &stubWriter{returnErr: respErr}
+			got := run(context.Background(), cfg,
+				loginFromCreds(validCreds(), nil),
+				sw, silentLogger())
+			if got != tc.wantExit {
+				t.Fatalf("exit code: got %d, want %d (status %d)", got, tc.wantExit, tc.statusCode)
 			}
 		})
 	}
