@@ -512,16 +512,16 @@ func TestBuildMetadata_AudienceMergePrecedence(t *testing.T) {
 		{
 			"per-item-wins",
 			[]string{"household"},
-			[]string{"subject", "parents"},
+			[]string{"subject", "guardians"},
 			[]string{"public"},
 			[]string{"public"},
 		},
 		{
 			"rule-wins-when-no-item",
 			[]string{"household"},
-			[]string{"subject", "parents"},
+			[]string{"subject", "guardians"},
 			nil,
-			[]string{"subject", "parents"},
+			[]string{"subject", "guardians"},
 		},
 		{
 			"config-wins-when-no-item-no-rule",

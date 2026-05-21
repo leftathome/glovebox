@@ -27,6 +27,18 @@ type QuarantineMetadata struct {
 	Reason           string          `json:"reason"`
 }
 
+// ShouldForceQuarantineFromTag returns true when an item's metadata tags
+// indicate it MUST be routed to quarantine regardless of the scanner
+// verdict. Currently triggers on parse_status: "degraded" or
+// "failure_receipt" (spec 12 §12 / Q-EARLY).
+func ShouldForceQuarantineFromTag(meta *staging.ItemMetadata) bool {
+	if meta == nil || meta.Tags == nil {
+		return false
+	}
+	status := meta.Tags["parse_status"]
+	return status == "degraded" || status == "failure_receipt"
+}
+
 func RouteQuarantine(item staging.StagingItem, scanResult engine.ScanResult, quarantineDir string, notifyDir string, logger *audit.Logger, threshold float64, scanDuration time.Duration, reason string) error {
 	content, err := os.ReadFile(item.ContentPath)
 	if err != nil {

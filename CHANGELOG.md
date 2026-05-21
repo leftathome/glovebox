@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-XX
+
+### Added
+
+- **Schoology connector** (`connectors/schoology/`) -- ingests
+  assignments, faculty feed posts, inbox messages, and attachments from
+  a parent Schoology account via the
+  [schoology-go](https://github.com/leftathome/schoology-go) library.
+  Single-container deployment serving all kids in a household. Browser-
+  session-cookie authentication (spec 06's pattern for unusual auth
+  flows); credentials provisioned via K8s Secret + External Secrets
+  Operator + 1Password. Window-scheduled polling with splay (07:00-09:00
+  and 15:30-17:30 local on weekdays) plus an authenticated `POST
+  /v1/poll` trigger endpoint with 60-second debounce. Implements the
+  framework's `Connector` + `Watcher` + `Listener` interfaces. See
+  `docs/specs/12-schoology-connector-design.md`.
+- Routing-layer tag-based quarantine: items with `tags.parse_status`
+  set to `degraded` or `failure_receipt` are routed to quarantine
+  regardless of scanner verdict. Audit log records
+  `QuarantineReason: "parse_status_tag"`. Enables forensic preservation
+  of parse failures for bug-patrol.
+- `docs/AUTH-RECOVERY.md` -- operator procedure for Schoology session
+  expiry recovery (detect via `kubectl logs`, re-auth on workstation
+  via `auth.Login`, update 1Password item, wait for ESO sync, verify).
+
+### Notes
+
+- Schoology session cookies expire approximately every 14 days; the
+  connector surfaces expiry as `PermanentError` with a recovery-
+  instruction message and exits non-zero so K8s reports
+  `CrashLoopBackOff` for alerting. There is no headless refresh path
+  for SSO-fronted tenants -- recovery is a manual operator action.
+- Uses spec 11 v1.2 audience vocabulary (`guardians`, `caregivers`);
+  inbox messages route with `audience: ["guardians"]` standalone
+  (parent-level, no specific kid).
+- Per-kid `data_subject` values are operator-chosen opaque labels
+  (`k1`/`k2`) to avoid placing PII (nicknames, legal names) into
+  metadata and audit logs.
+- Introduces `auth_method: "session_cookie"` to spec 06's open
+  `auth_method` enum.
+- Marks several patterns (window scheduler with splay, trigger endpoint
+  with debounce, parse-failure receipt synthesis, per-kid opaque
+  labels) as candidates for extraction to a future "connector primitive
+  base type" when PowerSchool (spec 13) lands.
+
+## [0.5.0] - 2026-05-19
+
+### Added
+
+- New audience enum token `caregivers` -- delegated supervisors and care
+  providers (tutors, nannies, AI agents in caretaking roles,
+  out-of-household relatives on duty). Orthogonal to `household`; the
+  combination `[household, caregivers]` is permitted. See spec 11 v1.2
+  §3.4 and the §3.1 glossary.
+
+### Changed (breaking)
+
+- Renamed audience enum token `parents` → `guardians`. Same semantics
+  (spec 11 v0.4.0's §3.4 table already documented the token as
+  "parents/guardians" parenthetically); the new name matches school and
+  legal terminology and is inclusive of bio/adoptive/foster parents and
+  legal guardians. The Go constant `AudienceParents` was renamed to
+  `AudienceGuardians`. v0.4.0 was less than 24 hours old with no
+  external consumers when this change landed; in-repo callers were
+  migrated in the same release.
+- `guardians` and `caregivers` may now appear standalone in `audience`
+  with empty `data_subject` (household-scope interpretation). Prior to
+  v0.5.0, role-relative tokens uniformly required `data_subject` to be
+  set. `subject` and `siblings` retain that requirement -- they are
+  inherently subject-relative.
+
+### Notes
+
+- Spec 11 §3.1 was extended with a `guardians`-vs-`caregivers` glossary
+  entry, an architectural stance documenting Glovebox audience as
+  coarse (with fine-grained authorization deferred to downstream
+  agents), and an "Audience is a snapshot, not a permanent ACL"
+  subsection clarifying that lifecycle-dependent access (juvenile →
+  adult transition, caregiver contract endings, retention horizons) is
+  the downstream agent's responsibility to apply against frozen
+  audit-log audience tokens.
+- Spec 11 §2.2 explicitly defers medical-care role tokens (`spouse`,
+  `medical_providers`, HIPAA-grade sensitivity escalators) until a
+  medical-content connector lands with concrete use cases to validate
+  against.
+
 ## [0.4.0] - 2026-05-18
 
 ### Added

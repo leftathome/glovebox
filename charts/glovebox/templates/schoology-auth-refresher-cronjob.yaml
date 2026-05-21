@@ -1,0 +1,89 @@
+{{- if .Values.schoologyAuthRefresher.enabled }}
+# Schoology browser-session refresher (spec 06 §12).
+#
+# A singleton CronJob fires roughly every 12 days, ~48h before the
+# 14-day Schoology session expiry window. The pod drives a headless
+# Chromium through Schoology's native /login form via the
+# schoology-go/auth library, then writes the resulting 5-field session
+# JSON into a Vault KV v2 path. ESO syncs that downstream and the
+# Schoology connector Deployment auto-rolls via its existing checksum
+# annotation.
+#
+# concurrencyPolicy=Forbid + backoffLimit=3 + a non-retried bad-creds
+# exit code (3) form the lockout-safety layers documented in
+# spec 06 §12.5.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "glovebox.fullname" . }}-schoology-auth-refresher
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schoology-auth-refresher
+spec:
+  schedule: {{ .Values.schoologyAuthRefresher.schedule | default "0 6 */12 * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      # Lockout safety per spec 06 §12.5: the Job controller would
+      # otherwise spawn up to backoffLimit+1 replacement pods on ANY
+      # failure, regardless of exit code. We fail-fast on the three
+      # operator-fix exit codes (2 config, 3 bad_credentials, 4
+      # secret_write_failed) so a wrong password cannot trigger
+      # Schoology's account-lockout threshold via repeated retries.
+      # Requires K8s 1.31+ (GA) or 1.26+ with the JobPodFailurePolicy
+      # feature gate.
+      podFailurePolicy:
+        rules:
+          - action: FailJob
+            onExitCodes:
+              operator: In
+              values: [2, 3, 4]
+      template:
+        metadata:
+          labels:
+            {{- include "glovebox.labels" . | nindent 12 }}
+            app.kubernetes.io/component: schoology-auth-refresher
+        spec:
+          serviceAccountName: {{ include "glovebox.fullname" . }}-schoology-auth-refresher
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+          containers:
+            - name: refresher
+              image: "{{ .Values.schoologyAuthRefresher.image.repository }}:{{ .Values.schoologyAuthRefresher.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.schoologyAuthRefresher.image.pullPolicy | default "IfNotPresent" }}
+              securityContext:
+                # readOnlyRootFilesystem is intentionally OFF: Chromium
+                # writes to /tmp during browser startup and would crash
+                # under a read-only root.
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: VAULT_ADDR
+                  value: {{ .Values.schoologyAuthRefresher.vault.addr | quote }}
+                - name: VAULT_K8S_ROLE
+                  value: {{ .Values.schoologyAuthRefresher.vault.k8sRole | quote }}
+                - name: VAULT_KV_MOUNT
+                  value: {{ .Values.schoologyAuthRefresher.vault.kvMount | default "secret" | quote }}
+                - name: VAULT_SESSION_PATH
+                  value: {{ .Values.schoologyAuthRefresher.vault.sessionPath | quote }}
+              envFrom:
+                # SCHOOLOGY_HOST, SCHOOLOGY_USERNAME, SCHOOLOGY_PASSWORD
+                # are projected from this Secret. The Secret itself is
+                # produced by the credentials ExternalSecret template.
+                - secretRef:
+                    name: {{ include "glovebox.fullname" . }}-schoology-refresher-credentials
+              resources:
+                {{- toYaml .Values.schoologyAuthRefresher.resources | nindent 16 }}
+{{- end }}
