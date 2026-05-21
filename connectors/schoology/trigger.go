@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // TriggerHandler implements connector.Listener for the POST /v1/poll
@@ -18,23 +20,28 @@ import (
 // handler itself uses a mutex to guard lastTrigger across concurrent
 // requests.
 //
+// Tel is optional (nil-safe) so older call sites that don't yet pass
+// a Telemetry value continue to work.
+//
 // TODO: candidate for extraction to connector primitive base type
 // (any read-mostly connector might want a trigger endpoint).
 type TriggerHandler struct {
 	BearerToken      string
 	DebounceDuration time.Duration
 	PollSignal       chan<- struct{}
+	Tel              *Telemetry
 
 	mu          sync.Mutex
 	lastTrigger time.Time
 }
 
-// NewTriggerHandler constructs a handler.
-func NewTriggerHandler(token string, debounce time.Duration, pollSignal chan<- struct{}) *TriggerHandler {
+// NewTriggerHandler constructs a handler. tel is optional (nil-safe).
+func NewTriggerHandler(token string, debounce time.Duration, pollSignal chan<- struct{}, tel *Telemetry) *TriggerHandler {
 	return &TriggerHandler{
 		BearerToken:      token,
 		DebounceDuration: debounce,
 		PollSignal:       pollSignal,
+		Tel:              tel,
 	}
 }
 
@@ -46,14 +53,23 @@ func (h *TriggerHandler) Handler() http.Handler {
 }
 
 func (h *TriggerHandler) handlePoll(w http.ResponseWriter, r *http.Request) {
+	ctx, span := h.Tel.StartSpan(r.Context(), "schoology.trigger.handle",
+		attribute.String("client_addr", r.RemoteAddr),
+	)
+	defer span.End()
+	_ = ctx // future: pass into downstream poll signaling
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		span.SetAttributes(attribute.String("outcome", "method_not_allowed"))
 		return
 	}
 	auth := []byte(r.Header.Get("Authorization"))
 	expected := []byte("Bearer " + h.BearerToken)
 	if subtle.ConstantTimeCompare(auth, expected) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.Tel.RecordTriggerRequest("unauthorized")
+		span.SetAttributes(attribute.String("outcome", "unauthorized"))
 		return
 	}
 
@@ -66,6 +82,8 @@ func (h *TriggerHandler) handlePoll(w http.ResponseWriter, r *http.Request) {
 		secs := int((remaining + time.Second - 1) / time.Second)
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		h.Tel.RecordTriggerRequest("debounced")
+		span.SetAttributes(attribute.String("outcome", "debounced"))
 		return
 	}
 
@@ -85,4 +103,6 @@ func (h *TriggerHandler) handlePoll(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"poll_queued_at": now.UTC().Format(time.RFC3339),
 	})
+	h.Tel.RecordTriggerRequest("accepted")
+	span.SetAttributes(attribute.String("outcome", "accepted"))
 }
