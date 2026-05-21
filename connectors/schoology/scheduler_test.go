@@ -83,11 +83,44 @@ func TestScheduler_AfterAllWindows_RollsToNextDay(t *testing.T) {
 	}
 }
 
-func TestScheduler_MidWindow_PicksLaterToday(t *testing.T) {
-	// Test: 08:00 (inside morning window) but if splay rolls a time before 08:00,
-	// the scheduler should roll forward to the afternoon window (or next day).
+func TestScheduler_MidWindow_NeverReturnsBeforeNow(t *testing.T) {
+	// Property: with now inside a window, the scheduler must always
+	// return a time strictly after now, even when the splayed time within
+	// the current window happens to roll earlier than now. Use a one-window
+	// config at now=08:30 so most seeds roll a splay before now, which
+	// forces the t.After(now) guard to take the rollover branch.
 	cfg := Config{
 		PollSchedule: PollSchedule{
+			Windows: []PollWindow{
+				{Start: "07:00", End: "09:00"},
+			},
+		},
+	}
+	tz := time.UTC
+	now := time.Date(2026, 5, 19, 8, 30, 0, 0, tz) // Tuesday, 30 min into window
+
+	rolledToTomorrow := 0
+	for seed := int64(1); seed <= 50; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		next, _ := computeNextPollTime(cfg, now, tz, rng)
+		if !next.After(now) {
+			t.Errorf("seed %d: next %v not strictly after now %v", seed, next, now)
+		}
+		if next.Day() != now.Day() {
+			rolledToTomorrow++
+		}
+	}
+	if rolledToTomorrow == 0 {
+		t.Errorf("no seeds triggered day-rollover; t.After(now) guard untested by this sweep")
+	}
+}
+
+func TestScheduler_FridayAfterWindows_RollsToMonday(t *testing.T) {
+	// Compound case: weekdays_only + all today's windows past + today is Friday.
+	// Scheduler must roll past Saturday and Sunday and land on Monday.
+	cfg := Config{
+		PollSchedule: PollSchedule{
+			WeekdaysOnly: true,
 			Windows: []PollWindow{
 				{Start: "07:00", End: "09:00"},
 				{Start: "15:30", End: "17:30"},
@@ -95,13 +128,15 @@ func TestScheduler_MidWindow_PicksLaterToday(t *testing.T) {
 		},
 	}
 	tz := time.UTC
-	// 08:00 on a Tuesday, inside morning window
-	now := time.Date(2026, 5, 19, 8, 0, 0, 0, tz)
-	rng := rand.New(rand.NewSource(12345))
+	// Friday 2026-05-22 at 18:00 UTC -- past both windows.
+	now := time.Date(2026, 5, 22, 18, 0, 0, 0, tz)
+	if now.Weekday() != time.Friday {
+		t.Fatalf("fixture date is not Friday: %v", now.Weekday())
+	}
+	rng := rand.New(rand.NewSource(1))
 	next, _ := computeNextPollTime(cfg, now, tz, rng)
-	// "next" must be strictly AFTER now.
-	if !next.After(now) {
-		t.Errorf("expected next > now, got next=%v now=%v", next, now)
+	if next.Weekday() != time.Monday {
+		t.Errorf("expected Monday, got %v (%v)", next.Weekday(), next)
 	}
 }
 
