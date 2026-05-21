@@ -66,7 +66,7 @@ func sampleThread(id int64, subject string) *schoologylib.MessageThread {
 		LastActivity: time.Date(2025, 9, 12, 10, 0, 0, 0, time.UTC),
 		Unread:       true,
 		MessageCount: 3,
-		URL:          "/messages/thread/" + strings.TrimPrefix(subject, ""),
+		URL:          "/messages/thread/" + subject,
 	}
 }
 
