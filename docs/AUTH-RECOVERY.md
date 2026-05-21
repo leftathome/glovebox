@@ -3,6 +3,12 @@
 Operator procedure for recovering the Schoology connector after a session
 cookie expires.
 
+> **Note (2026-05-21):** an in-cluster refresher (spec 06 §12) is
+> being implemented to automate this procedure on a 12-day CronJob
+> schedule. Once it's deployed, this document remains the **fallback
+> procedure** when the refresher itself fails (bad credentials, IdP
+> precondition change, anti-automation block, etc.).
+
 ## When this applies
 
 The Schoology connector authenticates using browser-session cookies
