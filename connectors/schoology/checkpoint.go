@@ -20,9 +20,11 @@ func CheckpointKey(surface, scope string) string {
 
 // LastSeenID reads the highest-seen ID for a content surface.
 // Returns (0, nil) when the checkpoint is fresh (i.e. first poll).
-// Returns (0, err) when the stored value is unparseable -- callers
-// must decide whether to abort the poll or replay from zero; defaulting
-// to zero would silently re-emit every previously-seen item.
+// Returns (0, err) when the stored value is unparseable. The processor
+// convention (see attachments.go) is to skip the affected item with a
+// slog.Error + metric increment and continue the poll, rather than
+// abort the whole surface. Returning the error lets callers record the
+// failure precisely.
 func LastSeenID(cp connector.Checkpoint, surface, scope string) (int64, error) {
 	key := CheckpointKey(surface, scope)
 	v, ok := cp.Load(key)
@@ -77,7 +79,10 @@ func (d StageDecision) Accept() bool { return d == StageAccept }
 
 // ShouldStage classifies an item's ID against the checkpoint for its
 // surface. Returns an error when the checkpoint store can't be read
-// (corrupted value); callers should treat that as a poll-abort condition.
+// (corrupted value); the processor convention is to skip the item
+// with a slog.Error + metric increment and continue (see attachments.go),
+// not abort the whole poll. The error is returned rather than swallowed
+// so the caller can record it precisely.
 //
 // TODO: candidate for extraction to connector primitive base type
 // (highest-ID dedup is shared with PowerSchool and future LMS connectors).
