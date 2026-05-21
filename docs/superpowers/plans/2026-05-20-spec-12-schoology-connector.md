@@ -115,6 +115,8 @@ Wave 1 fans out 7-way: 6 independent code tasks + 1 docs task. Wave 3 fans out 4
 - **Beads hygiene:** `bd update <id> --claim` at task start, `bd close <id>` at task end.
 - **PII discipline (spec 12 §10):** test config uses `k1`, `k2` for kid labels. Do NOT use family nicknames or legal names in any test data, even hand-written.
 - **Subagent extraction hints:** when a piece of code is a clear candidate for the future "connector primitive base" (window scheduler, client interface pattern, parse-failure receipts, trigger handler), add `// TODO: candidate for extraction to connector primitive base type` as a comment.
+- **Shared test helpers:** `readStagedItems(t, stagingDir)` is defined inline in `connectors/schoology/assignments_test.go` (the first test file that needs it) and reused by `feed_test.go`, `messages_test.go`, `attachments_test.go`, and `integration_test.go` since they're all in `package schoology`. Other shared helpers follow the same pattern: define in the first task that needs them, reuse in later tasks.
+- **Library type adaptation:** every processor task (7-10) has a "Verify schoology-go type fields" pre-step. The code sketches use placeholder field names; ALWAYS confirm via `go doc github.com/leftathome/schoology-go.<Type>` before pasting. If a field doesn't exist, omit the corresponding tag.
 
 ---
 
@@ -139,91 +141,92 @@ Find the function that decides between `RoutePass` and `RouteQuarantine`. Likely
 
 - [ ] `grep -rn "RouteQuarantine\|RoutePass" internal/routing/ | head -20`
 - [ ] Read the dispatcher function in full before editing.
+- [ ] **Note:** `audit.RejectEntry` already has a `Reason` field; quarantine paths set it (see `internal/routing/quarantine.go`). We do NOT need to add a new field to `AuditEntry`; the existing `RejectEntry.Reason` carries the "parse_status_tag" string when the tag-driven path fires.
 
-### Step 1.3 -- Write failing tests
+### Step 1.3 -- Define a testable helper
+
+Add a small testable helper to `internal/routing/quarantine.go` (or a new `internal/routing/tag_override.go` if quarantine.go is already large):
+
+```go
+// ShouldForceQuarantineFromTag returns true when an item's metadata tags
+// indicate it MUST be routed to quarantine regardless of the scanner
+// verdict. Currently triggers on parse_status: "degraded" or
+// "failure_receipt" (spec 12 §12 / Q-EARLY).
+func ShouldForceQuarantineFromTag(meta *staging.ItemMetadata) bool {
+	if meta == nil || meta.Tags == nil {
+		return false
+	}
+	status := meta.Tags["parse_status"]
+	return status == "degraded" || status == "failure_receipt"
+}
+```
+
+This is the testable surface. The dispatcher (whatever calls `RoutePass`/`RouteQuarantine`) will call this helper before consulting the scanner verdict.
+
+### Step 1.4 -- Write failing tests
 
 Add to `internal/routing/quarantine_test.go`:
 
 ```go
-func TestParseStatusTag_RoutesToQuarantine(t *testing.T) {
+func TestShouldForceQuarantineFromTag_TriggersOn(t *testing.T) {
 	cases := []struct {
-		name       string
+		name        string
 		parseStatus string
+		want        bool
 	}{
-		{"degraded", "degraded"},
-		{"failure_receipt", "failure_receipt"},
+		{"degraded", "degraded", true},
+		{"failure_receipt", "failure_receipt", true},
+		{"ok", "ok", false},
+		{"empty", "", false},
+		{"random", "whatever", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			meta := staging.ItemMetadata{
-				Source:           "schoology",
-				Sender:           "test",
-				Subject:          "test",
-				Timestamp:        time.Now().UTC(),
-				DestinationAgent: "school",
-				ContentType:      "text/plain",
-				Tags:             map[string]string{"parse_status": tc.parseStatus},
+			meta := &staging.ItemMetadata{
+				Tags: map[string]string{"parse_status": tc.parseStatus},
 			}
-			// Simulate the routing decision with a passing scanner verdict
-			// (the tag should override and force quarantine).
-			verdict := engine.ScanResult{Verdict: engine.VerdictPass}
-			decision := routingDecisionFor(meta, verdict) // expose-for-test or via existing dispatcher
-			if decision != "quarantine" {
-				t.Errorf("expected quarantine, got %q", decision)
+			if got := ShouldForceQuarantineFromTag(meta); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestParseStatusTag_OtherValues_DoNotForceQuarantine(t *testing.T) {
-	// Items with parse_status set to something else, or unset, follow normal scanner verdict.
-	meta := staging.ItemMetadata{
-		Source:           "schoology",
-		Sender:           "test",
-		Subject:          "test",
-		Timestamp:        time.Now().UTC(),
-		DestinationAgent: "school",
-		ContentType:      "text/plain",
-		Tags:             map[string]string{"parse_status": "ok"},
+func TestShouldForceQuarantineFromTag_NilSafe(t *testing.T) {
+	if ShouldForceQuarantineFromTag(nil) {
+		t.Error("nil meta should not force quarantine")
 	}
-	verdict := engine.ScanResult{Verdict: engine.VerdictPass}
-	decision := routingDecisionFor(meta, verdict)
-	if decision != "pass" {
-		t.Errorf("expected pass, got %q", decision)
+	if ShouldForceQuarantineFromTag(&staging.ItemMetadata{}) {
+		t.Error("nil Tags map should not force quarantine")
 	}
 }
 ```
 
-If the dispatcher function isn't named/shaped to be testable directly, expose a small helper (e.g., `func shouldForceQuarantine(meta ItemMetadata) bool`) and test that.
+- [ ] Run: `go test ./internal/routing/ -run TestShouldForceQuarantineFromTag -v`
+- [ ] Expected: FAIL (function doesn't exist yet).
 
-- [ ] Run: `go test ./internal/routing/ -run "TestParseStatusTag" -v`
-- [ ] Expected: FAIL (no parse_status handling yet).
+### Step 1.5 -- Wire helper into the dispatcher
 
-### Step 1.4 -- Implement the tag-based force-quarantine
-
-In whichever function decides pass vs quarantine, add (BEFORE consulting the scanner verdict):
+Find the function that calls `RoutePass`/`RouteQuarantine` (Step 1.2 located it). Add the tag override BEFORE consulting the scanner verdict:
 
 ```go
 // Tag-driven quarantine override (spec 12 §12 / Q-EARLY): items marked
-// with parse_status: "degraded" or "failure_receipt" by the connector
-// are forensic artifacts of broken upstream parsers and bypass the
-// scanner verdict directly to quarantine.
-if status, ok := meta.Tags["parse_status"]; ok {
-	if status == "degraded" || status == "failure_receipt" {
-		return "quarantine"  // or whatever the quarantine constant is
-	}
+// with parse_status by the connector are forensic artifacts and bypass
+// the scanner verdict directly to quarantine.
+if ShouldForceQuarantineFromTag(&meta) {
+	return RouteQuarantine(item, scanResult, qDir, ..., "parse_status_tag")
 }
 ```
 
-Also update `audit.AuditEntry` to include a `QuarantineReason` string field (if it doesn't already), set to `"parse_status_tag"` when this path triggers, so the forensic record is clear.
+The `"parse_status_tag"` string is the `reason` argument passed to `RouteQuarantine`, which is recorded in the existing `audit.RejectEntry.Reason` field — no new audit-log fields needed.
 
-### Step 1.5 -- Run tests + vet
+### Step 1.6 -- Run tests + vet
 
 - [ ] `go test ./internal/routing/... -v`
 - [ ] `go vet ./internal/...`
 - [ ] All pass / clean.
 
-### Step 1.6 -- Commit + push + close
+### Step 1.7 -- Commit + push + close
 
 ```bash
 git add internal/routing/quarantine.go internal/routing/quarantine_test.go
@@ -1445,9 +1448,30 @@ Add imports to test file: `"github.com/leftathome/glovebox/connector"`, `"time"`
 
 - [ ] `bd update glovebox-pphw --claim`
 
+### Step 7.1a -- Verify schoology-go's Assignment type fields
+
+**REQUIRED before writing code.** The field names in the sketch below
+(`a.ID`, `a.Title`, `a.CourseTitle`, `a.TeacherName`, `a.DueDate`,
+`a.Status`, `a.CreatedAt`, `a.Description`) are PLACEHOLDERS. Verify
+each against the actual library:
+
+```bash
+go doc github.com/leftathome/schoology-go.Assignment
+# OR
+grep -A 30 "^type Assignment " ../schoology-go/assignments.go
+```
+
+- [ ] Note the actual field names; substitute throughout the
+  implementation. Where the library doesn't expose a field, omit the
+  corresponding tag from the staged item's `Tags` map.
+- [ ] If the library doesn't return `Assignment` but a differently-named
+  type, update the SchoologyClient interface (Task 2's `client.go`)
+  to match — there's an explicit Task 2 dependency on this task that
+  may surface field-name issues retroactively.
+
 ### Step 7.2 -- Implement
 
-`connectors/schoology/assignments.go` (sketch — adapt to library's actual `Assignment` struct):
+`connectors/schoology/assignments.go` (sketch — adapt the placeholder field accesses per Step 7.1a):
 
 ```go
 package schoology
@@ -1686,9 +1710,39 @@ func TestProcessAssignments_LibraryErrorEmitsReceipt(t *testing.T) {
 	}
 }
 
-// readStagedItems is a helper shared across processor tests.
-// Define it in a shared _test.go file if it doesn't already exist.
+// readStagedItems is a helper shared across processor tests. Define
+// it inline in this file (assignments_test.go) the first time; Tasks 8,
+// 9, 10 can reference it as long as they're in the same test package.
+//
+// If multiple processor tests evolve to need richer helpers, refactor
+// into a new file `connectors/schoology/test_helpers_test.go` later.
+// For v1, inline here:
+func readStagedItems(t *testing.T, stagingDir string) []staging.ItemMetadata {
+	t.Helper()
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatalf("read staging dir: %v", err)
+	}
+	var out []staging.ItemMetadata
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stagingDir, e.Name(), "metadata.json"))
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+		var m staging.ItemMetadata
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
 ```
+
+Add imports to assignments_test.go: `"encoding/json"`, `"os"`, `"path/filepath"`, `"strings"`, `"github.com/leftathome/glovebox/internal/staging"`.
 
 ### Step 7.4 -- Test + vet + commit + push + close
 
@@ -2158,35 +2212,77 @@ func TestTelemetry_MetricsRegister(t *testing.T) {
 
 Per spec 12 §3, implement `Connector` + `Watcher` + `Listener`. The struct holds:
 
-- `client SchoologyClient`
-- `cfg Config`
-- `writer *connector.StagingWriter`
-- `matcher *connector.RuleMatcher`
-- `cp connector.Checkpoint`
-- `tel *Telemetry`
-- `tz *time.Location`
-- `rng *rand.Rand`
-- `trigger *TriggerHandler`
-- `pollSignal chan struct{}` (buffered, 1)
-- `driftCounter *SchemaDriftCounter`
-- `libVersion string`
+```go
+type SchoologyConnector struct {
+	client         SchoologyClient
+	cfg            Config
+	writer         *connector.StagingWriter   // set via Wire
+	matcher        *connector.RuleMatcher     // set via Wire
+	tel            *Telemetry
+	tz             *time.Location
+	rng            *rand.Rand
+	trigger        *TriggerHandler
+	pollSignal     chan struct{}              // buffered, capacity 1
+	driftCounter   *SchemaDriftCounter
+	libVersion     string
+}
 
-Methods:
-- `Poll(ctx, cp) error` — catch-up; calls `pollNow(ctx, "catch_up")`.
-- `Watch(ctx, cp) error` — long-running loop. Each iteration:
-  1. Compute next poll time via `computeNextPollTime`.
-  2. `select` on `time.After(next - now)` vs `c.pollSignal` vs `ctx.Done()`.
-  3. On wake (either path): call `pollNow(ctx, "scheduled" or "triggered")`.
-  4. If `driftCounter.ShouldEscalate()`: return PermanentError.
+// NewConnector constructs a SchoologyConnector with the bits known at
+// program start (config, client, telemetry, schedule helpers). The
+// framework-provided writer/matcher are attached later via Wire() once
+// the framework calls our Setup callback.
+func NewConnector(client SchoologyClient, cfg Config) *SchoologyConnector {
+	tz, _ := loadTimezone(os.Getenv("SCHOOLOGY_TIMEZONE"))
+	tel, _ := NewTelemetry("glovebox.schoology", "glovebox.schoology")
+	signal := make(chan struct{}, 1)
+	trigger := NewTriggerHandler(
+		os.Getenv("SCHOOLOGY_TRIGGER_TOKEN"),
+		time.Duration(cfg.Trigger.DebounceSeconds)*time.Second,
+		signal,
+	)
+	return &SchoologyConnector{
+		client:       client,
+		cfg:          cfg,
+		tel:          tel,
+		tz:           tz,
+		rng:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		trigger:      trigger,
+		pollSignal:   signal,
+		driftCounter: NewSchemaDriftCounter(cfg.ParseFailureThreshold),
+		libVersion:   schoologylib.Version, // OR a const we maintain ourselves
+	}
+}
+
+// Wire attaches the framework-provided resources to the connector. Called
+// by main.go from inside the Setup callback the framework invokes after
+// it has constructed StagingWriter, RuleMatcher, etc.
+func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) {
+	c.writer = cc.Writer
+	c.matcher = cc.Matcher
+	// Telemetry doesn't need cc; metrics are already attached to the
+	// global OTel meter provider that the framework's Metrics shares.
+}
+```
+
+Methods (interface implementations):
+
+- `Poll(ctx context.Context, cp connector.Checkpoint) error` — catch-up; calls `c.pollNow(ctx, cp, "catch_up")`.
+- `Watch(ctx context.Context, cp connector.Checkpoint) error` — long-running loop. Each iteration:
+  1. Compute next poll time via `computeNextPollTime(c.cfg, time.Now(), c.tz, c.rng)`.
+  2. `select` on `time.After(next - time.Now())` vs `c.pollSignal` vs `ctx.Done()`.
+  3. On `time.After` fire: call `c.pollNow(ctx, cp, "scheduled")`.
+  4. On `c.pollSignal` fire: call `c.pollNow(ctx, cp, "triggered")`.
+  5. On `ctx.Done()`: return `ctx.Err()`.
+  6. After each pollNow: if `c.driftCounter.ShouldEscalate()` returns true, return `connector.PermanentError(fmt.Errorf("schema drift escalation: %d consecutive empty-with-errors polls", c.driftCounter.Count()))`.
 - `Handler() http.Handler` — returns `c.trigger.Handler()`.
 
-The `pollNow(ctx, source string) error` function:
-1. Start root span.
-2. Increment polls counter with source label.
-3. Build a fresh `ReceiptDedup` for this poll.
-4. For each kid: switch view, process assignments, process feed.
-5. Process inbox messages (parent-level).
-6. Drive `driftCounter.RecordPoll(itemsProduced, errorsLogged)`.
+The internal `c.pollNow(ctx context.Context, cp connector.Checkpoint, source string) error` function:
+1. Start root span via `c.tel.Tracer.Start(ctx, "schoology.poll", trace.WithAttributes(attribute.String("trigger_source", source)))`.
+2. Increment `c.tel.PollsTotal` with `trigger_source` label.
+3. Build a fresh `dedup := NewReceiptDedup()` for this poll.
+4. For each `kid := range c.cfg.Kids`: switch view (`view_child` -- the library mutexes internally), process assignments, process feed (which itself processes attachments).
+5. Process inbox messages (parent-level; no kid loop).
+6. After all surfaces: `c.driftCounter.RecordPoll(itemsProduced, errorsLogged)`.
 7. End root span.
 
 ### Step 13.2 -- main.go
