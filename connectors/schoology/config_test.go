@@ -98,6 +98,41 @@ func TestValidateConfig_NoKids(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_NoWindows(t *testing.T) {
+	cfg := Config{
+		Kids:         []Kid{{Name: "k1", SchoologyUID: 1}},
+		PollSchedule: PollSchedule{Windows: nil},
+	}
+	if err := ValidateConfig(&cfg); err == nil || !strings.Contains(err.Error(), "at least one window") {
+		t.Fatalf("expected at-least-one-window error, got %v", err)
+	}
+}
+
+func TestValidateConfig_WindowEndNotAfterStart(t *testing.T) {
+	cases := []struct {
+		name  string
+		start string
+		end   string
+	}{
+		{"backwards", "09:00", "07:00"},
+		{"equal", "08:30", "08:30"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				Kids: []Kid{{Name: "k1", SchoologyUID: 1}},
+				PollSchedule: PollSchedule{
+					Windows: []PollWindow{{Start: tc.start, End: tc.end}},
+				},
+			}
+			err := ValidateConfig(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "must be strictly after") {
+				t.Fatalf("expected strictly-after error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestApplyDefaults(t *testing.T) {
 	cfg := Config{
 		Kids: []Kid{{Name: "k1", SchoologyUID: 1}},
