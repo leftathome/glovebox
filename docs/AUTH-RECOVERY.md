@@ -95,7 +95,7 @@ session when the browser lands on the post-login home page, then writes
 a 5-field JSON file (`host`, `sess_id`, `csrf_token`, `csrf_key`, `uid`)
 to the path you specified, mode `0600`. **All five fields are required**
 by `auth.LoadCredentials` validation; do not strip any of them when
-copying into 1Password.
+writing to Vault.
 
 Notes:
 - The first run downloads a Chromium build into go-rod's cache
@@ -115,19 +115,31 @@ It should be a JSON object with exactly five string fields (`host`,
 empty or malformed, the browser flow did not complete successfully
 (common cause: closed the window before landing on `/home`); re-run.
 
-### 4. Update the 1Password item
+### 4. Write the session into Vault
 
-Open the 1Password item named `schoology-session-<household>` (where
-`<household>` matches the `household` value in your connector config).
-Replace its contents entirely with the JSON you just wrote.
+Write the five fields to the Vault KV v2 path that the connector's
+`ExternalSecret` reads. The default path is
+`secret/glovebox/schoology/<household>/session` (where `<household>`
+matches the `household` value in your connector config).
 
-If you store the JSON in a structured 1Password field rather than a
-single notes blob, replace each of the four sub-fields. Whichever shape
-your ExternalSecret template expects.
+```bash
+vault kv put secret/glovebox/schoology/<household>/session @/tmp/schoology-session.json
+```
+
+Or, equivalently, with explicit key=value pairs from the JSON:
+
+```bash
+vault kv put secret/glovebox/schoology/<household>/session \
+  host=...    sess_id=...    csrf_token=...    csrf_key=...    uid=...
+```
+
+If your `ExternalSecret` template expects a single JSON blob in one
+field rather than five flat keys, write it that way -- whichever shape
+the template you applied at deploy time consumes.
 
 ### 5. Wait for ESO to sync
 
-External Secrets Operator polls 1Password on its configured refresh
+External Secrets Operator polls Vault on its configured refresh
 interval (default ~60 seconds for this connector's `ExternalSecret`).
 The K8s Secret will update, and because the Deployment template carries
 a checksum annotation on the Secret, the pod will be re-rolled
@@ -167,32 +179,34 @@ shred -u /tmp/schoology-session.json   # Linux
 
 ## Troubleshooting
 
-### 1Password item not found
+### Vault KV path not found
 
-ESO logs an `ItemNotFound` (or vendor-specific equivalent) error. Check
-that the item name matches the `household` value in `config.json`
-exactly (case-sensitive). The expected name is
-`schoology-session-<household>`. Example: `household: "smith"` →
-`schoology-session-smith`.
+ESO logs a `secret not found` error (or vendor-specific equivalent).
+Check that the path matches the `household` value in `config.json`
+exactly (case-sensitive). The expected path is
+`secret/glovebox/schoology/<household>/session`. Example:
+`household: "smith"` → `secret/glovebox/schoology/smith/session`.
 
 ```bash
 kubectl describe externalsecret -n glovebox schoology-session
+vault kv get secret/glovebox/schoology/<household>/session
 ```
 
 ### ESO sync stuck
 
 If the `ExternalSecret` status never advances past `SecretSyncedError`
-or the `LAST SYNC` timestamp is stale, ESO is not reaching 1Password.
+or the `LAST SYNC` timestamp is stale, ESO is not reaching Vault.
 Check the operator and the `ClusterSecretStore`:
 
 ```bash
 kubectl get clustersecretstore
-kubectl describe clustersecretstore <your-1password-store>
+kubectl describe clustersecretstore <your-vault-store>
 kubectl logs -n external-secrets deploy/external-secrets -f
 ```
 
-Common causes: expired 1Password service-account token, network policy
-blocking egress from the ESO pod, 1Password Connect server down.
+Common causes: expired Vault token / failed token renewal in the
+ESO ClusterSecretStore, network policy blocking egress from the ESO
+pod, Vault server unreachable or sealed.
 
 ### Pod doesn't restart after Secret updates
 
@@ -209,7 +223,7 @@ Then fix the chart so future recoveries are automatic.
 ### Re-auth succeeded but pod still loops on session-expired
 
 Possible causes:
-- The JSON in 1Password is wrapped (e.g. base64-encoded, quoted-string)
+- The JSON in Vault is wrapped (e.g. base64-encoded, quoted-string)
   in a way the ExternalSecret template doesn't unwrap. Check the
   rendered Secret with `kubectl get secret -n glovebox schoology-session
   -o jsonpath='{.data.credentials\.json}' | base64 -d` and confirm it
