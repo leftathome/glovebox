@@ -215,10 +215,18 @@ func TestConnector_PollNow_ConvergesAllSources(t *testing.T) {
 	c := newWiredConnector(t, client)
 	cp := newTestCheckpoint(t)
 
-	for _, source := range []string{"catch_up", "scheduled", "triggered"} {
-		t.Run(source, func(t *testing.T) {
-			if err := c.pollNow(context.Background(), cp, source); err != nil {
-				t.Fatalf("pollNow(%q): %v", source, err)
+	cases := []struct {
+		source     string
+		splaySecs  int
+	}{
+		{"catch_up", -1},
+		{"scheduled", 137}, // a representative non-negative splay
+		{"triggered", -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.source, func(t *testing.T) {
+			if err := c.pollNow(context.Background(), cp, tc.source, tc.splaySecs); err != nil {
+				t.Fatalf("pollNow(%q): %v", tc.source, err)
 			}
 		})
 	}
@@ -239,8 +247,12 @@ func TestConnector_DriftCounter_Escalates(t *testing.T) {
 	if !connector.IsPermanent(err) {
 		t.Errorf("checkDrift error is not permanent: %v", err)
 	}
-	if !strings.Contains(err.Error(), "exceeded threshold") {
-		t.Errorf("checkDrift error = %q, want to mention 'exceeded threshold'", err.Error())
+	// Spec 12 §11.4 mandates a message naming the schema-drift diagnostic
+	// and pointing at the library version (operator runbook hint).
+	for _, want := range []string{"schema drift", "library version"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("checkDrift error = %q, want to mention %q", err.Error(), want)
+		}
 	}
 }
 
@@ -272,7 +284,7 @@ func TestConnector_DetectBadCredentials(t *testing.T) {
 	c := newWiredConnector(t, client)
 	cp := newTestCheckpoint(t)
 
-	err := c.pollNow(context.Background(), cp, "scheduled")
+	err := c.pollNow(context.Background(), cp, "scheduled", 0)
 	if err == nil {
 		t.Fatal("pollNow with bad credentials returned nil error")
 	}

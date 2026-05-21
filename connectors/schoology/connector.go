@@ -141,8 +141,10 @@ func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) error {
 
 // Poll satisfies connector.Connector. The framework calls Poll once on
 // startup (catch-up) and again from the re-poll branches of RunWatchLoop.
+// splaySecs is -1 because catch-up polls aren't scheduled through the
+// window scheduler — see pollNow's splay-handling.
 func (c *SchoologyConnector) Poll(ctx context.Context, cp connector.Checkpoint) error {
-	return c.pollNow(ctx, cp, "catch_up")
+	return c.pollNow(ctx, cp, "catch_up", -1)
 }
 
 // Handler satisfies connector.Listener and returns the POST /v1/poll
@@ -172,18 +174,22 @@ func (c *SchoologyConnector) Watch(ctx context.Context, cp connector.Checkpoint)
 		timer := time.NewTimer(wait)
 
 		var source string
+		var pollSplay int
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 			source = "scheduled"
+			pollSplay = splaySecs
 		case <-c.pollSignal:
 			timer.Stop()
 			source = "triggered"
+			// Trigger fired before the scheduled tick; no splay applies.
+			pollSplay = -1
 		}
 
-		if err := c.pollNow(ctx, cp, source); err != nil {
+		if err := c.pollNow(ctx, cp, source, pollSplay); err != nil {
 			return err
 		}
 
@@ -208,7 +214,6 @@ func (c *SchoologyConnector) nextPoll(now time.Time) (next time.Time, splaySecs 
 	// scheduled day. We re-derive the window string from the returned
 	// time-of-day so the log line says "08:00-09:00" rather than indexing
 	// into cfg.PollSchedule.Windows.
-	hm := next.Format("15:04")
 	for _, w := range c.cfg.PollSchedule.Windows {
 		startMin, _ := parseTimeOfDay(w.Start)
 		endMin, _ := parseTimeOfDay(w.End)
@@ -223,7 +228,6 @@ func (c *SchoologyConnector) nextPoll(now time.Time) (next time.Time, splaySecs 
 	// (shouldn't happen given ValidateConfig requires >=1 window). Emit
 	// a degraded log shape rather than panicking.
 	window = "unknown"
-	_ = hm
 	return next, 0, window
 }
 
@@ -231,6 +235,10 @@ func (c *SchoologyConnector) nextPoll(now time.Time) (next time.Time, splaySecs 
 // when the consecutive-empty-with-errors count has crossed the configured
 // threshold; otherwise nil. Extracted from the Watch body so the same
 // logic is unit-testable without spinning up a Watch goroutine.
+//
+// Error message follows spec 12 §11.4: explicitly names the schema-drift
+// diagnostic and points operators at the library version so alerting
+// dashboards / runbooks have the right hint without reading the code.
 func (c *SchoologyConnector) checkDrift() error {
 	if !c.driftCounter.ShouldEscalate() {
 		return nil
@@ -240,10 +248,11 @@ func (c *SchoologyConnector) checkDrift() error {
 	slog.Error("schoology schema drift escalation",
 		"consecutive_polls", count,
 		"threshold", threshold,
+		"library_version", c.libVersion,
 	)
 	return connector.PermanentError(fmt.Errorf(
-		"schoology: %d consecutive empty-with-errors polls exceeded threshold %d",
-		count, threshold,
+		"schoology library returned 0 items with parse errors for %d consecutive polls (threshold %d); likely upstream schema drift; investigate library version %s",
+		count, threshold, c.libVersion,
 	))
 }
 
@@ -264,7 +273,11 @@ func (c *SchoologyConnector) checkDrift() error {
 // "schoology session expired" line and return a PermanentError so the
 // framework will exit the process (the operator restarts after running
 // the recovery procedure in docs/AUTH-RECOVERY.md).
-func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoint, source string) error {
+// splaySecs is the per-poll splay offset in seconds; -1 signals "no
+// splay applies" (catch-up Poll() or trigger-driven runs). Per spec
+// §13.2 and §13.3 the splay_time attribute and log field are populated
+// for scheduled polls only.
+func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoint, source string, splaySecs int) error {
 	c.pollMu.Lock()
 	defer c.pollMu.Unlock()
 
@@ -277,20 +290,28 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	}
 
 	pollID := uuid.New().String()
-	ctx, span := tel.StartSpan(ctx, "schoology.poll",
+	spanAttrs := []attribute.KeyValue{
 		attribute.String("trigger_source", source),
 		attribute.String("poll_id", pollID),
-	)
+	}
+	if splaySecs >= 0 {
+		spanAttrs = append(spanAttrs, attribute.Int("splay_time", splaySecs))
+	}
+	ctx, span := tel.StartSpan(ctx, "schoology.poll", spanAttrs...)
 	defer span.End()
 
 	tel.RecordPollByTrigger(source)
 
 	start := time.Now()
-	slog.Info("schoology poll start",
+	startFields := []any{
 		"trigger_source", source,
 		"poll_id", pollID,
 		"kids_count", len(c.cfg.Kids),
-	)
+	}
+	if splaySecs >= 0 {
+		startFields = append(startFields, "splay_time", splaySecs)
+	}
+	slog.Info("schoology poll start", startFields...)
 
 	dedup := NewReceiptDedup()
 	var itemsProduced int
