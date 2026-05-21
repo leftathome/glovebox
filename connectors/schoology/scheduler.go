@@ -13,9 +13,18 @@ import (
 // The second return value is true when the current day was skipped
 // because of weekdays_only=true falling on a weekend.
 //
+// The rng is mutated on each call and is not safe to share across
+// goroutines; the Watcher owns its own *rand.Rand.
+//
+// Panics if cfg.PollSchedule.Windows is empty (config validation
+// should have rejected this; see ValidateConfig).
+//
 // TODO: candidate for extraction to connector primitive base type
 // (the windowed-with-splay pattern is generally useful).
 func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand.Rand) (time.Time, bool) {
+	if len(cfg.PollSchedule.Windows) == 0 {
+		panic("schoology: computeNextPollTime called with zero windows; config validation should have rejected this")
+	}
 	now = now.In(tz)
 	day := now
 	skipped := false
@@ -25,11 +34,6 @@ func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand
 		skipped = true
 		for isWeekend(day) {
 			day = day.AddDate(0, 0, 1)
-		}
-		// First window of the next valid weekday, splayed.
-		if len(cfg.PollSchedule.Windows) == 0 {
-			// No windows configured; cannot schedule. Return zero + skipped.
-			return time.Time{}, true
 		}
 		return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), true
 	}
@@ -46,9 +50,6 @@ func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand
 	day = day.AddDate(0, 0, 1)
 	for cfg.PollSchedule.WeekdaysOnly && isWeekend(day) {
 		day = day.AddDate(0, 0, 1)
-	}
-	if len(cfg.PollSchedule.Windows) == 0 {
-		return time.Time{}, skipped
 	}
 	return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), skipped
 }
@@ -67,8 +68,7 @@ func splayedTimeIn(w PollWindow, day time.Time, tz *time.Location, rng *rand.Ran
 	startSec := startH*3600 + startM*60
 	endSec := endH*3600 + endM*60
 	if endSec <= startSec {
-		// Defensive: invalid window. Config validation should have rejected.
-		endSec = startSec + 60
+		panic(fmt.Sprintf("schoology: invalid window %q-%q reached scheduler; config validation should have rejected it", w.Start, w.End))
 	}
 	splay := rng.Intn(endSec - startSec)
 	totalSec := startSec + splay
