@@ -54,8 +54,15 @@ func ProcessMessages(
 ) (staged int, errsLogged bool) {
 	threads, parseErrs, err := client.GetInbox(ctx)
 	if err != nil {
-		emitMessagesReceipt(writer, matcher, dedup, libVersion, "", classifyMessagesError(err), err.Error())
-		return 0, true
+		errsLogged = true
+		errorClass := classifyMessagesError(err)
+		// Observe before emit so AffectedCount reflects reality; mirrors
+		// the assignments + feed processors so a shared dedup tracker
+		// behaves consistently across surfaces.
+		if dedup.Observe("messages", errorClass, "") {
+			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", errorClass, err.Error())
+		}
+		return 0, errsLogged
 	}
 
 	for _, pe := range parseErrs {
@@ -64,6 +71,9 @@ func ProcessMessages(
 		}
 		if dedup.Observe("messages", "row_parse", "") {
 			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", "row_parse", pe.Error())
+			errsLogged = true
+		} else {
+			// Still counts as an error logged for schema-drift purposes.
 			errsLogged = true
 		}
 	}
@@ -224,20 +234,20 @@ func emitMessagesReceipt(
 		return
 	}
 
-	count := dedup.AffectedCount(parser, errorClass)
-	if count == 0 {
-		count = 1
-	}
+	// AffectedCount comes straight from the dedup tracker. Top-level and
+	// row-parse callers both Observe() before invoking this helper, so
+	// the count is at least 1 by the time we get here. (See ProcessMessages
+	// near the top of this file.)
 	opts := BuildReceiptOptions(ReceiptInputs{
 		Parser:            parser,
 		ErrorClass:        errorClass,
 		ErrorMsg:          errorMsg,
-		Trace:             "",
+		Trace:             "GetInbox",
 		SourceURL:         "",
 		TargetKid:         "",
 		TargetContentType: "message",
 		LibVersion:        libVersion,
-		AffectedCount:     count,
+		AffectedCount:     dedup.AffectedCount(parser, errorClass),
 		AffectedItemIDs:   dedup.AffectedItemIDs(parser, errorClass),
 	})
 	opts.DestinationAgent = result.Destination

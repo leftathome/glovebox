@@ -46,19 +46,27 @@ func ProcessFeed(
 	posts, parseErrs, err := client.GetFeed(ctx, kid.SchoologyUID)
 	if err != nil {
 		errsLogged = true
-		emitFeedTopLevelReceipt(writer, matcher, kid, libVersion, err)
+		errorClass := classifyLibError(err)
+		// Observe so the receipt records the affected count; if Observe
+		// returns false the receipt was already emitted this poll and we
+		// must not duplicate it. Mirrors the assignments processor so
+		// processors that share a dedup tracker behave consistently.
+		if dedup.Observe("feed", errorClass, "") {
+			emitFeedTopLevelReceipt(writer, matcher, kid, libVersion, err, errorClass)
+		}
 		return 0, 0, errsLogged
 	}
 
 	// Emit one row-parse receipt per unique (parser, errorClass) in this
-	// poll. The dedup tracker is shared across surfaces by the caller so
-	// row-parse failures from feed and other surfaces don't collide on
-	// the same key.
+	// poll. All row-parse failures collapse to a single "row_parse"
+	// bucket — matches the assignments + messages processors so an
+	// operator dashboarding on error_class doesn't see arbitrary
+	// per-surface taxonomies.
 	for _, pe := range parseErrs {
 		if pe == nil {
 			continue
 		}
-		errorClass := classifyLibError(pe)
+		const errorClass = "row_parse"
 		if dedup.Observe("feed", errorClass, "") {
 			errsLogged = true
 			emitFeedRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
@@ -272,12 +280,13 @@ func emitFeedTopLevelReceipt(
 	kid Kid,
 	libVersion string,
 	err error,
+	errorClass string,
 ) {
-	errorClass := classifyLibError(err)
 	in := ReceiptInputs{
 		Parser:            "feed",
 		ErrorClass:        errorClass,
 		ErrorMsg:          err.Error(),
+		Trace:             "GetFeed",
 		TargetKid:         kid.Name,
 		TargetContentType: "feed",
 		LibVersion:        libVersion,
