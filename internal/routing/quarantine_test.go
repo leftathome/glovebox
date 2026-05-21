@@ -139,3 +139,36 @@ func TestRouteQuarantine_StagingCleanedUp(t *testing.T) {
 		t.Error("staging directory should have been removed")
 	}
 }
+
+func TestShouldForceQuarantineFromTag_TriggersOn(t *testing.T) {
+	cases := []struct {
+		name        string
+		parseStatus string
+		want        bool
+	}{
+		{"degraded", "degraded", true},
+		{"failure_receipt", "failure_receipt", true},
+		{"ok", "ok", false},
+		{"empty", "", false},
+		{"random", "whatever", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := &staging.ItemMetadata{
+				Tags: map[string]string{"parse_status": tc.parseStatus},
+			}
+			if got := ShouldForceQuarantineFromTag(meta); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShouldForceQuarantineFromTag_NilSafe(t *testing.T) {
+	if ShouldForceQuarantineFromTag(nil) {
+		t.Error("nil meta should not force quarantine")
+	}
+	if ShouldForceQuarantineFromTag(&staging.ItemMetadata{}) {
+		t.Error("nil Tags map should not force quarantine")
+	}
+}

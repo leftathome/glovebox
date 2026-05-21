@@ -289,7 +289,7 @@ func TestAuditEntry_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 		Verdict:       "pass",
 		Destination:   "school",
 		DataSubject:   "bee",
-		Audience:      []string{"subject", "parents"},
+		Audience:      []string{"subject", "guardians"},
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestAuditEntry_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 	if !strings.Contains(string(data), `"data_subject":"bee"`) {
 		t.Errorf("missing data_subject in JSON: %s", data)
 	}
-	if !strings.Contains(string(data), `"audience":["subject","parents"]`) {
+	if !strings.Contains(string(data), `"audience":["subject","guardians"]`) {
 		t.Errorf("missing audience in JSON: %s", data)
 	}
 }

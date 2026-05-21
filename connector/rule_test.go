@@ -93,7 +93,7 @@ func TestRuleMatcher_PropagatesDataSubjectAndAudience(t *testing.T) {
 			Match:       "foo",
 			Destination: "agent-a",
 			DataSubject: "bee",
-			Audience:    []string{"subject", "parents"},
+			Audience:    []string{"subject", "guardians"},
 		},
 		{
 			Match:       "*",
@@ -110,7 +110,7 @@ func TestRuleMatcher_PropagatesDataSubjectAndAudience(t *testing.T) {
 	if got.DataSubject != "bee" {
 		t.Errorf("DataSubject: got %q, want %q", got.DataSubject, "bee")
 	}
-	if len(got.Audience) != 2 || got.Audience[0] != "subject" || got.Audience[1] != "parents" {
+	if len(got.Audience) != 2 || got.Audience[0] != "subject" || got.Audience[1] != "guardians" {
 		t.Errorf("Audience: got %v", got.Audience)
 	}
 

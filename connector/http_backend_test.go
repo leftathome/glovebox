@@ -512,7 +512,7 @@ func TestHTTPStagingBackend_HonorsConfigDataSubjectAndAudience(t *testing.T) {
 
 	backend := NewHTTPStagingBackend(srv.URL+"/v1/ingest", "test-connector", srv.Client())
 	backend.SetConfigDataSubject("bee")
-	backend.SetConfigAudience([]string{"subject", "parents"})
+	backend.SetConfigAudience([]string{"subject", "guardians"})
 
 	item, err := backend.NewItem(validHTTPOpts())
 	if err != nil {
@@ -541,7 +541,7 @@ func TestHTTPStagingBackend_HonorsConfigDataSubjectAndAudience(t *testing.T) {
 	if len(rawAudience) != 2 {
 		t.Fatalf("audience: got %d elements, want 2", len(rawAudience))
 	}
-	if rawAudience[0] != "subject" || rawAudience[1] != "parents" {
-		t.Errorf("audience: got %v want [subject parents]", rawAudience)
+	if rawAudience[0] != "subject" || rawAudience[1] != "guardians" {
+		t.Errorf("audience: got %v want [subject guardians]", rawAudience)
 	}
 }
