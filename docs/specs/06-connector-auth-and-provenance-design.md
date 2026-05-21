@@ -525,3 +525,183 @@ Files requiring changes for the `routes` -> `rules` rename:
 - Identity-based routing in glovebox (future feature)
 - Tag-based quarantine rules (future feature)
 - Hashing or pseudonymizing identity in audit logs (v1 stores plaintext)
+
+## 12. Browser-Session Refresher (Addendum)
+
+### 12.1 Motivation
+
+Spec 06 §3.5 deferred interactive auth flows to "a separate bead as a
+CLI tool." That CLI exists today for Schoology -- it is the manual
+procedure documented in `docs/AUTH-RECOVERY.md`. The operator runs a
+small Go program on a workstation that calls
+`schoology-go/auth.Login`, watches a visible Chromium window, pastes
+the resulting 5-field JSON into a 1Password item, and waits for
+External Secrets Operator to sync the new session into the cluster.
+
+This addendum specifies an in-cluster replacement for that workflow.
+Schoology's parent-account session cookies expire about every 14 days,
+and the manual procedure is the single largest reliability hazard for a
+long-running Schoology connector deployment: an unattended 14-day
+window will, eventually, expire on a holiday and CrashLoopBackOff the
+pod until somebody is around to re-paste cookies. The refresher
+automates the recovery loop entirely.
+
+This is **Schoology-specific scope.** Other connectors with similar
+browser-session patterns (none today) could reuse the design but no
+abstraction layer is being built here -- spec 12 is the only consumer.
+
+### 12.2 Preconditions and Scope
+
+This addendum applies when ALL of the following are true:
+
+1. The connector authenticates via browser-session cookies (no OAuth /
+   PAT / app password surface).
+2. The IdP serves a **native username/password form** with no SSO
+   redirect (Google, Microsoft Entra, Okta) and **no MFA**.
+3. The IdP does not employ anti-automation defenses that fingerprint
+   headless Chromium (Cloudflare Turnstile, datadome, PerimeterX, etc.).
+4. A 1Password item exists holding the source credentials and a
+   separate 1Password item holds the synced session JSON (both reached
+   via the cluster's existing ExternalSecret pipeline).
+
+The Schoology connector satisfies all four for the parent-account
+flow as of the spec 12 implementation (see spec 12 §5).
+
+If any precondition becomes false (e.g., the district migrates to
+Google SSO, or Schoology adds MFA enforcement), the refresher cannot
+operate and the manual `AUTH-RECOVERY.md` procedure remains the
+fallback.
+
+### 12.3 Components
+
+The refresher comprises four artifacts:
+
+1. **`cmd/glovebox-schoology-auth-refresher/main.go`** -- a small Go
+   binary (~150 lines) that:
+   - Reads `SCHOOLOGY_HOST`, `SCHOOLOGY_USERNAME`, `SCHOOLOGY_PASSWORD`
+     from environment variables (projected by K8s from a Secret).
+   - Reads `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN`, `OP_VAULT`,
+     `OP_SESSION_ITEM` for the 1Password Connect write path.
+   - Calls
+     `schoology-go/auth.LoginWithPassword(ctx, host, user, pass)`.
+   - Writes the resulting 5-field `*auth.Credentials` JSON back to the
+     named 1Password item via the 1Password Connect SDK.
+   - Exits 0 on success, non-zero on any failure. K8s Job semantics
+     handle retry + backoff.
+2. **`build/refresher/Dockerfile`** -- a multi-stage image. Stage 1
+   builds the Go binary; stage 2 is a minimal runtime
+   (debian-slim or distroless-with-cacerts) that includes a Chromium
+   binary (so `go-rod` doesn't download one at runtime in-cluster).
+3. **`deploy/k8s/schoology/cronjob-auth-refresher.yaml`** -- a
+   `CronJob` running every 12 days (`schedule: "0 6 */12 * *"`)
+   roughly 48 hours before the 14-day session expiry window. Job
+   `backoffLimit: 3`, `activeDeadlineSeconds: 600` (10 minutes),
+   `restartPolicy: Never`. Pod-level resources: 256Mi RAM request /
+   512Mi limit; 200m CPU request / 1000m limit (Chromium is bursty).
+4. **`deploy/k8s/schoology/externalsecret-credentials.yaml`** -- a
+   second `ExternalSecret` (alongside the existing session
+   `ExternalSecret`) that materialises the source credentials Secret
+   the refresher Job mounts.
+
+### 12.4 Behavior
+
+Per-invocation flow:
+
+1. Validate that all required environment variables are present.
+   Missing or empty values exit with code 2 (`config error`).
+2. Construct a context with a 5-minute timeout (login + write should
+   complete in <2 minutes; the buffer covers Chromium cold-start
+   plus DOM-change tolerance).
+3. Invoke `auth.LoginWithPassword(ctx, host, user, pass)`. On
+   error:
+   - `auth.ErrInvalidCredentials` (if the library distinguishes it) ->
+     exit code 3 (`bad credentials`). Operator must update the source
+     1Password item. Do NOT retry.
+   - any other error -> exit code 1 (`transient`). The Job's
+     `backoffLimit` handles retry.
+4. Marshal `*Credentials` to JSON and PUT the result to the
+   `OP_SESSION_ITEM` via 1Password Connect's `items` endpoint.
+   - On 4xx: exit code 4 (`secret write rejected`). Operator
+     intervention required (vault permissions, item shape).
+   - On 5xx or network error: exit code 1 (`transient`). Retried by
+     `backoffLimit`.
+5. On success, emit a single structured log line at INFO with the new
+   session's expiry (if the library exposes one) and exit 0.
+
+The connector pod re-rolls automatically because the existing
+Deployment template carries a checksum annotation on the session
+Secret (see AUTH-RECOVERY.md §6).
+
+### 12.5 Lockout Safety
+
+Schoology may rate-limit or lock the account after repeated failed
+logins. Two layers of defense:
+
+- **Job-level `backoffLimit: 3`** with exponential backoff
+  (`backoffLimitPerIndex` is not used since the Job is not indexed) --
+  three failures across a single invocation, then the Job surfaces as
+  failed and an operator alert fires. No further attempts happen until
+  the next CronJob fire or a manual `kubectl create job --from`.
+- **Process-level credential-failure short-circuit**: bad-credentials
+  exit (code 3) MUST NOT be retried; the Job's
+  `restartPolicy: Never` plus the explicit non-retry classification
+  prevents a wrong password from triggering Schoology's lockout
+  threshold.
+
+### 12.6 Trigger Modes
+
+v1 supports two triggers:
+
+- **Scheduled (CronJob)** -- every 12 days, autonomous. The
+  refresher writes a Kubernetes Event (and a structured log line)
+  noting the outcome.
+- **Manual (`kubectl create job --from=cronjob/schoology-auth-refresher
+  manual-$(date +%s)`)** -- operator runs the same CronJob's pod
+  template on demand. Useful for the first deploy, after a
+  precondition change (§12.2), or as a workstation-free recovery.
+
+On-401 auto-trigger from the connector (the connector emitting a
+"session expired" signal that creates a Job) is deferred. The
+12-day cadence plus a 2-day buffer before the 14-day expiry should
+keep the connector continuously authenticated; if a one-off Job is
+ever needed, a human runs the manual command.
+
+### 12.7 Observability
+
+The refresher must emit, at minimum:
+
+- A structured log line per outcome (`success | bad_credentials |
+  transient_failure | secret_write_failed`).
+- Stdout/stderr captured by K8s -- already searchable via the cluster's
+  log aggregator.
+- An exit code matching §12.4 so the cluster's Job-failure alert can
+  branch on it (cluster-level alerting wiring is out of scope here).
+
+A connector-side metric (`schoology_session_refreshed_total`) is
+deferred to glovebox-f7v3 (telemetry task) -- the refresher Job emits
+logs only, and the alerting fabric picks up Job-failure conditions
+through existing K8s primitives.
+
+### 12.8 Out of Scope (Addendum)
+
+- Refresher support for non-Schoology connectors. A generic
+  "browser-session-refresher" library is not justified by current
+  scope (Schoology is the only consumer).
+- On-401 auto-triggered refresh (see §12.6 rationale).
+- SSO + MFA handling -- Schoology's current parent-account surface
+  doesn't require it. Districts that adopt SSO or MFA must fall back
+  to AUTH-RECOVERY.md.
+- Anti-automation evasion (proxy rotation, stealth profiles,
+  fingerprint randomization). Required only if the IdP starts
+  blocking the Chrome devtools protocol; out of scope until evidence
+  appears.
+- Cross-vault Secret writes. v1 writes to one 1Password vault via one
+  Connect token. Multi-tenant support is a future concern.
+
+### 12.9 Implementation Sizing
+
+This is a **one-task** addendum. The Go binary is ~150 lines; the
+Dockerfile is ~20 lines; the K8s YAML totals ~80 lines across two
+files. Tests stub `auth.LoginWithPassword` and the 1Password Connect
+client (both have natural seams) and cover: success path, bad-creds
+exit, transient-error exit, secret-write rejection.
