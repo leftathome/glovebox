@@ -47,7 +47,7 @@ separately.
 
 ### 2. Re-authenticate on your workstation
 
-The `schoology-go` library exposes `auth.Login` as a Go function — there
+The `schoology-go` library exposes `auth.Login` as a Go function -- there
 is no standalone CLI binary. The simplest way to run it is a short
 helper program. If your repo doesn't already have one, this is the
 minimum viable form:
@@ -86,8 +86,10 @@ go run ./hack/schoology-login yourschool.schoology.com /tmp/schoology-session.js
 A visible Chromium window opens. Complete whatever login flow your
 district uses (SSO, MFA, native password). The library captures the
 session when the browser lands on the post-login home page, then writes
-a 4-field JSON file (`sess_id`, `csrf_token`, `csrf_key`, `uid`) to the
-path you specified, mode `0600`.
+a 5-field JSON file (`host`, `sess_id`, `csrf_token`, `csrf_key`, `uid`)
+to the path you specified, mode `0600`. **All five fields are required**
+by `auth.LoadCredentials` validation; do not strip any of them when
+copying into 1Password.
 
 Notes:
 - The first run downloads a Chromium build into go-rod's cache
@@ -102,7 +104,8 @@ Notes:
 cat /tmp/schoology-session.json
 ```
 
-It should be a JSON object with exactly four string fields. If it looks
+It should be a JSON object with exactly five string fields (`host`,
+`sess_id`, `csrf_token`, `csrf_key`, `uid`). If it looks
 empty or malformed, the browser flow did not complete successfully
 (common cause: closed the window before landing on `/home`); re-run.
 
@@ -204,7 +207,8 @@ Possible causes:
   in a way the ExternalSecret template doesn't unwrap. Check the
   rendered Secret with `kubectl get secret -n glovebox schoology-session
   -o jsonpath='{.data.credentials\.json}' | base64 -d` and confirm it
-  is the raw 4-field JSON the library expects.
+  is the raw 5-field JSON the library expects (`host`, `sess_id`,
+  `csrf_token`, `csrf_key`, `uid` -- all required).
 - You authenticated as a different Schoology account (e.g. one without
   parent visibility into the kids' courses). Check the `uid` in the
   JSON matches the parent account you intend to use.
