@@ -86,7 +86,7 @@ func TestProcessMessages_StagesNewThreads(t *testing.T) {
 		},
 	}
 
-	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, "v0.1.0")
+	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
 
 	if staged != 2 {
 		t.Errorf("staged = %d, want 2", staged)
@@ -137,12 +137,12 @@ func TestProcessMessages_DedupesAcrossPolls(t *testing.T) {
 		},
 	}
 
-	first, _ := ProcessMessages(context.Background(), client, writer, matcher, cp, NewReceiptDedup(), "v0.1.0")
+	first, _ := ProcessMessages(context.Background(), client, writer, matcher, cp, NewReceiptDedup(), nil, "v0.1.0")
 	if first != 1 {
 		t.Fatalf("first call staged %d, want 1", first)
 	}
 
-	second, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, NewReceiptDedup(), "v0.1.0")
+	second, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, NewReceiptDedup(), nil, "v0.1.0")
 	if second != 0 {
 		t.Errorf("second call staged %d, want 0 (dedup)", second)
 	}
@@ -170,7 +170,7 @@ func TestProcessMessages_LibraryErrorEmitsReceipt(t *testing.T) {
 		},
 	}
 
-	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, "v0.1.0")
+	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
 	if staged != 0 {
 		t.Errorf("staged = %d, want 0", staged)
 	}
@@ -208,7 +208,7 @@ func TestProcessMessages_ZeroIDSkipped(t *testing.T) {
 		},
 	}
 
-	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, "v0.1.0")
+	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
 	if staged != 0 {
 		t.Errorf("staged = %d, want 0", staged)
 	}
@@ -242,7 +242,7 @@ func TestProcessMessages_ParseErrorsEmitReceipt(t *testing.T) {
 		},
 	}
 
-	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, "v0.1.0")
+	staged, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
 	if staged != 1 {
 		t.Errorf("staged = %d, want 1", staged)
 	}
@@ -283,7 +283,7 @@ func TestProcessMessages_AudienceFromRule(t *testing.T) {
 		},
 	}
 
-	staged, _ := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, "v0.1.0")
+	staged, _ := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
 	if staged != 1 {
 		t.Fatalf("staged = %d, want 1", staged)
 	}

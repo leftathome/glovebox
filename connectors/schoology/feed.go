@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connector/content"
 	schoologylib "github.com/leftathome/schoology-go"
@@ -37,23 +39,37 @@ func ProcessFeed(
 	writer *connector.StagingWriter,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
-	metrics *connector.Metrics,
+	tel *Telemetry,
 	dedup *ReceiptDedup,
 	kid Kid,
 	maxAttachmentMB int,
 	libVersion string,
 ) (staged int, attachmentsStaged int, errsLogged bool) {
-	posts, parseErrs, err := client.GetFeed(ctx, kid.SchoologyUID)
+	posts, parseErrs, err := getFeedTraced(ctx, client, tel, kid)
 	if err != nil {
 		errsLogged = true
 		errorClass := classifyLibError(err)
+		// schoology_parse_failures_total fires on EVERY observation per
+		// spec §13.1 ("parse failures"); the receipt counter fires only
+		// on the first observation per poll because it tracks emitted
+		// receipts, not failures.
+		tel.RecordParseFailure("feed", errorClass, kid.Name, "feed")
 		// Observe so the receipt records the affected count; if Observe
 		// returns false the receipt was already emitted this poll and we
 		// must not duplicate it. Mirrors the assignments processor so
 		// processors that share a dedup tracker behave consistently.
-		if dedup.Observe("feed", errorClass, "") {
+		receiptEmitted := dedup.Observe("feed", errorClass, "")
+		if receiptEmitted {
 			emitFeedTopLevelReceipt(writer, matcher, kid, libVersion, err, errorClass)
+			tel.RecordParseFailureReceipt("feed", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "feed",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("feed", errorClass),
+		)
 		return 0, 0, errsLogged
 	}
 
@@ -67,13 +83,21 @@ func ProcessFeed(
 			continue
 		}
 		const errorClass = "row_parse"
-		if dedup.Observe("feed", errorClass, "") {
-			errsLogged = true
+		// Per-occurrence failure counter — fires for every row parse error.
+		tel.RecordParseFailure("feed", errorClass, kid.Name, "feed")
+		receiptEmitted := dedup.Observe("feed", errorClass, "")
+		errsLogged = true
+		if receiptEmitted {
 			emitFeedRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
+			tel.RecordParseFailureReceipt("feed", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "feed",
+			"error_class", errorClass,
+			"kid", kid.Name,
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("feed", errorClass),
+		)
 	}
 
 	matchKey := "schoology:" + kid.Name + ":" + feedSurface
@@ -110,19 +134,8 @@ func ProcessFeed(
 		opts := buildFeedItemOptions(p, rule)
 		body := content.HTMLToText([]byte(p.Body))
 
-		item, err := writer.NewItem(opts)
-		if err != nil {
-			slog.Warn("schoology feed new item failed",
-				"kid", kid.Name, "edge_id", edgeID, "error", err)
-			continue
-		}
-		if err := item.WriteContent(body); err != nil {
-			slog.Warn("schoology feed write content failed",
-				"kid", kid.Name, "edge_id", edgeID, "error", err)
-			continue
-		}
-		if err := item.Commit(); err != nil {
-			slog.Warn("schoology feed commit failed",
+		if err := stageFeedItem(ctx, tel, writer, opts, body, edgeID); err != nil {
+			slog.Warn("schoology feed stage failed",
 				"kid", kid.Name, "edge_id", edgeID, "error", err)
 			continue
 		}
@@ -146,7 +159,7 @@ func ProcessFeed(
 		}
 		atts := convertLibAttachments(p, opts.Subject)
 		staged1, skipped := ProcessAttachments(
-			ctx, client, writer, matcher, cp, metrics,
+			ctx, client, writer, matcher, cp, tel,
 			atts, edgeID, feedSurface,
 			attachMatchKey, feedAttachmentSurface, kid.Name,
 			maxAttachmentMB,
@@ -161,6 +174,40 @@ func ProcessFeed(
 	}
 
 	return staged, attachmentsStaged, errsLogged
+}
+
+// getFeedTraced wraps client.GetFeed in the schoology.lib.GetFeed span
+// (spec §13.2). Failures still propagate; the span exists for both
+// success and failure cases so an operator can correlate latency with
+// outcomes.
+func getFeedTraced(ctx context.Context, client SchoologyClient, tel *Telemetry, kid Kid) ([]*schoologylib.Post, schoologylib.ParseErrors, error) {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.GetFeed",
+		attribute.Int64("uid", kid.SchoologyUID),
+	)
+	defer span.End()
+	return client.GetFeed(ctx, kid.SchoologyUID)
+}
+
+// stageFeedItem writes the staging item under a schoology.staging.commit
+// span. parse_status is "normal" for happy-path posts; the feed
+// processor does not currently produce degraded items at this layer.
+func stageFeedItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, edgeID int64) error {
+	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
+		attribute.Int64("item_id", edgeID),
+		attribute.String("destination", opts.DestinationAgent),
+		attribute.String("data_subject", opts.DataSubject),
+		attribute.String("parse_status", "normal"),
+	)
+	defer span.End()
+
+	item, err := writer.NewItem(opts)
+	if err != nil {
+		return err
+	}
+	if err := item.WriteContent(body); err != nil {
+		return err
+	}
+	return item.Commit()
 }
 
 // buildFeedItemOptions composes the ItemOptions for a parent post per

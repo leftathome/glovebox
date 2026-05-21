@@ -10,7 +10,7 @@ import (
 
 func TestTriggerHandler_Accepts(t *testing.T) {
 	signal := make(chan struct{}, 1)
-	h := NewTriggerHandler("secret", time.Minute, signal)
+	h := NewTriggerHandler("secret", time.Minute, signal, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/poll", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -26,7 +26,7 @@ func TestTriggerHandler_Accepts(t *testing.T) {
 }
 
 func TestTriggerHandler_RejectsBadToken(t *testing.T) {
-	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1))
+	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1), nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/poll", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	rec := httptest.NewRecorder()
@@ -37,7 +37,7 @@ func TestTriggerHandler_RejectsBadToken(t *testing.T) {
 }
 
 func TestTriggerHandler_RejectsGET(t *testing.T) {
-	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1))
+	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1), nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/poll", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -49,7 +49,7 @@ func TestTriggerHandler_RejectsGET(t *testing.T) {
 
 func TestTriggerHandler_Debounces(t *testing.T) {
 	signal := make(chan struct{}, 1)
-	h := NewTriggerHandler("secret", time.Minute, signal)
+	h := NewTriggerHandler("secret", time.Minute, signal, nil)
 
 	// First trigger: accepted.
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/poll", nil)
@@ -79,7 +79,7 @@ func TestTriggerHandler_Debounces(t *testing.T) {
 }
 
 func TestTriggerHandler_MissingAuthRejected(t *testing.T) {
-	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1))
+	h := NewTriggerHandler("secret", time.Minute, make(chan struct{}, 1), nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/poll", nil) // no Authorization header
 	rec := httptest.NewRecorder()
 	h.Handler().ServeHTTP(rec, req)
@@ -99,7 +99,7 @@ func TestTriggerHandler_CoalescesWhenSignalFull(t *testing.T) {
 	signal := make(chan struct{}, 1)
 	signal <- struct{}{} // pre-fill so the first send drops to default
 
-	h := NewTriggerHandler("secret", time.Minute, signal)
+	h := NewTriggerHandler("secret", time.Minute, signal, nil)
 	// Manually set lastTrigger to "long ago" so the debounce window has elapsed.
 	h.lastTrigger = time.Now().Add(-2 * time.Minute)
 

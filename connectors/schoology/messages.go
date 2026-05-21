@@ -29,6 +29,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	schoologylib "github.com/leftathome/schoology-go"
 
 	"github.com/leftathome/glovebox/connector"
@@ -50,18 +52,31 @@ func ProcessMessages(
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	dedup *ReceiptDedup,
+	tel *Telemetry,
 	libVersion string,
 ) (staged int, errsLogged bool) {
-	threads, parseErrs, err := client.GetInbox(ctx)
+	threads, parseErrs, err := getInboxTraced(ctx, client, tel)
 	if err != nil {
 		errsLogged = true
 		errorClass := classifyMessagesError(err)
+		// Per-occurrence parse-failure counter (spec §13.1). target_kid
+		// is empty because the inbox is parent-level, not per-kid.
+		tel.RecordParseFailure("messages", errorClass, "", "message")
 		// Observe before emit so AffectedCount reflects reality; mirrors
 		// the assignments + feed processors so a shared dedup tracker
 		// behaves consistently across surfaces.
-		if dedup.Observe("messages", errorClass, "") {
+		receiptEmitted := dedup.Observe("messages", errorClass, "")
+		if receiptEmitted {
 			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", errorClass, err.Error())
+			tel.RecordParseFailureReceipt("messages", errorClass)
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "messages",
+			"error_class", errorClass,
+			"kid", "",
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("messages", errorClass),
+		)
 		return 0, errsLogged
 	}
 
@@ -69,13 +84,20 @@ func ProcessMessages(
 		if pe == nil {
 			continue
 		}
-		if dedup.Observe("messages", "row_parse", "") {
+		tel.RecordParseFailure("messages", "row_parse", "", "message")
+		receiptEmitted := dedup.Observe("messages", "row_parse", "")
+		errsLogged = true
+		if receiptEmitted {
 			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", "row_parse", pe.Error())
-			errsLogged = true
-		} else {
-			// Still counts as an error logged for schema-drift purposes.
-			errsLogged = true
+			tel.RecordParseFailureReceipt("messages", "row_parse")
 		}
+		slog.Warn("schoology parse failure",
+			"parser", "messages",
+			"error_class", "row_parse",
+			"kid", "",
+			"receipt_emitted", receiptEmitted,
+			"affected_count", dedup.AffectedCount("messages", "row_parse"),
+		)
 	}
 
 	result, ok := matcher.Match("schoology:message")
@@ -106,20 +128,9 @@ func ProcessMessages(
 		}
 
 		opts, body := buildMessageItem(t, result)
-		item, nErr := writer.NewItem(opts)
-		if nErr != nil {
-			slog.Warn("schoology message new item failed",
-				"thread_id", t.ID, "error", nErr)
-			continue
-		}
-		if wErr := item.WriteContent(body); wErr != nil {
-			slog.Warn("schoology message write content failed",
-				"thread_id", t.ID, "error", wErr)
-			continue
-		}
-		if cErr := item.Commit(); cErr != nil {
-			slog.Warn("schoology message commit failed",
-				"thread_id", t.ID, "error", cErr)
+		if err := stageMessageItem(ctx, tel, writer, opts, body, t.ID); err != nil {
+			slog.Warn("schoology message stage failed",
+				"thread_id", t.ID, "error", err)
 			continue
 		}
 		if cpErr := SaveLastSeenID(cp, "message", "", t.ID); cpErr != nil {
@@ -132,6 +143,38 @@ func ProcessMessages(
 	}
 
 	return staged, errsLogged
+}
+
+// getInboxTraced wraps client.GetInbox in the schoology.lib.GetInbox
+// span (spec §13.2). The inbox is parent-level, so the span carries no
+// uid attribute.
+func getInboxTraced(ctx context.Context, client SchoologyClient, tel *Telemetry) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error) {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.GetInbox")
+	defer span.End()
+	return client.GetInbox(ctx)
+}
+
+// stageMessageItem writes the staging item under a schoology.staging.commit
+// span. parse_status is "normal" because the messages processor stages
+// only fully-parsed threads; degraded receipts go through the receipt
+// path with their own emission helpers.
+func stageMessageItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, threadID int64) error {
+	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
+		attribute.Int64("item_id", threadID),
+		attribute.String("destination", opts.DestinationAgent),
+		attribute.String("data_subject", opts.DataSubject),
+		attribute.String("parse_status", "normal"),
+	)
+	defer span.End()
+
+	item, err := writer.NewItem(opts)
+	if err != nil {
+		return err
+	}
+	if err := item.WriteContent(body); err != nil {
+		return err
+	}
+	return item.Commit()
 }
 
 // buildMessageItem synthesises ItemOptions plus the text body for a

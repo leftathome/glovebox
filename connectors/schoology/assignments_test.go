@@ -89,7 +89,7 @@ func TestProcessAssignments_StagesNewItems(t *testing.T) {
 	}
 
 	staged, errsLogged := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, dedup, kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, dedup, nil, kid, "v0.1.0",
 	)
 
 	if staged != 2 {
@@ -154,7 +154,7 @@ func TestProcessAssignments_DedupesAcrossPolls(t *testing.T) {
 	}
 
 	first, _ := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, NewReceiptDedup(), kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, NewReceiptDedup(), nil, kid, "v0.1.0",
 	)
 	if first != 1 {
 		t.Fatalf("first poll staged %d, want 1", first)
@@ -164,7 +164,7 @@ func TestProcessAssignments_DedupesAcrossPolls(t *testing.T) {
 	}
 
 	second, errsLogged := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, NewReceiptDedup(), kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, NewReceiptDedup(), nil, kid, "v0.1.0",
 	)
 	if second != 0 {
 		t.Errorf("second poll staged %d, want 0 (dedup)", second)
@@ -199,7 +199,7 @@ func TestProcessAssignments_LibraryErrorEmitsReceipt(t *testing.T) {
 	}
 
 	staged, errsLogged := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, dedup, kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, dedup, nil, kid, "v0.1.0",
 	)
 	if staged != 0 {
 		t.Errorf("staged = %d, want 0", staged)
@@ -262,7 +262,7 @@ func TestProcessAssignments_ParseErrorsEmitOneReceiptPerPoll(t *testing.T) {
 	}
 
 	staged, errsLogged := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, dedup, kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, dedup, nil, kid, "v0.1.0",
 	)
 	if staged != 2 {
 		t.Errorf("staged = %d, want 2 (parse errors should not block successful items)", staged)
@@ -313,7 +313,7 @@ func TestProcessAssignments_NoRuleMatch(t *testing.T) {
 	}
 
 	staged, errsLogged := ProcessAssignments(
-		context.Background(), client, writer, matcher, cp, dedup, kid, "v0.1.0",
+		context.Background(), client, writer, matcher, cp, dedup, nil, kid, "v0.1.0",
 	)
 	if staged != 0 {
 		t.Errorf("staged = %d, want 0 on no-rule-match", staged)
