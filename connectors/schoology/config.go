@@ -90,29 +90,44 @@ func ValidateConfig(c *Config) error {
 		}
 		seen[k.Name] = true
 	}
+	if len(c.PollSchedule.Windows) == 0 {
+		return fmt.Errorf("poll_schedule.windows: at least one window required")
+	}
 	for i, w := range c.PollSchedule.Windows {
-		if err := validateTimeOfDay(w.Start); err != nil {
+		startMin, err := parseTimeOfDay(w.Start)
+		if err != nil {
 			return fmt.Errorf("poll_schedule.windows[%d].start: %w", i, err)
 		}
-		if err := validateTimeOfDay(w.End); err != nil {
+		endMin, err := parseTimeOfDay(w.End)
+		if err != nil {
 			return fmt.Errorf("poll_schedule.windows[%d].end: %w", i, err)
+		}
+		if endMin <= startMin {
+			return fmt.Errorf("poll_schedule.windows[%d]: end %q must be strictly after start %q", i, w.End, w.Start)
 		}
 	}
 	return nil
 }
 
 func validateTimeOfDay(s string) error {
+	_, err := parseTimeOfDay(s)
+	return err
+}
+
+// parseTimeOfDay parses an HH:MM local-time string into minutes-of-day
+// (0..1439). Returns an error if the format or numeric ranges are invalid.
+func parseTimeOfDay(s string) (int, error) {
 	parts := strings.Split(s, ":")
 	if len(parts) != 2 {
-		return fmt.Errorf("expected HH:MM, got %q", s)
+		return 0, fmt.Errorf("expected HH:MM, got %q", s)
 	}
 	hh, err := strconv.Atoi(parts[0])
 	if err != nil || hh < 0 || hh > 23 {
-		return fmt.Errorf("invalid hour in %q", s)
+		return 0, fmt.Errorf("invalid hour in %q", s)
 	}
 	mm, err := strconv.Atoi(parts[1])
 	if err != nil || mm < 0 || mm > 59 {
-		return fmt.Errorf("invalid minute in %q", s)
+		return 0, fmt.Errorf("invalid minute in %q", s)
 	}
-	return nil
+	return hh*60 + mm, nil
 }
