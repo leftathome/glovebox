@@ -65,7 +65,7 @@ The server reads only `token` for validation; the other fields are operator meta
 
 ### 3.2 Source IDs
 
-A source-id is a stable string naming a CLIENT (the entity that holds the token), not a USER. Format: `^[a-z][a-z0-9-]{0,63}$`. Examples:
+A source-id is a stable string naming a CLIENT (the entity that holds the token), not a USER. Format: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (starts with a letter, ends with letter or digit, single dashes only — no leading/trailing or consecutive dashes), maximum 64 characters. The single-dash constraint also rejects the IDN-reserved `xn--` prefix and similar look-alike-attack patterns. Examples:
 
 - `recognizer` -- the in-cluster recognizer service (spec 13's first consumer).
 - `workstation-mbox-importer` -- a future mbox importer running on an operator workstation.
@@ -129,11 +129,12 @@ Loading procedure:
 4. Validate the source-id name from Vault's `List` response against `^[a-z][a-z0-9-]{0,63}$` (§3.2 format). Malformed source-ids are skipped, logged ERROR (`glovebox ingest source_id malformed`), and the per-source error counter (`glovebox_ingest_token_load_errors_total{source_id="<malformed-value-truncated-and-sanitized>"}`) is incremented. This catches Vault-side typos and prevents a malformed source-id from injecting into log lines or metric labels.
 5. Validate token format: 64 lowercase hex characters. Tokens that fail validation are logged at ERROR (`glovebox ingest token malformed`) AND increment `glovebox_ingest_token_load_errors_total{source_id="<source-id>"}`. The malformed entry is skipped; loading continues for the remaining entries. The metric exists so operators can alert on "this source-id has a malformed Vault entry" without needing to scrape logs.
 6. Build the in-memory `[]tokenEntry` slice per §4.3's storage shape. NOT a map — see §4.3 for the side-channel rationale.
-7. Swap the slice atomically with `sync.RWMutex` so in-flight requests do not race a partial reload. The renumbered steps that follow (was step 5/6 in the prior draft) preserve the same swap-under-write-lock semantics.
+7. Cross-check uniqueness: no two `tokenEntry` items share the same `token` bytes. A duplicate token across two source-ids is a Vault data-entry mistake (the operator typed the same value twice) AND it breaks the "at most one match" invariant §4.3's branchless validation relies on. On duplicate: log ERROR (`glovebox ingest token duplicate`) naming both source-ids, drop BOTH entries from the slice, increment `glovebox_ingest_token_load_errors_total` for each. The reload completes with the remaining entries; the affected source-ids return 401 until the operator fixes the Vault entries.
+8. Swap the slice atomically with `sync.RWMutex` so in-flight requests do not race a partial reload.
 
 On startup, if the Vault load FAILS:
 
-- If at least one previous successful load is cached (subsequent reload failure): WARN log; keep the prior map; continue serving.
+- If at least one previous successful load is cached (subsequent reload failure): WARN log; keep the prior token store; continue serving.
 - If this is the first load (no cache): ERROR log; **refuse to bind the `/v1/archives` listener** at all. The process continues to serve `/v1/ingest` (which doesn't need this layer) and exposes /healthz, but `/v1/archives` requests get 503 with `glovebox archive listener unavailable: token load failed`. This is a deliberate hardening choice: an unauthenticated archive endpoint is worse than no archive endpoint.
 
 ### 4.2 Reload Triggers
@@ -141,11 +142,11 @@ On startup, if the Vault load FAILS:
 Two reload triggers:
 
 - **SIGHUP.** Operator-initiated. Synchronous reload; the SIGHUP handler returns only after the load completes (success or failure). The reload's success is logged.
-- **Periodic re-pull.** A goroutine reloads from Vault on a configurable interval (default 5 minutes). Cheap for the expected source-id count (single digits). Failure of a periodic reload is logged WARN but does not affect the in-memory map.
+- **Periodic re-pull.** A goroutine reloads from Vault on a configurable interval (default 5 minutes). Cheap for the expected source-id count (single digits). Failure of a periodic reload is logged WARN but does not affect the in-memory token store.
 
-A reload's success replaces the in-memory map atomically. A reload's failure leaves the map unchanged.
+A reload's success replaces the in-memory token store atomically. A reload's failure leaves the prior store unchanged.
 
-There is NO partial-reload semantic. The map is rebuilt entirely; there is no "merge new tokens into the existing map" path. This means a Vault entry that has been deleted disappears from the map on the next reload.
+There is NO partial-reload semantic. The token store is rebuilt entirely; there is no "merge new tokens into the existing store" path. This means a Vault entry that has been deleted disappears from the store on the next reload.
 
 ### 4.3 Validation on Every Request
 
@@ -196,10 +197,10 @@ The implementation MUST:
 
 - Use `crypto/subtle.ConstantTimeCompare` for every byte-level token comparison.
 - NOT use `bytes.Equal`, `==`, or any other operator that could short-circuit.
-- NOT short-circuit the map iteration on first match.
+- NOT short-circuit the token-store iteration on first match.
 - NOT log the bytes of a rejected token attempt (NEVER, not even truncated; see §6.3 audit log rules).
 
-The test suite includes a constant-time assertion: for a fixed in-memory token map, validation against a wrong token whose first byte matches a real token must take the same time as validation against a wrong token whose first byte differs. This is a coarse check (Go's `testing.B` is noisy at sub-microsecond resolution) and is documented as best-effort rather than rigorous timing-attack-proof.
+The test suite includes a constant-time assertion: for a fixed in-memory token store, validation against a wrong token whose first byte matches a real token must take the same time as validation against a wrong token whose first byte differs. This is a coarse check (Go's `testing.B` is noisy at sub-microsecond resolution) and is documented as best-effort rather than rigorous timing-attack-proof.
 
 ## 5. HTTP Contract
 
@@ -285,14 +286,14 @@ Every authentication event (accept OR reject) emits a structured log line. Field
 
 The accept log line's `archive_id` is a useful pivot for forensic searches ("show me everything `recognizer` delivered in the last 24 hours"). Absent for endpoints that don't carry an archive_id (e.g., `OPTIONS`).
 
-The audit log is the existing connector framework's audit log (per spec 06 §5.4), not a separate stream. Operators query it via the cluster's normal log aggregation.
+The audit log is the existing connector framework's audit log (per spec 06 §8.3), not a separate stream. Operators query it via the cluster's normal log aggregation.
 
 ### 6.4 Metric Surface
 
 Per spec 13 §7.1:
 
 - `glovebox_ingest_auth_total{endpoint, status}` -- counter; `status` ∈ {`accepted`, `rejected`, `rate_limited`}.
-- `glovebox_ingest_auth_rejected_total{remote_ip_bucket}` -- counter; `remote_ip_bucket` is a low-cardinality bucketing of source IPs (e.g., /24 subnets) to enable "which subnet is probing" dashboarding without per-IP cardinality explosion.
+- `glovebox_ingest_auth_rejected_total{remote_ip_bucket}` -- counter; `remote_ip_bucket` is a low-cardinality bucketing of source IPs to enable "which subnet is probing" dashboarding without per-IP cardinality explosion. The label value is the CIDR-string form of the bucket: IPv4 → /24 (e.g., `203.0.113.0/24`), IPv6 → /64 (e.g., `2001:db8::/64`). The exact wire format is the CIDR string — operators can group / regex against it directly in PromQL.
 
 Counts are emitted via the framework's OTel-on-Prometheus exporter.
 
@@ -340,7 +341,7 @@ To revoke a source-id entirely (e.g., remove `friend-alice`'s access permanently
 
 1. Delete the Vault entry: `vault kv metadata delete secret/glovebox/ingest-tokens/friend-alice`.
 2. Reload glovebox.
-3. The source-id no longer exists in the in-memory map; all requests with that token return 401.
+3. The source-id no longer exists in the in-memory token store; all requests with that token return 401.
 
 The consumer's local copy of the token still exists but is now useless.
 
@@ -351,17 +352,22 @@ New Helm values block (under the existing `ingest:` key):
 ```yaml
 ingest:
   auth:
-    enabled: true                       # gates spec 13's /v1/archives auth wiring
+    enabled: true                                # gates spec 13's /v1/archives auth wiring
     vault:
       addr: "http://vault.vault.svc.cluster.local:8200"
       k8sRole: "glovebox-ingest"
       tokensPath: "glovebox/ingest-tokens"
       kvMount: "secret"
-    reloadIntervalSeconds: 300          # periodic re-pull
+    reloadIntervalSeconds: 300                    # periodic re-pull
+    trustedProxyCIDRs:                            # X-Forwarded-For is honored only from these peers
+      - "10.244.0.0/16"                          # placeholder: replace with the cluster's Traefik pod CIDR
     perIPRateLimit:
       window: 60s
       maxRejected: 10
-      lruCapacity: 10000
+      lruCapacity: 1000                          # smaller than the prior 10000 to shrink the LRU-eviction-bypass surface (§5.3)
+    globalRateLimit:                              # process-wide 401 backstop; trips on flood-evicting-the-real-attacker patterns
+      window: 60s
+      maxRejected: 100
 ```
 
 The Vault K8s auth role `glovebox-ingest` requires a policy granting:
@@ -377,10 +383,10 @@ The Helm chart includes the relevant `ClusterSecretStore` reference and `Externa
 
 | Symptom | Cause | Server response | Recovery |
 |---|---|---|---|
-| 401 on every request from a known consumer | Vault entry deleted; in-memory map dropped the source-id on last reload | 401 | Re-create Vault entry with the same source-id and (likely) the same token; reload glovebox |
+| 401 on every request from a known consumer | Vault entry deleted; in-memory token store dropped the source-id on last reload | 401 | Re-create Vault entry with the same source-id and (likely) the same token; reload glovebox |
 | 401 immediately after rotation | Glovebox reloaded but consumer hasn't picked up new token | 401 | Wait for ESO sync + consumer rollout; coordinated rotation (§8.1) minimizes the window |
 | 429 on a known consumer | Burst of mismatches (token rotated mid-burst) tripped the rate limit | 429 + Retry-After | Wait the Retry-After interval; reload glovebox if rotation is the cause |
-| `/v1/archives` returns 503 on startup | Vault token load failed at boot (no cached map) | 503 | Fix Vault connectivity (check the role, the secret-store, network policy from glovebox ns to vault ns); glovebox auto-recovers on the next periodic re-pull |
+| `/v1/archives` returns 503 on startup | Vault token load failed at boot (no cached store) | 503 | Fix Vault connectivity (check the role, the secret-store, network policy from glovebox ns to vault ns); glovebox auto-recovers on the next periodic re-pull |
 | Constant-time-compare timing-attack signature on Grafana | Hypothetical | -- | The constant-time compare is best-effort; rigorous mitigation deferred until an actual timing attack signature appears |
 | Token-bytes leaked in logs | A bug in the audit-log code | -- | Treat as a SECURITY incident: rotate ALL tokens, audit logs, fix the bug. Per §6.3 the discipline is "never log the bytes." The repo MUST carry a `semgrep` rule (configured in `.semgrep/auth-leakage.yml`) banning `r.Header.Get("Authorization")` and `r.Header["Authorization"]` outside the package containing the auth middleware. CI fails if the rule fires. |
 
@@ -392,7 +398,7 @@ These are deliberate v1 omissions; documented so the future shape is obvious.
 - **Per-token scope.** Vault entry grows an `allowed_endpoints` list and an `allowed_media_types` list. Server enforces scope checks after validation. Adds a 403 response code. *Migration path*: schema change is additive (entries without the field default to "all endpoints, all media types"); the validator gains a scope check after the constant-time compare; existing tokens continue working until an operator narrows their scope.
 - **Auth on `/v1/ingest`.** Extension of this spec applying the same machinery to the connector-scale endpoint. Requires a per-connector chart change to inject `GLOVEBOX_INGEST_TOKEN` and a per-connector Vault entry. *Migration path*: gated by `ingest.auth.coverIngest` flag, default `false` in the v1 release that lands the feature; operator flips to `soft_warn` mode (server logs missing/invalid tokens but accepts the request) for an observation window, then to `enforce` mode once all connectors have been updated.
 - **Token expiry.** Vault entry grows an `expires_at` field; server rejects (with 401) any token whose entry has aged past expiry. Pairs with Vault's existing lease semantics for short-lived workflows. *Migration path*: schema change is additive (entries without the field default to no expiry); the validator checks `expires_at` after the constant-time compare; legacy tokens continue working until an operator backfills the field.
-- **HMAC-signed token payloads** (JWT-style). Token carries claims (source-id, scope, expiry) signed by a glovebox-held key. Removes the need for a server-side map lookup. Heavier on protocol surface; deferred unless multi-tenant or fine-grained scope arrives.
+- **HMAC-signed token payloads** (JWT-style). Token carries claims (source-id, scope, expiry) signed by a glovebox-held key. Removes the need for a server-side token-store lookup. Heavier on protocol surface; deferred unless multi-tenant or fine-grained scope arrives.
 
 ## 12. Out of Scope
 
@@ -407,4 +413,4 @@ These are deliberate v1 omissions; documented so the future shape is obvious.
 - **Spec 06 (Connector Auth and Provenance)** -- the Identity block, audit log, and `delivered_by` provenance pattern this spec emits into.
 - **Spec 08 (HTTP Ingest API)** -- the unauthenticated connector-scale endpoint this spec deliberately leaves alone in v1.
 - **Spec 13 (Archive Delivery API)** -- the consumer of this auth layer; the reason v1 of this spec exists.
-- **Spec 12 (Schoology Connector) §5** -- the precedent for Vault K8s auth used here (and §12 for the schoology refresher implementation that exercises the same pattern).
+- **Spec 12 (Schoology Connector) §5** -- the precedent for Vault K8s auth used here.

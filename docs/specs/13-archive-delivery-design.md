@@ -127,6 +127,8 @@ The endpoint speaks tus.io v1.0.0 with these extensions: `creation`, `terminatio
 
 **Upload-ID binding.** Each upload-id is bound at creation to the source-id that POSTed it. The server REJECTS any `HEAD`/`PATCH`/`DELETE` against an upload-id whose binding does not match the requesting source-id with 404 (NOT 403 — we do not leak existence of upload-ids across source-ids).
 
+**Acknowledged fingerprinting limitation (intra-source).** The §4.4 `409 upload_busy` response (returned to the upload's OWNER while another PATCH is in flight on that upload-id) is distinguishable from a 404 (returned to non-owners). A client that holds a valid token can therefore probe its OWN upload-ids to detect concurrent activity. This is a deliberate accepted disclosure: a token-holder's ability to know about their own uploads is below the meaningful-disclosure threshold (they already have the token). Cross-source fingerprinting is the case we close: an unauthorized source-id cannot distinguish "upload-id doesn't exist" from "upload-id belongs to another source-id" because both return 404.
+
 The finalize step is NOT a separate method per tus.io: when a client's cumulative PATCH offset reaches `Upload-Length` exactly, the server transitions the upload to finalize automatically and responds with 204 + the new offset. The server's response to the final PATCH may take seconds (untar) and the client MUST tolerate that latency.
 
 A separate `POST .../<upload-id>?finalize=1` endpoint is rejected: tus.io's "PATCH-reaches-length" semantic is sufficient and avoids inventing a custom verb.
@@ -170,6 +172,8 @@ The three branches:
 The 303 fast-path is a deviation from vanilla tus.io's "POST always creates" semantics, justified by the recognizer's at-least-once delivery semantics: a network failure between server-finalize and client-receives-201 leaves the client unsure whether to retry, and the idempotent fast-path makes the safe answer "yes, always retry."
 
 Authentication (per spec 10) is checked BEFORE the idempotency lookup. Unauthenticated callers see 401 regardless of whether the archive_id exists, so the existence-leak surface is bounded by the bearer-token set.
+
+**Acknowledged timing-side-channel.** The idempotency check is a filesystem `stat(archives/<archive_id>)` followed by a metadata.json read; its latency depends on filesystem-cache state. The on-disk directory layout (§5.1) is FLAT — `archives/<archive_id>/` with no source-id subdirectory — so an authenticated token-holder can detect the existence of an archive_id BY ANY source-id via stat-timing probes, then receive the 409 conflict response (which intentionally does NOT echo sha256 or source-id, §4.3 above) to confirm. The information leak is bounded: a token-holder learns "this archive_id is taken somewhere in the system" but not by whom or with what content. For the v1 homelab scope (tokens map to explicitly-trusted clients), this is below the threshold for restructuring the layout to `archives/<source_id>/<archive_id>/`. Future revisions that admit untrusted external sources should reconsider.
 
 ### 4.4 PATCH Validation
 
@@ -245,8 +249,8 @@ Any other Typeflag is rejected, including: `TypeSymlink` (symlinks), `TypeLink` 
 **Step 5: Mode hygiene.** The server EXTRACTS files with mode `0600` and directories with mode `0700`, IGNORING the tar entry's mode bits entirely. The tar `Uid`/`Gid` fields are also ignored; extraction runs as the glovebox process UID. Set-uid / set-gid / sticky bits are never honored.
 
 **Step 6: Size caps.**
-- Each entry's declared `Size` MUST be ≤ `Upload-Length`. (No single entry can exceed the whole archive.)
-- The CUMULATIVE extracted size (sum of all `TypeReg` entry sizes) MUST be ≤ `2 * Upload-Length`. This bounds tar-bomb attacks where many small "uncompressed" entries blow up extraction footprint. (The factor of 2 accommodates legitimate tarballs with mild padding overhead but rejects pathological inputs.)
+- Each entry's declared `Size` (from `header.Size`) MUST be ≤ `Upload-Length`. (No single entry can exceed the whole archive.) Header-declared size is the upper bound on what `tar.Reader` will yield from the entry's `Read()` calls; this check happens at entry boundary.
+- The CUMULATIVE extracted size MUST be ≤ `2 * Upload-Length`. **The check is evaluated against bytes actually written to disk, NOT against header-declared sizes**, and is enforced incrementally during the per-entry write loop: the server tracks a running `bytes_written_total` and rejects the upload the moment the next chunk would push it over the cap. (A tar can declare honest header sizes and produce a stream that yields fewer bytes per entry, never more — Go's `tar.Reader` enforces the upper bound at entry level. We check against actual writes anyway because that's the resource we actually care about: disk bytes consumed.) The factor of 2 accommodates legitimate tarballs with mild metadata overhead but rejects pathological tar-bomb inputs.
 - Total entry COUNT MUST be ≤ 1,000,000. Belt-and-suspenders against entry-count attacks even when individual sizes are tiny.
 
 **Step 7: Storage cap.** Extraction proceeds only if it won't push the per-source `archives/` usage beyond the soft cap (§5.4). The soft cap is enforced here even though §5.4 calls it "informational for the upload itself": the difference is that the OVERALL upload's `Tus-Max-Size` admission isn't blocked by soft cap, but per-entry extraction during untar IS gated to prevent a tarball from blasting past the cap entry-by-entry.
@@ -483,6 +487,8 @@ ingest:
   auth:                                  # specified by spec 10
     tokensPath: secret/glovebox/ingest-tokens
     reloadIntervalSeconds: 300
+    trustedProxyCIDRs:                   # X-Forwarded-For honored ONLY from these peers (spec 10 §5.3)
+      - "10.244.0.0/16"                  # placeholder: replace with the cluster's Traefik pod CIDR
     perIPRateLimit:
       window: 60s
       maxRejected: 10
@@ -503,7 +509,7 @@ ingest:
 | 400 on finalize | Tar safety violation | 400 + JSON detail | Client: clean the offending archive entries upstream; re-send |
 | 503 on POST | Global hard cap | 503 + Retry-After 600 | Operator: drain or grow PVC; clients retry after `Retry-After` |
 | 429 on POST | Per-IP rate limit on 401s | 429 + Retry-After | Caller is misconfigured; fix the token, wait, retry |
-| stuck upload | Client connection lost mid-PATCH | -- | Client: HEAD to read offset, resume from there. Auto-cleanup after 24h via §5.5 |
+| stuck upload | Client connection lost mid-PATCH | -- | Client: HEAD to read offset, resume from there. Auto-cleanup after 72h via §5.5; HEAD response carries `Tus-Expires` so clients can detect impending cleanup |
 | process dies mid-finalize | Server crash | -- | On restart, `.tmp-archives/<id>.finalize/` is orphaned; cleanup removes it; client retries with the same archive_id (the original tmp file is gone, so this is a full re-send) |
 
 ## 10. Out of Scope
@@ -533,11 +539,11 @@ This spec gates [glovebox-p1zx](.beads/issues.jsonl)'s implementation. The writi
 
 - **Wave C (solo)** -- wire-up + integration test:
   - C1: Mount handlers in the framework; thread auth + rate-limit middleware. Quota measurement goroutine. Cleanup goroutine.
-  - C2: Integration test: a tus client uploads a 50 MB mbox + a 5-file tarball; both stage correctly; corrupted sha256 rejected; tar-safety violation rejected.
+  - C2: Integration test: a tus client uploads a 50 MB mbox + a 5-file tarball; both stage correctly; corrupted sha256 rejected; tar-safety violation rejected. The 12 GiB end-to-end smoke test (bead acceptance criterion) is exercised in Wave D2 against the built container image, not in Go-level integration tests, because a 12 GiB tmpfile in `go test` is impractical.
 
 - **Wave D (solo)** -- ops:
   - D1: Helm chart updates (PVC 50 GiB default, NetworkPolicy for recognizer ingress, Vault ClusterSecretStore reference for `ingest-tokens/`).
-  - D2: Smoke test script.
+  - D2: Smoke test script. Drives a single tus.io upload against the built container image: 12 GiB synthetic mbox content (zeros are fine; we verify sha256 + finalize + the staged `metadata.json`, not content). Bead glovebox-p1zx's acceptance criterion ("12GB mbox delivers without 413") lives here.
 
 Each wave follows the established spec-12 review pattern: implementer + 2 reviewers per task, single bundled cleanup commit. **A dedicated security review of the merged result is required** before declaring this work shippable, given the attack surface (multi-GB external-facing endpoint, tar extraction, token validation).
 
