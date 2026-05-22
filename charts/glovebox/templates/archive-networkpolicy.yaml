@@ -20,7 +20,12 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.ingest.archives.networkPolicy.recognizerNamespaceLabel }}
+              # Per spec 13 §8.1: matchLabels: { name: <namespace-label> }.
+              # The operator MUST label the recognizer namespace with `name: <value>`
+              # (NOT the kubernetes.io/metadata.name auto-label, which is the
+              # namespace's literal name). Set the value via
+              # .Values.ingest.archives.networkPolicy.recognizerNamespaceLabel.
+              name: {{ .Values.ingest.archives.networkPolicy.recognizerNamespaceLabel }}
       ports:
         - protocol: TCP
           port: 9091

@@ -374,6 +374,7 @@ ingest:
     maxUploadSize: 32212254720              # 30 GiB (Tus-Max-Size)
     perSourceMaxConcurrent: 4
     globalMaxConcurrent: 32
+    perSourceSoftCapPct: 40                 # spec 13 §8.4 — per-entry untar admission cap
     globalHardCapPct: 95                    # 503 threshold
     globalHardCapHysteresisPct: 85          # 503-lift threshold
     patchIdleTimeoutSeconds: 300            # 5-min slowloris guard
@@ -383,4 +384,8 @@ ingest:
     retention:
       doneArchiveDays: 7
     networkPolicy:
-      recognizerNamespaceLabel: "openclaw-recognizer"  # namespace label to allow ingress from
+      # REPLACE with your recognizer namespace's `name:` label value (the
+      # operator-set namespace label, NOT the kubelet-managed
+      # kubernetes.io/metadata.name auto-label). The chart's NetworkPolicy
+      # matches on `name: <this-value>` per spec 13 §8.1.
+      recognizerNamespaceLabel: "openclaw-recognizer"

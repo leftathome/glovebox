@@ -161,4 +161,77 @@ if ! docker exec "$CONTAINER_NAME" ls -la "/data/glovebox/archives/$ARCHIVE_ID/"
     exit 1
 fi
 
-echo "SUCCESS: 12 GiB upload completed and staged at archives/$ARCHIVE_ID/"
+echo "SUCCESS (raw mbox): 12 GiB upload completed and staged at archives/$ARCHIVE_ID/"
+
+# ----------------------------------------------------------------------
+# Phase 2: multi-GB tarball subtree per the bead acceptance criterion.
+# ----------------------------------------------------------------------
+# The bead glovebox-p1zx's acceptance criterion is "12 GB mbox + at
+# least one multi-GB subtree". Phase 1 above covered the mbox; this
+# phase exercises the tarball path:
+#   - media_type: archive/google-takeout-subtree -> Untar dispatch
+#   - server walks tar.Reader; entries land under archives/<id>/tree/
+# We build a small 2 GiB sparse-file inside a one-entry tar so the
+# total upload is ~2 GiB (above the "multi-GB" floor) and the test
+# adds ~30 seconds vs Phase 1's ~3 minutes.
+
+SUBTREE_SIZE="${SUBTREE_SIZE:-2147483648}"  # 2 GiB
+SUBTREE_ARCHIVE_ID="${SUBTREE_ARCHIVE_ID:-smoke-subtree-$(date +%s)-$$}"
+TARBALL_FILE="$TMP_DIR/subtree.tar"
+SUBTREE_DIR="$TMP_DIR/subtree"
+mkdir -p "$SUBTREE_DIR"
+echo "Phase 2: creating $SUBTREE_SIZE-byte sparse subtree file..."
+truncate -s "$SUBTREE_SIZE" "$SUBTREE_DIR/data.bin"
+# Build an uncompressed tarball with a single entry. The server walks
+# tar.Reader and enforces spec §4.7 safety rules; sparse-NUL content
+# survives the type-flag + name + size checks.
+( cd "$TMP_DIR" && tar cf "$TARBALL_FILE" subtree )
+TARBALL_SIZE=$(stat -c '%s' "$TARBALL_FILE" 2>/dev/null || stat -f '%z' "$TARBALL_FILE")
+TARBALL_SHA256="$(sha256sum "$TARBALL_FILE" | awk '{print $1}')"
+echo "Phase 2: tarball size=$TARBALL_SIZE bytes, sha256=$TARBALL_SHA256"
+
+SUBTREE_METADATA="archive_id $(b64 "$SUBTREE_ARCHIVE_ID"),archive_filename $(b64 "subtree.tar"),subtree_relative_path $(b64 "subtree"),media_type $(b64 "archive/google-takeout-subtree"),matcher_id $(b64 "smoke/subtree"),provider $(b64 "smoke"),sha256 $(b64 "$TARBALL_SHA256"),size_bytes $(b64 "$TARBALL_SIZE")"
+
+echo "Phase 2: POST /v1/archives..."
+HDR_FILE2="$(mktemp)"
+BODY_FILE2="$(mktemp)"
+HTTP_STATUS="$(curl -sS -D "$HDR_FILE2" -o "$BODY_FILE2" -w '%{http_code}' \
+    -X POST "http://127.0.0.1:$HOST_PORT/v1/archives" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Tus-Resumable: 1.0.0" \
+    -H "Upload-Length: $TARBALL_SIZE" \
+    -H "Upload-Metadata: $SUBTREE_METADATA")"
+if [ "$HTTP_STATUS" != "201" ]; then
+    echo "FAIL: Phase 2 POST returned $HTTP_STATUS"
+    echo "  body:"
+    cat "$BODY_FILE2"
+    docker logs "$CONTAINER_NAME" || true
+    exit 1
+fi
+LOCATION2="$(awk -v IGNORECASE=1 '/^Location:/ {print $2}' "$HDR_FILE2" | tr -d '\r' | tail -1)"
+echo "Phase 2: upload-id $(basename "$LOCATION2")"
+
+echo "Phase 2: PATCH (streaming $TARBALL_SIZE bytes)..."
+HTTP_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -X PATCH "http://127.0.0.1:$HOST_PORT$LOCATION2" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Tus-Resumable: 1.0.0" \
+    -H "Upload-Offset: 0" \
+    -H "Content-Type: application/offset+octet-stream" \
+    --data-binary "@$TARBALL_FILE")"
+if [ "$HTTP_STATUS" != "204" ]; then
+    echo "FAIL: Phase 2 PATCH returned $HTTP_STATUS"
+    docker logs "$CONTAINER_NAME" || true
+    exit 1
+fi
+
+echo "Phase 2: verifying untarred tree at archives/$SUBTREE_ARCHIVE_ID/tree/..."
+if ! docker exec "$CONTAINER_NAME" ls -la "/data/glovebox/archives/$SUBTREE_ARCHIVE_ID/tree/subtree/data.bin" >/dev/null 2>&1; then
+    echo "FAIL: archives/$SUBTREE_ARCHIVE_ID/tree/subtree/data.bin not found"
+    docker logs "$CONTAINER_NAME" || true
+    exit 1
+fi
+
+echo "SUCCESS (tarball subtree): ~$((SUBTREE_SIZE / 1024 / 1024)) MiB tarball completed and untarred at archives/$SUBTREE_ARCHIVE_ID/tree/"
+echo
+echo "SUCCESS: both bead acceptance phases passed (12 GiB mbox + multi-GB subtree)."
