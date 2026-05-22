@@ -28,7 +28,19 @@ data:
         "max_body_bytes": {{ .Values.config.ingest.maxBodyBytes | int }},
         "max_metadata_bytes": {{ .Values.config.ingest.maxMetadataBytes | int }},
         "backpressure_threshold": {{ .Values.config.ingest.backpressureThreshold | int }},
-        "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }}
+        "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }},
+        {{- /*
+          Project ONLY the runtime-relevant subset of ingest.auth and
+          ingest.archives into config.json. The `enabled` keys are
+          Helm-only chart gates that decide whether the ExternalSecret
+          and NetworkPolicy templates render; the Go config loader
+          neither expects nor reads them. Same for archives.networkPolicy.*
+          (chart-only) and archives.retention.* (consumed by the cleanup
+          goroutine via separate config fields — adjust here if the Go
+          side ever reads them).
+        */ -}}
+        "auth": {{ unset (deepCopy .Values.ingest.auth) "enabled" | toJson }},
+        "archives": {{ unset (unset (deepCopy .Values.ingest.archives) "enabled") "networkPolicy" | toJson }}
       }
     }
   rules.json: |
