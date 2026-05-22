@@ -49,32 +49,44 @@ The shared-PVC handoff alternative is unavailable: the cluster's RWX NAS is offl
    Recognizer                                 Glovebox (this spec)
    --------------                             ----------------------
    POST /v1/archives          ---------->     Auth middleware (spec 10)
-   (Upload-Metadata)                          |
-                                              v
-                                              Pre-flight idempotency check
+   (Upload-Length,                            |- 401 on bad token
+    Upload-Metadata,                          |
+    Authorization)                            v
+                                              Pre-flight idempotency
+                                              (scoped by source-id)
                                               |
-   201 + Location              <----------    |- absent -> create upload state
-                                                |
-   PATCH .../<upload-id>       ---------->     Append + rolling sha256
-   (offset + chunk)                            |
-   204 No Content              <----------    Update Upload-Offset
+                                              |- absent -> create upload state
+                                              |- match  -> 303 Location
+                                              |- conflict (same source-id,
+                                              |            different sha256) -> 409
+   201 + Location              <----------    |
+                                              |
+   PATCH .../<upload-id>       ---------->    Per-upload-id mutex
+   (Upload-Offset + chunk)                    Append + rolling sha256
+                                              Update offset
+   204 + Upload-Offset         <----------    |
    ...                                         |
-   POST .../<upload-id>?finalize -------->     |- sha256 verify
+   PATCH (final chunk:         ---------->    Offset reaches Upload-Length
+    offset+len == length)                     |- sha256 verify (rolling)
                                               |- size verify
-                                              |- media-type switch
-                                              |   |- raw: rename to archives/<id>/raw/<file>
-                                              |   |- tar: stream-untar to archives/<id>/tree/
-                                              |- write metadata.json
-                                              |- atomic rename .tmp -> archives/<id>
-                                              v
-   201 + receipt JSON         <----------     Notify (fsnotify trigger to importers)
+                                              |- media-type dispatch:
+                                              |   |- raw: rename tmp -> .tmp-archives/<id>.finalize/raw/
+                                              |   |- tar: stream-untar -> .tmp-archives/<id>.finalize/tree/
+                                              |- write metadata.json sidecar
+                                              |- atomic os.Rename:
+                                              |    .tmp-archives/<id>.finalize -> archives/<archive_id>
                                               |
-                                              (importer reads archives/<id> per spec 09)
+   204 + Upload-Offset         <----------    (importer fsnotify wakes; reads
+   (== Upload-Length)                          archives/<archive_id>/metadata.json)
+                                              |
+   GET /v1/archives/<archive_id> ---------->  Read staged metadata.json
+                                              |
+   200 + receipt JSON         <----------     |
 ```
 
 ### 3.1 Endpoint Surface
 
-A single HTTP listener (the existing external listener on port 8081 per spec 08 §2.2) hosts two distinct handler trees:
+A single HTTP listener (the existing ingest listener on port 9091 per spec 08 §2.2) hosts two distinct handler trees:
 
 - `/v1/ingest` -- unchanged. Multipart with 64 MB cap. No auth in v1 (per spec 10 §7).
 - `/v1/archives*` -- new. tus.io protocol. Bearer-token auth required.
@@ -89,12 +101,12 @@ The existing listener's `http.Server.MaxBytesReader` (or equivalent body cap) ap
 
 After authentication (per spec 10) sets the request context's `delivered_by = <source-id>`, the source-id is the canonical client identity for the rest of the request. It is recorded in:
 
-- Each chunk's audit log entry (per spec 06 §5.4).
-- The finalized archive's `metadata.json` sidecar (§4.7).
+- Each chunk's audit log entry (per spec 06 §8.3).
+- The finalized archive's `metadata.json` sidecar (§4.8).
 - The staged archive's Identity block (per spec 06 §5.2) -- `auth_method: "bearer_token"`, `provider: "ingest"`, `account_id: <source-id>`.
 - Every metric label that includes `source_id`.
 
-The client's `Upload-Metadata.delivered_by` field, if present, is ignored. Server-set provenance is the only authoritative value.
+The client's `Upload-Metadata` MUST NOT contain the keys `delivered_by` or `delivered_at`. The server REJECTS any `POST /v1/archives` whose `Upload-Metadata` carries either key with 400. This is a hard rejection rather than a silent server-side override: a client that thinks it can set these fields has a bug worth surfacing, not a behavior to silently paper over.
 
 ## 4. Endpoint Contract (tus.io)
 
@@ -105,10 +117,15 @@ The endpoint speaks tus.io v1.0.0 with these extensions: `creation`, `terminatio
 | Method | Path | Purpose | Required headers | Response |
 |---|---|---|---|---|
 | `OPTIONS` | `/v1/archives` | Capability discovery | `Tus-Resumable: 1.0.0` | 200 + `Tus-Version`, `Tus-Max-Size`, `Tus-Extension`, `Tus-Resumable` |
-| `POST` | `/v1/archives` | Initiate upload | `Upload-Length`, `Upload-Metadata`, `Tus-Resumable: 1.0.0`, `Authorization: Bearer <token>` | 201 + `Location: /v1/archives/<upload-id>` + `Tus-Resumable: 1.0.0`; OR (pre-flight idempotent hit) 303 + `Location: /v1/archives/<archive-id>` |
-| `HEAD` | `/v1/archives/<upload-id>` | Read offset | `Tus-Resumable: 1.0.0`, `Authorization: Bearer <token>` | 200 + `Upload-Offset`, `Upload-Length`, `Tus-Resumable: 1.0.0` |
+| `POST` | `/v1/archives` | Initiate upload | `Upload-Length`, `Upload-Metadata`, `Tus-Resumable: 1.0.0`, `Authorization: Bearer <token>` | 201 + `Location: /v1/archives/<upload-id>` + `Tus-Resumable: 1.0.0`; OR (pre-flight idempotent hit) 303 + `Location: /v1/archives/<archive_id>` |
+| `HEAD` | `/v1/archives/<upload-id>` | Read offset | `Tus-Resumable: 1.0.0`, `Authorization: Bearer <token>` | 200 + `Upload-Offset`, `Upload-Length`, `Tus-Resumable: 1.0.0`, `Tus-Expires` (deadline before §5.5 cleanup) |
 | `PATCH` | `/v1/archives/<upload-id>` | Append chunk | `Tus-Resumable: 1.0.0`, `Upload-Offset`, `Content-Type: application/offset+octet-stream`, `Content-Length`, `Authorization: Bearer <token>` | 204 + `Upload-Offset` (new total) + `Tus-Resumable: 1.0.0` |
 | `DELETE` | `/v1/archives/<upload-id>` | Abort upload | `Tus-Resumable: 1.0.0`, `Authorization: Bearer <token>` | 204 |
+| `GET` | `/v1/archives/<archive_id>` | Read finalize receipt | `Authorization: Bearer <token>` | 200 + receipt JSON per §4.8; 404 if not finalized; 404 if archive_id belongs to a different source-id |
+
+**Upload-ID format.** Server-generated upload-ids are 128-bit cryptographically random values, hex-encoded (32 lowercase hex chars). The namespace is large enough that collision probability is negligible at any realistic upload volume; a colliding ID at POST time would trigger an internal 500.
+
+**Upload-ID binding.** Each upload-id is bound at creation to the source-id that POSTed it. The server REJECTS any `HEAD`/`PATCH`/`DELETE` against an upload-id whose binding does not match the requesting source-id with 404 (NOT 403 — we do not leak existence of upload-ids across source-ids).
 
 The finalize step is NOT a separate method per tus.io: when a client's cumulative PATCH offset reaches `Upload-Length` exactly, the server transitions the upload to finalize automatically and responds with 204 + the new offset. The server's response to the final PATCH may take seconds (untar) and the client MUST tolerate that latency.
 
@@ -120,14 +137,16 @@ The `Upload-Metadata` header carries `key1 value1,key2 value2,...` pairs where e
 
 | Key | Type | Description |
 |---|---|---|
-| `archive_id` | string | Client-supplied stable identifier. Format suggestion: `<8-hex-of-content-hash>-<original-archive-stem>-<sequence>`. MUST match `^[a-zA-Z0-9._-]{1,128}$`. |
-| `archive_filename` | string | Original archive name as the user delivered it. Used only for provenance; not interpreted by the server. UTF-8, max 256 bytes. |
-| `subtree_relative_path` | string | Path within the unpacked archive: `.` for raw-file deliveries (mbox), `<subdir>` for tarball subtrees. UTF-8, max 1024 bytes. |
+| `archive_id` | string | Client-supplied stable identifier. Format suggestion: `<8-hex-of-content-hash>-<original-archive-stem>-<sequence>`. MUST match `^[a-zA-Z0-9._-]{1,128}$`. **The regex check happens BEFORE any logging or metric emission**: an unvalidated archive_id never reaches an audit-log call site, which prevents log-line injection via crafted newlines/control chars. |
+| `archive_filename` | string | Original archive name as the user delivered it. Used only for provenance AND (for raw-file media types) as the on-disk filename under `raw/`. MUST match `^[A-Za-z0-9._-]+$` and MUST NOT contain `..`, `/`, `\`, NUL, or any control character. Max 256 bytes. Server rejects at POST. |
+| `subtree_relative_path` | string | Path within the unpacked archive: `.` for raw-file deliveries (mbox), `<subdir>` for tarball subtrees. UTF-8, max 1024 bytes, no NUL or control chars. Recorded; not used as a filesystem path. |
 | `media_type` | string | Stable media-type identifier. Server enforces against a static allow-list (§4.5); unknown values reject at `POST` BEFORE any bytes flow. |
-| `matcher_id` | string | The recognizer matcher that claimed this subtree (e.g., `google-takeout/mail`). Recorded in metadata; not interpreted. UTF-8, max 256 bytes. |
-| `provider` | string | Upstream provider (`google`, `meta`, etc.). Recorded; not interpreted. Lowercase alpha + dash, max 64 bytes. |
+| `matcher_id` | string | The recognizer matcher that claimed this subtree (e.g., `google-takeout/mail`). MUST match `^[A-Za-z0-9._/-]{1,256}$` (no NUL, no control chars). Recorded; not interpreted. |
+| `provider` | string | Upstream provider (`google`, `meta`, etc.). MUST match `^[a-z][a-z0-9-]{0,63}$`. Recorded; not interpreted. |
 | `sha256` | string | Hex-encoded sha256 of the content bytes the client will send. 64 lowercase hex chars. Verified at finalize. |
-| `size_bytes` | string | Decimal-encoded size in bytes. MUST equal the `Upload-Length` header. Verified at finalize. |
+| `size_bytes` | string | Decimal-encoded size in bytes. MUST equal the `Upload-Length` header. **Verified at POST** (not at finalize): mismatch returns 400 before any upload state is allocated, so a client never wastes a multi-GB upload on a header bug. |
+
+**Validation ordering** (MANDATORY): all `Upload-Metadata` regex / format checks happen BEFORE any audit-log entry or metric emission that references the field. The validator either accepts the entire `Upload-Metadata` block (proceeding to logging + state allocation) or rejects it whole with a single 400 + a non-revealing error code. There is NO partial-validation flow that logs some fields while rejecting others.
 
 Server-set fields (client-supplied values are ignored):
 
@@ -140,27 +159,36 @@ Total `Upload-Metadata` header length MUST NOT exceed 4 KiB. Exceeding returns 4
 
 ### 4.3 Pre-flight Idempotency
 
-Before accepting a `POST /v1/archives`, the server checks for an existing finalized archive at `archives/<archive_id>/`:
+Before accepting a `POST /v1/archives`, the server checks for an existing finalized archive at `archives/<archive_id>/`. **Idempotency is scoped by the authenticated source-id**: the lookup is `(source_id, archive_id) -> metadata.json`. A cross-source archive_id collision never returns the "matching sha256" branch; this prevents one source-id from probing what another source-id has uploaded by enumerating guessable archive_ids.
 
-- **Exists with matching sha256** -- the upload is a duplicate of a successful previous delivery. Server returns 303 See Other with `Location: /v1/archives/<archive_id>` pointing at the finalized resource. No upload state is created; no bytes flow. The client treats this as success.
-- **Exists with different sha256** -- the client is reusing an archive_id for non-identical content, which is a contract violation. Server returns 409 Conflict with body `{"error":"archive_id_conflict","existing_sha256":"...","claimed_sha256":"..."}`.
-- **Absent** -- normal tus.io flow proceeds. Server allocates an `upload-id`, creates `.tmp-archives/<upload-id>`, returns 201 + `Location`.
+The three branches:
 
-This is a deviation from vanilla tus.io's "POST always creates" semantics, but it is necessary for idempotent retry under transient network failures and is the natural fit for the recognizer's at-least-once delivery semantics.
+- **No `archives/<archive_id>/` exists** -- normal tus.io flow proceeds. Server allocates an `upload-id`, binds it to the requesting source-id, creates `.tmp-archives/<upload-id>`, returns 201 + `Location`.
+- **`archives/<archive_id>/` exists, belongs to the requesting source-id, sha256 matches** -- duplicate of a prior successful delivery from the same source. Server returns 303 See Other + `Location: /v1/archives/<archive_id>`. No upload state created; no bytes flow.
+- **`archives/<archive_id>/` exists AND (belongs to a different source-id OR has a different sha256)** -- conflict. Server returns 409 Conflict with body `{"error":"archive_id_conflict"}`. The response body deliberately does NOT echo the existing archive's sha256 or source-id; a probing client learns only "this archive_id is taken," not the contents of the conflicting record.
+
+The 303 fast-path is a deviation from vanilla tus.io's "POST always creates" semantics, justified by the recognizer's at-least-once delivery semantics: a network failure between server-finalize and client-receives-201 leaves the client unsure whether to retry, and the idempotent fast-path makes the safe answer "yes, always retry."
+
+Authentication (per spec 10) is checked BEFORE the idempotency lookup. Unauthenticated callers see 401 regardless of whether the archive_id exists, so the existence-leak surface is bounded by the bearer-token set.
 
 ### 4.4 PATCH Validation
 
 For each `PATCH /v1/archives/<upload-id>`:
 
-1. Validate `Upload-Offset` matches the server's current stored offset for this upload. Mismatch returns 409.
-2. Validate `Content-Type: application/offset+octet-stream` (per tus.io). Wrong type returns 415.
-3. Append the body bytes to `.tmp-archives/<upload-id>` and update a rolling sha256 (`hash/sha256.New()` writer wrapped around the bytes-to-disk).
-4. Update the server's stored offset.
-5. Respond 204 + new `Upload-Offset`.
+1. Validate the upload-id is bound to the requesting source-id (§4.1). Mismatch returns 404.
+2. Acquire the per-upload-id mutex. The server maintains one `sync.Mutex` per active upload-id; PATCH, HEAD, and DELETE all serialize through it. If the mutex is already held when the request arrives, return 409 + `{"error":"upload_busy"}` immediately (do NOT block waiting). This prevents two concurrent PATCHes (from the same client with two TCP sessions, or from a buggy retry loop) from interleaving bytes into the tmp file and corrupting the rolling sha256.
+3. Validate `Upload-Offset` matches the server's current stored offset for this upload. Mismatch returns 409 + `{"error":"offset_mismatch","expected":N}`.
+4. Validate `Content-Type: application/offset+octet-stream` (per tus.io). Wrong type returns 415.
+5. Append the body bytes to `.tmp-archives/<upload-id>` and update the rolling sha256 (`hash/sha256.New()` writer wrapped around the bytes-to-disk).
+6. Update the server's stored offset.
+7. If the new offset equals `Upload-Length`, transition to finalize (§4.6) WHILE STILL HOLDING the mutex. The finalize-step's response (204 with `Upload-Offset == Upload-Length`) is sent only after finalize completes (or fails).
+8. Respond 204 + new `Upload-Offset`.
 
-If the body bytes pushed the cumulative offset beyond `Upload-Length`, the server discards the surplus, sets the offset to `Upload-Length`, and proceeds to finalize. The client SHOULD NOT send more than `Upload-Length` total bytes, but the server tolerates a small overshoot rather than failing the upload.
+**Idle timeout.** A PATCH that does not produce body bytes for `patchIdleTimeoutSeconds` (default 300 s = 5 min) is terminated by the server with the connection closed; the upload-id remains valid and the client may resume via HEAD + PATCH. This bounds slowloris-style resource holding.
 
-If a PATCH body terminates short of its declared `Content-Length` (client connection dropped), the server reads what arrived, updates the offset, persists state, and waits for the client to resume via HEAD + a subsequent PATCH.
+**Overshoot tolerance.** If the body bytes pushed the cumulative offset beyond `Upload-Length`, the server discards the surplus, sets the offset to `Upload-Length`, and proceeds to finalize. The client SHOULD NOT send more than `Upload-Length` total bytes, but the server tolerates a small overshoot rather than failing the upload.
+
+**Short-body resume.** If a PATCH body terminates short of its declared `Content-Length` (client connection dropped), the server reads what arrived, updates the offset, persists state, releases the mutex, and waits for the client to resume via HEAD + a subsequent PATCH.
 
 ### 4.5 Media-Type Allow-List
 
@@ -190,19 +218,40 @@ Steps 1-5 happen synchronously inside the final PATCH's response handler. The cl
 
 ### 4.7 Tar Safety Rules
 
-For tarball `media_type` values, the server REJECTS the entire upload (delete tmp, return 400 + identifying detail) on the first violation of any of the following:
+For tarball `media_type` values, the server applies an **allow-list** approach: only entries that pass every rule below are extracted. Any violation REJECTS the entire upload (delete tmp + finalize dir, return 400 + identifying detail). The rules are evaluated in the order listed; the first failing rule determines the rejection reason.
 
-- **Absolute paths.** An entry whose name starts with `/` or contains `:` (Windows drive prefix).
-- **Path traversal.** An entry whose name contains `..` as a path component (`a/../b` is rejected even if it normalizes safely).
-- **Symbolic links.** Any entry with `Typeflag = TypeSymlink` (`TypeLink` -- hard link -- also rejected; no link types).
-- **Device files.** Any `TypeChar`, `TypeBlock`, `TypeFifo`.
-- **Sockets.** Any `TypeFifo` / `TypeXGlobalHeader` / `TypeXHeader` -- only `TypeReg` and `TypeDir` entries are permitted.
-- **Entries with non-normal modes.** Server overrides all extracted file modes to `0600` and directory modes to `0700`. Tar `mode` bits other than the permission bits are ignored.
-- **Entries with non-default UID/GID.** Tar `Uid`/`Gid` are ignored; extraction runs as the connector user. Set-uid / set-gid mode bits are stripped.
-- **Entry size exceeds remaining quota.** Per-source quota tracking (§5.4); reject if extracting this entry would exceed the source's soft cap.
-- **Total entries exceed 1,000,000.** Belt-and-suspenders against zip-bomb-style entry-count attacks.
+**Step 1: Resolve effective entry name (defends against pax-header overrides).** Go's `archive/tar` silently merges pax extension records (`TypeXHeader`, `TypeXGlobalHeader`) into the regular `Name` field as the reader iterates. Safety checks MUST be applied to the resolved `header.Name` AFTER pax merging, NOT to any pre-merge value. The server MUST additionally reject any pax record whose key is `path` or `linkpath` (those are the recognized pax keys that override Name and Linkname) -- pax overrides are a known tar-extraction bypass and we do not need them. Other pax keys (`mtime`, `atime`, `uid`, `gid`, `comment`) are ignored.
 
-The rejection log line is structured (`glovebox archive upload tar safety reject`) with `archive_id`, `source_id`, `entry_path`, `entry_type`, `reason` so operators can identify adversarial inputs.
+**Step 2: Typeflag allow-list.** The entry's `Typeflag` MUST be one of:
+- `TypeReg` (regular file)
+- `TypeDir` (directory)
+
+Any other Typeflag is rejected, including: `TypeSymlink` (symlinks), `TypeLink` (hardlinks), `TypeChar` / `TypeBlock` / `TypeFifo` (device files / FIFOs), `TypeGNUSparse` (sparse files), `TypeGNULongName` / `TypeGNULongLink` (deprecated GNU extensions). Each rejection is logged with the specific Typeflag value as `entry_type` so operators can identify what showed up.
+
+**Step 3: Name validity.** The resolved `Name` MUST:
+- Be valid UTF-8. Invalid UTF-8 → reject.
+- Be non-empty after trimming.
+- NOT contain NUL bytes (`\x00`). NUL truncates at the kernel boundary, allowing path-traversal bypass against substring checks.
+- NOT contain any C0 control character (bytes `< 0x20`) other than nothing — newline, tab, etc. are all rejected. CRLF in entry names is a vector for log-line injection downstream.
+- Be ≤ 4,096 bytes (PATH_MAX on Linux).
+- Have every path component ≤ 255 bytes (NAME_MAX on Linux ext4 / xfs).
+
+**Step 4: Path safety.** The resolved `Name` MUST:
+- NOT start with `/` (absolute path).
+- NOT contain `:` followed by `/` (Windows drive prefix forms).
+- NOT contain `..` as a path component, even if it normalizes safely (rejecting `a/../b` is intentional: simpler rule, no surprises). `..` appearing as a substring inside a filename (e.g., `my..backup.tar`) is allowed.
+- NOT contain double-slashes (`//`) or trailing slash on a `TypeReg` entry.
+
+**Step 5: Mode hygiene.** The server EXTRACTS files with mode `0600` and directories with mode `0700`, IGNORING the tar entry's mode bits entirely. The tar `Uid`/`Gid` fields are also ignored; extraction runs as the glovebox process UID. Set-uid / set-gid / sticky bits are never honored.
+
+**Step 6: Size caps.**
+- Each entry's declared `Size` MUST be ≤ `Upload-Length`. (No single entry can exceed the whole archive.)
+- The CUMULATIVE extracted size (sum of all `TypeReg` entry sizes) MUST be ≤ `2 * Upload-Length`. This bounds tar-bomb attacks where many small "uncompressed" entries blow up extraction footprint. (The factor of 2 accommodates legitimate tarballs with mild padding overhead but rejects pathological inputs.)
+- Total entry COUNT MUST be ≤ 1,000,000. Belt-and-suspenders against entry-count attacks even when individual sizes are tiny.
+
+**Step 7: Storage cap.** Extraction proceeds only if it won't push the per-source `archives/` usage beyond the soft cap (§5.4). The soft cap is enforced here even though §5.4 calls it "informational for the upload itself": the difference is that the OVERALL upload's `Tus-Max-Size` admission isn't blocked by soft cap, but per-entry extraction during untar IS gated to prevent a tarball from blasting past the cap entry-by-entry.
+
+**Rejection logging.** The reject log line is structured (`glovebox archive upload tar safety reject`) with fields: `archive_id`, `source_id`, `entry_path` (truncated to 256 bytes + sanitized to `^[A-Za-z0-9._/-]+$` BEFORE logging so a malicious path can't inject into the log line), `entry_type`, `reason` (one of the step labels above: `pax_path_override`, `typeflag_disallowed`, `name_invalid_utf8`, `name_contains_nul`, `name_contains_control`, `name_too_long`, `name_traversal`, `name_absolute`, `size_too_large`, `cumulative_size_too_large`, `entry_count_too_large`, `soft_cap_exceeded`). The reason set is closed; operators dashboard against it.
 
 ### 4.8 Finalize Receipt
 
@@ -254,45 +303,61 @@ The exact `<staging_root>` value comes from `GLOVEBOX_STAGING_DIR` per the exist
 
 ### 5.2 Atomicity Model
 
-The single committing event is the `os.Rename(".tmp-archives/<upload-id>.finalize", "archives/<archive_id>")` in §4.6 step 5. This rename is atomic on a single-filesystem POSIX volume (the staging PVC is exactly one mounted filesystem); either the importer sees a fully-staged `archives/<archive_id>/` with `metadata.json` and content, or it sees nothing.
+The single committing event is the `os.Rename(".tmp-archives/<upload-id>.finalize", "archives/<archive_id>")` in §4.6 step 5. This rename is atomic ONLY on a single-filesystem POSIX volume. If `.tmp-archives/` and `archives/` are on different filesystems (`stat -c %d` returns different device IDs), `os.Rename` returns `EXDEV` and a naive fallback copy+unlink would publish a partially-formed `archives/<archive_id>/` directory to importers mid-copy.
 
-If the process dies between the rolling-sha256 verification (§4.6 step 1) and the atomic rename (step 5), the `.tmp-archives/<upload-id>.finalize/` dir is left orphaned. The cleanup job (§5.5) deletes such orphans.
+**Startup precondition.** On boot, before binding the `/v1/archives` listener, the server `stat()`s `<staging_root>/.tmp-archives/` and `<staging_root>/archives/` and compares their device IDs (`Stat_t.Dev`). If they differ — or if either path is missing and can't be created on the same volume — the server logs ERROR `glovebox archive listener unavailable: tmp and final dirs on different filesystems` and refuses to serve `/v1/archives*` (returns 503 with `Retry-After: 60`). The process continues to serve `/v1/ingest`, `/healthz`, `/readyz`, `/metrics`. The operator must remount the staging PVC such that both subdirectories share a filesystem.
 
-`metadata.json` is written to `.tmp-archives/<upload-id>.finalize/metadata.json` AFTER all raw/ or tree/ content is in place, so it never appears partially. Within the finalize dir, the metadata.json is the last file written and the rename publishes everything together.
+If the process dies between sha256 verification (§4.6 step 1) and the atomic rename (step 5), the `.tmp-archives/<upload-id>.finalize/` dir is left orphaned. The cleanup job (§5.5) deletes such orphans.
+
+`metadata.json` is written to `.tmp-archives/<upload-id>.finalize/metadata.json` AFTER all `raw/` or `tree/` content is in place, so it never appears partially. Within the finalize dir, the metadata.json is the last file written and the rename publishes everything together.
+
+**Permissions.** The server creates `.tmp-archives/` with mode `0700`, files within at mode `0600`, and the post-rename `archives/<archive_id>/` directory at mode `0700` with files at `0600`. Extracted tarball directories are also mode `0700`. This prevents another process on the same pod (debug sidecar, init container with shared volume, etc.) from reading in-flight or finalized archive content; the only reader is the glovebox process UID. Operators MUST NOT mount the staging PVC into any container that doesn't share glovebox's UID.
 
 ### 5.3 Importer Pickup
 
-Importers (spec 09 mbox-importer; future siblings) watch `<staging_root>/archives/` via `fsnotify` for `IN_CREATE` events on directory entries. The triggering event is the rename in §5.2; importers MUST NOT react to anything under `.tmp-archives/`.
+Staged archives at `<staging_root>/archives/<archive_id>/` are picked up by media-type-specific importers via an `fsnotify` watch on the `archives/` directory.
 
-The importer's contract:
+**Current state (v1).** Spec 09's mbox-importer is a CLI-invoked K8s Job (`--source <file>` flag); it does NOT today implement the watcher mode this spec depends on. The watcher mode is named V2 in spec 09 §6 and is tracked as **`glovebox-c9zt`** ("spec 09 mbox-importer: archive-event watcher mode"), which MUST land alongside or before the spec 13 implementation reaches production for any `archive/mbox` delivery to be processed automatically.
 
-1. On `IN_CREATE` for `archives/<archive_id>/`, wait up to 2 seconds for `metadata.json` to be readable (paranoia against the rename being observed before the kernel flushes the rename event's underlying directory updates -- in practice the rename is single-syscall and atomic, but the 2-second timeout costs nothing).
-2. Read `metadata.json`. If `media_type` does not match the importer's allow-list, ignore the archive (a different importer will handle it).
-3. Acquire an importer-specific advisory lock on `archives/<archive_id>/.importer-lock` (an existence-check + create with `O_EXCL`) so a single archive is not double-picked.
-4. Process the archive (mbox → per-message items into the connector-staging surface; Takeout subtree → per-file items).
-5. On success, move `archives/<archive_id>/` to `archives/.done/<archive_id>/` for retention (configurable; default 7 days then deleted).
-6. On failure, leave the archive in place; the importer's failure log identifies the archive_id.
+**Contract (for `glovebox-c9zt` and future importers).** The importer:
 
-The retention dir `archives/.done/` is operator-visible for forensic audit but is NOT watched by importers (no `IN_CREATE` event for moves into it).
+1. Watches `<staging_root>/archives/` with an `fsnotify` `IN_MOVED_TO` watch (the spec 13 finalize uses `os.Rename`, which generates `IN_MOVED_TO` on the destination directory; `IN_CREATE` covers the fallback case where an operator manually stages an archive). MUST NOT react to anything under `.tmp-archives/`.
+2. On event for `archives/<archive_id>/`, waits up to 2 seconds for `metadata.json` to be readable (paranoia against observing the rename before the kernel flushes the destination-directory-entry update; in practice the rename is single-syscall and atomic but the 2-second timeout costs nothing on the happy path).
+3. Reads `metadata.json`. If `media_type` does not match the importer's allow-list, ignores the archive (a different importer will handle it; the v1 allow-list for mbox-importer is `archive/mbox`).
+4. Acquires an importer-specific advisory lock on `archives/<archive_id>/.importer-lock` (an existence-check + create with `O_EXCL`) so a single archive is not double-picked. Locks are per-importer; e.g., the mbox-importer's lock is `.mbox-importer.lock`. This lets multiple importers (future Takeout subtree importer alongside mbox-importer) coexist without races even when both handle the same archive — they'd be looking at different `media_type`s anyway, but the per-importer lock leaves room.
+5. Processes the archive (mbox → per-message items into the connector-staging surface via the existing spec 09 pipeline; Takeout subtree → per-file items via the future Takeout importer).
+6. On success, moves `archives/<archive_id>/` to `archives/.done/<archive_id>/` for retention (configurable; default 7 days then deleted by the cleanup goroutine).
+7. On failure, leaves the archive in place; the importer's failure log identifies the archive_id. Manual operator intervention recovers.
+
+The retention dir `archives/.done/` is operator-visible for forensic audit but is NOT watched by importers (no `IN_MOVED_TO` event for moves into it because `fsnotify` watches are scoped to the immediate parent directory, not subdirectories).
 
 ### 5.4 Sizing + Quota
 
 **Default PVC size: 50 GiB.** Operator override via the Helm chart's `staging.size` value. Justification: recognizer's data PVC is 100 GiB and currently holds 4 Takeout zips + a 12 GB mbox; once those land in glovebox at archive scale the equivalent need at glovebox is roughly half (importers consume archives and shrink the on-disk footprint as they emit per-item content; the archives themselves are deleted after retention).
 
-**Per-source soft cap.** Each `source_id` is given a default soft cap of 40% of total PVC capacity (configurable). When `archives/` usage attributable to a single `source_id` exceeds the soft cap, the server logs `glovebox archive storage near cap` at WARN with `source_id, used_bytes, soft_cap_bytes` and exposes `glovebox_archive_storage_pct{source_id}` as a Prometheus gauge for alerting. The upload continues; soft cap is informational.
+**Per-upload protocol cap.** `Tus-Max-Size` is advertised as 30 GiB (32,212,254,720 bytes). This is below the PVC ceiling so even an extreme single upload can't fill the volume, and well above the 12 GiB current-real-world mbox so the recognizer's expected workload fits with comfortable headroom. Operator-configurable via `ingest.archives.maxUploadSize`.
 
-**Global hard cap.** When `archives/` total usage exceeds 95% of PVC capacity, the server returns 503 Service Unavailable on new `POST /v1/archives` with `Retry-After: 600`. In-flight uploads continue (terminating them would lose work that's already on disk). The 503 lifts when usage drops below 85% (hysteresis).
+**Per-source soft cap.** Each `source_id` is given a default soft cap of 40% of total PVC capacity (= 20 GiB at default sizing). The soft cap is **enforced for per-entry untar admission** (§4.7 step 7 will reject the next tarball entry if extracting it would push the source over the soft cap) but is **NOT enforced at upload admission**: a source can have a soft-cap-tripping `POST /v1/archives` complete to the rolling-sha256 verification stage; the cap only blocks the per-entry write loop when it actually crosses the threshold. The server logs `glovebox archive storage near cap` at WARN with `source_id, used_bytes, soft_cap_bytes` when the cap is crossed, and exposes `glovebox_archive_storage_source_bytes{source_id}` as a Prometheus gauge for alerting. (Earlier draft text said the soft cap was "informational only" — that was inconsistent with §4.7's enforcement; this version is the canonical contract.)
 
-**Storage measurement.** A background goroutine sums `archives/` directory sizes on a 60-second interval and publishes the totals. This is cheap on a homelab-scale tree (low hundreds of subdirectories).
+**Global hard cap.** When `archives/` + `.tmp-archives/` COMBINED usage exceeds 95% of PVC capacity, the server returns 503 Service Unavailable on new `POST /v1/archives` with `Retry-After: 600`. Including `.tmp-archives/` in the calculation is mandatory: otherwise a malicious source-id can hold open thousands of in-flight uploads to slowly fill the PVC without ever triggering the hard cap (which would only see `archives/` after finalize). In-flight uploads in progress when the hard cap trips are allowed to complete (terminating them would lose work that's already on disk), but new POSTs are rejected. The 503 lifts when combined usage drops below 85% (hysteresis).
+
+**Per-source concurrent-upload cap.** Each source-id may have at most 4 concurrent in-flight uploads (configurable via `ingest.archives.perSourceMaxConcurrent`). New `POST /v1/archives` from a source-id already at the cap returns 429 + `Retry-After: 60`. This bounds the slowloris vector where one client opens thousands of uploads to reserve upload-id state without sending bytes.
+
+**Global concurrent-upload cap.** No more than 32 concurrent in-flight uploads across all source-ids (configurable). Same 429 + `Retry-After` semantics. Belt-and-suspenders against a compromised single source-id exceeding its individual cap via a bug.
+
+**Storage measurement.** A background goroutine sums `archives/` + `.tmp-archives/` directory sizes on a 60-second interval and publishes the totals. Each subdirectory's size is attributed to a `source_id` (read from the in-memory upload-id binding for tmp dirs, from the staged `metadata.json` for finalized dirs). The measurement is cheap on a homelab-scale tree (low hundreds of subdirectories).
 
 ### 5.5 Orphan Cleanup
 
 On startup AND on a 60-minute interval, the server walks `.tmp-archives/` and deletes:
 
-- Any `<upload-id>` file (no `.finalize` sibling) whose mtime is older than 24 hours. These are stale in-flight uploads where the client never resumed.
-- Any `<upload-id>.finalize/` directory whose mtime is older than 1 hour. These are processes that died mid-finalize (the legitimate finalize is sub-second; an hour-old `.finalize` is wreckage).
+- Any `<upload-id>` file (no `.finalize` sibling) whose mtime is older than 72 hours. These are stale in-flight uploads where the client never resumed. The 72-hour threshold accommodates legitimate workstation clients that suspend a multi-GB upload overnight (laptop sleep) and resume the next day; the prior 24-hour threshold was too aggressive for that use case.
+- Any `<upload-id>.finalize/` directory whose mtime is older than 1 hour. These are processes that died mid-finalize (the legitimate finalize is sub-second to seconds; an hour-old `.finalize` is wreckage).
+- Any `archives/.done/<archive_id>/` directory whose mtime is older than the configured retention window (default 7 days).
 
 The cleanup is logged at INFO with the count of items removed. The interval is configurable but the defaults are reasonable for homelab cadence.
+
+**`Tus-Expires` header.** The server's `HEAD /v1/archives/<upload-id>` response includes a `Tus-Expires` header carrying the RFC 1123 UTC timestamp at which the upload's tmp file becomes eligible for cleanup (i.e., creation-time + 72 hours, refreshed on each successful PATCH). Clients that need to pause uploads for extended periods MUST check this header and resume before it elapses. The server also includes the same header on the `POST /v1/archives` 201 response.
 
 ## 6. Authentication
 
@@ -333,6 +398,9 @@ All metrics use the existing framework's OTel-on-Prometheus emitter. Schoology c
 | `glovebox_ingest_auth_total` | counter | `endpoint, status` | Spec 10 surface; `endpoint` ∈ {`/v1/ingest`, `/v1/archives`}, `status` ∈ {`accepted`, `rejected`, `rate_limited`} |
 | `glovebox_ingest_auth_rejected_total` | counter | `remote_ip_bucket` | Low-cardinality bucketing of rejected source IPs |
 | `glovebox_archive_tar_safety_rejections_total` | counter | `source_id, reason` | Per the §4.7 reason enum |
+| `glovebox_archive_concurrent_uploads_rejected_total` | counter | `source_id, scope` (`per_source`/`global`) | 429-on-concurrent-cap from §5.4 |
+| `glovebox_archive_patch_idle_timeout_total` | counter | `source_id` | PATCH terminated by §4.4 idle timeout |
+| `glovebox_ingest_token_load_errors_total` | counter | `source_id` | Spec 10 §4.1 per-source token-load errors (malformed Vault entry); fires on each reload attempt that skips an entry |
 
 ### 7.2 Traces
 
@@ -380,7 +448,7 @@ Documented for operator reference; this spec does NOT auto-deploy alert rules.
 
 ### 8.1 NetworkPolicy
 
-The recognizer namespace MUST be granted ingress to the glovebox external listener port. Chart change: add a `NetworkPolicy` rule (or extend the existing one) allowing TCP/8081 from `namespaceSelector: { matchLabels: { name: openclaw-recognizer } }` (the recognizer's namespace label).
+The recognizer namespace MUST be granted ingress to the glovebox ingest listener port. Chart change: add a `NetworkPolicy` rule (or extend the existing one) allowing TCP/9091 from `namespaceSelector: { matchLabels: { name: openclaw-recognizer } }` (the recognizer's namespace label).
 
 Other archive-delivery clients (future workstation mbox importer, friend imports) will need their own ingress rules; not specified here.
 
@@ -399,22 +467,29 @@ New Helm values block:
 ```yaml
 ingest:
   archives:
-    enabled: false                  # opt-in
-    maxUploadSize: 53687091200      # 50 GiB
-    perSourceSoftCapPct: 40         # of total PVC
-    globalHardCapPct: 95            # 503 threshold
-    globalHardCapHysteresisPct: 85  # 503-lift threshold
+    enabled: false                       # opt-in
+    maxUploadSize: 32212254720           # 30 GiB (Tus-Max-Size)
+    perSourceSoftCapPct: 40              # of total PVC (default 20 GiB at 50 GiB PVC)
+    perSourceMaxConcurrent: 4
+    globalMaxConcurrent: 32
+    globalHardCapPct: 95                 # 503 threshold (archives/ + .tmp-archives/)
+    globalHardCapHysteresisPct: 85       # 503-lift threshold
+    patchIdleTimeoutSeconds: 300         # 5-min slowloris guard per PATCH
     cleanupIntervalSeconds: 3600
-    cleanupTmpAgeHours: 24
+    cleanupTmpAgeHours: 72               # accommodates overnight laptop suspends
     cleanupFinalizeAgeHours: 1
     retention:
       doneArchiveDays: 7
-  auth:                              # specified by spec 10
+  auth:                                  # specified by spec 10
     tokensPath: secret/glovebox/ingest-tokens
     reloadIntervalSeconds: 300
     perIPRateLimit:
       window: 60s
       maxRejected: 10
+      lruCapacity: 1000                  # smaller bucket to reduce eviction-bypass surface
+    globalRateLimit:
+      window: 60s
+      maxRejected: 100                   # backstop when LRU evicts the real attacker
 ```
 
 ## 9. Failure Modes
@@ -437,7 +512,7 @@ ingest:
 - Auth on `/v1/ingest`. Existing connector-scale path keeps its no-auth behavior; future spec extends spec 10 to cover it.
 - Multi-tenant token scoping (per-source allowed media_types). All authenticated source-ids can upload any allowed media_type. Adding per-token scope is a spec 10 future extension.
 - Streaming untar during PATCH. v1 untars at finalize after the full file is on disk. The few seconds of extra I/O is acceptable for homelab cadence.
-- Server-side compression. Tarballs MUST be uncompressed tar (no .tar.gz, no .tar.zst) in v1. The recognizer's pipeline produces uncompressed tar artifacts; if compressed support is wanted later, it lands as a media-type-aware decompression in the untar dispatch.
+- Server-side compression. Tarballs MUST be uncompressed tar (no .tar.gz, no .tar.zst) in v1. The recognizer's pipeline produces uncompressed tar artifacts; if compressed support is wanted later, it lands as a media-type-aware decompression in the untar dispatch and MUST include a decompression-bomb defense: `Tus-Max-Size` is enforced against the COMPRESSED upload size, but the decompressed extract size MUST be additionally capped (`decompressed_bytes <= 4 * Tus-Max-Size` is a reasonable bound) so a small compressed input cannot expand into PVC exhaustion. Per spec §4.7 step 6 (cumulative size cap) provides a similar guardrail for uncompressed tarballs; the compressed case needs its own variant of the same defense.
 - Per-archive_id deduplication of CONTENT across different archive_ids. If two distinct archive_ids carry the same sha256, the archive is stored twice. Content-addressed dedup is a meaningful storage optimization but adds a content-hash lookup table that v1 doesn't need.
 - Glovebox-side parsing of mbox / Takeout / etc. Per-importer specs own that work.
 - TLS termination at the ingest listener. Cluster ingress through Traefik handles TLS for external traffic per existing convention.
