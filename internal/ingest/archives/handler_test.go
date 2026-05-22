@@ -1286,3 +1286,416 @@ func TestDELETE_WrongSourceID_404(t *testing.T) {
 		t.Errorf("alice's upload state was dropped by wrong-source DELETE: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------
+// GET — finalize receipt fetch (spec §4.1 / §4.8)
+// ---------------------------------------------------------------------
+
+// newGetRequest constructs an authenticated GET request for the given
+// archive-id. The Tus-Resumable header is intentionally NOT set: GET
+// is a normal HTTP receipt fetch per spec §4.1's method table.
+func newGetRequest(t *testing.T, sourceID, archiveID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, archivesBasePath+"/"+archiveID, nil)
+	if sourceID != "" {
+		req = req.WithContext(ingest.WithDeliveredBy(req.Context(), sourceID))
+	}
+	return req
+}
+
+func TestGET_FinalizedArchive_200(t *testing.T) {
+	h, root := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	archiveID := "abcdef12-takeout-001"
+	staged := stageExistingArchive(t, root, archiveID, "recognizer",
+		"deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	req := newGetRequest(t, "recognizer", archiveID)
+	w := httptest.NewRecorder()
+	h.get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+
+	var got FinalizeReceipt
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode receipt: %v; body = %s", err, w.Body.String())
+	}
+	if got.ArchiveID != staged.ArchiveID {
+		t.Errorf("ArchiveID = %q, want %q", got.ArchiveID, staged.ArchiveID)
+	}
+	if got.DeliveredBy != staged.DeliveredBy {
+		t.Errorf("DeliveredBy = %q, want %q", got.DeliveredBy, staged.DeliveredBy)
+	}
+	if got.SHA256 != staged.SHA256 {
+		t.Errorf("SHA256 = %q, want %q", got.SHA256, staged.SHA256)
+	}
+	if got.MediaType != staged.MediaType {
+		t.Errorf("MediaType = %q, want %q", got.MediaType, staged.MediaType)
+	}
+	if got.SizeBytes != staged.SizeBytes {
+		t.Errorf("SizeBytes = %d, want %d", got.SizeBytes, staged.SizeBytes)
+	}
+	if got.StagedPath != staged.StagedPath {
+		t.Errorf("StagedPath = %q, want %q", got.StagedPath, staged.StagedPath)
+	}
+	if !got.SHA256Verified {
+		t.Errorf("SHA256Verified = false, want true")
+	}
+}
+
+func TestGET_WrongSourceID_404(t *testing.T) {
+	h, root := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	archiveID := "alice-archive-001"
+	stageExistingArchive(t, root, archiveID, "alice",
+		"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+
+	// GET as a different source-id; same 404 + opaque body as not-found.
+	req := newGetRequest(t, "recognizer", archiveID)
+	w := httptest.NewRecorder()
+	h.get(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "archive_not_found" {
+		t.Errorf("body code = %q, want archive_not_found (no leak)", code)
+	}
+}
+
+func TestGET_NonExistent_404(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	req := newGetRequest(t, "recognizer", "does-not-exist")
+	w := httptest.NewRecorder()
+	h.get(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "archive_not_found" {
+		t.Errorf("body code = %q, want archive_not_found", code)
+	}
+}
+
+func TestGET_MalformedArchiveID_404(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	// extractUploadID only takes the FIRST path segment, so a path like
+	// /v1/archives/foo/bar yields "foo". Any subpath that survives
+	// extractUploadID but fails archiveIDRe must produce 404+opaque.
+	// httptest.NewRequest insists on a valid HTTP target, so we construct
+	// the request via a parsed URL that bypasses URL-syntax validation
+	// for the path bytes we want to exercise.
+	cases := []struct {
+		name      string
+		archiveID string
+	}{
+		// "" (empty) -- extractUploadID returns "" for /v1/archives/ ;
+		// regex {1,128} rejects empty.
+		{"empty", ""},
+		// Plus sign -- not in the character class [a-zA-Z0-9._-].
+		{"plus", "has+plus"},
+		// Colon -- not in the character class.
+		{"colon", "has:colon"},
+		// Tilde -- not in the character class.
+		{"tilde", "has~tilde"},
+		// Over 128 chars (all chars individually valid).
+		{"too_long", strings.Repeat("a", 129)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Build a request whose r.URL.Path is exactly what we want.
+			// We can't use httptest.NewRequest because it parses the target
+			// as an HTTP request line and rejects characters that aren't
+			// valid in a request URI (spaces, control chars). Instead we
+			// build the Request struct directly with a constructed URL.
+			req := httptest.NewRequest(http.MethodGet, archivesBasePath+"/placeholder", nil)
+			req.URL.Path = archivesBasePath + "/" + tc.archiveID
+			req = req.WithContext(ingest.WithDeliveredBy(req.Context(), "recognizer"))
+
+			w := httptest.NewRecorder()
+			h.get(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+			}
+			if code := decodeErrorBody(t, w.Body); code != "archive_not_found" {
+				t.Errorf("body code = %q, want archive_not_found (no shape leak)", code)
+			}
+		})
+	}
+}
+
+func TestGET_NotYetFinalized_404(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	// Spin up an in-flight upload via POST; PATCH never completes, so
+	// archives/<archive_id>/ is never populated. The archive_id is the
+	// CLIENT-supplied one, not the upload-id; GET on it must 404.
+	clientArchiveID := "inflight-001"
+	_, _ = createUpload(t, h, "recognizer", clientArchiveID, []byte("not-finalized"))
+
+	req := newGetRequest(t, "recognizer", clientArchiveID)
+	w := httptest.NewRecorder()
+	h.get(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+	if code := decodeErrorBody(t, w.Body); code != "archive_not_found" {
+		t.Errorf("body code = %q, want archive_not_found", code)
+	}
+}
+
+func TestGET_NoAuth_500_WiringBug(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	// Build a request WITHOUT WithDeliveredBy in the context.
+	req := httptest.NewRequest(http.MethodGet, archivesBasePath+"/any-id", nil)
+	w := httptest.NewRecorder()
+	h.get(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "internal_wiring" {
+		t.Errorf("body code = %q, want internal_wiring", code)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Mount — routing + middleware wiring
+// ---------------------------------------------------------------------
+
+// withAuthCtxMiddleware is a tiny test middleware that injects a
+// delivered_by value into the request context before delegating to the
+// next handler. Used by routing tests to satisfy requireDeliveredBy.
+func withAuthCtxMiddleware(sourceID string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = r.WithContext(ingest.WithDeliveredBy(r.Context(), sourceID))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func TestMount_RoutesOptionsToOptions(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 32212254720)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodOptions, archivesBasePath, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Tus-Version"); got != "1.0.0" {
+		t.Errorf("Tus-Version = %q, want 1.0.0", got)
+	}
+	if got := w.Header().Get("Tus-Extension"); got != "creation,termination,checksum" {
+		t.Errorf("Tus-Extension = %q, want extensions list", got)
+	}
+}
+
+func TestMount_RoutesPostToCreate(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux, withAuthCtxMiddleware("recognizer"))
+
+	body := []byte("mount-post-body")
+	sum := sha256.Sum256(body)
+	pairs := validMetaPairs("mount-post-001", int64(len(body)))
+	pairs["sha256"] = hex.EncodeToString(sum[:])
+
+	req := httptest.NewRequest(http.MethodPost, archivesBasePath, nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Upload-Length", strconv.FormatInt(int64(len(body)), 10))
+	req.Header.Set("Upload-Metadata", encMeta(pairs))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+	if loc := w.Header().Get("Location"); !strings.HasPrefix(loc, archivesBasePath+"/") {
+		t.Errorf("Location = %q, want prefix %q", loc, archivesBasePath+"/")
+	}
+}
+
+func TestMount_RoutesHEADToHead(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux, withAuthCtxMiddleware("recognizer"))
+
+	body := []byte("mount-head")
+	uploadID, _ := createUpload(t, h, "recognizer", "mount-head-001", body)
+
+	req := httptest.NewRequest(http.MethodHead, archivesBasePath+"/"+uploadID, nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Upload-Offset"); got != "0" {
+		t.Errorf("Upload-Offset = %q, want 0", got)
+	}
+	if got := w.Header().Get("Upload-Length"); got != strconv.FormatInt(int64(len(body)), 10) {
+		t.Errorf("Upload-Length = %q, want %d", got, len(body))
+	}
+}
+
+func TestMount_RoutesPATCHToPatch(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux, withAuthCtxMiddleware("recognizer"))
+
+	// First create the upload (also via the mux to prove POST works).
+	body := []byte("mount-patch-body")
+	uploadID, _ := createUpload(t, h, "recognizer", "mount-patch-001", body)
+
+	req := httptest.NewRequest(http.MethodPatch, archivesBasePath+"/"+uploadID, bytes.NewReader(body))
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Content-Type", patchContentType)
+	req.Header.Set("Upload-Offset", "0")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMount_RoutesDELETEToDelete(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux, withAuthCtxMiddleware("recognizer"))
+
+	body := []byte("mount-delete")
+	uploadID, _ := createUpload(t, h, "recognizer", "mount-delete-001", body)
+
+	req := httptest.NewRequest(http.MethodDelete, archivesBasePath+"/"+uploadID, nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMount_RoutesGETToGet(t *testing.T) {
+	h, root := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux, withAuthCtxMiddleware("recognizer"))
+
+	archiveID := "mount-get-001"
+	stageExistingArchive(t, root, archiveID, "recognizer",
+		"feedfacefeedface0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	req := httptest.NewRequest(http.MethodGet, archivesBasePath+"/"+archiveID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
+func TestMount_MethodNotAllowed_BasePath(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodPut, archivesBasePath, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	allow := w.Header().Get("Allow")
+	if !strings.Contains(allow, "OPTIONS") || !strings.Contains(allow, "POST") {
+		t.Errorf("Allow = %q, want OPTIONS and POST listed", allow)
+	}
+}
+
+func TestMount_MethodNotAllowed_PerIDPath(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodPut, archivesBasePath+"/some-id", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	allow := w.Header().Get("Allow")
+	for _, want := range []string{"HEAD", "PATCH", "DELETE", "GET"} {
+		if !strings.Contains(allow, want) {
+			t.Errorf("Allow = %q, want %s listed", allow, want)
+		}
+	}
+}
+
+// recordingMiddleware appends its tag to a shared slice each time it
+// runs. Used to assert middleware-chain order in TestMount_MiddlewareThreadsInOrder.
+func recordingMiddleware(tag string, order *[]string, mu *sync.Mutex) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*order = append(*order, tag)
+			mu.Unlock()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func TestMount_MiddlewareThreadsInOrder(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 32212254720)
+	mux := http.NewServeMux()
+
+	var mu sync.Mutex
+	var order []string
+	outer := recordingMiddleware("outer", &order, &mu)
+	inner := recordingMiddleware("inner", &order, &mu)
+
+	// Pass [outer, inner] -> expect outer runs first, then inner, then
+	// the handler. The Mount comment specifies outermost-to-innermost
+	// in the argument order.
+	h.Mount(mux, outer, inner)
+
+	req := httptest.NewRequest(http.MethodOptions, archivesBasePath, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	want := []string{"outer", "inner"}
+	if len(order) != len(want) {
+		t.Fatalf("middleware invocation count = %d (%v), want %d (%v)", len(order), order, len(want), want)
+	}
+	for i, tag := range want {
+		if order[i] != tag {
+			t.Errorf("order[%d] = %q, want %q (full = %v)", i, order[i], tag, order)
+		}
+	}
+}
