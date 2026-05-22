@@ -141,6 +141,11 @@ func NewStore(cfg StoreConfig) *Store {
 // UploadState in the store. The new upload-id is 128-bit random hex
 // (32 lowercase hex chars) generated from crypto/rand.
 //
+// m may be nil; in that case the UploadState's ArchiveID defaults to
+// the empty string. Production callers route through ParseUploadMetadata
+// and supply a non-nil Metadata, but tests construct fixtures with nil
+// to avoid the metadata-parse dependency.
+//
 // Returns ErrConcurrencyGlobal if the global in-flight cap is reached
 // (checked first, intentionally — see ErrConcurrencyGlobal docs);
 // ErrConcurrencyPerSource if the per-source cap is reached; or a

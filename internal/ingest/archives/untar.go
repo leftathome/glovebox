@@ -35,6 +35,44 @@ var (
 	ErrTarTooMany       = errors.New("entry count exceeded cap")
 )
 
+// ClassifyReason maps an Untar error to its coarsest matching spec
+// §4.7 rejection reason string. C1's finalize handler uses this to feed
+// EventTarSafetyReject + RecordTarSafetyReject without re-running the
+// validator.
+//
+// The mapping is COARSE: ErrTarNameInvalid collapses several spec
+// reasons (name_invalid_utf8 / name_contains_nul / name_contains_control
+// / name_too_long) into the umbrella "name_invalid"; ErrTarPathTraversal
+// collapses name_absolute + name_traversal. Finer granularity is a
+// follow-up — the validator helpers (validUntarName, hasPathTraversal)
+// would need to return typed *TarError values carrying the precise
+// sub-reason. Documented as a known limitation; the metric's `reason`
+// label retains operational usefulness at the coarse level.
+//
+// Returns ok=false if err is nil or not a known Untar sentinel. In that
+// case the caller should log the raw error and skip the metric emission
+// (or use an "unknown" bucket).
+func ClassifyReason(err error) (string, bool) {
+	switch {
+	case err == nil:
+		return "", false
+	case errors.Is(err, ErrTarPaxOverride):
+		return "pax_path_override", true
+	case errors.Is(err, ErrTarTypeflag):
+		return "typeflag_disallowed", true
+	case errors.Is(err, ErrTarNameInvalid):
+		return "name_invalid", true
+	case errors.Is(err, ErrTarPathTraversal):
+		return "name_traversal", true
+	case errors.Is(err, ErrTarTooLarge):
+		return "size_too_large", true
+	case errors.Is(err, ErrTarTooMany):
+		return "entry_count_too_large", true
+	default:
+		return "", false
+	}
+}
+
 // errExceededCap is the internal signal from writeCapped indicating the
 // per-entry stream produced more bytes than the remaining cumulative budget.
 // Surfaced to callers as ErrTarTooLarge.

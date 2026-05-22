@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -709,5 +710,38 @@ func appendOctal6(dst []byte, v uint) []byte {
 		dst = append(dst, digits[i])
 	}
 	return dst
+}
+
+// ---- ClassifyReason ----
+
+func TestClassifyReason_MapsKnownSentinels(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want string
+		ok   bool
+	}{
+		{"nil", nil, "", false},
+		{"pax override", ErrTarPaxOverride, "pax_path_override", true},
+		{"typeflag", ErrTarTypeflag, "typeflag_disallowed", true},
+		{"name invalid", ErrTarNameInvalid, "name_invalid", true},
+		{"path traversal", ErrTarPathTraversal, "name_traversal", true},
+		{"too large", ErrTarTooLarge, "size_too_large", true},
+		{"too many", ErrTarTooMany, "entry_count_too_large", true},
+		{"unknown", errors.New("disk full"), "", false},
+		{"wrapped name invalid", fmt.Errorf("entry %q: %w", "bad", ErrTarNameInvalid), "name_invalid", true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := ClassifyReason(tc.err)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("ClassifyReason(%v) = (%q, %v), want (%q, %v)",
+					tc.err, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
 }
 
