@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sync"
 	"sync/atomic"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -27,9 +26,11 @@ type tokenEntry struct {
 }
 
 // TokenStore holds the validated set of tokens. Lookups are
-// constant-time linear scans per spec 10 section 4.3.
+// constant-time linear scans per spec 10 section 4.3. The atomic
+// pointer is the sole synchronization primitive; lookups read without
+// locking and Reload swaps the pointer atomically with a freshly
+// allocated slice. No mutex is needed.
 type TokenStore struct {
-	mu      sync.RWMutex
 	entries atomic.Pointer[[]tokenEntry] // atomic swap on reload
 	loadErr atomic.Pointer[error]        // most recent reload error (nil = healthy)
 }
@@ -40,6 +41,18 @@ func NewTokenStore() *TokenStore {
 	empty := []tokenEntry{}
 	s.entries.Store(&empty)
 	return s
+}
+
+// LoadErr returns the most recent Reload error (nil = healthy). C3's
+// startup path uses this to detect "first load failed, no cache"
+// without needing to capture the Reload error at boot. Safe to call
+// concurrently with Reload.
+func (s *TokenStore) LoadErr() error {
+	p := s.loadErr.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // sourceIDRe matches the spec 10 section 3.2 format:

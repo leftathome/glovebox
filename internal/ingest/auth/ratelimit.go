@@ -50,7 +50,23 @@ type bucketEntry struct {
 // LRUCapacity is replaced by the spec default (1000). Window and the two
 // MaxRejected values are NOT defaulted; callers are expected to set them
 // from the Helm values block (spec 10 §9).
+// NewRateLimiter panics on a zero or negative value for Window /
+// PerIPMaxRejected / GlobalMaxRejected: dividing by zero in
+// rate.Every would either panic deep in golang.org/x/time/rate or
+// produce a useless infinite-rate limiter. Surfacing the misconfig at
+// startup is friendlier than the first 401 minutes later silently
+// flapping. Helm defaults populate all three (spec 10 §9), so this
+// only fires for direct-Go callers that forgot to set them.
 func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
+	if cfg.Window <= 0 {
+		panic("auth.NewRateLimiter: Window must be > 0")
+	}
+	if cfg.PerIPMaxRejected <= 0 {
+		panic("auth.NewRateLimiter: PerIPMaxRejected must be > 0")
+	}
+	if cfg.GlobalMaxRejected <= 0 {
+		panic("auth.NewRateLimiter: GlobalMaxRejected must be > 0")
+	}
 	if cfg.LRUCapacity <= 0 {
 		cfg.LRUCapacity = 1000
 	}

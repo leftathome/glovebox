@@ -366,6 +366,39 @@ func TestReload_MissingTokenField_Skipped(t *testing.T) {
 	}
 }
 
+// ---- LoadErr accessor ----
+
+func TestLoadErr_HealthyAfterSuccess(t *testing.T) {
+	s := NewTokenStore()
+	if err := s.LoadErr(); err != nil {
+		t.Errorf("LoadErr on fresh store = %v, want nil", err)
+	}
+	fv := &fakeVault{
+		Data: map[string]map[string]any{
+			"recognizer": {"token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		},
+	}
+	if err := s.Reload(context.Background(), ReloadConfig{Client: fv, BasePath: "glovebox/ingest-tokens"}); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if err := s.LoadErr(); err != nil {
+		t.Errorf("LoadErr after success = %v, want nil", err)
+	}
+}
+
+func TestLoadErr_ReportsListFailure(t *testing.T) {
+	s := NewTokenStore()
+	listErr := errors.New("vault is sealed")
+	fv := &fakeVault{ListErr: listErr}
+	if err := s.Reload(context.Background(), ReloadConfig{Client: fv, BasePath: "glovebox/ingest-tokens"}); err == nil {
+		t.Fatal("Reload returned nil; expected list error")
+	}
+	got := s.LoadErr()
+	if got == nil || !errors.Is(got, listErr) {
+		t.Errorf("LoadErr = %v, want wrapped vault-is-sealed error", got)
+	}
+}
+
 // ---- sanitizeForLog ----
 
 func TestSanitizeForLog_StripsControlsAndCaps(t *testing.T) {

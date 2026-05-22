@@ -43,3 +43,21 @@ func TestBucketIP_IPv6_64(t *testing.T) {
 		t.Errorf("got %q, want 2001:db8:1:2::/64", got)
 	}
 }
+
+func TestBucketIP_IPv4MappedIPv6_CanonicalizesToIPv4(t *testing.T) {
+	// ::ffff:192.0.2.1 is the IPv4-mapped form of 192.0.2.1. The
+	// canonical bucket must be the IPv4 /24, not an IPv6 /64.
+	if got := BucketIP("::ffff:192.0.2.1"); got != "192.0.2.0/24" {
+		t.Errorf("got %q, want 192.0.2.0/24 (IPv4-mapped should canonicalize)", got)
+	}
+}
+
+func TestResolveClientIP_RemoteAddrWithoutPort_FallsBack(t *testing.T) {
+	// Some test envs / proxies pass r.RemoteAddr already in bare-host
+	// form. SplitHostPort fails; we fall back to the raw value.
+	r := &ProxyResolver{}
+	got := r.ResolveClientIP("203.0.113.5", "")
+	if got != "203.0.113.5" {
+		t.Errorf("got %q, want 203.0.113.5 (bare-host fallback)", got)
+	}
+}

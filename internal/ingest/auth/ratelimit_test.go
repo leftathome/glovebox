@@ -56,3 +56,25 @@ func TestRateLimiter_GlobalBackstop(t *testing.T) {
 		t.Error("global backstop should have tripped at attempt 4")
 	}
 }
+
+func TestNewRateLimiter_PanicsOnZeroConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  RateLimitConfig
+	}{
+		{"zero Window", RateLimitConfig{Window: 0, PerIPMaxRejected: 10, GlobalMaxRejected: 100}},
+		{"zero PerIPMaxRejected", RateLimitConfig{Window: time.Minute, PerIPMaxRejected: 0, GlobalMaxRejected: 100}},
+		{"zero GlobalMaxRejected", RateLimitConfig{Window: time.Minute, PerIPMaxRejected: 10, GlobalMaxRejected: 0}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("NewRateLimiter(%+v) did not panic", tc.cfg)
+				}
+			}()
+			NewRateLimiter(tc.cfg)
+		})
+	}
+}
