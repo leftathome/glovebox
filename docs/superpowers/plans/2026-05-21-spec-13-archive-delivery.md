@@ -60,7 +60,7 @@ go.mod                                          (MODIFY — add golang.org/x/tim
 
 ## Conventions (Read Before Starting)
 
-- **Branch:** `chore/beads-glovebox-p1zx` (currently checked out). Do NOT push to github (broken HTTPS); `git push gitlab spec-12-schoology-connector` works for other branches but this work commits locally only. Final merge to main via local `git merge --no-ff`, mirroring the spec-12 pattern.
+- **Branch:** `chore/beads-glovebox-p1zx` (currently checked out). Do NOT push to github (broken HTTPS in this WSL session per the spec-12 handoff memory); use `git push gitlab chore/beads-glovebox-p1zx` to back up the branch. Final merge to main via local `git merge --no-ff`, mirroring the spec-12 pattern.
 - **Beads tracking:** every task below is one bead. Claim via `bd update <id> --claim`, do the work, close via `bd close <id>` from the orchestrator (NOT the implementer agent). The orchestrator dispatches implementer + 2 reviewers per task; review findings bundle into one cleanup commit per wave.
 - **TDD discipline:** every task starts with a failing test, runs it to confirm it fails for the right reason, writes minimal code, runs the test to confirm it passes, then commits. Don't skip the "run it failing first" step — that's where you catch test-doesn't-actually-test-what-you-think bugs.
 - **Commit message format:** `<package>: <imperative summary> (glovebox-<id>)`.
@@ -70,6 +70,8 @@ go.mod                                          (MODIFY — add golang.org/x/tim
 - **Test helpers:** `internal/ingest/archives/` tests share helpers via a `helpers_test.go` file added in the first task that needs them. Other tasks add to it rather than re-defining.
 - **Nil-safety convention:** every type that could be nil in tests (Telemetry-style) has nil-safe Record/StartSpan/etc. helpers. Mirrors spec 12 §13's pattern.
 - **Spec 12 §5 is the Vault K8s auth precedent.** Re-read `connectors/schoology-auth-refresher/main.go`'s `newVaultClient` function before writing the spec 10 token loader; the pattern is identical.
+- **Atomic file writes:** `internal/atomicfile/` (currently in the working tree, untracked) is the in-progress helper for the tmp+rename pattern. Task C1's `atomicWrite` helper SHOULD use it once it lands (or vendor the same tmp+rename idiom inline if `atomicfile` isn't tracked yet). Track this assumption with a `// TODO: switch to internal/atomicfile.Write once tracked` comment.
+- **Shared test helpers (`helpers_test.go`):** Task B2 owns this file. It creates per-upload-state fixtures (`mustNewUploadState(t, ...)`) and a `mustNewTokenStore(t, ...)` helper. Subsequent tasks add to it rather than re-defining.
 
 ---
 
@@ -87,16 +89,39 @@ Wave B (parallel, blocks Wave C):
   glovebox-B1  spec 13 impl: Upload-Metadata parse + validate (internal/ingest/archives/metadata.go)
   glovebox-B2  spec 13 impl: upload-id store + per-upload mutex (internal/ingest/archives/store.go)
   glovebox-B3  spec 13 impl: tar safety + streaming extract (internal/ingest/archives/untar.go)
+  glovebox-B4  spec 13 impl: Telemetry — metrics + spans + log constants (internal/ingest/archives/telemetry.go)
 
-Wave C (sequential, depends on Wave A + Wave B):
-  glovebox-C1  spec 13 impl: finalize (sha256 verify + dispatch + atomic rename)
-  glovebox-C2  spec 13 impl: tus.io HTTP handler (mounts B1+B2+B3+C1)
-  glovebox-C3  spec 13 impl: server wire-up + quota goroutine + cleanup goroutine
-  glovebox-C4  spec 13 impl: end-to-end integration test
+Wave C (mostly-sequential, depends on Wave A + Wave B):
+  glovebox-C1   spec 13 impl: finalize (sha256 verify + dispatch + atomic rename)
+  glovebox-C2a  spec 13 impl: tus.io handler — OPTIONS + POST + idempotency
+  glovebox-C2b  spec 13 impl: tus.io handler — HEAD + PATCH + DELETE
+  glovebox-C2c  spec 13 impl: tus.io handler — GET receipt + wire-up + middleware mount
+  glovebox-C3   spec 13 impl: server wire-up — startup checks + token reload (SIGHUP + periodic) + quota goroutine + cleanup goroutine
+  glovebox-C4   spec 13 impl: end-to-end integration test
 
 Wave D (parallel, depends on Wave C):
   glovebox-D1  spec 13 impl: Helm chart updates (values.yaml + ExternalSecret + NetworkPolicy)
   glovebox-D2  spec 13 impl: smoke test script (12 GiB upload against container image)
+```
+
+**bd create commands** (paste-executable by the orchestrator):
+
+```bash
+bd create --title="spec 13 impl: Vault token loader + reload" --description="See plan §Task A1" --type=task --priority=2
+bd create --title="spec 13 impl: rate limiter + proxy trust" --description="See plan §Task A2" --type=task --priority=2
+bd create --title="spec 13 impl: delivered_by provenance plumbing" --description="See plan §Task A3" --type=task --priority=2
+bd create --title="spec 13 impl: Upload-Metadata parse + validate" --description="See plan §Task B1" --type=task --priority=2
+bd create --title="spec 13 impl: upload-id store + per-upload mutex" --description="See plan §Task B2" --type=task --priority=2
+bd create --title="spec 13 impl: tar safety + streaming extract" --description="See plan §Task B3" --type=task --priority=2
+bd create --title="spec 13 impl: Telemetry surface" --description="See plan §Task B4" --type=task --priority=2
+bd create --title="spec 13 impl: finalize sha256+dispatch+rename" --description="See plan §Task C1" --type=task --priority=2
+bd create --title="spec 13 impl: tus.io handler OPTIONS+POST" --description="See plan §Task C2a" --type=task --priority=2
+bd create --title="spec 13 impl: tus.io handler HEAD+PATCH+DELETE" --description="See plan §Task C2b" --type=task --priority=2
+bd create --title="spec 13 impl: tus.io handler GET+wire-up" --description="See plan §Task C2c" --type=task --priority=2
+bd create --title="spec 13 impl: server wire-up + goroutines" --description="See plan §Task C3" --type=task --priority=2
+bd create --title="spec 13 impl: end-to-end integration test" --description="See plan §Task C4" --type=task --priority=2
+bd create --title="spec 13 impl: Helm chart updates" --description="See plan §Task D1" --type=task --priority=2
+bd create --title="spec 13 impl: 12 GiB smoke test script" --description="See plan §Task D2" --type=task --priority=2
 ```
 
 ---
@@ -381,6 +406,15 @@ Expected: PASS.
 
 - [ ] **Step 11: Implement `Reload` against a `vaultapi.Client` seam.**
 
+The implementation MUST use a TWO-PASS algorithm for duplicate-token detection to handle triple/quadruple collisions correctly. The single-pass code shown below is illustrative of the per-entry shape only; the real `Reload` body wraps the per-entry processing in two passes:
+
+```
+pass 1: walk all Vault entries, validate source-id + token format, count token-bytes frequencies in a map[[32]byte]int.
+pass 2: walk Vault entries again; add a tokenEntry to `next` ONLY IF count[tok] == 1 AND source-id is valid AND token decodes cleanly.
+```
+
+A test case MUST exercise the triple-collision: three source-ids sharing one token → all three are dropped from the resulting `next` slice, three TokenLoadError metrics fire.
+
 ```go
 // internal/ingest/auth/tokens.go (append)
 
@@ -437,21 +471,13 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
             if cfg.OnError != nil { cfg.OnError(sid) }
             continue
         }
-        if prev, dup := seen[tok]; dup {
-            cfg.Logger.Error("glovebox ingest token duplicate",
-                "source_id_a", prev, "source_id_b", sid)
-            // Per spec 10 §4.1 step 7: drop BOTH entries on duplicate.
-            // We remove the already-added entry by index search.
-            for i := range next {
-                if next[i].sourceID == prev {
-                    next = append(next[:i], next[i+1:]...)
-                    break
-                }
-            }
-            delete(seen, tok)
-            if cfg.OnError != nil { cfg.OnError(prev); cfg.OnError(sid) }
-            continue
-        }
+        // Note on duplicates: a single-pass O(N) approach handles pairs but
+        // mishandles triples (three source-ids sharing one token bytes value).
+        // The plan therefore uses a two-pass strategy: first pass builds a
+        // count map; second pass adds to `next` only those source-ids whose
+        // token bytes appear EXACTLY ONCE. This is implemented below in two
+        // discrete loops; the snippet here is the per-entry portion of the
+        // SECOND pass.
         seen[tok] = sid
         next = append(next, tokenEntry{token: tok, sourceID: sid})
     }
@@ -1002,7 +1028,7 @@ git add internal/ingest/audit_provenance.go internal/ingest/audit_provenance_tes
 git commit -m "ingest: delivered_by + Identity request-context plumbing (glovebox-A3)"
 ```
 
-**Exit criteria for A3:** request context carries `delivered_by` from auth middleware to handler; `BuildIdentity` produces the spec 06 §5.2 block.
+**Exit criteria for A3:** request context carries `delivered_by` from auth middleware to handler; `BuildIdentity` produces the spec 06 §5.2 block. Task C1's `FinalizeReceipt` MUST embed `*Identity` and Task C1's test MUST assert the receipt's `metadata.json` carries the Identity block (this consumer contract is documented here so C1's implementer doesn't miss it).
 
 ---
 
@@ -1383,22 +1409,40 @@ git commit -m "ingest/archives: upload-id store + concurrent caps + binding (glo
 
 **Spec references:** spec 13 §4.7 (tar safety rules — seven steps).
 
-Tests (each failing first, then implementation):
+Tests (each failing first, then implementation). One rejection test per spec §4.7 closed-set `reason` label PLUS happy-path coverage:
 
-- absolute path → reject
-- `..` component → reject
-- NUL in name → reject
-- non-UTF8 name → reject
-- name too long (> 4096) → reject
-- component too long (> 255) → reject
-- symlink typeflag → reject
-- hardlink typeflag → reject
-- device file → reject
-- pax header with `path` key → reject
-- cumulative size > 2× declared limit → reject
-- entry count > 1M → reject
-- happy path: 3 regular files extracted into expected paths with mode 0600
-- happy path: 2 directories + nested files extracted with directory mode 0700
+- `name_absolute` — entry starts with `/` → reject
+- `name_traversal` — `..` component → reject
+- `name_traversal` — Windows drive prefix (`C:`) → reject
+- `name_traversal` — double-slash `//` → reject
+- `name_traversal` — trailing slash on TypeReg → reject
+- `name_contains_nul` — NUL byte in name → reject
+- `name_contains_control` — `\n`, `\r`, `\t` in name → reject
+- `name_invalid_utf8` — invalid UTF-8 sequence → reject
+- `name_too_long` — name > 4096 bytes → reject
+- `name_too_long` — any path component > 255 bytes → reject
+- `typeflag_disallowed` — `TypeSymlink` → reject
+- `typeflag_disallowed` — `TypeLink` (hardlink) → reject
+- `typeflag_disallowed` — `TypeChar` / `TypeBlock` / `TypeFifo` (device) → reject (one test each)
+- `typeflag_disallowed` — `TypeGNUSparse` → reject
+- `typeflag_disallowed` — `TypeGNULongName` / `TypeGNULongLink` → reject
+- `pax_path_override` — pax header with `path` key → reject
+- `pax_path_override` — pax header with `linkpath` key → reject (separate test from `path` per the spec text)
+- `size_too_large` — per-entry declared `Size` > `Upload-Length` → reject
+- `cumulative_size_too_large` — total written bytes > 2× declared total → reject; uses bytes-written-incrementally check per spec §4.7 step 6
+- `entry_count_too_large` — > 1,000,000 entries → reject (use a synthetic tar with a small total but many tiny entries; cap the test at 100 for speed and verify the threshold logic separately with a mocked counter)
+- `soft_cap_exceeded` — extracting next entry would push source over soft cap → reject (uses a fake quota provider; spec §4.7 step 7)
+- **Mode hygiene** (3 separate tests):
+  - happy path: regular file extracted with mode `0600` regardless of tar header mode
+  - happy path: directory extracted with mode `0700` regardless of tar header mode
+  - set-uid bit in tar header is dropped — file extracted with mode `0600` (NOT `0600|os.ModeSetuid`)
+- **UID/GID hygiene**: tar entry with Uid=12345 is extracted as the process UID (assert via `os.Stat`)
+- **Happy paths**:
+  - 3 regular files at top level → extracted, mode 0600, correct content
+  - 2 directories + nested files → extracted, directory mode 0700, file mode 0600
+  - Empty tar (no entries) → no error, 0 entries
+
+The implementation MUST evaluate the cumulative-size cap against bytes ACTUALLY WRITTEN to disk (not header-declared Size), incrementally during the per-entry write loop, per spec §4.7 step 6's iteration-3 wording.
 
 Implementation surface:
 
@@ -1556,6 +1600,205 @@ git commit -m "ingest/archives: tar safety + streaming extract (glovebox-B3)"
 ```
 
 **Exit criteria for B3:** every spec §4.7 rule has a passing rejection test; the happy paths (raw + nested) extract with the correct modes.
+
+---
+
+### Task B4: Telemetry Surface (metrics + spans + log constants)
+
+**Files:**
+- Create: `internal/ingest/archives/telemetry.go`
+- Create: `internal/ingest/archives/telemetry_test.go`
+
+**Spec references:** spec 13 §7 (all of it — §7.1 metrics, §7.2 traces, §7.3 logs, §7.4 alerts as comments).
+
+Mirrors the spec-12 `connectors/schoology/telemetry.go` pattern: a `Telemetry` struct embedding the framework's existing OTel exporter setup with schoology-specific OTel instruments + nil-safe Record helpers. Read `connectors/schoology/telemetry.go` first as the precedent.
+
+- [ ] **Step 1: Define the `Telemetry` struct + nil-safe constructor.**
+
+```go
+// internal/ingest/archives/telemetry.go
+package archives
+
+import (
+    "context"
+    "fmt"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/metric"
+    "go.opentelemetry.io/otel/trace"
+)
+
+type Telemetry struct {
+    // Spec 13 §7.1 metrics
+    uploadsTotal               metric.Int64Counter   // status: created/completed/failed_*/terminated
+    uploadBytesTotal           metric.Int64Counter
+    uploadDuration             metric.Float64Histogram
+    uploadInFlight             metric.Int64UpDownCounter
+    patchChunkBytes            metric.Int64Histogram
+    extractedEntriesTotal      metric.Int64Counter
+    extractedBytesTotal        metric.Int64Counter
+    storageBytes               metric.Int64Gauge
+    storagePct                 metric.Float64Gauge
+    storageSourceBytes         metric.Int64Gauge
+    concurrentRejectedTotal    metric.Int64Counter   // scope: per_source/global
+    patchIdleTimeoutTotal      metric.Int64Counter
+    tarSafetyRejectionsTotal   metric.Int64Counter   // reason: closed enum per §4.7
+    // Spec 10 §6.4 / spec 13 §7.1 auth metrics
+    authTotal                  metric.Int64Counter   // status: accepted/rejected/rate_limited
+    authRejectedByIPBucket     metric.Int64Counter
+    tokenLoadErrorsTotal       metric.Int64Counter
+
+    tracer trace.Tracer
+}
+
+// NewTelemetry constructs the schoology-style telemetry handle.
+// Every Record* method is nil-safe so callers that don't wire telemetry
+// (tests, the C2 `nil`-passing variants) work without panics.
+func NewTelemetry(meterName, tracerName string) (*Telemetry, error) {
+    if meterName == "" || tracerName == "" {
+        return nil, fmt.Errorf("NewTelemetry: empty meter/tracer name")
+    }
+    meter := otel.Meter(meterName)
+    t := &Telemetry{tracer: otel.Tracer(tracerName)}
+    // ... 15 metric.Int64Counter / Histogram / Gauge / UpDownCounter constructors
+    //     each wrapped: `fmt.Errorf("construct %s: %w", name, err)`
+    return t, nil
+}
+```
+
+- [ ] **Step 2: Failing tests for each Record helper's nil-safety + happy-path no-panic.**
+
+Mirror `connectors/schoology/telemetry_test.go`'s shape:
+
+```go
+func TestNewTelemetry_RegistersAllInstruments(t *testing.T) {
+    tel, err := NewTelemetry("test", "test")
+    if err != nil { t.Fatalf("NewTelemetry: %v", err) }
+    // Call every Record helper once with sample values; assert no panic.
+    tel.RecordUploadCreated(context.Background(), "recognizer", "archive/mbox")
+    tel.RecordUploadCompleted(context.Background(), "recognizer", "archive/mbox", time.Second)
+    // ... etc.
+}
+
+func TestNewTelemetry_RejectsEmptyNames(t *testing.T) {
+    if _, err := NewTelemetry("", "x"); err == nil { t.Error("empty meter accepted") }
+    if _, err := NewTelemetry("x", ""); err == nil { t.Error("empty tracer accepted") }
+}
+
+func TestTelemetry_NilSafe(t *testing.T) {
+    var nilTel *Telemetry
+    // Every Record* method called on nil; assert no panic.
+    nilTel.RecordUploadCreated(context.Background(), "x", "y")
+    // ... etc.
+}
+
+func TestTelemetry_StartSpanOnNilUsesGlobalTracer(t *testing.T) {
+    var nilTel *Telemetry
+    ctx, span := nilTel.StartSpan(context.Background(), "test.span")
+    defer span.End()
+    _ = ctx
+}
+```
+
+- [ ] **Step 3: Implement each Record* method.**
+
+```go
+// Sample — every method is ~5 lines + a nil-guard.
+func (t *Telemetry) RecordUploadCreated(ctx context.Context, sourceID, mediaType string) {
+    if t == nil { return }
+    t.uploadsTotal.Add(ctx, 1, metric.WithAttributes(
+        attribute.String("source_id", sourceID),
+        attribute.String("media_type", mediaType),
+        attribute.String("status", "created"),
+    ))
+}
+```
+
+Required methods (one per spec §7.1 metric × the status enum where applicable):
+
+```
+RecordUploadCreated(ctx, source_id, media_type)
+RecordUploadCompleted(ctx, source_id, media_type, duration)
+RecordUploadFailed(ctx, source_id, media_type, reason)   // reason ∈ failed_sha256/failed_size/failed_untar/failed_auth/failed_quota/terminated
+RecordUploadBytes(ctx, source_id, media_type, n int64)
+RecordUploadInFlight(ctx, source_id, delta int64)
+RecordPatchChunkBytes(ctx, n int64)
+RecordExtractedEntries(ctx, media_type string, n int64)
+RecordExtractedBytes(ctx, media_type string, n int64)
+SetStorageBytes(ctx, n int64)
+SetStoragePct(ctx, pct float64)
+SetStorageSourceBytes(ctx, source_id string, n int64)
+RecordConcurrentRejected(ctx, source_id, scope string)   // scope ∈ per_source/global
+RecordPatchIdleTimeout(ctx, source_id string)
+RecordTarSafetyReject(ctx, source_id, reason string)
+RecordAuth(ctx, endpoint, status string)
+RecordAuthRejectedByIP(ctx, ip_bucket string)
+RecordTokenLoadError(ctx, source_id string)
+
+StartSpan(ctx, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span)
+```
+
+- [ ] **Step 4: Define event-log helpers — type-safe constants for every spec §7.3 event.**
+
+```go
+// Spec 13 §7.3 event names. Constants prevent typos that would break
+// log-aggregator queries downstream.
+const (
+    EventUploadCreated     = "glovebox archive upload created"
+    EventUploadCompleted   = "glovebox archive upload completed"
+    EventUploadAborted     = "glovebox archive upload aborted"
+    EventTarSafetyReject   = "glovebox archive upload tar safety reject"
+    EventStorageNearCap    = "glovebox archive storage near cap"
+    EventStorageHardCap    = "glovebox archive storage hard cap"
+    EventCleanup           = "glovebox archive cleanup"
+    EventIngestAuthOK      = "glovebox ingest authenticated"
+    EventIngestAuthReject  = "glovebox ingest auth rejected"
+    EventIngestAuthRL      = "glovebox ingest auth rate limited"
+)
+
+// AbortReason / TarRejectReason are closed-set enums for the reason
+// fields of the corresponding log events. Defined here so callers
+// import the constants rather than passing free-form strings.
+type AbortReason string
+const (
+    AbortSHA256Mismatch    AbortReason = "sha256_mismatch"
+    AbortSizeMismatch      AbortReason = "size_mismatch"
+    AbortTarUnsafeEntry    AbortReason = "tar_unsafe_entry"
+    AbortQuotaExceeded     AbortReason = "quota_exceeded"
+    AbortTerminatedByClient AbortReason = "terminated_by_client"
+    AbortProcessDied       AbortReason = "process_died"
+    AbortIdempotencyConflict AbortReason = "idempotency_conflict"
+)
+
+type TarRejectReason string
+const (
+    TarRejectPaxOverride       TarRejectReason = "pax_path_override"
+    TarRejectTypeflag          TarRejectReason = "typeflag_disallowed"
+    TarRejectNameInvalidUTF8   TarRejectReason = "name_invalid_utf8"
+    TarRejectNameNUL           TarRejectReason = "name_contains_nul"
+    TarRejectNameControl       TarRejectReason = "name_contains_control"
+    TarRejectNameTooLong       TarRejectReason = "name_too_long"
+    TarRejectNameTraversal     TarRejectReason = "name_traversal"
+    TarRejectNameAbsolute      TarRejectReason = "name_absolute"
+    TarRejectSizeTooLarge      TarRejectReason = "size_too_large"
+    TarRejectCumulativeSize    TarRejectReason = "cumulative_size_too_large"
+    TarRejectEntryCount        TarRejectReason = "entry_count_too_large"
+    TarRejectSoftCap           TarRejectReason = "soft_cap_exceeded"
+)
+```
+
+- [ ] **Step 5: Run + commit.**
+
+```bash
+go test ./internal/ingest/archives/ -run TestTelemetry -v -count=1
+go test ./internal/ingest/archives/ -run TestNewTelemetry -v -count=1
+go vet ./internal/ingest/archives/...
+git add internal/ingest/archives/telemetry.go internal/ingest/archives/telemetry_test.go
+git commit -m "ingest/archives: Telemetry (metrics + spans + log constants) (glovebox-B4)"
+```
+
+**Exit criteria for B4:** every spec §7.1 metric has a Record helper; every spec §7.3 event name is a constant; every closed-set reason enum has typed constants; every Record* helper is nil-safe; StartSpan on nil receiver falls through to the OTel global tracer.
 
 ---
 
@@ -1721,7 +1964,16 @@ func atomicWrite(path string, data []byte) error {
 }
 ```
 
-Tests: happy raw, happy tar, sha256 mismatch (rejects + cleans up), size mismatch (rejects + cleans up), tar safety violation propagated (rejects + cleans up), atomic rename failure simulated by pre-existing target.
+Tests:
+- Happy raw — mbox finalized, `metadata.json` written, atomic rename succeeds.
+- Happy tar — 5-file tarball untarred under `tree/`, metadata.json written, rename succeeds.
+- sha256 mismatch — rejected, tmp + finalize dirs cleaned, no `archives/<id>/` created.
+- Size mismatch (declared 1024, actual 1020 on disk) — rejected, cleaned up.
+- Tar safety violation propagated from Untar — rejected, cleaned up.
+- **Rename-to-pre-existing-target** — pre-create `archives/<archive_id>/` before calling Finalize; assert Finalize returns a sentinel error (`ErrArchiveExists`) AND cleans up the finalize dir. The caller (C2's PATCH handler at finalize-completion) MUST translate this into a 409 + JSON body `{"error":"archive_id_conflict"}` matching spec §4.3's conflict response. Two distinct source-ids racing the same archive_id is the scenario this covers.
+- **Identity block in metadata.json** — FinalizeReceipt JSON must include the spec 06 §5.2 Identity block (`provider: "ingest"`, `auth_method: "bearer_token"`, `account_id: <source-id>`). The test reads `metadata.json` after finalize and asserts the nested block is present and correct.
+
+`FinalizeReceipt` MUST embed the Identity struct from `internal/ingest/audit_provenance.go` so the staged metadata.json carries the spec 10 §6.2 contract verbatim.
 
 ```bash
 go test ./internal/ingest/archives/ -run TestFinalize -v -count=1
@@ -1731,65 +1983,125 @@ git commit -m "ingest/archives: finalize (sha256 + dispatch + atomic rename) (gl
 
 ---
 
-### Task C2: tus.io HTTP Handler
+### Task C2a: tus.io Handler — OPTIONS + POST + Idempotency
 
 **Files:**
-- Create: `internal/ingest/archives/handler.go`
-- Create: `internal/ingest/archives/handler_test.go`
+- Create: `internal/ingest/archives/handler.go` (initial skeleton, ~250 LOC)
+- Create: `internal/ingest/archives/handler_test.go` (POST + OPTIONS tests, ~300 LOC)
 
-**Spec references:** spec 13 §4.1 (method table), §4.3 (pre-flight idempotency), §4.4 (PATCH), §5.2 (st_dev check).
+**Spec references:** spec 13 §4.1 (OPTIONS + POST), §4.3 (idempotency), §4.5 (media allow-list), §5.4 (concurrent caps), §3.2 (Tus-Max-Size enforcement).
 
-Mounts at `/v1/archives`. Required handlers:
+Tests (failing-first, then minimal impl):
 
-- `OPTIONS /v1/archives` → 200 + `Tus-Version`, `Tus-Max-Size`, `Tus-Extension: creation,termination,checksum`
-- `POST /v1/archives` → idempotency check first; on miss, store.Create + allocate `.tmp-archives/<id>` → 201
-- `HEAD /v1/archives/<id>` → 200 + `Upload-Offset` + `Upload-Length` + `Tus-Expires`
-- `PATCH /v1/archives/<id>` → acquire per-upload mutex (TryLock; 409 upload_busy on fail) → append to tmp file + update hasher + update offset → if offset == length, call `Finalize` → 204
-- `DELETE /v1/archives/<id>` → cleanup tmp + store.Remove → 204
-- `GET /v1/archives/<archive_id>` → read `archives/<id>/metadata.json` → 200 with body, OR 404
-
-Implementation is large — split into per-method helpers. Tests use `httptest.NewRecorder` + `httptest.NewRequest` against the handler.
-
-Per-method test list (failing-first then implementation per spec):
-- OPTIONS returns correct headers.
+- OPTIONS returns 200 + `Tus-Version: 1.0.0` + `Tus-Max-Size: 32212254720` + `Tus-Extension: creation,termination,checksum` + `Tus-Resumable: 1.0.0`.
+- **Tus-Resumable header check** — any request (POST/HEAD/PATCH/DELETE) without `Tus-Resumable: 1.0.0` → 412 Precondition Failed. (Spec §4.1 implicit; tus.io standard.)
 - POST without Authorization → 401.
 - POST with bad token → 401.
-- POST with valid token + valid metadata → 201 + Location.
-- POST with reserved metadata key → 400.
-- POST with size_bytes != Upload-Length → 400.
+- POST with valid token + valid metadata → 201 + `Location: /v1/archives/<32-hex-upload-id>` + `Tus-Resumable: 1.0.0` + `Tus-Expires: <RFC1123>`.
+- POST with reserved `delivered_by` or `delivered_at` in Upload-Metadata → 400.
+- POST with `size_bytes != Upload-Length` → 400.
 - POST with unknown media_type → 400.
-- POST with archive_id colliding (same source-id, same sha256) → 303 + Location.
-- POST with archive_id colliding (same source-id, different sha256) → 409.
-- POST with archive_id colliding (different source-id) → 409 (no leak).
-- POST when per-source cap exceeded → 429.
-- POST when global cap exceeded → 429.
-- HEAD on unknown upload-id → 404.
-- HEAD on upload-id from different source-id → 404 (binding check).
-- HEAD happy path → 200 + Upload-Offset + Upload-Length + Tus-Expires.
-- PATCH wrong Content-Type → 415.
-- PATCH offset mismatch → 409 offset_mismatch.
-- PATCH concurrent (mutex held) → 409 upload_busy.
-- PATCH happy path appending bytes → 204 + new Upload-Offset.
-- PATCH that completes the upload → triggers Finalize → 204 with Upload-Offset == Upload-Length.
-- PATCH that triggers sha256 mismatch in Finalize → 400.
-- DELETE happy path → 204; tmp file + state removed.
-- GET on finalized archive → 200 + receipt.
-- GET on non-finalized → 404.
-- Hard-cap 503 when global storage_pct over threshold (use a fake quota provider).
+- **POST with `Upload-Length > Tus-Max-Size`** → 413 Payload Too Large.
+- POST with archive_id colliding (same source-id, same sha256) → 303 See Other + `Location: /v1/archives/<archive_id>`. Body empty.
+- POST with archive_id colliding (same source-id, different sha256) → 409 + `{"error":"archive_id_conflict"}` (body MUST NOT echo the existing sha256 per spec §4.3).
+- POST with archive_id colliding (different source-id) → 409 (same body; no source-id leak).
+- POST when per-source cap exceeded → 429 + `Retry-After: 60`.
+- POST when global cap exceeded → 429 + `Retry-After: 60`.
 
-This is the biggest single task in the plan. Estimated 600-800 LOC + ~800 LOC of tests. May be split into C2a (POST + idempotency + binding), C2b (HEAD/PATCH/DELETE), C2c (GET + OPTIONS) if the implementer requests.
+The C2a commit produces a working `OPTIONS` + `POST` flow. Subsequent C2b/C2c builds on the same `handler.go` file.
 
 ```bash
-go test ./internal/ingest/archives/ -count=1 -v
+go test ./internal/ingest/archives/ -run "TestOPTIONS|TestPOST" -v -count=1
 git add internal/ingest/archives/handler.go internal/ingest/archives/handler_test.go
-git commit -m "ingest/archives: tus.io HTTP handler (glovebox-C2)"
+git commit -m "ingest/archives: tus.io handler — OPTIONS + POST + idempotency (glovebox-C2a)"
 ```
-
-**Exit criteria for C2:** every spec §4.1 method + every spec §4.4 PATCH rule + every spec §4.3 idempotency branch has a passing test. The handler depends on Wave A + B already landed.
 
 ---
 
-### Task C3: Server Wire-Up + Quota Goroutine + Cleanup Goroutine
+### Task C2b: tus.io Handler — HEAD + PATCH + DELETE
+
+**Files:**
+- Modify: `internal/ingest/archives/handler.go` (add HEAD/PATCH/DELETE method handlers, ~250 LOC)
+- Modify: `internal/ingest/archives/handler_test.go` (HEAD/PATCH/DELETE tests, ~400 LOC)
+
+**Spec references:** spec 13 §4.1 (HEAD/PATCH/DELETE), §4.4 (PATCH validation + idle timeout), §4.6 (finalize triggered by final PATCH).
+
+Tests:
+
+- HEAD on unknown upload-id → 404.
+- HEAD on upload-id from different source-id → 404 (binding check; intentionally the same 404 as "doesn't exist" to prevent existence leak).
+- HEAD happy path → 200 + `Upload-Offset` + `Upload-Length` + `Tus-Expires` + `Tus-Resumable: 1.0.0`.
+- PATCH wrong Content-Type → 415.
+- PATCH offset mismatch → 409 + `{"error":"offset_mismatch","expected":N}`.
+- PATCH on upload-id from different source-id → 404 (binding).
+- **PATCH concurrent (mutex held)** → 409 + `{"error":"upload_busy"}` (test via two goroutines starting PATCH simultaneously; one must see upload_busy).
+- PATCH happy path appending bytes → 204 + new `Upload-Offset`.
+- PATCH that completes the upload (offset reaches Upload-Length) → triggers Finalize → 204 with `Upload-Offset == Upload-Length`. Assert `archives/<archive_id>/metadata.json` exists post-response.
+- PATCH that triggers sha256 mismatch in Finalize → 400 + `{"error":"sha256_mismatch","claimed":"...","computed":"..."}`. Assert tmp + finalize dirs cleaned.
+- PATCH that triggers a Finalize rename-collision (pre-existing `archives/<archive_id>/` from a different source) → 409 + archive_id_conflict body.
+- **PATCH idle timeout** — open a PATCH with a slow reader that pauses indefinitely; server terminates after `patchIdleTimeoutSeconds` (test with a 1-second timeout, NOT 300s). Assert the upload-id remains valid for resume via HEAD + new PATCH. Counter `glovebox_archive_patch_idle_timeout_total{source_id}` increments.
+- DELETE happy path → 204; tmp file + state removed; HEAD on the same upload-id afterwards → 404.
+- DELETE on upload-id from different source-id → 404 (binding).
+
+```bash
+go test ./internal/ingest/archives/ -run "TestHEAD|TestPATCH|TestDELETE" -v -count=1
+git add internal/ingest/archives/handler.go internal/ingest/archives/handler_test.go
+git commit -m "ingest/archives: tus.io handler — HEAD + PATCH + DELETE (glovebox-C2b)"
+```
+
+---
+
+### Task C2c: tus.io Handler — GET Receipt + Middleware Mount
+
+**Files:**
+- Modify: `internal/ingest/archives/handler.go` (GET handler + Mount helper, ~100 LOC)
+- Modify: `internal/ingest/archives/handler_test.go` (GET + integration mount tests, ~150 LOC)
+
+**Spec references:** spec 13 §4.1 (GET receipt), §4.8 (receipt JSON shape), §6 (auth integration).
+
+Tests:
+
+- GET on finalized archive → 200 + receipt JSON matching `FinalizeReceipt` shape (including the spec 06 §5.2 Identity block from C1's update).
+- GET on archive belonging to a different source-id → 404.
+- GET on non-existent archive_id → 404.
+- GET on archive that's mid-upload (not yet finalized) → 404 (the GET resource is the finalized archive, NOT the in-flight upload).
+- Mount-test: assert the handler's `Mount(mux *http.ServeMux, middleware ...Middleware)` correctly wraps every method route with the auth middleware from Wave A. Use a fake middleware that counts invocations.
+
+```go
+// Sketch of the Mount helper.
+func (h *Handler) Mount(mux *http.ServeMux, middleware ...Middleware) {
+    routes := []struct{
+        method, path string
+        fn http.HandlerFunc
+    }{
+        {"OPTIONS", "/v1/archives", h.options},
+        {"POST",    "/v1/archives", h.create},
+        // ... HEAD/PATCH/DELETE go to /v1/archives/ (with trailing slash for routing)
+    }
+    final := func(fn http.HandlerFunc) http.Handler {
+        var h http.Handler = fn
+        for i := len(middleware) - 1; i >= 0; i-- {
+            h = middleware[i](h)
+        }
+        return h
+    }
+    for _, r := range routes {
+        mux.Handle(r.path, final(methodGate(r.method, r.fn)))
+    }
+}
+```
+
+```bash
+go test ./internal/ingest/archives/ -count=1 -v   # full handler suite passes
+git add internal/ingest/archives/handler.go internal/ingest/archives/handler_test.go
+git commit -m "ingest/archives: tus.io handler — GET receipt + mount (glovebox-C2c)"
+```
+
+**Exit criteria for the C2a/b/c trilogy:** every spec §4.1 method + every spec §4.4 PATCH rule + every spec §4.3 idempotency branch + spec §3.2 Tus-Max-Size + Tus-Resumable + idle-timeout has a passing test. The handler depends on Wave A + B already landed.
+
+---
+
+### Task C3: Server Wire-Up + Goroutines + Startup Checks
 
 **Files:**
 - Modify: `internal/ingest/server.go`
@@ -1797,27 +2109,198 @@ git commit -m "ingest/archives: tus.io HTTP handler (glovebox-C2)"
 - Create: `internal/ingest/archives/quota_test.go`
 - Create: `internal/ingest/archives/cleanup.go`
 - Create: `internal/ingest/archives/cleanup_test.go`
+- Modify: `internal/ingest/auth/middleware.go` (or create if not added by Wave A; see Note below)
 
-**Spec references:** spec 13 §5.2 (st_dev startup check), §5.4 (storage measurement), §5.5 (cleanup).
+**Note on middleware:** Wave A created the `auth` package primitives (token store, rate limiter, proxy resolver) but did NOT explicitly create an HTTP middleware function combining them. C3 adds `auth.Middleware(store *TokenStore, rl *RateLimiter, pr *ProxyResolver, tel *Telemetry) func(http.Handler) http.Handler` since the middleware ties together pieces from all of A1+A2+A3 (and B4's telemetry) and is most naturally written at wire-up time. If Wave A's reviewers want the middleware extracted, this can move to a Wave A follow-up task.
 
-Steps:
-1. Quota goroutine: walks `archives/` + `.tmp-archives/`, sums by source-id; updates gauges; computes hard-cap pct. Exposed via `func StorageStats() (totalPct float64, perSource map[string]int64)`.
-2. Cleanup goroutine: scans `.tmp-archives/` on a 60-min interval (configurable); deletes orphans per §5.5 thresholds.
-3. server.go: at startup, runs the §5.2 st_dev check. If pass, mounts the `/v1/archives*` handler tree (created by C2). If fail, registers a fallback handler that returns 503 for `/v1/archives*` and logs the reason at boot.
-4. The auth middleware (from Wave A) wraps the archives handler.
+**Spec references:** spec 13 §5.2 (st_dev startup check), §5.4 (storage measurement + 95/85 hysteresis), §5.5 (cleanup), spec 10 §4.1 (startup-bind-refusal on token-load failure), spec 10 §4.2 (SIGHUP + periodic reload triggers).
+
+- [ ] **Step 1: Quota goroutine.**
+
+```go
+// internal/ingest/archives/quota.go
+package archives
+
+import (
+    "context"
+    "io/fs"
+    "path/filepath"
+    "sync/atomic"
+    "time"
+)
+
+type QuotaState struct {
+    pct          atomic.Pointer[float64]   // current archives/+.tmp-archives/ pct of PVC capacity
+    hardCapBlock atomic.Bool                // true when 503 is in effect (95% trip, 85% lift hysteresis)
+    perSource    atomic.Pointer[map[string]int64]
+}
+
+func (q *QuotaState) ShouldBlock() bool { return q.hardCapBlock.Load() }
+func (q *QuotaState) Pct() float64       { p := q.pct.Load(); if p == nil { return 0 }; return *p }
+
+// StartQuotaGoroutine walks archives/ + .tmp-archives/ on a tick,
+// updates the in-memory pct + perSource gauges, and toggles
+// hardCapBlock with hysteresis: trip at >= hardTripPct, lift at
+// <= hardLiftPct. Tel.SetStorageBytes / SetStoragePct / SetStorage-
+// SourceBytes mirror the values into Prometheus.
+func StartQuotaGoroutine(ctx context.Context, stagingRoot string, capacityBytes int64,
+    interval time.Duration, hardTripPct, hardLiftPct float64, tel *Telemetry, q *QuotaState) {
+    // ... goroutine that ticks every `interval`, recomputes,
+    // and updates q + tel.
+}
+```
 
 Tests:
-- StorageStats over a fixture staging directory returns correct sums.
-- Cleanup deletes a tmp file older than 72h; preserves a fresh one.
-- Cleanup deletes a `.finalize/` dir older than 1h; preserves a fresh one.
-- st_dev startup check: same-FS passes; different-FS fails and the handler returns 503.
+- StorageStats over a fixture staging directory returns correct totals.
+- Per-source attribution: a `metadata.json` with `delivered_by: "alpha"` counts toward alpha; an upload-id state with SourceID `beta` counts its tmp file toward beta.
+- **Hysteresis** — feed synthetic sizes via a fake `du` injection; assert `ShouldBlock()` flips to true at 96%, stays true at 90%, flips to false at 84%.
+
+- [ ] **Step 2: Cleanup goroutine.**
+
+```go
+// internal/ingest/archives/cleanup.go
+package archives
+
+import (
+    "context"
+    "log/slog"
+    "os"
+    "path/filepath"
+    "strings"
+    "time"
+)
+
+type CleanupConfig struct {
+    StagingRoot        string
+    Interval           time.Duration // default 60 min
+    TmpAge             time.Duration // default 72 h (per spec §5.5 v1.3)
+    FinalizeAge        time.Duration // default 1 h
+    DoneRetention      time.Duration // default 7 * 24 h (archives/.done/)
+    Logger             *slog.Logger
+    Telemetry          *Telemetry
+}
+
+// StartCleanupGoroutine ticks every Interval, plus runs once on
+// startup. Per spec §5.5: deletes tmp files older than TmpAge,
+// .finalize/ dirs older than FinalizeAge, .done/<id>/ older than
+// DoneRetention.
+func StartCleanupGoroutine(ctx context.Context, cfg CleanupConfig) {
+    // ...
+}
+```
+
+Tests:
+- Tmp file older than 72h is deleted; fresh one preserved.
+- `.finalize/` dir older than 1h deleted; fresh preserved.
+- `archives/.done/<id>/` older than 7d deleted; fresh preserved.
+- Cleanup emits the spec §7.3 `EventCleanup` log with `removed_uploads`, `removed_finalize_dirs`, `freed_bytes`.
+- **Note re: `archives/.done/`** — Wave 1 of this plan ships WITHOUT glovebox-c9zt (spec 09 watcher mode), so nothing populates `.done/` in production. The cleanup test uses a manually-staged fixture for the `.done/` retention path; the real `.done/` retention exercise has to wait for c9zt to land. Add a `// TODO(c9zt): exercise via integrated importer pickup` comment so the future implementer knows.
+
+- [ ] **Step 3: Token-store reload wiring (SIGHUP + periodic).**
+
+```go
+// internal/ingest/server.go (additions)
+
+// startTokenReloadGoroutine ticks every cfg.ReloadInterval and
+// reloads the TokenStore from Vault. ALSO listens for SIGHUP and
+// triggers a synchronous reload on signal arrival.
+func startTokenReloadGoroutine(ctx context.Context, store *auth.TokenStore,
+    cfg auth.ReloadConfig, interval time.Duration, tel *archives.Telemetry) {
+    hup := make(chan os.Signal, 1)
+    signal.Notify(hup, syscall.SIGHUP)
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            if err := store.Reload(ctx, cfg); err != nil {
+                slog.Warn("token reload (periodic) failed", "error", err)
+            }
+        case <-hup:
+            slog.Info("token reload (SIGHUP) triggered")
+            if err := store.Reload(ctx, cfg); err != nil {
+                slog.Error("token reload (SIGHUP) failed", "error", err)
+            }
+        }
+    }
+}
+```
+
+Tests (use `golang.org/x/sync/errgroup` or similar to drive a test goroutine):
+- A `time.Tick` fake fires; reload count increments.
+- A SIGHUP is delivered via `syscall.Kill(os.Getpid(), syscall.SIGHUP)`; reload count increments synchronously (assert via a counter atomic.Int64 in a fake Vault client).
+- Reload failure on periodic tick is logged but doesn't crash the goroutine.
+
+- [ ] **Step 4: Server wire-up with the two startup checks.**
+
+```go
+// internal/ingest/server.go (modified StartServer or similar)
+
+func StartArchiveListener(ctx context.Context, cfg ArchiveListenerConfig) (*http.Server, error) {
+    // (a) Spec 13 §5.2 startup precondition: same filesystem.
+    if err := verifySameFilesystem(cfg.StagingRoot); err != nil {
+        slog.Error("glovebox archive listener unavailable: tmp and final dirs on different filesystems",
+            "error", err)
+        // Register a fallback handler that returns 503 for /v1/archives*.
+        cfg.Mux.Handle("/v1/archives", http.HandlerFunc(serve503))
+        cfg.Mux.Handle("/v1/archives/", http.HandlerFunc(serve503))
+        // /v1/ingest stays functional.
+        return nil, nil // process continues; archive endpoint is down
+    }
+
+    // (b) Spec 10 §4.1 startup: load Vault tokens. If FIRST load fails AND
+    // no cached store exists, refuse to bind /v1/archives*.
+    if err := cfg.TokenStore.Reload(ctx, cfg.AuthReloadConfig); err != nil {
+        slog.Error("glovebox archive listener unavailable: token load failed",
+            "error", err)
+        cfg.Mux.Handle("/v1/archives", http.HandlerFunc(serve503))
+        cfg.Mux.Handle("/v1/archives/", http.HandlerFunc(serve503))
+        return nil, nil
+    }
+
+    // (c) Both checks pass — mount the real handler tree.
+    handler := archives.NewHandler(cfg.Store, cfg.QuotaState, cfg.Telemetry,
+        archives.HandlerConfig{StagingRoot: cfg.StagingRoot, TusMaxSize: cfg.TusMaxSize, ...})
+    middleware := auth.Middleware(cfg.TokenStore, cfg.RateLimiter, cfg.ProxyResolver, cfg.Telemetry)
+    handler.Mount(cfg.Mux, middleware)
+
+    // (d) Spin background goroutines.
+    go StartQuotaGoroutine(ctx, cfg.StagingRoot, cfg.PVCCapacityBytes, 60*time.Second, 95.0, 85.0, cfg.Telemetry, cfg.QuotaState)
+    go StartCleanupGoroutine(ctx, archives.CleanupConfig{StagingRoot: cfg.StagingRoot, Interval: 60*time.Minute, ...})
+    go startTokenReloadGoroutine(ctx, cfg.TokenStore, cfg.AuthReloadConfig, cfg.TokenReloadInterval, cfg.Telemetry)
+
+    return cfg.Server, nil
+}
+
+func serve503(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Retry-After", "60")
+    http.Error(w, "archive listener unavailable", http.StatusServiceUnavailable)
+}
+
+func verifySameFilesystem(stagingRoot string) error {
+    // Compare st_dev of stagingRoot/.tmp-archives and stagingRoot/archives.
+    // Create the dirs if absent. Returns nil if same fs, error otherwise.
+}
+```
+
+Tests:
+- **st_dev same** — both dirs exist on the same fs → wire-up succeeds, handler responds 200 to a happy POST.
+- **st_dev different** — simulate by stubbing the `syscall.Stat_t.Dev` comparator to return mismatched values → wire-up registers the 503 fallback → POST returns 503.
+- **Token load failure on first boot, no cache** → wire-up registers the 503 fallback → POST returns 503.
+- **Token load failure on periodic re-pull, cached map present** → existing handler stays mounted → POST continues to succeed using cached tokens.
 
 ```bash
-go test ./internal/ingest/archives/ -count=1 -v
+go test ./internal/ingest/... -count=1 -v
 go vet ./...
-git add internal/ingest/server.go internal/ingest/archives/quota.go ... internal/ingest/archives/cleanup.go ...
-git commit -m "ingest: archive listener wire-up + quota + cleanup (glovebox-C3)"
+git add internal/ingest/server.go internal/ingest/archives/quota.go internal/ingest/archives/quota_test.go \
+        internal/ingest/archives/cleanup.go internal/ingest/archives/cleanup_test.go \
+        internal/ingest/auth/middleware.go internal/ingest/auth/middleware_test.go
+git commit -m "ingest: archive listener wire-up + reload + quota + cleanup (glovebox-C3)"
 ```
+
+**Exit criteria for C3:** both startup checks land (st_dev + token load); SIGHUP + periodic reload both fire reload; quota hysteresis at 95/85; cleanup honors 72h/1h/7d thresholds; auth middleware ties tokens + rate limiter + proxy resolver + telemetry into one `func(http.Handler) http.Handler`.
 
 ---
 
@@ -1870,7 +2353,42 @@ helm template charts/glovebox/ --set ingest.auth.enabled=true --set ingest.archi
 helm lint charts/glovebox/ --set ingest.auth.enabled=true --set ingest.archives.enabled=true
 ```
 
-Both must run clean. Resource count check confirms the new ExternalSecret + NetworkPolicy render only when enabled.
+Both must run clean.
+
+**Golden assertions** — explicit yq-based checks to lock the spec 10 §9 + spec 13 §8.4 final-iteration defaults so a future values.yaml edit can't silently drop them:
+
+```bash
+# Spec 10 §9 — token-store reload + rate-limit defaults
+helm template charts/glovebox/ --set ingest.auth.enabled=true \
+  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
+        | select(.name=="GLOVEBOX_INGEST_AUTH_LRU_CAPACITY") | .value' \
+  | grep -qx "1000" || { echo "FAIL: lruCapacity not 1000"; exit 1; }
+
+helm template charts/glovebox/ --set ingest.auth.enabled=true \
+  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
+        | select(.name=="GLOVEBOX_INGEST_AUTH_GLOBAL_MAX_REJECTED") | .value' \
+  | grep -qx "100" || { echo "FAIL: globalRateLimit.maxRejected not 100"; exit 1; }
+
+# Spec 13 §8.4 — Tus-Max-Size + per-source concurrency cap defaults
+helm template charts/glovebox/ --set ingest.archives.enabled=true \
+  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
+        | select(.name=="GLOVEBOX_INGEST_ARCHIVES_MAX_UPLOAD_SIZE") | .value' \
+  | grep -qx "32212254720" || { echo "FAIL: maxUploadSize not 30 GiB"; exit 1; }
+
+helm template charts/glovebox/ --set ingest.archives.enabled=true \
+  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
+        | select(.name=="GLOVEBOX_INGEST_ARCHIVES_PER_SOURCE_MAX_CONCURRENT") | .value' \
+  | grep -qx "4" || { echo "FAIL: perSourceMaxConcurrent not 4"; exit 1; }
+```
+
+Resource count check confirms the new ExternalSecret + NetworkPolicy render only when enabled:
+
+```bash
+N=$(helm template charts/glovebox/ --set ingest.archives.enabled=false | grep -E "^kind: (ExternalSecret|NetworkPolicy)$" | wc -l)
+[ "$N" -eq 0 ] || { echo "FAIL: archive resources rendered when disabled"; exit 1; }
+N=$(helm template charts/glovebox/ --set ingest.archives.enabled=true | grep -E "^kind: (ExternalSecret|NetworkPolicy)$" | wc -l)
+[ "$N" -eq 2 ] || { echo "FAIL: archive resources count $N != 2"; exit 1; }
+```
 
 ```bash
 git add charts/glovebox/
