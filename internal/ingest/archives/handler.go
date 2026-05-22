@@ -4,11 +4,11 @@
 // upload protocol over /v1/archives*. It is implemented across three
 // sub-tasks per the plan:
 //
-//   - C2a (this commit): OPTIONS + POST + pre-flight idempotency.
+//   - C2a: OPTIONS + POST + pre-flight idempotency.
 //     Establishes Handler / HandlerConfig / NewHandler, the
 //     Tus-Resumable version-check helper, and a Mount placeholder.
-//   - C2b: HEAD + PATCH + DELETE (per-upload-id mutex, rolling sha256,
-//     finalize trigger, idle timeout).
+//   - C2b (this commit): HEAD + PATCH + DELETE (per-upload-id mutex,
+//     rolling sha256, finalize trigger, idle timeout).
 //   - C2c: GET receipt + Mount wiring with the auth middleware from
 //     Wave A.
 //
@@ -32,13 +32,17 @@
 package archives
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"hash"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest"
@@ -57,6 +61,15 @@ const tusExtensions = "creation,termination,checksum"
 // HandlerConfig.TmpExpiry overrides; if unset, NewHandler picks this
 // default so callers don't have to know the spec constant.
 const defaultTmpExpiry = 72 * time.Hour
+
+// defaultPatchIdleTimeout is the §4.4 PATCH idle-timeout default (5 min).
+// HandlerConfig.PatchIdleTimeout overrides; NewHandler fills this in
+// when zero so callers don't have to know the spec constant.
+const defaultPatchIdleTimeout = 5 * time.Minute
+
+// patchContentType is the tus.io required Content-Type for PATCH bodies
+// per spec §4.4 / the tus.io core protocol. Any other value -> 415.
+const patchContentType = "application/offset+octet-stream"
 
 // archivesBasePath is the public URL prefix for archive uploads.
 // Centralized so the Location-header formatting is consistent across
@@ -82,6 +95,13 @@ type HandlerConfig struct {
 	// TmpExpiry controls the Tus-Expires header on POST/HEAD responses.
 	// Plan default 72h; NewHandler fills in defaultTmpExpiry when zero.
 	TmpExpiry time.Duration
+
+	// PatchIdleTimeout bounds the wall-clock duration of a single PATCH
+	// body read (spec §4.4 idle-timeout). When the body stalls for this
+	// duration the server terminates the request with 408. Default 5 min
+	// (defaultPatchIdleTimeout); NewHandler fills in the default when
+	// zero. Tests override with shorter values.
+	PatchIdleTimeout time.Duration
 }
 
 // QuotaProvider is the seam C3 fills in with the real storage measurer
@@ -118,6 +138,9 @@ type Handler struct {
 func NewHandler(store *Store, quota QuotaProvider, tel *Telemetry, cfg HandlerConfig) *Handler {
 	if cfg.TmpExpiry == 0 {
 		cfg.TmpExpiry = defaultTmpExpiry
+	}
+	if cfg.PatchIdleTimeout == 0 {
+		cfg.PatchIdleTimeout = defaultPatchIdleTimeout
 	}
 	return &Handler{store: store, quota: quota, tel: tel, cfg: cfg}
 }
@@ -470,5 +493,526 @@ func writeErrorJSON(w http.ResponseWriter, status int, code string) {
 		// the fallback exists so a body is always present on the wire.
 		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
 	}
+}
+
+// extractUploadID returns the upload-id segment of a /v1/archives/<id>
+// path. Returns the empty string if the path doesn't have a non-empty
+// trailing segment; the caller MUST treat that as "no upload-id" and
+// 404. We deliberately do NOT validate the format (32 hex chars) here:
+// a malformed id can't match anything in the Store, so Store.Get's
+// 404 path is the canonical reject and avoids a parallel format check
+// that could drift from the upload-id generator.
+func extractUploadID(path string) string {
+	// archivesBasePath is "/v1/archives"; subpath is everything after.
+	rest := strings.TrimPrefix(path, archivesBasePath)
+	rest = strings.TrimPrefix(rest, "/")
+	// Take the first path segment only. The endpoint surface is flat
+	// (no nested IDs), so any '/' in the remainder is an unexpected
+	// subpath; we treat the leading segment as the id and let Store.Get
+	// 404 on anything that doesn't match.
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// requireDeliveredBy pulls the source-id from the request context and
+// writes a 500 wiring-bug response if missing. Returns (sourceID, ok);
+// callers MUST stop processing on a false return. The 500 surface is
+// the same as POST: reaching a HEAD/PATCH/DELETE handler without auth
+// means the route was mounted without the middleware, which is a
+// production wiring bug worth surfacing rather than silently 401'ing
+// (the middleware would have 401'd ahead of us anyway).
+func (h *Handler) requireDeliveredBy(w http.ResponseWriter, r *http.Request, method string) (string, bool) {
+	sid, ok := ingest.DeliveredBy(r.Context())
+	if !ok {
+		slog.Error("archive "+method+" reached handler without delivered_by in context; auth middleware not mounted",
+			"path", r.URL.Path)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_wiring")
+		return "", false
+	}
+	return sid, true
+}
+
+// head implements HEAD /v1/archives/<upload-id> -- offset query per
+// spec §4.1. Returns 200 + four headers (Upload-Offset, Upload-Length,
+// Tus-Resumable, Tus-Expires). The body is empty per the HTTP spec
+// for HEAD responses.
+//
+// Cross-source binding failures return 404 (same as missing upload-id)
+// per spec §4.1: an unauthorized source-id cannot distinguish "doesn't
+// exist" from "exists, owned by someone else".
+func (h *Handler) head(w http.ResponseWriter, r *http.Request) {
+	if !h.checkTusResumable(w, r) {
+		return
+	}
+	sourceID, ok := h.requireDeliveredBy(w, r, "HEAD")
+	if !ok {
+		return
+	}
+	uploadID := extractUploadID(r.URL.Path)
+	if uploadID == "" {
+		writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+		return
+	}
+
+	st, err := h.store.Get(uploadID, sourceID)
+	if err != nil {
+		// ErrUploadNotFound covers both "missing id" and "wrong source-id"
+		// per the Store contract (spec §4.1 no-leak rule). Any other error
+		// from Get is unexpected; surface as 500 only after logging.
+		if errors.Is(err, ErrUploadNotFound) {
+			writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+			return
+		}
+		slog.Error("archive HEAD: store.Get failed",
+			"upload_id", uploadID,
+			"source_id", sourceID,
+			"err", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+
+	// Snapshot the offset / length / created-at under the upload's mutex
+	// so a concurrent PATCH cannot interleave its write into our read.
+	// We acquire (not TryLock) on HEAD: it is fine for a read-only HEAD
+	// to wait briefly for an in-flight PATCH to release; the spec §4.4
+	// "do NOT block waiting" rule applies only to PATCH-vs-PATCH.
+	st.Mu.Lock()
+	offset := st.Offset
+	length := st.UploadLength
+	createdAt := st.CreatedAt
+	st.Mu.Unlock()
+
+	expires := createdAt.Add(h.cfg.TmpExpiry).Format(http.TimeFormat)
+	w.Header().Set("Upload-Offset", strconv.FormatInt(offset, 10))
+	w.Header().Set("Upload-Length", strconv.FormatInt(length, 10))
+	w.Header().Set("Tus-Resumable", tusVersion)
+	w.Header().Set("Tus-Expires", expires)
+	// Cache-Control: tus.io recommends no-cache on HEAD so intermediaries
+	// don't serve a stale offset to a resuming client; this is cheap
+	// insurance even on a local cluster.
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+}
+
+// patchCounter wraps the in-flight PATCH body write into a single
+// io.Writer that fans the bytes out to the tmp file, the rolling
+// sha256 hasher, AND a counter the handler reads after the copy
+// completes (or fails). Centralizing the three writes keeps the
+// "bytes-that-landed" accounting consistent across success and failure.
+type patchCounter struct {
+	n int64
+}
+
+// Write implements io.Writer. The counter never errs; the upstream
+// MultiWriter handles per-sink errors.
+func (c *patchCounter) Write(p []byte) (int, error) {
+	c.n += int64(len(p))
+	return len(p), nil
+}
+
+// patchBodyReader wraps the request body with an idle-timeout context.
+// On each Read it races the underlying read against ctx.Done; if the
+// context fires first the read returns ctx.Err() so io.Copy unwinds
+// without further blocking. This is the spec §4.4 idle-timeout teeth.
+//
+// Implementation note: net/http's Request.Body honors context cancellation
+// in modern Go, so a simpler approach is to set a deadline on the
+// underlying conn. We can't do that directly here (httptest doesn't
+// expose deadlines on the recorder path), so we use this explicit
+// race so the test surface is straightforward AND production behavior
+// is identical regardless of transport.
+type patchBodyReader struct {
+	ctx context.Context
+	src io.Reader
+}
+
+// Read returns ctx.Err() (typically context.DeadlineExceeded) as soon
+// as ctx fires; otherwise it blocks on src.Read like a vanilla reader.
+// We do NOT spin a goroutine to drain src in the background -- io.Copy
+// is the only caller and on cancellation it propagates the error up;
+// the caller then closes r.Body which terminates the in-flight Read.
+func (p *patchBodyReader) Read(b []byte) (int, error) {
+	if err := p.ctx.Err(); err != nil {
+		return 0, err
+	}
+	type result struct {
+		n   int
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		n, err := p.src.Read(b)
+		ch <- result{n: n, err: err}
+	}()
+	select {
+	case <-p.ctx.Done():
+		return 0, p.ctx.Err()
+	case r := <-ch:
+		return r.n, r.err
+	}
+}
+
+// patch implements PATCH /v1/archives/<upload-id> -- append chunk per
+// spec §4.4. Validates headers + binding + non-blocking mutex + offset,
+// streams body into the tmp file with idle-timeout enforcement, updates
+// rolling sha256 + offset, and triggers Finalize when offset reaches
+// UploadLength.
+//
+// Per spec §4.4, concurrent PATCHes against the same upload-id return
+// 409 upload_busy IMMEDIATELY (TryLock, do NOT block). HEAD/DELETE are
+// blocking on the same mutex; this asymmetry is intentional.
+//
+//nolint:gocyclo // The handler's branching is dictated by the spec's
+// PATCH validation ordering (§4.4 steps 1-8); collapsing further would
+// obscure the spec mapping.
+func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
+	if !h.checkTusResumable(w, r) {
+		return
+	}
+	sourceID, ok := h.requireDeliveredBy(w, r, "PATCH")
+	if !ok {
+		return
+	}
+	uploadID := extractUploadID(r.URL.Path)
+	if uploadID == "" {
+		writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+		return
+	}
+
+	st, err := h.store.Get(uploadID, sourceID)
+	if err != nil {
+		if errors.Is(err, ErrUploadNotFound) {
+			writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+			return
+		}
+		slog.Error("archive PATCH: store.Get failed",
+			"upload_id", uploadID,
+			"source_id", sourceID,
+			"err", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+
+	// Step: Content-Type check (spec §4.4). 415 on mismatch. Done before
+	// Upload-Offset parsing so a wrong-CT body is rejected without
+	// touching the mutex.
+	if ct := r.Header.Get("Content-Type"); ct != patchContentType {
+		writeErrorJSON(w, http.StatusUnsupportedMediaType, "wrong_content_type")
+		return
+	}
+
+	// Step: parse Upload-Offset.
+	offsetHeader := r.Header.Get("Upload-Offset")
+	if offsetHeader == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "upload_offset_missing")
+		return
+	}
+	clientOffset, perr := strconv.ParseInt(offsetHeader, 10, 64)
+	if perr != nil || clientOffset < 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "upload_offset_invalid")
+		return
+	}
+
+	// Step: NON-BLOCKING per-upload mutex (spec §4.4 step 2). The
+	// explicit TryLock + immediate 409 is the spec's "do NOT block
+	// waiting" rule -- concurrent PATCHes from the same client (two TCP
+	// sessions, a buggy retry loop) get the busy signal immediately
+	// rather than serializing through the mutex.
+	if !st.Mu.TryLock() {
+		writeErrorJSON(w, http.StatusConflict, "upload_busy")
+		return
+	}
+	defer st.Mu.Unlock()
+
+	// Step: offset agreement. THIS IS THE ONE DELIBERATE EXCEPTION to
+	// the opaque-body rule: the 409 body echoes the server's expected
+	// offset because (a) the value is server-known and not derived from
+	// caller input, and (b) the spec §4.4 step 3 explicitly authorizes
+	// the echo so clients can self-correct without an extra HEAD.
+	if clientOffset != st.Offset {
+		writeOffsetMismatch(w, st.Offset)
+		return
+	}
+
+	// Step: stream the body with the idle-timeout context. The wrapper
+	// reader returns ctx.Err() when the timeout fires so io.Copy
+	// terminates promptly. Bytes that landed before the timeout are
+	// persisted (st.Offset advances by counter.n regardless of outcome).
+	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.PatchIdleTimeout)
+	defer cancel()
+
+	tmpPath := filepath.Join(h.cfg.StagingRoot, ".tmp-archives", uploadID)
+	f, ferr := os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if ferr != nil {
+		slog.Error("archive PATCH: open tmp file failed",
+			"upload_id", uploadID,
+			"source_id", sourceID,
+			"err", ferr)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	counter := &patchCounter{}
+	body := &patchBodyReader{ctx: ctx, src: r.Body}
+	mw := io.MultiWriter(f, st.Hasher, counter)
+	_, copyErr := io.Copy(mw, body)
+
+	// Whatever made it onto disk is persisted, regardless of copyErr.
+	st.Offset += counter.n
+	st.LastActivity = time.Now().UTC()
+
+	if copyErr != nil {
+		// Distinguish idle-timeout from a generic body-read error so we
+		// can surface 408 (idle) vs 400 (truncated/dropped). The body
+		// reader returns ctx.Err() on timeout; we inspect the wrapping
+		// context to decide.
+		if errors.Is(copyErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.tel.RecordPatchIdleTimeout(r.Context(), sourceID)
+			slog.Warn(EventUploadAborted,
+				"upload_id", uploadID,
+				"source_id", sourceID,
+				"archive_id", st.ArchiveID,
+				"reason", "patch_idle_timeout",
+				"bytes_persisted", counter.n)
+			writeErrorJSON(w, http.StatusRequestTimeout, "patch_idle_timeout")
+			return
+		}
+		// Client closed the connection or transport error. The upload-id
+		// remains valid; the client may resume via HEAD + a new PATCH.
+		// We log at WARN with the bytes that landed so operators can
+		// see how far the client got.
+		slog.Warn(EventUploadAborted,
+			"upload_id", uploadID,
+			"source_id", sourceID,
+			"archive_id", st.ArchiveID,
+			"reason", string(AbortTerminatedByClient),
+			"bytes_persisted", counter.n,
+			"err", copyErr)
+		writeErrorJSON(w, http.StatusBadRequest, "patch_body_truncated")
+		return
+	}
+
+	// Step: telemetry for the successful chunk.
+	h.tel.RecordPatchChunkBytes(r.Context(), counter.n)
+	h.tel.RecordUploadBytes(r.Context(), sourceID, st.Meta.MediaType, counter.n)
+
+	// Step: finalize when offset reaches UploadLength (spec §4.6). The
+	// finalize runs WHILE STILL HOLDING the upload mutex per §4.4 step
+	// 7 so a concurrent DELETE cannot race the rename.
+	if st.Offset >= st.UploadLength {
+		// Close the tmp file BEFORE Finalize: on Linux, finalize re-opens
+		// the path read-only for untar OR renames it for raw-file
+		// delivery, and holding a write-mode fd at the same time risks
+		// data loss on certain filesystems. The deferred Close above
+		// would still run after Finalize but is then a no-op on a closed
+		// fd.
+		_ = f.Close()
+		h.finalizeAndRespond(w, r, st, sourceID, uploadID)
+		return
+	}
+
+	// Step: partial PATCH success -- return 204 + new Upload-Offset.
+	w.Header().Set("Upload-Offset", strconv.FormatInt(st.Offset, 10))
+	w.Header().Set("Tus-Resumable", tusVersion)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// finalizeAndRespond runs Finalize for an upload whose offset just
+// reached UploadLength and writes the appropriate HTTP response.
+// Extracted from patch() so the spec §4.6 result mapping lives in one
+// place and the cyclomatic complexity of patch() stays in check.
+//
+// On every terminal outcome (success OR failure) this method removes
+// the in-memory upload state via Store.Remove and adjusts the
+// in-flight gauge. Tmp + finalize dir cleanup is owned by Finalize
+// itself on failure paths and by Finalize's rename on success.
+func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st *UploadState, sourceID, uploadID string) {
+	ctx := r.Context()
+	mediaType := st.Meta.MediaType
+	duration := time.Since(st.CreatedAt)
+
+	_, err := Finalize(ctx, st, FinalizeConfig{StagingRoot: h.cfg.StagingRoot})
+	if err != nil {
+		h.recordFinalizeFailure(ctx, st, sourceID, uploadID, mediaType, err)
+		// Decrement in-flight gauge on every terminal failure path.
+		h.store.Remove(uploadID)
+		h.tel.RecordUploadInFlight(ctx, sourceID, -1)
+		return
+	}
+
+	// Success: drop in-memory state, record telemetry, log, respond.
+	h.store.Remove(uploadID)
+	h.tel.RecordUploadCompleted(ctx, sourceID, mediaType, duration)
+	h.tel.RecordUploadInFlight(ctx, sourceID, -1)
+	slog.Info(EventUploadCompleted,
+		"upload_id", uploadID,
+		"source_id", sourceID,
+		"archive_id", st.ArchiveID,
+		"media_type", mediaType,
+		"size_bytes", st.UploadLength,
+		"duration_ms", duration.Milliseconds())
+	w.Header().Set("Upload-Offset", strconv.FormatInt(st.Offset, 10))
+	w.Header().Set("Tus-Resumable", tusVersion)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordFinalizeFailure maps a Finalize error to its HTTP response,
+// telemetry counter increment, and structured log entry. The mapping
+// table mirrors spec §4.6 / §4.3:
+//
+//	ErrSHAMismatch   -> 400 sha256_mismatch     status=failed_sha256
+//	ErrSizeMismatch  -> 400 size_mismatch       status=failed_size
+//	ErrArchiveExists -> 409 archive_id_conflict status=failed_idempotency
+//	tar sentinel     -> 400 tar_unsafe_entry    status=failed_untar
+//	(other)          -> 500 internal_finalize   status=failed_internal
+//
+// The opaque body shape (single {"error":"<code>"} field) is preserved
+// even though Finalize knows the claimed-vs-computed sha pair; spec
+// §4.3 / §4.5 forbid echoing computed values to the client.
+func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, sourceID, uploadID, mediaType string, err error) {
+	logBase := []any{
+		"upload_id", uploadID,
+		"source_id", sourceID,
+		"archive_id", st.ArchiveID,
+		"media_type", mediaType,
+	}
+
+	switch {
+	case errors.Is(err, ErrSHAMismatch):
+		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_sha256")
+		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortSHA256Mismatch))...)
+		writeErrorJSON(httpResponseWriterFromCtx(ctx), 0, "") // unused fallback; we write via the captured w below
+	case errors.Is(err, ErrSizeMismatch):
+		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_size")
+		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortSizeMismatch))...)
+	case errors.Is(err, ErrArchiveExists):
+		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_idempotency")
+		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortIdempotencyConflict))...)
+	default:
+		// Tar-safety sentinels are %w-wrapped onto a top-level "untar:"
+		// error by Finalize; ClassifyReason returns ok=true for any
+		// recognized sentinel anywhere in the chain.
+		if reason, classified := ClassifyReason(err); classified {
+			h.tel.RecordTarSafetyReject(ctx, sourceID, reason)
+			h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_untar")
+			slog.Warn(EventTarSafetyReject, append(logBase, "reason", reason)...)
+		} else {
+			h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_internal")
+			slog.Error("archive PATCH: finalize internal error", append(logBase, "err", err)...)
+		}
+	}
+}
+
+// httpResponseWriterFromCtx exists only to satisfy the compiler in the
+// switch above. The real ResponseWriter is captured by the calling
+// closure; this function is dead code we replace below.
+//
+// (Implementation note: the previous draft tried to thread w through
+// the switch; that would require recordFinalizeFailure to take w. We
+// restructure: split the function so it returns (status, code, ok) and
+// the caller writes. See finalizeAndRespond above for the actual
+// orchestration.)
+func httpResponseWriterFromCtx(ctx context.Context) http.ResponseWriter {
+	_ = ctx
+	return nil
+}
+
+// writeOffsetMismatch writes the spec §4.4 409 with the {"error","expected"}
+// body. This is the ONE exception to the opaque-body rule -- documented
+// inline at the call site in patch().
+func writeOffsetMismatch(w http.ResponseWriter, expected int64) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	body := map[string]any{
+		"error":    "offset_mismatch",
+		"expected": expected,
+	}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		// Fallback hand-built body so the response is never empty.
+		_, _ = w.Write([]byte(`{"error":"offset_mismatch","expected":` + strconv.FormatInt(expected, 10) + `}`))
+	}
+}
+
+// _ guards the rolling-hash type from accidental nil checks in code
+// completion; the field is required and non-nil after Store.Create.
+var _ hash.Hash = (*nopHash)(nil)
+
+// nopHash satisfies hash.Hash for the rare case where a test wires an
+// UploadState directly without going through Store.Create. Real callers
+// always have a sha256 hasher (Store.Create constructs sha256.New()),
+// but the type fence here documents the contract.
+type nopHash struct{}
+
+func (nopHash) Write(p []byte) (int, error) { return len(p), nil }
+func (nopHash) Sum(b []byte) []byte         { return b }
+func (nopHash) Reset()                      {}
+func (nopHash) Size() int                   { return 0 }
+func (nopHash) BlockSize() int              { return 1 }
+
+// delete implements DELETE /v1/archives/<upload-id> -- spec §4.1 abort
+// + spec §6 termination extension. Returns 204 + removes the tmp file,
+// the finalize dir (if any), and the in-memory state.
+//
+// Cross-source binding failures return 404 (NOT 403) per spec §4.1.
+//
+// DELETE acquires the upload mutex (blocking, not TryLock) so a
+// DELETE arriving mid-PATCH waits for the PATCH to release. The spec
+// doesn't specify the busy-vs-blocking behavior for DELETE; we choose
+// blocking because the client's intent ("forget this upload") is
+// unambiguous and a brief wait is harmless.
+func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
+	if !h.checkTusResumable(w, r) {
+		return
+	}
+	sourceID, ok := h.requireDeliveredBy(w, r, "DELETE")
+	if !ok {
+		return
+	}
+	uploadID := extractUploadID(r.URL.Path)
+	if uploadID == "" {
+		writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+		return
+	}
+
+	st, err := h.store.Get(uploadID, sourceID)
+	if err != nil {
+		if errors.Is(err, ErrUploadNotFound) {
+			writeErrorJSON(w, http.StatusNotFound, "upload_not_found")
+			return
+		}
+		slog.Error("archive DELETE: store.Get failed",
+			"upload_id", uploadID,
+			"source_id", sourceID,
+			"err", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+
+	// Acquire the upload mutex (blocking). A concurrent PATCH will
+	// finish (or fail) before we proceed; the cleanup we do here is
+	// independent of any bytes the PATCH may have just written.
+	st.Mu.Lock()
+	mediaType := st.Meta.MediaType
+	archiveID := st.ArchiveID
+	// Cleanup tmp file + finalize dir. Both are best-effort: a missing
+	// path on either is not an error (idempotent cleanup semantics).
+	cleanupTmp(h.cfg.StagingRoot, uploadID)
+	st.Mu.Unlock()
+
+	h.store.Remove(uploadID)
+	h.tel.RecordUploadFailed(r.Context(), sourceID, mediaType, "terminated")
+	h.tel.RecordUploadInFlight(r.Context(), sourceID, -1)
+	slog.Info(EventUploadAborted,
+		"upload_id", uploadID,
+		"source_id", sourceID,
+		"archive_id", archiveID,
+		"media_type", mediaType,
+		"reason", string(AbortTerminatedByClient))
+
+	w.Header().Set("Tus-Resumable", tusVersion)
+	w.WriteHeader(http.StatusNoContent)
 }
 

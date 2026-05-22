@@ -26,7 +26,10 @@
 package archives
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,6 +39,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -650,3 +654,635 @@ func TestPOST_GlobalConcurrentCap_429(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// C2b helpers
+// ---------------------------------------------------------------------
+
+// patchURL builds the canonical PATCH/HEAD/DELETE URL for an upload-id.
+func patchURL(uploadID string) string {
+	return archivesBasePath + "/" + uploadID
+}
+
+// createUpload POSTs an upload through the handler and returns the
+// upload-id along with the sha256 (hex) the metadata claims. The caller
+// supplies the body bytes the upload will eventually contain; this
+// helper hashes them so the claimed sha256 in the metadata header
+// matches what PATCH will actually deliver. The upload-id is extracted
+// from the Location header.
+func createUpload(t *testing.T, h *Handler, sourceID, archiveID string, body []byte) (uploadID, claimedSHA string) {
+	t.Helper()
+	sum := sha256.Sum256(body)
+	claimedSHA = hex.EncodeToString(sum[:])
+	pairs := validMetaPairs(archiveID, int64(len(body)))
+	pairs["sha256"] = claimedSHA
+	req := authedPostRequest(t, sourceID, map[string]string{
+		"Tus-Resumable":   "1.0.0",
+		"Upload-Length":   strconv.FormatInt(int64(len(body)), 10),
+		"Upload-Metadata": encMeta(pairs),
+	})
+	w := httptest.NewRecorder()
+	h.create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("createUpload: status = %d, want 201, body = %s", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	uploadID = strings.TrimPrefix(loc, archivesBasePath+"/")
+	if uploadID == "" {
+		t.Fatalf("createUpload: empty upload-id from Location %q", loc)
+	}
+	return uploadID, claimedSHA
+}
+
+// newPatchRequest constructs an authenticated PATCH request for the
+// given upload-id with the given offset and body. Sets the canonical
+// Content-Type and Tus-Resumable headers unless overridden by the
+// caller (which uses an explicit override via NewRequest + Header.Set).
+func newPatchRequest(t *testing.T, sourceID, uploadID string, offset int64, body io.Reader) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, patchURL(uploadID), body)
+	req = req.WithContext(ingest.WithDeliveredBy(req.Context(), sourceID))
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Content-Type", patchContentType)
+	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
+	return req
+}
+
+// newHeadRequest constructs an authenticated HEAD request for the given
+// upload-id.
+func newHeadRequest(t *testing.T, sourceID, uploadID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodHead, patchURL(uploadID), nil)
+	req = req.WithContext(ingest.WithDeliveredBy(req.Context(), sourceID))
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	return req
+}
+
+// newDeleteRequest constructs an authenticated DELETE request for the
+// given upload-id.
+func newDeleteRequest(t *testing.T, sourceID, uploadID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, patchURL(uploadID), nil)
+	req = req.WithContext(ingest.WithDeliveredBy(req.Context(), sourceID))
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	return req
+}
+
+// blockingReader is an io.Reader that yields its bytes only after
+// release is closed. Used by TestPATCH_Concurrent_409UploadBusy to
+// keep one PATCH goroutine deterministically mid-copy while a second
+// PATCH races in and trips the per-upload TryLock.
+type blockingReader struct {
+	data    []byte
+	release <-chan struct{}
+	started chan struct{} // closed on the first Read so the test knows we're inside io.Copy
+	once    sync.Once
+}
+
+// Read implements io.Reader. The first call signals "started" and
+// blocks until release is closed; subsequent calls drain the buffer
+// to io.EOF.
+func (b *blockingReader) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	if len(b.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+// slowReader feeds bytes from data but sleeps `delay` before each Read,
+// so a PATCH idle-timeout that is shorter than `delay` will fire before
+// io.Copy completes. Used by TestPATCH_IdleTimeout_408.
+type slowReader struct {
+	data  []byte
+	delay time.Duration
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	time.Sleep(s.delay)
+	if len(s.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, s.data)
+	s.data = s.data[n:]
+	return n, nil
+}
+
+// ---------------------------------------------------------------------
+// HEAD
+// ---------------------------------------------------------------------
+
+func TestHEAD_UnknownUploadID_404(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	req := newHeadRequest(t, "recognizer", "00000000000000000000000000000000")
+	w := httptest.NewRecorder()
+	h.head(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "upload_not_found" {
+		t.Errorf("body code = %q, want upload_not_found", code)
+	}
+}
+
+func TestHEAD_WrongSourceID_404(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	// Seed an upload owned by "alice".
+	body := []byte("hello-world")
+	uploadID, _ := createUpload(t, h, "alice", "wrong-source-archive", body)
+
+	// HEAD as "recognizer" -- must look identical to the unknown-id case.
+	req := newHeadRequest(t, "recognizer", uploadID)
+	w := httptest.NewRecorder()
+	h.head(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "upload_not_found" {
+		t.Errorf("body code = %q, want upload_not_found (no leak)", code)
+	}
+	// No headers should reveal upload state.
+	if got := w.Header().Get("Upload-Offset"); got != "" {
+		t.Errorf("Upload-Offset header leaked: %q", got)
+	}
+	if got := w.Header().Get("Upload-Length"); got != "" {
+		t.Errorf("Upload-Length header leaked: %q", got)
+	}
+}
+
+func TestHEAD_HappyPath_200WithHeaders(t *testing.T) {
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	body := []byte("hello-world-some-bytes")
+	uploadID, _ := createUpload(t, h, "recognizer", "head-happy", body)
+
+	req := newHeadRequest(t, "recognizer", uploadID)
+	w := httptest.NewRecorder()
+	h.head(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Upload-Offset"); got != "0" {
+		t.Errorf("Upload-Offset = %q, want 0 (fresh upload)", got)
+	}
+	wantLen := strconv.Itoa(len(body))
+	if got := w.Header().Get("Upload-Length"); got != wantLen {
+		t.Errorf("Upload-Length = %q, want %q", got, wantLen)
+	}
+	if got := w.Header().Get("Tus-Resumable"); got != "1.0.0" {
+		t.Errorf("Tus-Resumable = %q, want 1.0.0", got)
+	}
+	if exp := w.Header().Get("Tus-Expires"); exp == "" {
+		t.Errorf("Tus-Expires header missing")
+	} else if _, err := http.ParseTime(exp); err != nil {
+		t.Errorf("Tus-Expires unparseable: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------
+// PATCH
+// ---------------------------------------------------------------------
+
+func TestPATCH_WrongContentType_415(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	body := []byte("payload")
+	uploadID, _ := createUpload(t, h, "recognizer", "patch-wrong-ct", body)
+
+	req := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/octet-stream") // wrong
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "wrong_content_type" {
+		t.Errorf("body code = %q, want wrong_content_type", code)
+	}
+}
+
+func TestPATCH_OffsetMismatch_409(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	body := []byte("payload-bytes")
+	uploadID, _ := createUpload(t, h, "recognizer", "patch-offset-mismatch", body)
+
+	// Server expects offset=0 on a fresh upload; submit offset=5.
+	req := newPatchRequest(t, "recognizer", uploadID, 5, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	// Spec §4.4: the 409 body is {"error":"offset_mismatch","expected":N}.
+	// The `expected` echo is the ONE allowed exception to the opaque-body
+	// rule. Assert both fields are present and the expected value is 0.
+	var obj map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&obj); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if code, _ := obj["error"].(string); code != "offset_mismatch" {
+		t.Errorf("error = %q, want offset_mismatch", code)
+	}
+	// JSON numbers decode to float64.
+	exp, ok := obj["expected"].(float64)
+	if !ok {
+		t.Fatalf("expected field missing or wrong type: %T %v", obj["expected"], obj["expected"])
+	}
+	if int64(exp) != 0 {
+		t.Errorf("expected = %v, want 0 (server's current offset on fresh upload)", exp)
+	}
+}
+
+func TestPATCH_WrongSourceID_404(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+	body := []byte("payload")
+	uploadID, _ := createUpload(t, h, "alice", "patch-wrong-source", body)
+
+	// PATCH as a different source-id; must 404 with the same code as the
+	// unknown-id case (no leak).
+	req := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "upload_not_found" {
+		t.Errorf("body code = %q, want upload_not_found (no leak)", code)
+	}
+}
+
+func TestPATCH_Concurrent_409UploadBusy(t *testing.T) {
+	h, _ := newTestHandler(t, defaultStore(), &fakeQuota{}, 1<<30)
+
+	// Use a payload large enough that the first PATCH spans the body
+	// completes. The first goroutine's blockingReader holds the mutex
+	// until we release it; the second PATCH must observe the busy state
+	// and 409 immediately (TryLock).
+	body := []byte("hello-concurrent-patch")
+	uploadID, _ := createUpload(t, h, "recognizer", "patch-busy", body)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	br := &blockingReader{
+		data:    body,
+		release: release,
+		started: started,
+	}
+
+	// Goroutine A: PATCH with a body that blocks until release.
+	reqA := newPatchRequest(t, "recognizer", uploadID, 0, br)
+	wA := httptest.NewRecorder()
+	doneA := make(chan struct{})
+	go func() {
+		h.patch(wA, reqA)
+		close(doneA)
+	}()
+
+	// Wait until A's io.Copy has invoked the first Read so we know A
+	// is holding the upload mutex.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-doneA
+		t.Fatal("goroutine A never reached its first body Read")
+	}
+
+	// Goroutine B: a second PATCH against the SAME upload-id while A
+	// holds the mutex. TryLock must fail -> 409 upload_busy.
+	reqB := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	wB := httptest.NewRecorder()
+	h.patch(wB, reqB)
+
+	if wB.Code != http.StatusConflict {
+		close(release)
+		<-doneA
+		t.Fatalf("B status = %d, want 409", wB.Code)
+	}
+	if code := decodeErrorBody(t, wB.Body); code != "upload_busy" {
+		close(release)
+		<-doneA
+		t.Errorf("B body code = %q, want upload_busy", code)
+	}
+
+	// Now let A finish so the test exits cleanly. A's outcome doesn't
+	// affect the assertion; we only require that exactly one of A/B saw
+	// upload_busy (B).
+	close(release)
+	<-doneA
+}
+
+func TestPATCH_HappyPath_AppendBytes(t *testing.T) {
+	store := defaultStore()
+	h, root := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	// Two-part upload so the first PATCH is a partial (offset advances
+	// but offset < UploadLength); finalize is exercised separately.
+	body := []byte("the-quick-brown-fox-jumps-over-the-lazy-dog")
+	uploadID, _ := createUpload(t, h, "recognizer", "patch-happy", body)
+
+	// PATCH a prefix only.
+	prefix := body[:10]
+	req := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(prefix))
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", w.Code, w.Body.String())
+	}
+	wantOffset := strconv.Itoa(len(prefix))
+	if got := w.Header().Get("Upload-Offset"); got != wantOffset {
+		t.Errorf("Upload-Offset = %q, want %q", got, wantOffset)
+	}
+	if got := w.Header().Get("Tus-Resumable"); got != "1.0.0" {
+		t.Errorf("Tus-Resumable = %q, want 1.0.0", got)
+	}
+
+	// Verify the tmp file actually contains the bytes that were appended.
+	tmpPath := filepath.Join(root, ".tmp-archives", uploadID)
+	got, err := os.ReadFile(tmpPath)
+	if err != nil {
+		t.Fatalf("read tmp file: %v", err)
+	}
+	if !bytes.Equal(got, prefix) {
+		t.Errorf("tmp file contents = %q, want %q", got, prefix)
+	}
+
+	// Store state should reflect the new offset and the upload should
+	// still be in-flight (not removed).
+	st, gerr := store.Get(uploadID, "recognizer")
+	if gerr != nil {
+		t.Fatalf("store.Get after partial PATCH: %v", gerr)
+	}
+	if st.Offset != int64(len(prefix)) {
+		t.Errorf("st.Offset = %d, want %d", st.Offset, len(prefix))
+	}
+}
+
+func TestPATCH_CompletesUpload_TriggersFinalize(t *testing.T) {
+	store := defaultStore()
+	h, root := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	// Single-shot PATCH covering the whole upload length so finalize runs.
+	body := []byte("complete-upload-body-bytes-for-finalize")
+	uploadID, claimedSHA := createUpload(t, h, "recognizer", "finalize-happy", body)
+
+	// Resolve the archive_id the staged metadata used so we can verify
+	// the post-rename location.
+	st, gerr := store.Get(uploadID, "recognizer")
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	archiveID := st.ArchiveID
+
+	req := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", w.Code, w.Body.String())
+	}
+	wantOffset := strconv.Itoa(len(body))
+	if got := w.Header().Get("Upload-Offset"); got != wantOffset {
+		t.Errorf("Upload-Offset = %q, want %q", got, wantOffset)
+	}
+
+	// Store should have dropped the upload state after a successful finalize.
+	if _, err := store.Get(uploadID, "recognizer"); err == nil {
+		t.Errorf("expected store.Get to fail after finalize; state still present")
+	}
+
+	// archives/<archive_id>/metadata.json should exist with the claimed sha.
+	metaPath := filepath.Join(root, "archives", archiveID, "metadata.json")
+	data, rerr := os.ReadFile(metaPath)
+	if rerr != nil {
+		t.Fatalf("read metadata.json: %v", rerr)
+	}
+	var receipt FinalizeReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatalf("unmarshal receipt: %v", err)
+	}
+	if receipt.SHA256 != claimedSHA {
+		t.Errorf("receipt.SHA256 = %q, want %q", receipt.SHA256, claimedSHA)
+	}
+	if !receipt.SHA256Verified {
+		t.Errorf("receipt.SHA256Verified = false, want true")
+	}
+
+	// The tmp file should be gone (renamed into raw/).
+	tmpPath := filepath.Join(root, ".tmp-archives", uploadID)
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("tmp file still present after finalize: %v", err)
+	}
+}
+
+func TestPATCH_FinalizeSHA256Mismatch_400(t *testing.T) {
+	// Defense against a recurring class of bug: the spec §4.6 contract is
+	// that a sha256 mismatch at finalize returns 400 with
+	// {"error":"sha256_mismatch"} (opaque -- no echo of claimed/computed).
+	// We engineer the mismatch by writing the upload state with a CLAIMED
+	// sha256 that does not match the body bytes we will PATCH.
+	store := defaultStore()
+	h, _ := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	body := []byte("payload-that-will-mismatch")
+	// Claim a sha256 that's definitely NOT the body's actual hash.
+	wrongSHA := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	pairs := validMetaPairs("sha-mismatch", int64(len(body)))
+	pairs["sha256"] = wrongSHA
+	req := authedPostRequest(t, "recognizer", map[string]string{
+		"Tus-Resumable":   "1.0.0",
+		"Upload-Length":   strconv.Itoa(len(body)),
+		"Upload-Metadata": encMeta(pairs),
+	})
+	w := httptest.NewRecorder()
+	h.create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body = %s", w.Code, w.Body.String())
+	}
+	uploadID := strings.TrimPrefix(w.Header().Get("Location"), archivesBasePath+"/")
+
+	// PATCH the full body. Server will reach finalize -> sha256 compare
+	// fails -> 400 + sha256_mismatch.
+	pReq := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	pW := httptest.NewRecorder()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("PATCH panicked on sha256 mismatch path: %v", r)
+		}
+	}()
+	h.patch(pW, pReq)
+
+	if pW.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 on sha256 mismatch (got body %q)", pW.Code, pW.Body.String())
+	}
+	code := decodeErrorBody(t, pW.Body)
+	if code != "sha256_mismatch" {
+		t.Errorf("body code = %q, want sha256_mismatch", code)
+	}
+	// Body MUST NOT echo the claimed or computed sha256 (opacity rule).
+	bodyStr := pW.Body.String()
+	if strings.Contains(bodyStr, wrongSHA) {
+		t.Errorf("body leaks claimed sha256: %s", bodyStr)
+	}
+}
+
+func TestPATCH_FinalizeRenameCollision_409(t *testing.T) {
+	// Spec §4.3 / §4.6: if archives/<archive_id>/ already exists at
+	// finalize time, the rename fails (Finalize returns ErrArchiveExists)
+	// and the handler MUST respond with 409 + archive_id_conflict.
+	store := defaultStore()
+	h, root := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	body := []byte("collision-body")
+	archiveID := "finalize-collision"
+	uploadID, _ := createUpload(t, h, "recognizer", archiveID, body)
+
+	// Pre-create archives/<archive_id>/ with a sentinel file so the final
+	// rename collides. The handler's idempotency check is at POST time,
+	// not at PATCH; creating the directory after createUpload bypasses
+	// the POST-time pre-flight and forces the collision into the finalize
+	// rename step.
+	collideDir := filepath.Join(root, "archives", archiveID)
+	if err := os.MkdirAll(collideDir, 0o700); err != nil {
+		t.Fatalf("mkdir collision dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(collideDir, "sentinel"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	req := newPatchRequest(t, "recognizer", uploadID, 0, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("PATCH panicked on rename-collision path: %v", r)
+		}
+	}()
+	h.patch(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 on rename collision (got body %q)", w.Code, w.Body.String())
+	}
+	if code := decodeErrorBody(t, w.Body); code != "archive_id_conflict" {
+		t.Errorf("body code = %q, want archive_id_conflict", code)
+	}
+}
+
+func TestPATCH_IdleTimeout_408(t *testing.T) {
+	// Construct a handler with a SHORT PATCH idle timeout. The slowReader
+	// sleeps longer than the timeout before delivering its first byte,
+	// which forces the patchBodyReader's ctx.Done branch to fire.
+	store := defaultStore()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".tmp-archives"), 0o700); err != nil {
+		t.Fatalf("mkdir .tmp-archives: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "archives"), 0o700); err != nil {
+		t.Fatalf("mkdir archives: %v", err)
+	}
+	tel, err := NewTelemetry("test", "test")
+	if err != nil {
+		t.Fatalf("NewTelemetry: %v", err)
+	}
+	h := NewHandler(store, &fakeQuota{}, tel, HandlerConfig{
+		StagingRoot:      root,
+		TusMaxSize:       1 << 30,
+		TmpExpiry:        72 * time.Hour,
+		PatchIdleTimeout: 100 * time.Millisecond,
+	})
+
+	body := []byte("slow-payload-that-will-time-out")
+	uploadID, _ := createUpload(t, h, "recognizer", "patch-idle", body)
+
+	// 500ms sleep before the first Read; timeout is 100ms.
+	slow := &slowReader{data: body, delay: 500 * time.Millisecond}
+	req := newPatchRequest(t, "recognizer", uploadID, 0, slow)
+	w := httptest.NewRecorder()
+	h.patch(w, req)
+
+	if w.Code != http.StatusRequestTimeout {
+		t.Fatalf("status = %d, want 408", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "patch_idle_timeout" {
+		t.Errorf("body code = %q, want patch_idle_timeout", code)
+	}
+}
+
+// ---------------------------------------------------------------------
+// DELETE
+// ---------------------------------------------------------------------
+
+func TestDELETE_HappyPath_204(t *testing.T) {
+	store := defaultStore()
+	h, root := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	body := []byte("delete-body")
+	uploadID, _ := createUpload(t, h, "recognizer", "delete-happy", body)
+
+	// Confirm the tmp file exists before DELETE.
+	tmpPath := filepath.Join(root, ".tmp-archives", uploadID)
+	if _, err := os.Stat(tmpPath); err != nil {
+		t.Fatalf("pre-DELETE: tmp file missing: %v", err)
+	}
+
+	req := newDeleteRequest(t, "recognizer", uploadID)
+	w := httptest.NewRecorder()
+	h.delete(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Tus-Resumable"); got != "1.0.0" {
+		t.Errorf("Tus-Resumable = %q, want 1.0.0", got)
+	}
+
+	// Tmp file must be gone.
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("tmp file still present after DELETE: %v", err)
+	}
+	// Store must have dropped the upload.
+	if _, err := store.Get(uploadID, "recognizer"); err == nil {
+		t.Errorf("expected store.Get to fail after DELETE; state still present")
+	}
+}
+
+func TestDELETE_WrongSourceID_404(t *testing.T) {
+	store := defaultStore()
+	h, root := newTestHandler(t, store, &fakeQuota{}, 1<<30)
+
+	body := []byte("delete-wrong-source")
+	uploadID, _ := createUpload(t, h, "alice", "delete-wrong-source", body)
+
+	// DELETE as a different source-id; same 404 as unknown-id (no leak).
+	req := newDeleteRequest(t, "recognizer", uploadID)
+	w := httptest.NewRecorder()
+	h.delete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if code := decodeErrorBody(t, w.Body); code != "upload_not_found" {
+		t.Errorf("body code = %q, want upload_not_found (no leak)", code)
+	}
+
+	// Tmp file must NOT have been removed (the wrong-source caller has
+	// no business cleaning up alice's upload).
+	tmpPath := filepath.Join(root, ".tmp-archives", uploadID)
+	if _, err := os.Stat(tmpPath); err != nil {
+		t.Errorf("tmp file removed by wrong-source DELETE: %v", err)
+	}
+	// alice's upload state should still be present.
+	if _, err := store.Get(uploadID, "alice"); err != nil {
+		t.Errorf("alice's upload state was dropped by wrong-source DELETE: %v", err)
+	}
+}
