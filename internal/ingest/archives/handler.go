@@ -836,10 +836,11 @@ func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st 
 
 	_, err := Finalize(ctx, st, FinalizeConfig{StagingRoot: h.cfg.StagingRoot})
 	if err != nil {
-		h.recordFinalizeFailure(ctx, st, sourceID, uploadID, mediaType, err)
+		status, code := h.recordFinalizeFailure(ctx, st, sourceID, uploadID, mediaType, err)
 		// Decrement in-flight gauge on every terminal failure path.
 		h.store.Remove(uploadID)
 		h.tel.RecordUploadInFlight(ctx, sourceID, -1)
+		writeErrorJSON(w, status, code)
 		return
 	}
 
@@ -859,20 +860,25 @@ func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// recordFinalizeFailure maps a Finalize error to its HTTP response,
-// telemetry counter increment, and structured log entry. The mapping
-// table mirrors spec §4.6 / §4.3:
+// recordFinalizeFailure maps a Finalize error to its telemetry counter
+// increment + structured log entry, AND returns the HTTP (status, code)
+// the caller should write. Separating "record" from "write" lets the
+// caller (finalizeAndRespond) own the http.ResponseWriter — earlier
+// drafts tried to thread the writer through this function via context
+// and ended up with a dead httpResponseWriterFromCtx stub that panicked.
 //
-//	ErrSHAMismatch   -> 400 sha256_mismatch     status=failed_sha256
-//	ErrSizeMismatch  -> 400 size_mismatch       status=failed_size
-//	ErrArchiveExists -> 409 archive_id_conflict status=failed_idempotency
-//	tar sentinel     -> 400 tar_unsafe_entry    status=failed_untar
-//	(other)          -> 500 internal_finalize   status=failed_internal
+// The mapping table mirrors spec §4.6 / §4.3:
+//
+//	ErrSHAMismatch   -> 400 sha256_mismatch       status=failed_sha256
+//	ErrSizeMismatch  -> 400 size_mismatch         status=failed_size
+//	ErrArchiveExists -> 409 archive_id_conflict   status=failed_idempotency
+//	tar sentinel     -> 400 tar_unsafe_entry      status=failed_untar
+//	(other)          -> 500 internal_finalize     status=failed_internal
 //
 // The opaque body shape (single {"error":"<code>"} field) is preserved
 // even though Finalize knows the claimed-vs-computed sha pair; spec
 // §4.3 / §4.5 forbid echoing computed values to the client.
-func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, sourceID, uploadID, mediaType string, err error) {
+func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, sourceID, uploadID, mediaType string, err error) (status int, code string) {
 	logBase := []any{
 		"upload_id", uploadID,
 		"source_id", sourceID,
@@ -884,13 +890,15 @@ func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, so
 	case errors.Is(err, ErrSHAMismatch):
 		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_sha256")
 		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortSHA256Mismatch))...)
-		writeErrorJSON(httpResponseWriterFromCtx(ctx), 0, "") // unused fallback; we write via the captured w below
+		return http.StatusBadRequest, "sha256_mismatch"
 	case errors.Is(err, ErrSizeMismatch):
 		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_size")
 		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortSizeMismatch))...)
+		return http.StatusBadRequest, "size_mismatch"
 	case errors.Is(err, ErrArchiveExists):
 		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_idempotency")
 		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortIdempotencyConflict))...)
+		return http.StatusConflict, "archive_id_conflict"
 	default:
 		// Tar-safety sentinels are %w-wrapped onto a top-level "untar:"
 		// error by Finalize; ClassifyReason returns ok=true for any
@@ -899,25 +907,12 @@ func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, so
 			h.tel.RecordTarSafetyReject(ctx, sourceID, reason)
 			h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_untar")
 			slog.Warn(EventTarSafetyReject, append(logBase, "reason", reason)...)
-		} else {
-			h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_internal")
-			slog.Error("archive PATCH: finalize internal error", append(logBase, "err", err)...)
+			return http.StatusBadRequest, "tar_unsafe_entry"
 		}
+		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_internal")
+		slog.Error("archive PATCH: finalize internal error", append(logBase, "err", err)...)
+		return http.StatusInternalServerError, "internal_finalize"
 	}
-}
-
-// httpResponseWriterFromCtx exists only to satisfy the compiler in the
-// switch above. The real ResponseWriter is captured by the calling
-// closure; this function is dead code we replace below.
-//
-// (Implementation note: the previous draft tried to thread w through
-// the switch; that would require recordFinalizeFailure to take w. We
-// restructure: split the function so it returns (status, code, ok) and
-// the caller writes. See finalizeAndRespond above for the actual
-// orchestration.)
-func httpResponseWriterFromCtx(ctx context.Context) http.ResponseWriter {
-	_ = ctx
-	return nil
 }
 
 // writeOffsetMismatch writes the spec §4.4 409 with the {"error","expected"}
