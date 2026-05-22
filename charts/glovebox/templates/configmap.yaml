@@ -28,7 +28,9 @@ data:
         "max_body_bytes": {{ .Values.config.ingest.maxBodyBytes | int }},
         "max_metadata_bytes": {{ .Values.config.ingest.maxMetadataBytes | int }},
         "backpressure_threshold": {{ .Values.config.ingest.backpressureThreshold | int }},
-        "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }}
+        "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }},
+        "auth": {{ .Values.ingest.auth | toJson }},
+        "archives": {{ .Values.ingest.archives | toJson }}
       }
     }
   rules.json: |
