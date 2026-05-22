@@ -7,10 +7,10 @@
 //   - C2a: OPTIONS + POST + pre-flight idempotency.
 //     Establishes Handler / HandlerConfig / NewHandler, the
 //     Tus-Resumable version-check helper, and a Mount placeholder.
-//   - C2b (this commit): HEAD + PATCH + DELETE (per-upload-id mutex,
+//   - C2b: HEAD + PATCH + DELETE (per-upload-id mutex,
 //     rolling sha256, finalize trigger, idle timeout).
-//   - C2c: GET receipt + Mount wiring with the auth middleware from
-//     Wave A.
+//   - C2c (this commit): GET receipt + Mount wiring with the auth
+//     middleware from Wave A.
 //
 // Design notes:
 //
@@ -145,19 +145,76 @@ func NewHandler(store *Store, quota QuotaProvider, tel *Telemetry, cfg HandlerCo
 	return &Handler{store: store, quota: quota, tel: tel, cfg: cfg}
 }
 
-// Mount is a placeholder for C2c. It will wire OPTIONS/POST/HEAD/PATCH/
-// DELETE/GET handlers onto mux and wrap each route with the supplied
-// middleware (auth from Wave A). For C2a it is intentionally a no-op so
-// the package compiles and the handler can be exercised directly via
-// httptest in tests; production wire-up waits for C2c.
+// Middleware is the standard http.Handler-chaining shape used by Mount.
+// Wave A's auth wiring (added in C3) produces a value of this type that
+// combines the token store, rate limiter, and proxy resolver. Defining
+// it here keeps the archives package decoupled from auth at the type
+// level — Mount accepts a slice of middlewares and is agnostic to what
+// any given one does, so tests can pass fakes that just record their
+// call order.
+type Middleware func(http.Handler) http.Handler
+
+// Mount registers the handler's HTTP routes on mux with the supplied
+// middleware. The middleware is applied OUTERMOST -> INNERMOST: caller
+// passes [auth] and gets a route that does auth then dispatches to the
+// archive handler; caller passes [auth, ratelimit] and gets
+// auth(ratelimit(handler)) -- auth runs first, then ratelimit, then
+// the archive method.
 //
-//nolint:unused // intentional placeholder for the C2c sub-task; the
-// signature is fixed by the plan §Task C2c so future work touches only
-// the body.
-func (h *Handler) Mount(mux *http.ServeMux) {
-	// C2c fills in the routing table. See plan §Task C2c for the
-	// route list and the middleware threading pattern.
-	_ = mux
+// Routes (spec §4.1):
+//
+//	OPTIONS /v1/archives                  -> h.options
+//	POST    /v1/archives                  -> h.create
+//	HEAD    /v1/archives/<upload-id>      -> h.head
+//	PATCH   /v1/archives/<upload-id>      -> h.patch
+//	DELETE  /v1/archives/<upload-id>      -> h.delete
+//	GET     /v1/archives/<archive_id>     -> h.get
+//
+// Method-not-allowed responses (e.g., PUT, POST against the per-id
+// path) get 405 + an Allow header listing the supported methods per
+// RFC 7231.
+//
+// The trailing-slash pattern (/v1/archives/) is required by net/http's
+// ServeMux to match all subpaths.
+func (h *Handler) Mount(mux *http.ServeMux, middleware ...Middleware) {
+	apply := func(handler http.Handler) http.Handler {
+		for i := len(middleware) - 1; i >= 0; i-- {
+			handler = middleware[i](handler)
+		}
+		return handler
+	}
+
+	basePath := archivesBasePath
+
+	// /v1/archives -- OPTIONS + POST
+	mux.Handle(basePath, apply(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodOptions:
+			h.options(w, r)
+		case http.MethodPost:
+			h.create(w, r)
+		default:
+			w.Header().Set("Allow", "OPTIONS, POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+
+	// /v1/archives/<id> -- HEAD + PATCH + DELETE + GET
+	mux.Handle(basePath+"/", apply(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			h.head(w, r)
+		case http.MethodPatch:
+			h.patch(w, r)
+		case http.MethodDelete:
+			h.delete(w, r)
+		case http.MethodGet:
+			h.get(w, r)
+		default:
+			w.Header().Set("Allow", "HEAD, PATCH, DELETE, GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
 }
 
 // checkTusResumable validates the Tus-Resumable header on every method
@@ -1035,5 +1092,92 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Tus-Resumable", tusVersion)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// get implements GET /v1/archives/<archive_id> -- finalize-receipt
+// fetch per spec §4.1 / §4.8. Unlike the other methods this is a
+// normal HTTP receipt fetch, NOT a tus.io protocol verb, so there is
+// no Tus-Resumable header check (spec §4.1's method table omits the
+// requirement for GET).
+//
+// Behavior:
+//
+//   - No delivered_by in context -> 500 (wiring bug).
+//   - Malformed archive_id (fails the §4.2 regex) -> 404 with the same
+//     opaque body as "not found". Returning 400 would leak the shape
+//     of valid archive_ids; we treat malformed identically to absent.
+//   - archives/<id>/metadata.json missing -> 404 opaque.
+//   - metadata.json read error -> 500.
+//   - metadata.json parse error -> 500 (on-disk corruption is internal).
+//   - DeliveredBy mismatch between the staged receipt and the request's
+//     authenticated source-id -> 404 opaque (no cross-source existence
+//     leak; same body as "not found").
+//   - Happy path -> 200 + JSON receipt. We re-encode the FinalizeReceipt
+//     rather than streaming the file bytes so the wire shape is governed
+//     by the Go type, even if a future maintainer adds an on-disk-only
+//     field. The Content-Type is application/json.
+func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	sourceID, ok := h.requireDeliveredBy(w, r, "GET")
+	if !ok {
+		return
+	}
+
+	archiveID := extractUploadID(r.URL.Path)
+	// Validate the archive_id matches the same regex used at POST. A
+	// malformed id can't exist in archives/, so we'd 404 below anyway,
+	// but doing the regex check up front lets us avoid touching the
+	// filesystem with attacker-controlled path segments. The 404 (not
+	// 400) is deliberate: it makes "malformed" and "missing" indistinguishable
+	// on the wire, so a probing client learns nothing about valid-id shape.
+	if !archiveIDRe.MatchString(archiveID) {
+		writeErrorJSON(w, http.StatusNotFound, "archive_not_found")
+		return
+	}
+
+	metaPath := filepath.Join(h.cfg.StagingRoot, "archives", archiveID, "metadata.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Same opaque body as the source-mismatch case below.
+			writeErrorJSON(w, http.StatusNotFound, "archive_not_found")
+			return
+		}
+		slog.Error("archive GET: read metadata.json failed",
+			"archive_id", archiveID,
+			"source_id", sourceID,
+			"err", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+
+	var receipt FinalizeReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		slog.Error("archive GET: unmarshal metadata.json failed",
+			"archive_id", archiveID,
+			"source_id", sourceID,
+			"err", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_state")
+		return
+	}
+
+	// Source-id binding: same opaque 404 as "not found" so a caller can't
+	// distinguish "doesn't exist" from "exists, owned by another source".
+	if receipt.DeliveredBy != sourceID {
+		writeErrorJSON(w, http.StatusNotFound, "archive_not_found")
+		return
+	}
+
+	// Re-encode the receipt rather than echoing data: we control the wire
+	// shape from the Go type. Future on-disk-only fields don't accidentally
+	// leak.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(receipt); err != nil {
+		// At this point the status has been written; we can only log.
+		slog.Error("archive GET: encode receipt response failed",
+			"archive_id", archiveID,
+			"source_id", sourceID,
+			"err", err)
+	}
 }
 
