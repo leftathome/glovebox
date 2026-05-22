@@ -347,3 +347,40 @@ connectors:
     nodeSelector: {}
     affinity: {}
     tolerations: []
+
+# Spec 10 (external ingest auth) + spec 13 (archive delivery) wiring.
+# These live at the top-level `ingest:` key (separate from `config.ingest:`,
+# which carries the connector-scale /v1/ingest knobs from spec 08).
+ingest:
+  auth:
+    enabled: false                          # opt-in; off by default
+    vault:
+      addr: "http://vault.vault.svc.cluster.local:8200"
+      k8sRole: "glovebox-ingest"
+      tokensPath: "glovebox/ingest-tokens"
+      kvMount: "secret"
+    reloadIntervalSeconds: 300              # periodic re-pull
+    trustedProxyCIDRs:
+      - "10.244.0.0/16"                     # placeholder: cluster Traefik pod CIDR
+    perIPRateLimit:
+      window: 60s
+      maxRejected: 10
+      lruCapacity: 1000                     # spec 10 §5.3 final (smaller than iteration-1 10000)
+    globalRateLimit:
+      window: 60s
+      maxRejected: 100                      # spec 10 §5.3 backstop
+  archives:
+    enabled: false                          # opt-in; off by default
+    maxUploadSize: 32212254720              # 30 GiB (Tus-Max-Size)
+    perSourceMaxConcurrent: 4
+    globalMaxConcurrent: 32
+    globalHardCapPct: 95                    # 503 threshold
+    globalHardCapHysteresisPct: 85          # 503-lift threshold
+    patchIdleTimeoutSeconds: 300            # 5-min slowloris guard
+    cleanupIntervalSeconds: 3600
+    cleanupTmpAgeHours: 72                  # accommodates overnight laptop suspends
+    cleanupFinalizeAgeHours: 1
+    retention:
+      doneArchiveDays: 7
+    networkPolicy:
+      recognizerNamespaceLabel: "openclaw-recognizer"  # namespace label to allow ingress from
