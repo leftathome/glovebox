@@ -119,16 +119,17 @@ Out-of-cluster consumers (workstation imports, friend imports) retrieve their to
 
 ### 4.1 Loading at Startup
 
-Glovebox uses Vault's Kubernetes auth method to authenticate (same pattern as spec 06 §12's schoology refresher: pod ServiceAccount JWT → Vault role → Vault token). The Vault role MUST grant `read + list` on `secret/data/glovebox/ingest-tokens/*` and `read + list` on `secret/metadata/glovebox/ingest-tokens/*`.
+Glovebox uses Vault's Kubernetes auth method to authenticate (same pattern as spec 12 §5's schoology refresher: pod ServiceAccount JWT → Vault role → Vault token). The Vault role MUST grant `read + list` on `secret/data/glovebox/ingest-tokens/*` and `read + list` on `secret/metadata/glovebox/ingest-tokens/*`.
 
 Loading procedure:
 
 1. Authenticate via `vaultapi.NewKubernetesAuth(role)`; obtain a Vault client.
 2. `client.KVv2("secret").List(ctx, "glovebox/ingest-tokens")` to enumerate source-ids.
 3. For each source-id, `client.KVv2("secret").Get(ctx, "glovebox/ingest-tokens/<source-id>")`. Extract the `token` field.
-4. Validate token format: 64 lowercase hex characters. Tokens that fail validation are logged at ERROR (`glovebox ingest token malformed`) and skipped; loading continues for the remaining entries.
-5. Build the in-memory map: `map[string]string` from `token-bytes → source-id`. Use a constant-time-friendly representation (raw byte slices, not strings, to avoid hash-table side-channel).
-6. Swap the map atomically with `sync.RWMutex` so in-flight requests do not race a partial reload.
+4. Validate the source-id name from Vault's `List` response against `^[a-z][a-z0-9-]{0,63}$` (§3.2 format). Malformed source-ids are skipped, logged ERROR (`glovebox ingest source_id malformed`), and the per-source error counter (`glovebox_ingest_token_load_errors_total{source_id="<malformed-value-truncated-and-sanitized>"}`) is incremented. This catches Vault-side typos and prevents a malformed source-id from injecting into log lines or metric labels.
+5. Validate token format: 64 lowercase hex characters. Tokens that fail validation are logged at ERROR (`glovebox ingest token malformed`) AND increment `glovebox_ingest_token_load_errors_total{source_id="<source-id>"}`. The malformed entry is skipped; loading continues for the remaining entries. The metric exists so operators can alert on "this source-id has a malformed Vault entry" without needing to scrape logs.
+6. Build the in-memory `[]tokenEntry` slice per §4.3's storage shape. NOT a map — see §4.3 for the side-channel rationale.
+7. Swap the slice atomically with `sync.RWMutex` so in-flight requests do not race a partial reload. The renumbered steps that follow (was step 5/6 in the prior draft) preserve the same swap-under-write-lock semantics.
 
 On startup, if the Vault load FAILS:
 
@@ -148,18 +149,46 @@ There is NO partial-reload semantic. The map is rebuilt entirely; there is no "m
 
 ### 4.3 Validation on Every Request
 
+**Storage shape.** The in-memory token store is a slice (NOT a map), structured as `[]tokenEntry` where each `tokenEntry` holds `{token [32]byte; sourceID string}`. A map keyed by token bytes was rejected: Go's map lookup is not constant-time (hash bucketing, internal hashtable resizing, key-equality short-circuit), and the lookup time would leak information about which bucket the matching token landed in. A slice with linear scan and explicit constant-time compare is the right shape.
+
 For each request to a protected endpoint (`/v1/archives*` in v1):
 
 1. Read the `Authorization` header. Missing → 401 (see §5.2).
 2. Validate format: exactly `Bearer <token-bytes>` where `<token-bytes>` is 64 lowercase hex characters. Wrong format → 401.
-3. Decode the hex into a 32-byte slice.
-4. With `sync.RWMutex.RLock`, iterate the in-memory map. For each `(stored-token-bytes, source-id)`:
-   - `crypto/subtle.ConstantTimeCompare(stored-token-bytes, request-token-bytes)` → 1 means equal.
-   - **Important:** comparison MUST iterate the entire map regardless of early match, OR use a single `ConstantTimeEq`-style aggregation. Early-exit on first match introduces a timing side channel that reveals the position of the matching token in the map. The map order is non-deterministic in Go but the iteration count is observable; we trade negligible CPU (small-N constant-time work) for constant-time correctness.
-5. If a match found: set request context `delivered_by = source-id`, mark `accepted`, proceed to handler.
-6. If no match: 401, increment rejection metric (with the request's IP bucket for §5.3 rate limiting).
+3. Decode the hex into a 32-byte fixed-size array.
+4. With `sync.RWMutex.RLock`, iterate the entire `tokenEntry` slice. Accumulate match information using bitwise-OR so the iteration time is independent of which entry (if any) matches:
 
-The iteration cost is O(N × 32 bytes) per request. For N ≤ 20 source-ids, this is ~640 byte-comparisons -- below the noise floor of any HTTP request handler. If the source-id population ever exceeds ~1000, the validation strategy gets a HashMap pre-lookup; not needed in v1.
+   ```go
+   var (
+       matched   uint32
+       sourceID  string
+   )
+   for _, e := range entries {
+       eq := uint32(subtle.ConstantTimeCompare(e.token[:], req[:]))
+       // Update matched + sourceID without branching on eq's value:
+       //   if eq == 1, set matched=1 and copy sourceID
+       //   if eq == 0, leave matched + sourceID alone
+       // ConstantTimeSelect handles the branchless update for the source-id copy.
+       prev := matched
+       matched |= eq
+       // Branchless copy of e.SourceID into sourceID iff eq==1 AND prev==0
+       // (we keep the FIRST match in iteration order to avoid leaking
+       // "two entries matched" information; in practice tokens are
+       // unique, so this is defensive)
+       if eq == 1 && prev == 0 {
+           sourceID = e.sourceID
+       }
+   }
+   ```
+
+   The `if eq == 1 && prev == 0` branch on the source-id copy is the one place where the implementation must accept a residual data-dependent branch, since copying a Go `string` header out of a slice element is not constant-time. The mitigation: at most one entry in the slice has a matching token (tokens are required to be globally unique, §3.1), so the branch fires at most once per request. The total work is `O(N)` ConstantTimeCompare invocations PLUS one cheap string-copy on success. No early-exit on first match.
+
+5. After the loop: if `matched == 1`, set request context `delivered_by = sourceID`, mark `accepted`, proceed to handler.
+6. If `matched == 0`, return 401, increment the rejection metric (and feed the §5.3 rate limiter).
+
+The iteration cost is `O(N × 32 bytes)` per request. For N ≤ 20 source-ids, this is ~640 byte-comparisons — below the noise floor of any HTTP request handler. The slice is rebuilt on every reload (§4.2); there is no resizing optimization that could leak timing.
+
+**No map / hashmap upgrade path.** If the source-id population ever exceeds ~1,000, the engineering response is to invest in BLINDED-LOOKUP token storage (e.g., bcrypt-hashed tokens with operator-aware lookup keys, or HMAC-keyed indices) — NOT a Go map, which would reintroduce the side channel this storage choice exists to avoid.
 
 ### 4.4 Constant-Time Compare Discipline
 
@@ -200,11 +229,20 @@ To slow brute-force attempts, the server maintains a per-IP token bucket of reje
 - Default: 10 rejected attempts per 60-second sliding window per source IP.
 - On exceeding: respond 429 Too Many Requests with `Retry-After: <seconds-until-bucket-refills>`.
 - Successful authentications DO NOT consume bucket capacity. A correctly-authenticated client is never rate-limited (per spec 13's recognizer client which retries on transient failures).
-- The bucket uses `golang.org/x/time/rate.Limiter` per-IP. IP extraction: `r.RemoteAddr` after the standard `X-Forwarded-For` / `X-Real-IP` parsing (the connector framework's existing helper).
+- The bucket uses `golang.org/x/time/rate.Limiter` per-IP.
 - Bucket state is in-memory; lost on restart. Acceptable: a process restart resets a brute-forcer's progress to zero, which is no worse than the pre-rate-limit state.
-- A bounded LRU caps the per-IP state to 10,000 entries; new IPs evict the least-recently-seen. Prevents one IP from filling memory with synthetic neighbors.
 
-The rate limit applies to ALL 401-eligible responses, including malformed `Authorization` headers and missing `Authorization` headers. A client probing for "is the endpoint up" without a token gets rate-limited.
+**Trusted-proxy IP extraction.** The server's "IP" for bucket-keying purposes is derived as follows:
+
+1. Read `r.RemoteAddr` (the immediate TCP peer).
+2. If `r.RemoteAddr` falls within the configured **trusted-proxy CIDR list** (default: `<traefik-namespace-pod-cidr>`, operator-configured via `ingest.auth.trustedProxyCIDRs`), THEN parse the right-most `X-Forwarded-For` entry as the real client IP. Otherwise IGNORE forwarded headers entirely and use `r.RemoteAddr`.
+3. A client speaking directly to the cluster IP cannot forge a forwarded header because step 2 only honors XFF when the immediate peer is itself a trusted reverse proxy.
+
+**LRU bound.** The per-IP state is capped at **1,000 entries** (NOT 10,000) via LRU eviction. Smaller bound reduces the eviction-bypass surface where a flood of synthetic IPs could push a real attacker's bucket out of the LRU and reset their attempt count.
+
+**Global 401 backstop.** Additionally, the server maintains a SINGLE process-wide rejected-attempt counter with a 60-second sliding window, default cap 100 rejections per window. When the global counter trips, ALL `/v1/archives*` requests return 429 + `Retry-After` for the remainder of the window, regardless of source IP. This is the defense against the LRU-eviction bypass: even if an attacker rotates through 10,001 synthetic IPs to flush the LRU, the global counter detects the rejection burst. Successful authentications do not consume the global counter.
+
+**Rate-limit scope.** The rate limiter is wrapped around handlers for `/v1/archives*` ONLY. Health endpoints (`/healthz`, `/readyz`, `/metrics`) bypass the limiter — a misconfigured prober hitting `/healthz` with a wrong path doesn't burn rate-limit budget. The `/v1/ingest` endpoint (no auth in v1, §7) is also outside the limiter's scope.
 
 ### 5.4 Other Response Codes Affected by Auth
 
@@ -242,7 +280,7 @@ This satisfies spec 06's identity contract: `provider` identifies the ingestion 
 Every authentication event (accept OR reject) emits a structured log line. Field rules:
 
 - **Acceptance.** `glovebox ingest authenticated` at INFO level. Fields: `source_id`, `remote_addr` (the parsed real IP), `endpoint` (e.g., `POST /v1/archives`), `archive_id` (if the request path identifies one). NO token bytes.
-- **Rejection.** `glovebox ingest auth rejected` at WARN level. Fields: `remote_addr`, `endpoint`, `reason_bucket` (a SAFE classifier: `missing_header`, `wrong_scheme`, `malformed_token`, `unknown_token` -- the same coarse bucketing exposed via metrics; specifically NOT a precise "which check failed first" signal). **NEVER log the token attempt**, not even hashed or truncated. The reason bucket exists so operators can distinguish "no Authorization header" from "wrong token" without leaking the token attempt bytes.
+- **Rejection.** `glovebox ingest auth rejected` at WARN level. Fields: `remote_addr`, `endpoint`, `reason_bucket` ∈ {`bad_request`, `unknown_token`}. `bad_request` covers ALL pre-decode failures (missing `Authorization` header, wrong scheme, malformed token format — these are operator-actionable as a single category: "the client is misconfigured, not actively attacking"). `unknown_token` is reserved for the "format was valid but no entry matched" case (potentially a leaked-and-revoked token, OR an active probe). The two-bucket split is deliberate: it gives operators ONE actionable signal (`unknown_token` rate spike → real concern) without leaking the precise reason a client failed (`missing_header` vs `wrong_scheme` would tell an attacker which check to circumvent first). **NEVER log the token attempt**, not even hashed or truncated.
 - **Rate-limit trigger.** `glovebox ingest auth rate limited` at WARN level. Fields: `remote_addr`, `attempts_in_window` (count), `window_seconds`.
 
 The accept log line's `archive_id` is a useful pivot for forensic searches ("show me everything `recognizer` delivered in the last 24 hours"). Absent for endpoints that don't carry an archive_id (e.g., `OPTIONS`).
@@ -283,8 +321,16 @@ During the window between step 3 (glovebox reloads) and step 5 (consumer picks u
 1. Generate a new token immediately.
 2. Write to Vault.
 3. Force glovebox reload IMMEDIATELY (don't wait for the periodic re-pull).
-4. The compromised token is dead the moment glovebox reloads.
+4. The compromised token is dead for NEW requests the moment glovebox reloads.
 5. Update consumer Secret out-of-band (the gap is acceptable for emergency).
+
+**Caveat: in-flight uploads are NOT terminated by reload.** A multi-GB tus.io upload PATCH-stream that was in progress when the reload completed continues to drain to disk under the old token's validated request context (the validation happened at PATCH start; subsequent chunks within the same PATCH don't re-validate). The compromised token is dead for new POST/HEAD/PATCH/DELETE requests but cannot retroactively kill an upload already mid-PATCH. For full-stop emergency termination, the operator must additionally:
+
+- Identify any in-flight uploads under the compromised source-id via `glovebox_archive_upload_in_flight{source_id}` metric.
+- `kubectl rollout restart` the glovebox deployment to terminate the in-flight TCP connections.
+- The `.tmp-archives/<upload-id>` files from those terminated uploads are orphaned and cleaned per spec 13 §5.5.
+
+This caveat is unique to bytes-already-in-flight cases. The reload-only path is correct for token rotation; the rollout-restart path is the additional step for active-compromise containment.
 
 Note that the overlap-window extension (§11) would NOT help in a compromise -- you want zero overlap then. The lack of an overlap-window in v1 is actually beneficial for the emergency case.
 
@@ -336,16 +382,16 @@ The Helm chart includes the relevant `ClusterSecretStore` reference and `Externa
 | 429 on a known consumer | Burst of mismatches (token rotated mid-burst) tripped the rate limit | 429 + Retry-After | Wait the Retry-After interval; reload glovebox if rotation is the cause |
 | `/v1/archives` returns 503 on startup | Vault token load failed at boot (no cached map) | 503 | Fix Vault connectivity (check the role, the secret-store, network policy from glovebox ns to vault ns); glovebox auto-recovers on the next periodic re-pull |
 | Constant-time-compare timing-attack signature on Grafana | Hypothetical | -- | The constant-time compare is best-effort; rigorous mitigation deferred until an actual timing attack signature appears |
-| Token-bytes leaked in logs | A bug in the audit-log code | -- | Treat as a SECURITY incident: rotate ALL tokens, audit logs, fix the bug. Per §6.3 the discipline is "never log the bytes," and the lint config explicitly bars `r.Header.Get("Authorization")` outside the auth middleware |
+| Token-bytes leaked in logs | A bug in the audit-log code | -- | Treat as a SECURITY incident: rotate ALL tokens, audit logs, fix the bug. Per §6.3 the discipline is "never log the bytes." The repo MUST carry a `semgrep` rule (configured in `.semgrep/auth-leakage.yml`) banning `r.Header.Get("Authorization")` and `r.Header["Authorization"]` outside the package containing the auth middleware. CI fails if the rule fires. |
 
 ## 11. Future Extensions
 
 These are deliberate v1 omissions; documented so the future shape is obvious.
 
 - **Overlap-window rotation (`token_previous` field).** Vault entry grows a `token_previous` field and a `previous_expires_at` field. Server accepts BOTH the current and previous token until `previous_expires_at`. Enables zero-downtime rotation. Schema change is additive; v1 code that reads only `token` continues to work against entries that carry the additional fields.
-- **Per-token scope.** Vault entry grows an `allowed_endpoints` list and an `allowed_media_types` list. Server enforces scope checks after validation. Adds a 403 response code.
-- **Auth on `/v1/ingest`.** Extension of this spec applying the same machinery to the connector-scale endpoint. Requires a per-connector chart change to inject `GLOVEBOX_INGEST_TOKEN` and a per-connector Vault entry. Operator-facing migration: enable the flag in a new chart release; existing connectors that haven't been updated still work (handler can be configured to soft-warn or hard-reject during the migration window).
-- **Token expiry.** Vault entry grows an `expires_at` field; server rejects (with 401) any token whose entry has aged past expiry. Pairs with Vault's existing lease semantics for short-lived workflows.
+- **Per-token scope.** Vault entry grows an `allowed_endpoints` list and an `allowed_media_types` list. Server enforces scope checks after validation. Adds a 403 response code. *Migration path*: schema change is additive (entries without the field default to "all endpoints, all media types"); the validator gains a scope check after the constant-time compare; existing tokens continue working until an operator narrows their scope.
+- **Auth on `/v1/ingest`.** Extension of this spec applying the same machinery to the connector-scale endpoint. Requires a per-connector chart change to inject `GLOVEBOX_INGEST_TOKEN` and a per-connector Vault entry. *Migration path*: gated by `ingest.auth.coverIngest` flag, default `false` in the v1 release that lands the feature; operator flips to `soft_warn` mode (server logs missing/invalid tokens but accepts the request) for an observation window, then to `enforce` mode once all connectors have been updated.
+- **Token expiry.** Vault entry grows an `expires_at` field; server rejects (with 401) any token whose entry has aged past expiry. Pairs with Vault's existing lease semantics for short-lived workflows. *Migration path*: schema change is additive (entries without the field default to no expiry); the validator checks `expires_at` after the constant-time compare; legacy tokens continue working until an operator backfills the field.
 - **HMAC-signed token payloads** (JWT-style). Token carries claims (source-id, scope, expiry) signed by a glovebox-held key. Removes the need for a server-side map lookup. Heavier on protocol surface; deferred unless multi-tenant or fine-grained scope arrives.
 
 ## 12. Out of Scope
@@ -361,4 +407,4 @@ These are deliberate v1 omissions; documented so the future shape is obvious.
 - **Spec 06 (Connector Auth and Provenance)** -- the Identity block, audit log, and `delivered_by` provenance pattern this spec emits into.
 - **Spec 08 (HTTP Ingest API)** -- the unauthenticated connector-scale endpoint this spec deliberately leaves alone in v1.
 - **Spec 13 (Archive Delivery API)** -- the consumer of this auth layer; the reason v1 of this spec exists.
-- **Spec 12 (Schoology Connector) §12** -- the precedent for Vault K8s auth used here.
+- **Spec 12 (Schoology Connector) §5** -- the precedent for Vault K8s auth used here (and §12 for the schoology refresher implementation that exercises the same pattern).
