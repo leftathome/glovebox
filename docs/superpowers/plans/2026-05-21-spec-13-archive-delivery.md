@@ -67,11 +67,11 @@ go.mod                                          (MODIFY — add golang.org/x/tim
 - **Verification at task boundaries:** `go vet ./...` AND `go test ./internal/ingest/...` AND (for chart tasks) `helm lint charts/glovebox/`. Failures BLOCK the commit; the implementer fixes before reporting back.
 - **No emojis in code** (per project CLAUDE.md).
 - **No `bd edit`** (opens vim and blocks agents).
-- **Test helpers:** `internal/ingest/archives/` tests share helpers via a `helpers_test.go` file added in the first task that needs them. Other tasks add to it rather than re-defining.
+- **Test helpers:** each package gets its own `helpers_test.go` file. Subsequent tasks within the package add to that file rather than re-defining. Per-package ownership: `internal/ingest/auth/helpers_test.go` owned by Task A1 (defines `mustNewTokenStore`, `mustDecodeTokenForTest`, fake VaultClient); `internal/ingest/archives/helpers_test.go` owned by Task B2 (defines `mustNewUploadState`, fixture-archive constructors, fake storage providers). A helper that needs both packages (e.g., a full-stack test setup) lives in its consumer's package; the lower-level packages do NOT import test-only types from each other.
 - **Nil-safety convention:** every type that could be nil in tests (Telemetry-style) has nil-safe Record/StartSpan/etc. helpers. Mirrors spec 12 §13's pattern.
 - **Spec 12 §5 is the Vault K8s auth precedent.** Re-read `connectors/schoology-auth-refresher/main.go`'s `newVaultClient` function before writing the spec 10 token loader; the pattern is identical.
 - **Atomic file writes:** `internal/atomicfile/` (currently in the working tree, untracked) is the in-progress helper for the tmp+rename pattern. Task C1's `atomicWrite` helper SHOULD use it once it lands (or vendor the same tmp+rename idiom inline if `atomicfile` isn't tracked yet). Track this assumption with a `// TODO: switch to internal/atomicfile.Write once tracked` comment.
-- **Shared test helpers (`helpers_test.go`):** Task B2 owns this file. It creates per-upload-state fixtures (`mustNewUploadState(t, ...)`) and a `mustNewTokenStore(t, ...)` helper. Subsequent tasks add to it rather than re-defining.
+- **Shared test helpers (`helpers_test.go`):** see the convention above — one per package, owned by the first task in that package. `internal/ingest/auth/helpers_test.go` owned by A1; `internal/ingest/archives/helpers_test.go` owned by B2.
 
 ---
 
@@ -437,11 +437,22 @@ type ReloadConfig struct {
     OnError  func(sourceID string)  // optional; invoked once per per-entry error
 }
 
+// parsedEntry is the intermediate shape produced by pass 1 and
+// consumed by pass 2. Per-entry validation errors short-circuit pass 1
+// (the entry is dropped + logged + OnError fires); pass 2 then drops
+// any token-bytes value that appears more than once.
+type parsedEntry struct {
+    sourceID string
+    token    [32]byte
+}
+
 // Reload pulls the current set of ingest tokens from Vault, validates
-// each, and atomically swaps them into the store. Per-entry errors are
-// logged + reported via OnError but do not fail the reload as a whole.
-// Returns an error only when the top-level Vault call fails (in which
-// case the previous store stays intact, matching spec 10 §4.1).
+// each, applies the two-pass duplicate-detection mandate from spec 10
+// §4.1 step 7, and atomically swaps the result into the store.
+// Per-entry errors are logged + reported via OnError but do not fail
+// the reload as a whole. Returns an error only when the top-level
+// Vault call fails (in which case the previous store stays intact,
+// matching spec 10 §4.1).
 func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
     if cfg.Logger == nil { cfg.Logger = slog.Default() }
     if cfg.KVMount == "" { cfg.KVMount = "secret" }
@@ -450,8 +461,10 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
         s.loadErr.Store(&err)
         return fmt.Errorf("list %s: %w", cfg.BasePath, err)
     }
-    seen := make(map[[32]byte]string, len(sourceIDs))
-    next := make([]tokenEntry, 0, len(sourceIDs))
+
+    // PASS 1: validate per-entry; build counts + parsed entries.
+    counts := make(map[[32]byte]int, len(sourceIDs))
+    parsed := make([]parsedEntry, 0, len(sourceIDs))
     for _, sid := range sourceIDs {
         if !validSourceID(sid) {
             cfg.Logger.Error("glovebox ingest source_id malformed", "source_id_raw", sanitizeForLog(sid))
@@ -471,16 +484,26 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
             if cfg.OnError != nil { cfg.OnError(sid) }
             continue
         }
-        // Note on duplicates: a single-pass O(N) approach handles pairs but
-        // mishandles triples (three source-ids sharing one token bytes value).
-        // The plan therefore uses a two-pass strategy: first pass builds a
-        // count map; second pass adds to `next` only those source-ids whose
-        // token bytes appear EXACTLY ONCE. This is implemented below in two
-        // discrete loops; the snippet here is the per-entry portion of the
-        // SECOND pass.
-        seen[tok] = sid
-        next = append(next, tokenEntry{token: tok, sourceID: sid})
+        counts[tok]++
+        parsed = append(parsed, parsedEntry{sourceID: sid, token: tok})
     }
+
+    // PASS 2: emit only the entries whose token bytes appear exactly
+    // once. Any token-bytes value seen 2+ times drops ALL of its
+    // source-ids (so a 3-way collision drops three entries, not two).
+    // The OnError callback fires once per dropped source-id so the
+    // token_load_errors_total metric reflects every dropped record.
+    next := make([]tokenEntry, 0, len(parsed))
+    for _, e := range parsed {
+        if counts[e.token] > 1 {
+            cfg.Logger.Error("glovebox ingest token duplicate",
+                "source_id", e.sourceID, "collision_count", counts[e.token])
+            if cfg.OnError != nil { cfg.OnError(e.sourceID) }
+            continue
+        }
+        next = append(next, tokenEntry{token: e.token, sourceID: e.sourceID})
+    }
+
     s.swap(next)
     var nilErr error
     s.loadErr.Store(&nilErr)
@@ -1804,7 +1827,7 @@ git commit -m "ingest/archives: Telemetry (metrics + spans + log constants) (glo
 
 ## Wave B → Wave B Cleanup (orchestrator)
 
-Same as Wave A: bundle review findings, close glovebox-B1/B2/B3.
+Same as Wave A: bundle review findings, close glovebox-B1/B2/B3/B4.
 
 ---
 
@@ -2343,7 +2366,7 @@ Same pattern.
 - Create: `charts/glovebox/templates/archive-networkpolicy.yaml`
 
 Steps:
-1. Add `ingest.auth:` + `ingest.archives:` blocks to `values.yaml` matching spec 13 §8.4 + spec 10 §9 defaults verbatim (lruCapacity 1000, globalRateLimit 100/60s, trustedProxyCIDRs placeholder, etc.).
+1. Add `ingest.auth:` + `ingest.archives:` blocks to `values.yaml` matching spec 13 §8.4 + spec 10 §9 defaults verbatim. Key defaults that the golden assertions check: `ingest.auth.perIPRateLimit.lruCapacity: 1000`, `ingest.auth.globalRateLimit: {window: 60s, maxRejected: 100}`, `ingest.auth.trustedProxyCIDRs` populated (placeholder value acceptable for the chart default), `ingest.archives.maxUploadSize: 32212254720`, `ingest.archives.perSourceMaxConcurrent: 4`, `ingest.archives.globalMaxConcurrent: 32`, `ingest.archives.patchIdleTimeoutSeconds: 300`. Extend `templates/configmap.yaml`'s `config.json` block to surface these subtrees so the golden assertions can read them.
 2. Add example ExternalSecret template that pulls `secret/glovebox/ingest-tokens/recognizer` from Vault into a K8s Secret. Operator-facing example; gated by `.Values.ingest.auth.enabled`.
 3. Add a NetworkPolicy template granting TCP/9091 ingress to the openclaw-recognizer namespace label.
 4. Verify:
@@ -2355,31 +2378,39 @@ helm lint charts/glovebox/ --set ingest.auth.enabled=true --set ingest.archives.
 
 Both must run clean.
 
-**Golden assertions** — explicit yq-based checks to lock the spec 10 §9 + spec 13 §8.4 final-iteration defaults so a future values.yaml edit can't silently drop them:
+**Golden assertions** — explicit yq-based checks to lock the spec 10 §9 + spec 13 §8.4 final-iteration defaults so a future values.yaml edit can't silently drop them. The chart ships glovebox config via a `ConfigMap` whose `data."config.json"` is JSON; the deployment mounts it at `/etc/glovebox/config.json` (see `charts/glovebox/templates/configmap.yaml` + `deployment.yaml:36`). The assertions therefore extract values from inside the rendered ConfigMap's `config.json`:
 
 ```bash
-# Spec 10 §9 — token-store reload + rate-limit defaults
-helm template charts/glovebox/ --set ingest.auth.enabled=true \
-  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
-        | select(.name=="GLOVEBOX_INGEST_AUTH_LRU_CAPACITY") | .value' \
-  | grep -qx "1000" || { echo "FAIL: lruCapacity not 1000"; exit 1; }
+# Helper: extract the rendered config.json blob and pipe through jq.
+cfg() {
+  helm template charts/glovebox/ --set ingest.auth.enabled=true --set ingest.archives.enabled=true \
+    | yq 'select(.kind=="ConfigMap" and .metadata.name=="release-name-glovebox") | .data."config.json"' -r \
+    | jq -r "$1"
+}
 
-helm template charts/glovebox/ --set ingest.auth.enabled=true \
-  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
-        | select(.name=="GLOVEBOX_INGEST_AUTH_GLOBAL_MAX_REJECTED") | .value' \
-  | grep -qx "100" || { echo "FAIL: globalRateLimit.maxRejected not 100"; exit 1; }
+# Spec 10 §9 — token-store reload + rate-limit defaults
+[ "$(cfg '.ingest.auth.perIPRateLimit.lruCapacity')" = "1000" ] \
+  || { echo "FAIL: lruCapacity != 1000"; exit 1; }
+[ "$(cfg '.ingest.auth.globalRateLimit.maxRejected')" = "100" ] \
+  || { echo "FAIL: globalRateLimit.maxRejected != 100"; exit 1; }
+[ "$(cfg '.ingest.auth.globalRateLimit.window')" = "60s" ] \
+  || { echo "FAIL: globalRateLimit.window != 60s"; exit 1; }
+# trustedProxyCIDRs is a list — assert it exists and is non-empty
+[ "$(cfg '.ingest.auth.trustedProxyCIDRs | length')" != "0" ] \
+  || { echo "FAIL: trustedProxyCIDRs is empty"; exit 1; }
 
 # Spec 13 §8.4 — Tus-Max-Size + per-source concurrency cap defaults
-helm template charts/glovebox/ --set ingest.archives.enabled=true \
-  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
-        | select(.name=="GLOVEBOX_INGEST_ARCHIVES_MAX_UPLOAD_SIZE") | .value' \
-  | grep -qx "32212254720" || { echo "FAIL: maxUploadSize not 30 GiB"; exit 1; }
-
-helm template charts/glovebox/ --set ingest.archives.enabled=true \
-  | yq 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env[]
-        | select(.name=="GLOVEBOX_INGEST_ARCHIVES_PER_SOURCE_MAX_CONCURRENT") | .value' \
-  | grep -qx "4" || { echo "FAIL: perSourceMaxConcurrent not 4"; exit 1; }
+[ "$(cfg '.ingest.archives.maxUploadSize')" = "32212254720" ] \
+  || { echo "FAIL: maxUploadSize != 30 GiB"; exit 1; }
+[ "$(cfg '.ingest.archives.perSourceMaxConcurrent')" = "4" ] \
+  || { echo "FAIL: perSourceMaxConcurrent != 4"; exit 1; }
+[ "$(cfg '.ingest.archives.globalMaxConcurrent')" = "32" ] \
+  || { echo "FAIL: globalMaxConcurrent != 32"; exit 1; }
+[ "$(cfg '.ingest.archives.patchIdleTimeoutSeconds')" = "300" ] \
+  || { echo "FAIL: patchIdleTimeoutSeconds != 300"; exit 1; }
 ```
+
+**Implementation note** — for the assertions to pass, D1 step 1 MUST extend `charts/glovebox/templates/configmap.yaml`'s `config.json` block to include the new `ingest.auth` and `ingest.archives` subtrees, sourced from `.Values.ingest.auth.*` and `.Values.ingest.archives.*` respectively. If the existing configmap template can't accommodate the structure, add a sibling template like `templates/ingest-config-additions.yaml` that emits a separate ConfigMap mounted alongside; the golden assertions then target that ConfigMap's name. Decide between the two approaches in D1 step 1 and document the choice inline.
 
 Resource count check confirms the new ExternalSecret + NetworkPolicy render only when enabled:
 
