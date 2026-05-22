@@ -1,0 +1,28 @@
+{{- if .Values.ingest.archives.enabled }}
+{{- if not .Values.persistence.tmpArchives.existingClaim }}
+# Spec 13 §5.1 scratch PVC for in-flight uploads (.tmp-archives/<id>/raw,
+# .tmp-archives/<id>/meta.json). Sized for the worst-case concurrent
+# upload set; the cleanup goroutine sweeps stale entries after
+# CleanupTmpAgeHours (default 72h, spec 13 §5.5). Must share a storage
+# class with the archives PVC so st_dev matches at startup -- otherwise
+# os.Rename in finalize returns EXDEV and the listener falls back to 503.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "glovebox.fullname" . }}-tmp-archives
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.persistence.tmpArchives.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.tmpArchives.size }}
+  {{- if .Values.persistence.tmpArchives.storageClass }}
+  storageClassName: {{ .Values.persistence.tmpArchives.storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

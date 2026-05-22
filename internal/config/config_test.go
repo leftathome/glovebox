@@ -260,6 +260,395 @@ func TestIngestDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_IngestAuthDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(`{}`), 0644)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Ingest.Auth.Enabled {
+		t.Error("ingest.auth.enabled default should be false")
+	}
+	if cfg.Ingest.Auth.Vault.Addr == "" {
+		t.Error("ingest.auth.vault.addr default should be non-empty")
+	}
+	if cfg.Ingest.Auth.Vault.K8sRole != "glovebox-ingest" {
+		t.Errorf("ingest.auth.vault.k8s_role default = %q, want glovebox-ingest", cfg.Ingest.Auth.Vault.K8sRole)
+	}
+	if cfg.Ingest.Auth.Vault.KVMount != "secret" {
+		t.Errorf("ingest.auth.vault.kv_mount default = %q, want secret", cfg.Ingest.Auth.Vault.KVMount)
+	}
+	if cfg.Ingest.Auth.Vault.TokensPath != "glovebox/ingest-tokens" {
+		t.Errorf("ingest.auth.vault.tokens_path default = %q, want glovebox/ingest-tokens", cfg.Ingest.Auth.Vault.TokensPath)
+	}
+	if cfg.Ingest.Auth.ReloadIntervalSeconds != 300 {
+		t.Errorf("ingest.auth.reload_interval_seconds default = %d, want 300", cfg.Ingest.Auth.ReloadIntervalSeconds)
+	}
+	if cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds != 60 {
+		t.Errorf("ingest.auth.per_ip_rate_limit.window_seconds default = %d, want 60", cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds)
+	}
+	if cfg.Ingest.Auth.PerIPRateLimit.MaxRejected != 10 {
+		t.Errorf("ingest.auth.per_ip_rate_limit.max_rejected default = %d, want 10", cfg.Ingest.Auth.PerIPRateLimit.MaxRejected)
+	}
+	if cfg.Ingest.Auth.GlobalRateLimit.MaxRejected != 100 {
+		t.Errorf("ingest.auth.global_rate_limit.max_rejected default = %d, want 100", cfg.Ingest.Auth.GlobalRateLimit.MaxRejected)
+	}
+}
+
+func TestLoadConfig_IngestArchivesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(`{}`), 0644)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Ingest.Archives.Enabled {
+		t.Error("ingest.archives.enabled default should be false")
+	}
+	if cfg.Ingest.Archives.StagingRoot != "/data/glovebox" {
+		t.Errorf("ingest.archives.staging_root default = %q, want /data/glovebox", cfg.Ingest.Archives.StagingRoot)
+	}
+	if cfg.Ingest.Archives.MaxUploadSize != 32212254720 {
+		t.Errorf("ingest.archives.max_upload_size default = %d, want 32212254720", cfg.Ingest.Archives.MaxUploadSize)
+	}
+	if cfg.Ingest.Archives.GlobalHardCapPct != 95 {
+		t.Errorf("ingest.archives.global_hard_cap_pct default = %d, want 95", cfg.Ingest.Archives.GlobalHardCapPct)
+	}
+	if cfg.Ingest.Archives.GlobalHardCapHysteresisPct != 85 {
+		t.Errorf("ingest.archives.global_hard_cap_hysteresis_pct default = %d, want 85", cfg.Ingest.Archives.GlobalHardCapHysteresisPct)
+	}
+	if cfg.Ingest.Archives.PerSourceSoftCapPct != 40 {
+		t.Errorf("ingest.archives.per_source_soft_cap_pct default = %d, want 40", cfg.Ingest.Archives.PerSourceSoftCapPct)
+	}
+}
+
+func TestLoadConfig_IngestAuthArchivesJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(`{
+		"ingest": {
+			"enabled": true,
+			"port": 9091,
+			"max_body_bytes": 67108864,
+			"max_metadata_bytes": 262144,
+			"backpressure_threshold": 100,
+			"request_timeout_seconds": 60,
+			"auth": {
+				"enabled": true,
+				"vault": {
+					"addr": "http://vault.example:8200",
+					"k8s_role": "test-role",
+					"kv_mount": "secret",
+					"tokens_path": "test/tokens"
+				},
+				"reload_interval_seconds": 60,
+				"trusted_proxy_cidrs": ["10.0.0.0/8", "172.16.0.0/12"],
+				"per_ip_rate_limit": {
+					"window_seconds": 30,
+					"max_rejected": 5,
+					"lru_capacity": 500
+				},
+				"global_rate_limit": {
+					"window_seconds": 30,
+					"max_rejected": 50
+				}
+			},
+			"archives": {
+				"enabled": true,
+				"staging_root": "/var/lib/glovebox",
+				"max_upload_size": 1073741824,
+				"per_source_max_concurrent": 2,
+				"global_max_concurrent": 8,
+				"per_source_soft_cap_pct": 25,
+				"global_hard_cap_pct": 90,
+				"global_hard_cap_hysteresis_pct": 80,
+				"patch_idle_timeout_seconds": 120,
+				"cleanup_interval_seconds": 1800,
+				"cleanup_tmp_age_hours": 24,
+				"cleanup_finalize_age_hours": 2,
+				"done_retention_days": 14
+			}
+		}
+	}`), 0644)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Ingest.Auth.Enabled {
+		t.Error("ingest.auth.enabled = false, want true")
+	}
+	if cfg.Ingest.Auth.Vault.Addr != "http://vault.example:8200" {
+		t.Errorf("vault.addr = %q", cfg.Ingest.Auth.Vault.Addr)
+	}
+	if len(cfg.Ingest.Auth.TrustedProxyCIDRs) != 2 {
+		t.Errorf("trusted_proxy_cidrs len = %d, want 2", len(cfg.Ingest.Auth.TrustedProxyCIDRs))
+	}
+	if cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds != 30 {
+		t.Errorf("per_ip window_seconds = %d, want 30", cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds)
+	}
+	if !cfg.Ingest.Archives.Enabled {
+		t.Error("ingest.archives.enabled = false, want true")
+	}
+	if cfg.Ingest.Archives.StagingRoot != "/var/lib/glovebox" {
+		t.Errorf("staging_root = %q", cfg.Ingest.Archives.StagingRoot)
+	}
+	if cfg.Ingest.Archives.MaxUploadSize != 1073741824 {
+		t.Errorf("max_upload_size = %d", cfg.Ingest.Archives.MaxUploadSize)
+	}
+	if cfg.Ingest.Archives.DoneRetentionDays != 14 {
+		t.Errorf("done_retention_days = %d", cfg.Ingest.Archives.DoneRetentionDays)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+}
+
+func TestIngestAuthValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "auth enabled but vault addr missing",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Vault.Addr = ""
+			},
+			wantErr: "vault.addr required",
+		},
+		{
+			name: "auth enabled but k8s role missing",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Vault.K8sRole = ""
+			},
+			wantErr: "vault.k8s_role required",
+		},
+		{
+			name: "auth enabled but reload interval zero",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.ReloadIntervalSeconds = 0
+			},
+			wantErr: "reload_interval_seconds must be > 0",
+		},
+		{
+			name: "auth enabled but per-IP window zero",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.PerIPRateLimit.WindowSeconds = 0
+			},
+			wantErr: "per_ip_rate_limit.window_seconds must be > 0",
+		},
+		{
+			name: "auth disabled — defaults pass even if invalid",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = false
+				c.Ingest.Auth.Vault.Addr = ""
+			},
+			wantErr: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			os.WriteFile(path, []byte(`{}`), 0644)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			tt.modify(&cfg)
+			err = cfg.Validate()
+			if tt.wantErr == "" && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestIngestArchivesValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "archives enabled but auth disabled",
+			modify: func(c *Config) {
+				c.Ingest.Archives.Enabled = true
+				c.Ingest.Auth.Enabled = false
+			},
+			wantErr: "ingest.archives.enabled requires ingest.auth.enabled",
+		},
+		{
+			name: "archives staging_root missing",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.StagingRoot = ""
+			},
+			wantErr: "staging_root required",
+		},
+		{
+			name: "hysteresis equal to hard cap",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.GlobalHardCapPct = 90
+				c.Ingest.Archives.GlobalHardCapHysteresisPct = 90
+			},
+			wantErr: "hysteresis_pct (90) must be < global_hard_cap_pct (90)",
+		},
+		{
+			name: "hysteresis greater than hard cap",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.GlobalHardCapPct = 80
+				c.Ingest.Archives.GlobalHardCapHysteresisPct = 90
+			},
+			wantErr: "hysteresis_pct (90) must be < global_hard_cap_pct (80)",
+		},
+		{
+			name: "hard cap over 100",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.GlobalHardCapPct = 110
+			},
+			wantErr: "global_hard_cap_pct must be in (0,100]",
+		},
+		{
+			name: "soft cap zero",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.PerSourceSoftCapPct = 0
+			},
+			wantErr: "per_source_soft_cap_pct must be in (0,100]",
+		},
+		{
+			name: "max_upload_size zero",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+				c.Ingest.Archives.MaxUploadSize = 0
+			},
+			wantErr: "max_upload_size must be > 0",
+		},
+		{
+			name: "valid combo",
+			modify: func(c *Config) {
+				enableAuthAndArchives(c)
+			},
+			wantErr: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			os.WriteFile(path, []byte(`{}`), 0644)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			tt.modify(&cfg)
+			err = cfg.Validate()
+			if tt.wantErr == "" && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func enableAuthAndArchives(c *Config) {
+	c.Ingest.Auth.Enabled = true
+	c.Ingest.Archives.Enabled = true
+}
+
+func contains(haystack, needle string) bool {
+	return len(needle) == 0 ||
+		(len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0)
+}
+
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestLoadConfig_HelmRenderedFixture pins the Go config schema against
+// a real chart-rendered config.json (auth + archives both enabled).
+// Regenerate with:
+//
+//	helm template charts/glovebox/ \
+//	  --set ingest.auth.enabled=true \
+//	  --set ingest.archives.enabled=true \
+//	  | awk '/config.json: \|/,/rules.json: \|/' | sed -n '2,/^  rules\\.json/{ /^  rules\\.json/d; s/^    //; p; }' \
+//	  > internal/config/testdata/helm-rendered-ingest-enabled.json
+//
+// A failure here means the chart's configmap.yaml emits keys the Go
+// IngestAuth/Archives structs don't recognize -- or vice versa. Fix
+// one side before re-running.
+func TestLoadConfig_HelmRenderedFixture(t *testing.T) {
+	cfg, err := LoadConfig("testdata/helm-rendered-ingest-enabled.json")
+	if err != nil {
+		t.Fatalf("LoadConfig on helm-rendered fixture: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate on helm-rendered fixture: %v", err)
+	}
+	if !cfg.Ingest.Auth.Enabled {
+		t.Error("ingest.auth.enabled = false; chart should emit true when --set ingest.auth.enabled=true")
+	}
+	if cfg.Ingest.Auth.Vault.Addr == "" {
+		t.Error("ingest.auth.vault.addr is empty; chart -> Go schema mismatch on vault.addr key")
+	}
+	if cfg.Ingest.Auth.Vault.K8sRole == "" {
+		t.Error("ingest.auth.vault.k8s_role is empty; chart -> Go schema mismatch on vault.k8s_role key")
+	}
+	if cfg.Ingest.Auth.ReloadIntervalSeconds == 0 {
+		t.Error("ingest.auth.reload_interval_seconds is 0; chart -> Go schema mismatch")
+	}
+	if cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds == 0 {
+		t.Error("per_ip_rate_limit.window_seconds is 0; chart -> Go schema mismatch (chart uses '60s' string; configmap.yaml must strip to int)")
+	}
+	if !cfg.Ingest.Archives.Enabled {
+		t.Error("ingest.archives.enabled = false; chart should emit true when --set ingest.archives.enabled=true")
+	}
+	if cfg.Ingest.Archives.StagingRoot == "" {
+		t.Error("ingest.archives.staging_root is empty; chart -> Go schema mismatch")
+	}
+	if cfg.Ingest.Archives.MaxUploadSize == 0 {
+		t.Error("ingest.archives.max_upload_size is 0; chart -> Go schema mismatch")
+	}
+	if cfg.Ingest.Archives.GlobalHardCapPct == 0 {
+		t.Error("ingest.archives.global_hard_cap_pct is 0; chart -> Go schema mismatch")
+	}
+	if cfg.Ingest.Archives.DoneRetentionDays == 0 {
+		t.Error("ingest.archives.done_retention_days is 0; chart -> Go schema mismatch (chart projects from retention.doneArchiveDays)")
+	}
+}
+
 func TestLoadConfig_AllEnvVars(t *testing.T) {
 	t.Setenv("GLOVEBOX_STAGING_DIR", "/env/staging")
 	t.Setenv("GLOVEBOX_QUARANTINE_DIR", "/env/quarantine")

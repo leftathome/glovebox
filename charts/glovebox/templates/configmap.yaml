@@ -30,17 +30,49 @@ data:
         "backpressure_threshold": {{ .Values.config.ingest.backpressureThreshold | int }},
         "request_timeout_seconds": {{ .Values.config.ingest.requestTimeoutSeconds | int }},
         {{- /*
-          Project ONLY the runtime-relevant subset of ingest.auth and
-          ingest.archives into config.json. The `enabled` keys are
-          Helm-only chart gates that decide whether the ExternalSecret
-          and NetworkPolicy templates render; the Go config loader
-          neither expects nor reads them. Same for archives.networkPolicy.*
-          (chart-only) and archives.retention.* (consumed by the cleanup
-          goroutine via separate config fields — adjust here if the Go
-          side ever reads them).
+          Spec 10 ingest.auth + spec 13 ingest.archives blocks. We emit
+          snake_case keys explicitly to match internal/config IngestConfig's
+          json tags; `toJson` on the values map would camelCase them and
+          the Go side would silently drop every field. The chart-only
+          gate keys (.enabled, .networkPolicy.recognizerNamespaceLabel)
+          are intentionally NOT projected here -- they decide whether
+          sibling templates render but the binary never reads them.
         */ -}}
-        "auth": {{ unset (deepCopy .Values.ingest.auth) "enabled" | toJson }},
-        "archives": {{ unset (unset (deepCopy .Values.ingest.archives) "enabled") "networkPolicy" | toJson }}
+        "auth": {
+          "enabled": {{ .Values.ingest.auth.enabled }},
+          "vault": {
+            "addr": {{ .Values.ingest.auth.vault.addr | quote }},
+            "k8s_role": {{ .Values.ingest.auth.vault.k8sRole | quote }},
+            "kv_mount": {{ .Values.ingest.auth.vault.kvMount | quote }},
+            "tokens_path": {{ .Values.ingest.auth.vault.tokensPath | quote }}
+          },
+          "reload_interval_seconds": {{ .Values.ingest.auth.reloadIntervalSeconds | int }},
+          "trusted_proxy_cidrs": {{ .Values.ingest.auth.trustedProxyCIDRs | toJson }},
+          "per_ip_rate_limit": {
+            "window_seconds": {{ regexReplaceAll "[^0-9]" .Values.ingest.auth.perIPRateLimit.window "" | int }},
+            "max_rejected": {{ .Values.ingest.auth.perIPRateLimit.maxRejected | int }},
+            "lru_capacity": {{ .Values.ingest.auth.perIPRateLimit.lruCapacity | int }}
+          },
+          "global_rate_limit": {
+            "window_seconds": {{ regexReplaceAll "[^0-9]" .Values.ingest.auth.globalRateLimit.window "" | int }},
+            "max_rejected": {{ .Values.ingest.auth.globalRateLimit.maxRejected | int }}
+          }
+        },
+        "archives": {
+          "enabled": {{ .Values.ingest.archives.enabled }},
+          "staging_root": {{ .Values.ingest.archives.stagingRoot | quote }},
+          "max_upload_size": {{ .Values.ingest.archives.maxUploadSize | int }},
+          "per_source_max_concurrent": {{ .Values.ingest.archives.perSourceMaxConcurrent | int }},
+          "global_max_concurrent": {{ .Values.ingest.archives.globalMaxConcurrent | int }},
+          "per_source_soft_cap_pct": {{ .Values.ingest.archives.perSourceSoftCapPct | int }},
+          "global_hard_cap_pct": {{ .Values.ingest.archives.globalHardCapPct | int }},
+          "global_hard_cap_hysteresis_pct": {{ .Values.ingest.archives.globalHardCapHysteresisPct | int }},
+          "patch_idle_timeout_seconds": {{ .Values.ingest.archives.patchIdleTimeoutSeconds | int }},
+          "cleanup_interval_seconds": {{ .Values.ingest.archives.cleanupIntervalSeconds | int }},
+          "cleanup_tmp_age_hours": {{ .Values.ingest.archives.cleanupTmpAgeHours | int }},
+          "cleanup_finalize_age_hours": {{ .Values.ingest.archives.cleanupFinalizeAgeHours | int }},
+          "done_retention_days": {{ .Values.ingest.archives.retention.doneArchiveDays | int }}
+        }
       }
     }
   rules.json: |
