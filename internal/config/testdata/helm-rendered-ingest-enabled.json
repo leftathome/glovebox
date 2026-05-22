@@ -41,7 +41,7 @@
     },
     "archives": {
       "enabled": true,
-      "staging_root": "/data/glovebox",
+      "staging_root": "/data/archive-storage",
       "max_upload_size": 32212254720,
       "per_source_max_concurrent": 4,
       "global_max_concurrent": 32,

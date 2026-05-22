@@ -107,16 +107,17 @@ Bind the role:
 
 ```bash
 vault write auth/kubernetes/role/glovebox-ingest \
-  bound_service_account_names=glovebox \
+  bound_service_account_names=glovebox-glovebox \
   bound_service_account_namespaces=glovebox \
   policies=glovebox-ingest-read \
   ttl=24h
 ```
 
 > Role name `glovebox-ingest` matches `.Values.ingest.auth.vault.k8sRole`.
-> The bound SA name `glovebox` matches `serviceAccount.create=true`'s
-> auto-derived name from `glovebox.serviceAccountName`. Bound namespace
-> `glovebox` is where we'll `helm install` in P6.
+> The bound SA name is `glovebox-glovebox` (verified via
+> `kubectl get sa -n glovebox` after helm install — helm derives the
+> name as `{release}-{name}` = `glovebox-glovebox`, not the plain
+> `glovebox` an earlier draft of this runbook claimed).
 
 ## 5. Generate + write the recognizer's source-id token
 
