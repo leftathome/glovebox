@@ -110,9 +110,11 @@ type Handler struct {
 }
 
 // NewHandler constructs the handler. tel may be nil (every Telemetry
-// helper is nil-safe). quota may NOT be nil; passing nil here means the
-// 503 hard-cap branch will panic on POST, which is a wiring bug worth
-// surfacing loudly -- production wires the C3 measurer in.
+// helper is nil-safe). quota may be nil — the POST handler skips the
+// hard-cap check via an explicit nil guard at the call site. Production
+// wires the C3 storage measurer in; tests that don't care about quota
+// behavior pass nil to avoid building a fake QuotaProvider just to be
+// asked ShouldBlock() once.
 func NewHandler(store *Store, quota QuotaProvider, tel *Telemetry, cfg HandlerConfig) *Handler {
 	if cfg.TmpExpiry == 0 {
 		cfg.TmpExpiry = defaultTmpExpiry
@@ -421,17 +423,35 @@ func (h *Handler) preflightIdempotency(sourceID string, meta *Metadata) (int, st
 // status + opaque error code. Per spec §4.2, ErrMetadataTooLong is the
 // 431 case (header overflow); all others are 400 with a single
 // "metadata_invalid" code so the body never reveals which field failed.
+// mapMetadataError translates a Metadata sentinel into its HTTP status +
+// closed-enum error code. The codes are distinct per sentinel so
+// operator dashboards can categorize 4xx volume by root cause.
+//
+// Opacity rule (spec §4.3 / §4.5): the code is a server-known label
+// that NEVER echoes any caller-supplied value (the client can craft
+// metadata to inject strings into the response otherwise). The response
+// body remains the single-field {"error":"<code>"} shape; only the code
+// string varies. This preserves the §4.3 idempotency-leak prevention
+// (the 409 conflict still uses the opaque `archive_id_conflict`) while
+// restoring per-error-class dashboarding signal flagged by the C2a
+// spec reviewer (spec §4.5 line 206).
 func mapMetadataError(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrMetadataTooLong):
 		return http.StatusRequestHeaderFieldsTooLarge, "metadata_too_long"
-	case errors.Is(err, ErrMetadataMissing),
-		errors.Is(err, ErrMetadataInvalid),
-		errors.Is(err, ErrMetadataReservedKey),
-		errors.Is(err, ErrMetadataUnknownMediaType),
-		errors.Is(err, ErrMetadataSizeMismatch):
+	case errors.Is(err, ErrMetadataMissing):
+		return http.StatusBadRequest, "metadata_missing"
+	case errors.Is(err, ErrMetadataReservedKey):
+		return http.StatusBadRequest, "metadata_reserved_key"
+	case errors.Is(err, ErrMetadataUnknownMediaType):
+		return http.StatusBadRequest, "unknown_media_type"
+	case errors.Is(err, ErrMetadataSizeMismatch):
+		return http.StatusBadRequest, "size_mismatch"
+	case errors.Is(err, ErrMetadataInvalid):
 		return http.StatusBadRequest, "metadata_invalid"
 	default:
+		// Unknown sentinel — default to the umbrella code so a future
+		// added sentinel doesn't silently leak the raw error.
 		return http.StatusBadRequest, "metadata_invalid"
 	}
 }
