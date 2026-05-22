@@ -94,6 +94,20 @@ persistence:
     storageClass: ""
     existingClaim: ""
     accessMode: ReadWriteOnce
+  # Spec 13 archive-delivery scratch + final-storage PVCs. Both render
+  # only when ingest.archives.enabled=true. The two must be pinned to
+  # the same storage class so st_dev matches at startup -- otherwise the
+  # listener mounts the 503 fallback (spec 13 §5.2 + listener.go).
+  tmpArchives:
+    size: 50Gi
+    storageClass: ""
+    existingClaim: ""
+    accessMode: ReadWriteOnce
+  archives:
+    size: 200Gi
+    storageClass: ""
+    existingClaim: ""
+    accessMode: ReadWriteOnce
 
 metrics:
   port: 9090
@@ -408,6 +422,11 @@ ingest:
       maxRejected: 100                      # spec 10 §5.3 backstop
   archives:
     enabled: false                          # opt-in; off by default
+    # Root path under which .tmp-archives/ and archives/ live. Both
+    # subdirectories MUST be on the same filesystem (spec 13 §5.2
+    # st_dev check); the persistence.tmpArchives + persistence.archives
+    # PVCs below must therefore be pinned to a single storage class.
+    stagingRoot: /data/glovebox
     maxUploadSize: 32212254720              # 30 GiB (Tus-Max-Size)
     perSourceMaxConcurrent: 4
     globalMaxConcurrent: 32

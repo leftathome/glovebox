@@ -14,6 +14,62 @@ type IngestConfig struct {
 	MaxMetadataBytes      int64 `json:"max_metadata_bytes"`
 	BackpressureThreshold int   `json:"backpressure_threshold"`
 	RequestTimeoutSeconds int   `json:"request_timeout_seconds"`
+
+	// Spec 10 auth + spec 13 archive-delivery sub-blocks. Both are
+	// opt-in: when Auth.Enabled or Archives.Enabled is false the
+	// matching boot path in main.go is skipped entirely.
+	Auth     IngestAuthConfig     `json:"auth"`
+	Archives IngestArchivesConfig `json:"archives"`
+}
+
+// IngestAuthConfig configures the spec 10 bearer-token middleware
+// applied to /v1/archives*. Mirrors values.yaml -> ingest.auth.
+type IngestAuthConfig struct {
+	Enabled               bool                `json:"enabled"`
+	Vault                 VaultClientConfig   `json:"vault"`
+	ReloadIntervalSeconds int                 `json:"reload_interval_seconds"`
+	TrustedProxyCIDRs     []string            `json:"trusted_proxy_cidrs"`
+	PerIPRateLimit        RateLimitWindowConf `json:"per_ip_rate_limit"`
+	GlobalRateLimit       RateLimitWindowConf `json:"global_rate_limit"`
+}
+
+// VaultClientConfig is the in-process Vault client wiring for the
+// TokenStore reload path. AuthMethod is always Kubernetes auth for now;
+// the field is reserved for future expansion.
+type VaultClientConfig struct {
+	Addr       string `json:"addr"`
+	K8sRole    string `json:"k8s_role"`
+	KVMount    string `json:"kv_mount"`
+	TokensPath string `json:"tokens_path"`
+}
+
+// RateLimitWindowConf parameterizes either of the two rate-limit
+// buckets (per-IP / global). WindowSeconds + MaxRejected map directly
+// to auth.RateLimitConfig.Window / Max*Rejected.
+type RateLimitWindowConf struct {
+	WindowSeconds int `json:"window_seconds"`
+	MaxRejected   int `json:"max_rejected"`
+	LRUCapacity   int `json:"lru_capacity"`
+}
+
+// IngestArchivesConfig configures the spec 13 archive-delivery
+// endpoint (/v1/archives*). StagingRoot anchors both .tmp-archives/
+// and archives/ on the same filesystem (st_dev identity is enforced at
+// boot).
+type IngestArchivesConfig struct {
+	Enabled                    bool   `json:"enabled"`
+	StagingRoot                string `json:"staging_root"`
+	MaxUploadSize              int64  `json:"max_upload_size"`
+	PerSourceMaxConcurrent     int    `json:"per_source_max_concurrent"`
+	GlobalMaxConcurrent        int    `json:"global_max_concurrent"`
+	PerSourceSoftCapPct        int    `json:"per_source_soft_cap_pct"`
+	GlobalHardCapPct           int    `json:"global_hard_cap_pct"`
+	GlobalHardCapHysteresisPct int    `json:"global_hard_cap_hysteresis_pct"`
+	PatchIdleTimeoutSeconds    int    `json:"patch_idle_timeout_seconds"`
+	CleanupIntervalSeconds     int    `json:"cleanup_interval_seconds"`
+	CleanupTmpAgeHours         int    `json:"cleanup_tmp_age_hours"`
+	CleanupFinalizeAgeHours    int    `json:"cleanup_finalize_age_hours"`
+	DoneRetentionDays          int    `json:"done_retention_days"`
 }
 
 type Config struct {
@@ -49,6 +105,40 @@ func LoadConfig(path string) (Config, error) {
 			MaxMetadataBytes:      262144,
 			BackpressureThreshold: 100,
 			RequestTimeoutSeconds: 60,
+			Auth: IngestAuthConfig{
+				Enabled: false,
+				Vault: VaultClientConfig{
+					Addr:       "http://vault.vault.svc.cluster.local:8200",
+					K8sRole:    "glovebox-ingest",
+					KVMount:    "secret",
+					TokensPath: "glovebox/ingest-tokens",
+				},
+				ReloadIntervalSeconds: 300,
+				PerIPRateLimit: RateLimitWindowConf{
+					WindowSeconds: 60,
+					MaxRejected:   10,
+					LRUCapacity:   1000,
+				},
+				GlobalRateLimit: RateLimitWindowConf{
+					WindowSeconds: 60,
+					MaxRejected:   100,
+				},
+			},
+			Archives: IngestArchivesConfig{
+				Enabled:                    false,
+				StagingRoot:                "/data/glovebox",
+				MaxUploadSize:              32212254720, // 30 GiB
+				PerSourceMaxConcurrent:     4,
+				GlobalMaxConcurrent:        32,
+				PerSourceSoftCapPct:        40,
+				GlobalHardCapPct:           95,
+				GlobalHardCapHysteresisPct: 85,
+				PatchIdleTimeoutSeconds:    300,
+				CleanupIntervalSeconds:     3600,
+				CleanupTmpAgeHours:         72,
+				CleanupFinalizeAgeHours:    1,
+				DoneRetentionDays:          7,
+			},
 		},
 	}
 
@@ -150,6 +240,84 @@ func (c *Config) Validate() error {
 	}
 	if c.Ingest.BackpressureThreshold <= 0 {
 		return fmt.Errorf("ingest.backpressure_threshold must be > 0 when ingest is enabled, got %d", c.Ingest.BackpressureThreshold)
+	}
+	if c.Ingest.Auth.Enabled {
+		if err := c.Ingest.Auth.validate(); err != nil {
+			return err
+		}
+	}
+	if c.Ingest.Archives.Enabled {
+		// Archive listener depends on bearer-token auth; refusing here is
+		// friendlier than the listener mounting the 503 fallback at boot.
+		if !c.Ingest.Auth.Enabled {
+			return fmt.Errorf("ingest.archives.enabled requires ingest.auth.enabled (spec 13 §5.2 / spec 10)")
+		}
+		if err := c.Ingest.Archives.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *IngestAuthConfig) validate() error {
+	if a.Vault.Addr == "" {
+		return fmt.Errorf("ingest.auth.vault.addr required when ingest.auth.enabled")
+	}
+	if a.Vault.K8sRole == "" {
+		return fmt.Errorf("ingest.auth.vault.k8s_role required when ingest.auth.enabled")
+	}
+	if a.Vault.TokensPath == "" {
+		return fmt.Errorf("ingest.auth.vault.tokens_path required when ingest.auth.enabled")
+	}
+	if a.ReloadIntervalSeconds <= 0 {
+		return fmt.Errorf("ingest.auth.reload_interval_seconds must be > 0, got %d", a.ReloadIntervalSeconds)
+	}
+	if a.PerIPRateLimit.WindowSeconds <= 0 {
+		return fmt.Errorf("ingest.auth.per_ip_rate_limit.window_seconds must be > 0, got %d", a.PerIPRateLimit.WindowSeconds)
+	}
+	if a.PerIPRateLimit.MaxRejected <= 0 {
+		return fmt.Errorf("ingest.auth.per_ip_rate_limit.max_rejected must be > 0, got %d", a.PerIPRateLimit.MaxRejected)
+	}
+	if a.GlobalRateLimit.WindowSeconds <= 0 {
+		return fmt.Errorf("ingest.auth.global_rate_limit.window_seconds must be > 0, got %d", a.GlobalRateLimit.WindowSeconds)
+	}
+	if a.GlobalRateLimit.MaxRejected <= 0 {
+		return fmt.Errorf("ingest.auth.global_rate_limit.max_rejected must be > 0, got %d", a.GlobalRateLimit.MaxRejected)
+	}
+	return nil
+}
+
+func (ar *IngestArchivesConfig) validate() error {
+	if ar.StagingRoot == "" {
+		return fmt.Errorf("ingest.archives.staging_root required when ingest.archives.enabled")
+	}
+	if ar.MaxUploadSize <= 0 {
+		return fmt.Errorf("ingest.archives.max_upload_size must be > 0, got %d", ar.MaxUploadSize)
+	}
+	if ar.PerSourceMaxConcurrent <= 0 {
+		return fmt.Errorf("ingest.archives.per_source_max_concurrent must be > 0, got %d", ar.PerSourceMaxConcurrent)
+	}
+	if ar.GlobalMaxConcurrent <= 0 {
+		return fmt.Errorf("ingest.archives.global_max_concurrent must be > 0, got %d", ar.GlobalMaxConcurrent)
+	}
+	if ar.GlobalHardCapPct <= 0 || ar.GlobalHardCapPct > 100 {
+		return fmt.Errorf("ingest.archives.global_hard_cap_pct must be in (0,100], got %d", ar.GlobalHardCapPct)
+	}
+	if ar.GlobalHardCapHysteresisPct <= 0 || ar.GlobalHardCapHysteresisPct > 100 {
+		return fmt.Errorf("ingest.archives.global_hard_cap_hysteresis_pct must be in (0,100], got %d", ar.GlobalHardCapHysteresisPct)
+	}
+	if ar.GlobalHardCapHysteresisPct >= ar.GlobalHardCapPct {
+		return fmt.Errorf("ingest.archives.global_hard_cap_hysteresis_pct (%d) must be < global_hard_cap_pct (%d)",
+			ar.GlobalHardCapHysteresisPct, ar.GlobalHardCapPct)
+	}
+	if ar.PerSourceSoftCapPct <= 0 || ar.PerSourceSoftCapPct > 100 {
+		return fmt.Errorf("ingest.archives.per_source_soft_cap_pct must be in (0,100], got %d", ar.PerSourceSoftCapPct)
+	}
+	if ar.PatchIdleTimeoutSeconds <= 0 {
+		return fmt.Errorf("ingest.archives.patch_idle_timeout_seconds must be > 0, got %d", ar.PatchIdleTimeoutSeconds)
+	}
+	if ar.CleanupIntervalSeconds <= 0 {
+		return fmt.Errorf("ingest.archives.cleanup_interval_seconds must be > 0, got %d", ar.CleanupIntervalSeconds)
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -67,6 +68,11 @@ func main() {
 	}
 	defer m.Shutdown()
 
+	// Bind the OTel global meter provider to ours so subsystems that
+	// reach for otel.Meter(...) (e.g. internal/ingest/archives.Telemetry)
+	// emit through the same Prometheus exporter as the rest of glovebox.
+	otel.SetMeterProvider(m.Provider())
+
 	matchers, detectors := buildScanFuncs(rules, registry)
 
 	// Pre-compute boost rules from config (static, don't rebuild per item)
@@ -100,7 +106,11 @@ func main() {
 		}
 	}()
 
-	// Start ingest HTTP server if enabled
+	// Start ingest HTTP server if enabled. The mux is shared between
+	// the legacy /v1/ingest connector endpoint (spec 08) and the
+	// spec 13 archive-delivery /v1/archives* surface; both bind to
+	// cfg.Ingest.Port so the chart's startup probe + NetworkPolicy
+	// continue to target a single port.
 	var ingestHandler *ingest.Handler
 	var ingestServer *http.Server
 	if cfg.Ingest.Enabled {
@@ -119,6 +129,17 @@ func main() {
 
 		ingestMux := http.NewServeMux()
 		ingestMux.Handle("/v1/ingest", ingestHandler)
+
+		// Spec 13 archive-delivery: bind /v1/archives* onto the same mux
+		// before the http.Server starts serving. bootstrapArchives is
+		// nil-tolerant — when Auth.Enabled / Archives.Enabled are off it
+		// returns without mounting anything; when a startup check fails
+		// it mounts a 503 fallback on /v1/archives* and lets the rest of
+		// the process run.
+		if err := bootstrapArchives(ctx, cfg, ingestMux); err != nil {
+			log.Fatalf("bootstrap archive listener: %v", err)
+		}
+
 		ingestServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.Ingest.Port),
 			Handler:      ingestMux,

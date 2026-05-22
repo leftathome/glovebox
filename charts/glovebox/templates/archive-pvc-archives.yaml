@@ -1,0 +1,33 @@
+{{- if .Values.ingest.archives.enabled }}
+{{- if not .Values.persistence.archives.existingClaim }}
+# Spec 13 §5.1 final-storage PVC for completed archive uploads. After
+# finalize succeeds, the upload moves atomically (os.Rename) from
+# .tmp-archives/<id>/ to archives/<id>/. The watcher (spec 9, separate
+# bead) picks files up from here. The done-retention sweep collapses
+# entries older than DoneRetentionDays (default 7d, spec 13 §5.5).
+#
+# IMPORTANT: this PVC and the tmp-archives PVC MUST resolve to the same
+# filesystem (same st_dev). The listener checks this at boot and mounts
+# a 503 fallback on /v1/archives* if they diverge. Easiest pattern:
+# pre-provision both PVCs against the same NFS/CSI export, or set both
+# storage classes identically and trust the provisioner.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "glovebox.fullname" . }}-archives
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.persistence.archives.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.archives.size }}
+  {{- if .Values.persistence.archives.storageClass }}
+  storageClassName: {{ .Values.persistence.archives.storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}
