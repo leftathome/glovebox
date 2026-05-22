@@ -126,7 +126,7 @@ func LoadConfig(path string) (Config, error) {
 			},
 			Archives: IngestArchivesConfig{
 				Enabled:                    false,
-				StagingRoot:                "/data/glovebox",
+				StagingRoot:                "/data/archive-storage",
 				MaxUploadSize:              32212254720, // 30 GiB
 				PerSourceMaxConcurrent:     4,
 				GlobalMaxConcurrent:        32,

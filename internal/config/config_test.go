@@ -308,8 +308,8 @@ func TestLoadConfig_IngestArchivesDefaults(t *testing.T) {
 	if cfg.Ingest.Archives.Enabled {
 		t.Error("ingest.archives.enabled default should be false")
 	}
-	if cfg.Ingest.Archives.StagingRoot != "/data/glovebox" {
-		t.Errorf("ingest.archives.staging_root default = %q, want /data/glovebox", cfg.Ingest.Archives.StagingRoot)
+	if cfg.Ingest.Archives.StagingRoot != "/data/archive-storage" {
+		t.Errorf("ingest.archives.staging_root default = %q, want /data/archive-storage", cfg.Ingest.Archives.StagingRoot)
 	}
 	if cfg.Ingest.Archives.MaxUploadSize != 32212254720 {
 		t.Errorf("ingest.archives.max_upload_size default = %d, want 32212254720", cfg.Ingest.Archives.MaxUploadSize)

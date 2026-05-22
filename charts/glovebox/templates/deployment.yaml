@@ -34,6 +34,16 @@ spec:
           args:
             - --config
             - /etc/glovebox/config.json
+          {{- if .Values.ingest.auth.enabled }}
+          env:
+            {{- if .Values.ingest.auth.vault.tlsSkipVerify }}
+            # Homelab vault commonly runs self-signed; the vault Go
+            # client (used by auth.LoginK8s + auth.NewProductionVaultClient)
+            # reads VAULT_SKIP_VERIFY from env via vaultapi.DefaultConfig.
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
@@ -80,14 +90,13 @@ spec:
             - name: shared
               mountPath: {{ .Values.config.sharedDir }}
             {{- if .Values.ingest.archives.enabled }}
-            # Spec 13 §5.2 — mount BOTH PVCs as subPaths of the same
-            # parent directory so .tmp-archives/ and archives/ live on
-            # the storage class the operator pinned. The listener's
-            # st_dev check at boot verifies they're on one device.
-            - name: tmp-archives
-              mountPath: {{ printf "%s/.tmp-archives" .Values.ingest.archives.stagingRoot }}
-            - name: archives
-              mountPath: {{ printf "%s/archives" .Values.ingest.archives.stagingRoot }}
+            # Spec 13 §5.2 — mount ONE PVC at stagingRoot; the listener
+            # creates .tmp-archives/ and archives/ subdirs on first boot.
+            # A single PVC guarantees st_dev identity (the listener's
+            # safety check would 503 the endpoint otherwise on backends
+            # like Longhorn where each PVC is a separate block device).
+            - name: archive-storage
+              mountPath: {{ .Values.ingest.archives.stagingRoot }}
             {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -124,10 +133,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.shared.existingClaim | default (printf "%s-shared" (include "glovebox.fullname" .)) }}
         {{- if .Values.ingest.archives.enabled }}
-        - name: tmp-archives
+        - name: archive-storage
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.tmpArchives.existingClaim | default (printf "%s-tmp-archives" (include "glovebox.fullname" .)) }}
-        - name: archives
-          persistentVolumeClaim:
-            claimName: {{ .Values.persistence.archives.existingClaim | default (printf "%s-archives" (include "glovebox.fullname" .)) }}
+            claimName: {{ .Values.persistence.archiveStorage.existingClaim | default (printf "%s-archive-storage" (include "glovebox.fullname" .)) }}
         {{- end }}

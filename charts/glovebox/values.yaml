@@ -94,16 +94,12 @@ persistence:
     storageClass: ""
     existingClaim: ""
     accessMode: ReadWriteOnce
-  # Spec 13 archive-delivery scratch + final-storage PVCs. Both render
-  # only when ingest.archives.enabled=true. The two must be pinned to
-  # the same storage class so st_dev matches at startup -- otherwise the
-  # listener mounts the 503 fallback (spec 13 §5.2 + listener.go).
-  tmpArchives:
-    size: 50Gi
-    storageClass: ""
-    existingClaim: ""
-    accessMode: ReadWriteOnce
-  archives:
+  # Spec 13 archive-delivery storage. One PVC for both .tmp-archives/
+  # and archives/ subtrees so they share st_dev (the listener's safety
+  # check 503s the endpoint if they diverge -- which happens on any
+  # CSI provisioner with per-volume block devices, like Longhorn). The
+  # listener creates the two subdirs on first boot.
+  archiveStorage:
     size: 200Gi
     storageClass: ""
     existingClaim: ""
@@ -406,10 +402,14 @@ ingest:
   auth:
     enabled: false                          # opt-in; off by default
     vault:
-      addr: "http://vault.vault.svc.cluster.local:8200"
+      addr: "https://vault.vault.svc.cluster.local:8200"
       k8sRole: "glovebox-ingest"
       tokensPath: "glovebox/ingest-tokens"
       kvMount: "secret"
+      # Homelab vaults commonly run with a self-signed cert; skip TLS
+      # verification when true. Cluster-pod-network only, no external
+      # exposure. For production-grade: false + mount the Vault CA cert.
+      tlsSkipVerify: true
     reloadIntervalSeconds: 300              # periodic re-pull
     trustedProxyCIDRs:
       - "10.244.0.0/16"                     # placeholder: cluster Traefik pod CIDR
@@ -422,11 +422,12 @@ ingest:
       maxRejected: 100                      # spec 10 §5.3 backstop
   archives:
     enabled: false                          # opt-in; off by default
-    # Root path under which .tmp-archives/ and archives/ live. Both
-    # subdirectories MUST be on the same filesystem (spec 13 §5.2
-    # st_dev check); the persistence.tmpArchives + persistence.archives
-    # PVCs below must therefore be pinned to a single storage class.
-    stagingRoot: /data/glovebox
+    # Root path under which .tmp-archives/ and archives/ live. A
+    # dedicated dir (not /data/glovebox, which already holds the
+    # staging/quarantine/audit/failed sibling mounts) avoids nested
+    # PVC mounts. The persistence.archiveStorage PVC is mounted here
+    # at install time.
+    stagingRoot: /data/archive-storage
     maxUploadSize: 32212254720              # 30 GiB (Tus-Max-Size)
     perSourceMaxConcurrent: 4
     globalMaxConcurrent: 32
