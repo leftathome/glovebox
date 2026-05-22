@@ -755,10 +755,27 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = f.Close() }()
 
+	// Cap writes at the remaining declared length so overshoot is tolerated
+	// silently (spec §4.4 line 193: "the server discards the surplus, sets
+	// the offset to Upload-Length, and proceeds to finalize"). The
+	// LimitReader caps the actual bytes that land in f/Hasher/counter at
+	// Upload-Length; we drain any surplus from r.Body so the client's send
+	// completes cleanly. If the client sends fewer bytes than the cap,
+	// io.Copy returns when r.Body EOFs first and we still finalize correctly.
 	counter := &patchCounter{}
 	body := &patchBodyReader{ctx: ctx, src: r.Body}
 	mw := io.MultiWriter(f, st.Hasher, counter)
-	_, copyErr := io.Copy(mw, body)
+	remaining := st.UploadLength - st.Offset
+	if remaining < 0 {
+		remaining = 0
+	}
+	_, copyErr := io.Copy(mw, io.LimitReader(body, remaining))
+	if copyErr == nil {
+		// Drain any surplus the client sent; we don't write it to disk but
+		// we DO need to consume it so the client's POST/PATCH completes
+		// rather than seeing a broken-pipe error.
+		_, _ = io.Copy(io.Discard, body)
+	}
 
 	// Whatever made it onto disk is persisted, regardless of copyErr.
 	st.Offset += counter.n
@@ -830,6 +847,11 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
 // in-flight gauge. Tmp + finalize dir cleanup is owned by Finalize
 // itself on failure paths and by Finalize's rename on success.
 func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st *UploadState, sourceID, uploadID string) {
+	// Re-read r.Context() (the un-wrapped request context) intentionally:
+	// PATCH wraps the body-read context with PatchIdleTimeout, but that
+	// deadline is for THE PATCH BODY read, not for finalize. Using the
+	// raw r.Context() means a fired PATCH-idle timer doesn't cancel
+	// finalize's sha256 + untar + rename work.
 	ctx := r.Context()
 	mediaType := st.Meta.MediaType
 	duration := time.Since(st.CreatedAt)
@@ -989,15 +1011,19 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	// Acquire the upload mutex (blocking). A concurrent PATCH will
 	// finish (or fail) before we proceed; the cleanup we do here is
 	// independent of any bytes the PATCH may have just written.
+	// store.Remove runs INSIDE the locked section so a concurrent HEAD
+	// can't observe the store entry after the tmp file is gone (TOCTOU
+	// closure flagged by C2b spec review).
 	st.Mu.Lock()
 	mediaType := st.Meta.MediaType
 	archiveID := st.ArchiveID
 	// Cleanup tmp file + finalize dir. Both are best-effort: a missing
 	// path on either is not an error (idempotent cleanup semantics).
 	cleanupTmp(h.cfg.StagingRoot, uploadID)
+	h.store.Remove(uploadID)
 	st.Mu.Unlock()
 
-	h.store.Remove(uploadID)
+
 	h.tel.RecordUploadFailed(r.Context(), sourceID, mediaType, "terminated")
 	h.tel.RecordUploadInFlight(r.Context(), sourceID, -1)
 	slog.Info(EventUploadAborted,
