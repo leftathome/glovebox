@@ -1105,7 +1105,9 @@ func TestParseUploadMetadata_HappyPath(t *testing.T) {
 }
 
 // Additional tests:
-// - rejects archive_id with newline/NUL/uppercase
+// - rejects archive_id with newline / NUL / outside the regex char set
+//   (NOTE: spec §4.2 regex `^[a-zA-Z0-9._-]{1,128}$` DOES admit uppercase;
+//   reject the chars not in the set — `/`, `:`, space, etc. — not `A-Z`)
 // - rejects archive_filename containing /, .., NUL
 // - rejects unknown media_type
 // - rejects size_bytes != Upload-Length
