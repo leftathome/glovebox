@@ -943,3 +943,48 @@ func TestIntegration_Auth_401_OnUnknownToken(t *testing.T) {
 		t.Errorf("body = %q, want %q (must match missing-token body for no-leak)", got, "unauthorized")
 	}
 }
+
+// ---------------------------------------------------------------------
+// Scenario 9: 401 bodies are byte-equal across missing-vs-unknown
+// (spec 10 §5.1 / §5.2 no-leak invariant). The two scenario tests above
+// each assert against the literal "unauthorized" individually, but
+// would silently pass if one returned "unauthorized " with trailing
+// whitespace (TrimSpace masks that). This test compares both bodies
+// byte-for-byte to lock the no-leak contract.
+// ---------------------------------------------------------------------
+
+func TestIntegration_Auth_401_BodiesByteEqual(t *testing.T) {
+	ts := setupIntegrationServer(t)
+
+	get401Body := func(authHeader string) (int, []byte) {
+		req, err := http.NewRequest(http.MethodPost, ts.srv.URL+archivesBasePath, nil)
+		if err != nil {
+			t.Fatalf("build req: %v", err)
+		}
+		req.Header.Set("Tus-Resumable", tusVersion)
+		req.Header.Set("Upload-Length", "1024")
+		req.Header.Set("Upload-Metadata", buildUploadMetadataHeader(
+			rawMboxMeta("ignored", "x.mbox",
+				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 1024)))
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, body
+	}
+
+	statusMissing, bodyMissing := get401Body("") // no Authorization header
+	statusUnknown, bodyUnknown := get401Body("Bearer " + "ff" + strings.Repeat("00", 31))
+
+	if statusMissing != http.StatusUnauthorized || statusUnknown != http.StatusUnauthorized {
+		t.Fatalf("expected both 401; got missing=%d unknown=%d", statusMissing, statusUnknown)
+	}
+	if !bytes.Equal(bodyMissing, bodyUnknown) {
+		t.Errorf("401 bodies differ:\n  missing=%q\n  unknown=%q\nspec 10 §5.1 requires byte-equal bodies", bodyMissing, bodyUnknown)
+	}
+}
