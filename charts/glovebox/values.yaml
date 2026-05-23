@@ -55,7 +55,13 @@ config:
   metricsPort: 9090
   watchMode: fsnotify
   pollIntervalSeconds: 5
-  scanWorkers: 4
+  # 8 scan workers (was 4): observed 2026-05-23 mbox-importer run pushing
+  # ~52 msg/sec into a 4-worker scanner -- queue depth climbed faster than
+  # workers drained. Doubling at the chart default doesn't change behavior
+  # for connector-only workloads (light steady-state load) but absorbs
+  # archive-importer bursts. Operators on low-CPU nodes can override
+  # back down to 4 if needed.
+  scanWorkers: 8
   scanTimeoutSeconds: 30
   scanChunkSizeBytes: 262144
   agentAllowlist:
@@ -68,7 +74,14 @@ config:
     port: 9091
     maxBodyBytes: 67108864
     maxMetadataBytes: 262144
-    backpressureThreshold: 100
+    # 5000 (was 100): observed 2026-05-23 the prior default tripped after
+    # the first ~100 messages of a mbox-importer Job, returning 429s that
+    # the HTTPStagingBackend exhausted retries on (recorded as ingest
+    # errors). 5000 gives the scanner ~125 sec of burst-absorption headroom
+    # at 40 items/sec drain. Memory cost: ~250 MiB at full queue with
+    # ~50 KiB staging items. Operators with stricter memory budgets can
+    # tune down; archive-importer-heavy workloads can tune up further.
+    backpressureThreshold: 5000
     requestTimeoutSeconds: 60
 
 persistence:

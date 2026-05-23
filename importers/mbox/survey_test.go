@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -533,5 +534,76 @@ func TestIsStale_MissingSource(t *testing.T) {
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("expected errors.Is(err, fs.ErrNotExist), got: %v", err)
+	}
+}
+
+// TestSurveyWriteAtomicLeavesNoPartialOnFailure mirrors the
+// checkpoint atomic-write test. Survey.Write uses temp+fsync+rename;
+// a failure during that sequence MUST leave neither a partially
+// written target nor a lingering .tmp-* sibling. We force a Write
+// failure by writing into a parent directory that is read-only
+// (non-root) or by writing into a non-existent parent (root, where
+// chmod is a no-op).
+func TestSurveyWriteAtomicLeavesNoPartialOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission semantics differ on Windows")
+	}
+
+	parent := t.TempDir()
+	var target, watchDir string
+
+	if os.Geteuid() == 0 {
+		target = filepath.Join(parent, "does-not-exist", "s.survey.v1.json")
+		watchDir = parent
+	} else {
+		roDir := filepath.Join(parent, "ro")
+		if err := os.Mkdir(roDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		target = filepath.Join(roDir, "s.survey.v1.json")
+		if err := os.WriteFile(target, []byte(`{"schema_version":"seed"}`), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := os.Chmod(roDir, 0o500); err != nil {
+			t.Fatalf("chmod ro: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) })
+		watchDir = roDir
+	}
+
+	s := &SurveyV1{
+		SchemaVersion: "survey-v1",
+		SourcePath:    "/x/y.mbox",
+		SourceSize:    42,
+		TotalMessages: 9_999,
+	}
+	if err := s.Write(target); err == nil {
+		t.Fatalf("expected Write to fail, got nil")
+	}
+
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(watchDir, 0o700); err != nil {
+			t.Fatalf("chmod restore: %v", err)
+		}
+	}
+
+	entries, err := os.ReadDir(watchDir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", watchDir, err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("partial survey temp file lingered: %s", e.Name())
+		}
+	}
+
+	if os.Geteuid() != 0 {
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("read target: %v", err)
+		}
+		if string(got) != `{"schema_version":"seed"}` {
+			t.Errorf("target was mutated despite failed write: %s", got)
+		}
 	}
 }

@@ -10,7 +10,7 @@
   "watch_mode": "fsnotify",
   "poll_interval_seconds": 5,
   "rules_file": "/etc/glovebox/rules.json",
-  "scan_workers": 4,
+  "scan_workers": 8,
   "scan_timeout_seconds": 30,
   "scan_chunk_size_bytes": 262144,
   "ingest": {
@@ -18,11 +18,11 @@
     "port": 9091,
     "max_body_bytes": 67108864,
     "max_metadata_bytes": 262144,
-    "backpressure_threshold": 100,
+    "backpressure_threshold": 5000,
     "request_timeout_seconds": 60,"auth": {
       "enabled": true,
       "vault": {
-        "addr": "http://vault.vault.svc.cluster.local:8200",
+        "addr": "https://vault.vault.svc.cluster.local:8200",
         "k8s_role": "glovebox-ingest",
         "kv_mount": "secret",
         "tokens_path": "glovebox/ingest-tokens"
