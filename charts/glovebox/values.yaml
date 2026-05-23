@@ -9,12 +9,20 @@ image:
   pullPolicy: IfNotPresent
 
 resources:
+  # Limits sized for the spec 13 archive-delivery workload: serving
+  # multi-GiB tus.io PATCH streams plus rolling sha256 + per-connection
+  # http buffer overhead spikes the Go runtime working set well above
+  # the pre-spec-13 128Mi/512Mi tier. 512Mi OOM-killed a 12 GiB mbox
+  # upload mid-PATCH (glovebox-5ud9); 2Gi limit + a GOMEMLIMIT 100Mi
+  # under the cgroup cap lets the runtime self-throttle GC before the
+  # kernel intervenes. If ingest.archives.enabled is false, scaling
+  # back to 128Mi/512Mi is safe.
   requests:
     cpu: 100m
-    memory: 128Mi
+    memory: 512Mi
   limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 2Gi
 
 nodeSelector: {}
 affinity: {}

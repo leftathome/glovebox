@@ -293,6 +293,16 @@ curl -i -X POST "$URL/v1/archives" \
 - `413` — `Upload-Length` exceeds `Tus-Max-Size`. **You should never
   see this** since glovebox is configured for 30 GiB by default; if
   you do, the operator under-provisioned the cap.
+- **OOM mid-upload** (not an HTTP code — the pod restarts, your in-flight
+  PATCHes see `connection refused`). The glovebox pod runs with a hard
+  memory cap; current default is 2 GiB (chart 0.4.2). Multi-GiB uploads
+  pass cleanly within that envelope, but a node-level memory squeeze or
+  an unrelated runaway can still get the pod evicted. Retry semantics:
+  HEAD the upload-id; if it still exists in `.tmp-archives/` (RWO PVC
+  survives pod restart) the offset is recoverable and PATCH-resume picks
+  up cleanly. If HEAD returns 404 the in-flight state was lost — POST a
+  fresh upload. Tracked under `glovebox-5ud9` (chart bump) and the
+  pprof / streaming-audit followup bead.
 - `429` — rate-limited (your IP or a global backstop). Honor
   `Retry-After`.
 - `503` — archive listener unavailable (Vault load failed, st_dev
