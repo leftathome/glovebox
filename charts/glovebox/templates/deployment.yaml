@@ -34,7 +34,7 @@ spec:
           args:
             - --config
             - /etc/glovebox/config.json
-          {{- if .Values.ingest.auth.enabled }}
+          {{- if or .Values.ingest.auth.enabled .Values.ingest.archives.enabled }}
           env:
             {{- if .Values.ingest.auth.vault.tlsSkipVerify }}
             # Homelab vault commonly runs self-signed; the vault Go
@@ -42,6 +42,16 @@ spec:
             # reads VAULT_SKIP_VERIFY from env via vaultapi.DefaultConfig.
             - name: VAULT_SKIP_VERIFY
               value: "true"
+            {{- end }}
+            {{- if .Values.ingest.archives.enabled }}
+            # Pin the Go runtime's soft memory ceiling ~100Mi below the
+            # cgroup limit so GC self-throttles before the kernel
+            # OOM-kills the pod during sustained multi-GiB PATCH
+            # streams (glovebox-5ud9). Go 1.19+ reads GOMEMLIMIT;
+            # format accepts e.g. "1900MiB". Value derived as
+            # resources.limits.memory minus a 100Mi safety margin.
+            - name: GOMEMLIMIT
+              value: "1900MiB"
             {{- end }}
           {{- end }}
           ports:
