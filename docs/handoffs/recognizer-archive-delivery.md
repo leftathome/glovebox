@@ -92,7 +92,7 @@ spec:
         - name: GLOVEBOX_INGEST_SOURCE_ID
           value: "recognizer-smoke-test"   # your source-id
         - name: GLOVEBOX_INGEST_URL
-          value: "http://glovebox.glovebox.svc.cluster.local:9091"
+          value: "http://glovebox-glovebox-ingest.glovebox.svc.cluster.local:9091"
 ```
 
 Or mount the Secret as a file at `/var/run/recognizer/glovebox-token`
@@ -116,8 +116,14 @@ or accept the pod-restart story.
 ### 2a. URL
 
 ```
-http://glovebox.glovebox.svc.cluster.local:9091
+http://glovebox-glovebox-ingest.glovebox.svc.cluster.local:9091
 ```
+
+Service-name shape is `{release}-glovebox-ingest`. The current deploy
+uses release name `glovebox` in namespace `glovebox`, so the
+double-`glovebox-glovebox-` is correct (verified via `kubectl get svc -n glovebox`).
+If the operator ever re-installs under a different release name,
+update the host segment.
 
 Routes mounted on that port:
 
@@ -403,7 +409,7 @@ channel.
 
 ```bash
 # In your recognizer pod, with the ExternalSecret mounted:
-export URL=http://glovebox.glovebox.svc.cluster.local:9091
+export URL=http://glovebox-glovebox-ingest.glovebox.svc.cluster.local:9091
 export TOKEN=$(cat /var/run/recognizer/glovebox-token)
 export SID=recognizer-smoke-test
 
