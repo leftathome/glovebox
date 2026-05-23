@@ -404,13 +404,18 @@ A 503 mid-upload is the only retry-worthy code; everything else is
 
 Once finalize returns 2xx, glovebox has:
 
-1. Written `archives/<archive_id>/<archive_filename>` (or
-   `archives/<archive_id>/extracted/` for tarballs).
-2. Written `archives/<archive_id>/metadata.json` carrying every
-   `Upload-Metadata` key + the server-set `delivered_by` (your
-   source-id) and `delivered_at`.
-3. Written `archives/<archive_id>/receipt.json` carrying the final
-   sha256, byte counts, finalize timestamp.
+1. Written either `archives/<archive_id>/raw/<archive_filename>` (for
+   raw media shapes — mbox, imap-export) **or**
+   `archives/<archive_id>/tree/<entry-path>...` (for tarballs —
+   google-takeout-subtree, generic-tarball; one file per tar entry).
+2. Written **`archives/<archive_id>/metadata.json`**, the single
+   sidecar carrying every validated `Upload-Metadata` key + the
+   server-set `delivered_by` (your source-id), `received_at`,
+   `sha256_verified: true`, `staged_path`, `entries_extracted`
+   (`0` for raw, count for tarball), and `raw_filename` (raw shapes
+   only). This file IS the finalize receipt — there is no separate
+   `receipt.json`. The `GET /v1/archives/<archive_id>` endpoint
+   returns the same JSON (spec 13 §4.8).
 
 The spec-9 mbox-importer watcher (bead `glovebox-c9zt`) picks the
 `archives/<id>/` directory up from there and feeds its contents into

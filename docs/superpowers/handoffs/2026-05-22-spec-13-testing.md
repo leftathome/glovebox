@@ -96,7 +96,7 @@ bash scripts/archive-smoke-test.sh
 ```
 
 Pass criteria (per `glovebox-p1zx` acceptance):
-- Phase 1: 12 GiB mbox uploaded in resumable chunks, finalizes to `/data/glovebox/archives/<id>/archive.mbox` + `metadata.json` + `receipt.json`. No 413 anywhere in the response stream.
+- Phase 1: 12 GiB mbox uploaded in resumable chunks, finalizes to `/data/glovebox/archives/<id>/raw/<archive_filename>` + `metadata.json` (the single sidecar; there is no separate receipt.json — the struct is named FinalizeReceipt in code but lands in metadata.json per spec 13 §4.8). No 413 anywhere in the response stream.
 - Phase 2: 2 GiB tarball uploaded, untars under `archives/<id>/extracted/`, every entry recognized by `internal/ingest/archives/untar.go`. No 413; tar-safety rejections logged at INFO if test entries hit them.
 
 **If a chunk fails mid-upload, deliberately kill the curl, then re-invoke the script with the same upload-id env var to test the HEAD-then-PATCH resume path. The script supports this via `RESUME_FROM_ID=<id>`.**
