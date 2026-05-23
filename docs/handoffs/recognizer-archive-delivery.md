@@ -213,13 +213,23 @@ returns `431 metadata_too_long`.
 
 ```
 archive/mbox                      (raw)   — one mbox file, ships as-is.
-archive/google-takeout-subtree    (tar)   — gzipped tarball; glovebox untars.
+archive/google-takeout-subtree    (tar)   — uncompressed tarball (no .tar.gz / .tar.zst); glovebox untars.
 archive/imap-export               (raw)   — one mbox-shaped IMAP dump.
-archive/generic-tarball           (tar)   — gzipped tarball, no Takeout semantics.
+archive/generic-tarball           (tar)   — uncompressed tarball, no Takeout semantics.
 ```
 
+**Tarballs MUST be uncompressed in v1** — spec 13 §"Out of scope and
+deferred" §"Server-side compression" is explicit. The finalize path
+feeds the body straight into `archive/tar.NewReader` with no gzip
+wrapper; a `.tar.gz` upload fails with
+`untar: tar read: archive/tar: invalid tar header` at finalize.
+Recognizer must emit plain `.tar` (or expose decompression as a
+separate spec-amendment bead with a decompression-bomb defense
+budget).
+
 Anything else returns `400 unknown_media_type`. Adding a fifth media
-type requires a code change in glovebox; ask Steve to file a spec
+type — or adding gzip/zstd support to existing tarball media types —
+requires a code change in glovebox; ask Steve to file a spec
 amendment.
 
 ### 3c. Recipes
