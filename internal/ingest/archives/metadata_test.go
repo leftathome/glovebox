@@ -114,6 +114,40 @@ func TestParseUploadMetadata_HappyPath_TarShape(t *testing.T) {
 	}
 }
 
+// Recognizer-shipping media types added 2026-05-23 (glovebox-4enb).
+// Both share the existing MediaRaw / MediaTar finalize dispatch; no
+// new untar / rename code path is required. A future per-type
+// importer (downstream watcher) may further specialize handling.
+
+func TestParseUploadMetadata_HappyPath_GenericTarball(t *testing.T) {
+	header := validHeader(map[string]string{
+		"media_type":            "archive/generic-tarball",
+		"subtree_relative_path": "meta-facebook",
+		"archive_filename":      "fb-export.tar",
+	})
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.Shape() != MediaTar {
+		t.Errorf("Shape()=%q want %q", m.Shape(), MediaTar)
+	}
+}
+
+func TestParseUploadMetadata_HappyPath_ImapExport(t *testing.T) {
+	header := validHeader(map[string]string{
+		"media_type":       "archive/imap-export",
+		"archive_filename": "inbox.mbox",
+	})
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.Shape() != MediaRaw {
+		t.Errorf("Shape()=%q want %q", m.Shape(), MediaRaw)
+	}
+}
+
 // ---- archive_id rejection cases ----
 
 func TestParseUploadMetadata_RejectsArchiveIDWithNewline(t *testing.T) {

@@ -40,11 +40,35 @@ const (
 )
 
 // mediaAllowList per spec 13 §4.5. Hard-coded; adding an entry
-// REQUIRES a code change AND a corresponding importer landing in the
-// same release. Operators cannot override this map at runtime.
+// REQUIRES a code change. Operators cannot override this map at
+// runtime.
+//
+// Importer coverage (downstream watcher dispatch, separate beads):
+//   - archive/mbox: spec 9 mbox-importer (glovebox-c9zt, watcher
+//     mode in progress).
+//   - archive/google-takeout-subtree: no dedicated importer yet;
+//     staged tarballs sit under archives/<id>/tree/ awaiting a
+//     future Takeout-aware consumer.
+//   - archive/generic-tarball: no dedicated importer yet; same
+//     "staged but unrouted" status as Takeout subtrees. Added to
+//     unblock recognizer's Meta/Facebook export delivery
+//     (glovebox-4enb 2026-05-23) -- semantically "any uncompressed
+//     tar we don't have a more specific media type for."
+//   - archive/imap-export: no dedicated importer yet; reuses the
+//     MediaRaw shape (the body is an mbox-shaped IMAP dump). A
+//     future spec-9-style watcher can opt to handle this media_type
+//     identically to archive/mbox.
+//
+// Earlier-draft note that adding an entry "REQUIRES ... a
+// corresponding importer landing in the same release" was relaxed
+// for the recognizer-shipping case: glovebox accepts + stages the
+// data; the importer-side gap is tracked separately so the data
+// doesn't get lost at the boundary while the watcher catches up.
 var mediaAllowList = map[string]MediaShape{
 	"archive/mbox":                   MediaRaw,
 	"archive/google-takeout-subtree": MediaTar,
+	"archive/generic-tarball":        MediaTar,
+	"archive/imap-export":            MediaRaw,
 }
 
 // Validation regexes per spec 13 §4.2.
