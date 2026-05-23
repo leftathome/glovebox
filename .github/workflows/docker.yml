@@ -21,6 +21,9 @@ jobs:
           - context: .
             image: ghcr.io/leftathome/glovebox-rss
             dockerfile: connectors/rss/Dockerfile
+          - context: .
+            image: ghcr.io/leftathome/glovebox-mbox-importer
+            dockerfile: importers/mbox/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v6
