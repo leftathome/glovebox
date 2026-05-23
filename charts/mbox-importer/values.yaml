@@ -1,0 +1,132 @@
+# mbox-importer one-shot Job. Spec 09 + bead glovebox-7ey (binary)
+# + glovebox-osw (this chart).
+#
+# Each `helm install <release>` deploys one Job that processes one
+# mbox archive. To process multiple archives, install multiple
+# releases with distinct -n / source paths (e.g.
+# `helm install mbox-2026-q1 charts/mbox-importer/ --set archive.archiveID=q1-mail-archive ...`).
+#
+# The Job is OPT-IN at the chart level: render produces nothing unless
+# `archive.archiveID` is set. This is intentional -- without an
+# explicit archive id there is no work to do and a stale Job would
+# linger.
+
+image:
+  repository: ghcr.io/leftathome/glovebox-mbox-importer
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Glovebox ingest target. The mbox-importer POSTs each parsed message
+# to this URL via the connector framework's HTTPStagingBackend.
+glovebox:
+  # Cluster-internal service for the glovebox scanner's /v1/ingest
+  # endpoint. Default assumes glovebox is installed under release name
+  # "glovebox" in namespace "glovebox" (chart's standard fullname is
+  # {release}-glovebox; the ingest service appends "-ingest").
+  ingestURL: "http://glovebox-glovebox-ingest.glovebox.svc.cluster.local:9091/v1/ingest"
+
+archive:
+  # archiveID is the directory name under /data/archive-storage/archives/
+  # produced by the spec-13 archive delivery endpoint (recognizer's
+  # source-id + archive_id slug). REQUIRED -- the chart renders
+  # nothing if this is empty.
+  archiveID: ""
+
+  # Filename of the mbox file inside archives/<archiveID>/raw/.
+  # If unset, the Job uses a glob-and-pick-the-first-mbox pattern
+  # via shell in the container, which is brittle; prefer setting
+  # this explicitly.
+  filename: ""
+
+  # source-name passed to the importer -- this lands as the "source"
+  # field in every staging item's metadata.
+  sourceName: ""
+
+  # Path inside the container where the archive-storage PVC mounts.
+  # The Job reads from `<storagePath>/archives/<archiveID>/raw/<filename>`.
+  storagePath: /data/archive-storage
+
+# Reference to the PVC the spec-13 archive delivery endpoint stages
+# into. Must be an existing claim in the same namespace as the Job.
+storageClaim: glovebox-glovebox-archive-storage
+
+# Importer behaviour.
+importer:
+  # Parallel POST workers. With glovebox's BackpressureThreshold at
+  # default 100, 4 is the highest safe value; raise once the scanner
+  # side is over-provisioned (see config.ingest.backpressureThreshold
+  # on the glovebox chart).
+  concurrency: 4
+
+  # Survey is one streaming pass over the mbox before import; small
+  # archives can opt-out by setting a pre-existing survey sidecar.
+  surveyOnly: false
+  regenerateSurvey: false
+
+  # Filter JSON pre-applied at the importer (drops messages before
+  # the ingest round-trip). Empty means "ingest everything"; see
+  # spec 09 §3.4 for the format.
+  filterJSON: ""
+
+  # Fixed tags appended to every item's tag map (comma-separated
+  # key=value pairs). Example: "import_run=2026-q1,operator=steve".
+  fixedTags: ""
+
+# Connector-framework config (rules / data_subject_default /
+# audience_default). Required so BuildItemOptions can resolve a
+# destination agent per spec 09 §3.7.
+config:
+  # Each rule maps a match key (label:..., list-id:..., sender) to a
+  # destination agent + optional tags / data_subject / audience.
+  # Wildcard match "*" catches anything that didn't match a named
+  # rule. AT LEAST ONE rule is required; helm template fails
+  # otherwise (the importer rejects messages with no matched
+  # destination).
+  rules:
+    - match: "*"
+      destination: "messaging"
+      tags:
+        importer: mbox
+
+  # Spec 11 §3 defaults applied to every item lacking a per-rule
+  # override. "household" is the safe broad default (does not need a
+  # data_subject).
+  dataSubjectDefault: ""
+  audienceDefault:
+    - household
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# Go runtime memory ceiling; set ~500Mi under the cgroup limit so GC
+# self-throttles before kernel OOM. Same pattern as the glovebox
+# chart (glovebox-5ud9 closure).
+goMemLimit: "1500MiB"
+
+# nodeSelector + affinity often required: the archive-storage PVC
+# is RWO, so the importer pod MUST schedule on the same node as the
+# glovebox scanner that currently has it attached. Easiest default is
+# to pin via nodeName at install time:
+#   --set podNodeName=johnny
+# (We deliberately do NOT default to a specific node; the operator
+# picks per cluster.)
+podNodeName: ""
+
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+healthPort: 8080
+
+podLabels:
+  # REQUIRED: glovebox's NetworkPolicy admits /v1/ingest only from
+  # pods labeled app.kubernetes.io/component=connector. Until that
+  # netpol grows an `importer` clause (separate bead), reusing
+  # "connector" is the way in.
+  app.kubernetes.io/component: connector
