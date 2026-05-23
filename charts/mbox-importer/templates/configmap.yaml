@@ -1,0 +1,19 @@
+{{- if .Values.archive.archiveID -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mbox-importer.fullname" . }}-config
+  labels:
+    {{- include "mbox-importer.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {
+      "rules": {{ .Values.config.rules | toJson }},
+      "data_subject_default": {{ .Values.config.dataSubjectDefault | quote }},
+      "audience_default": {{ .Values.config.audienceDefault | toJson }}
+    }
+  {{- if .Values.importer.filterJSON }}
+  filter.json: |
+{{ .Values.importer.filterJSON | indent 4 }}
+  {{- end }}
+{{- end -}}
