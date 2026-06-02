@@ -35,6 +35,11 @@ type ItemMetadata struct {
 	// StagingItem.Commit(). Empty (nil) for items committed before this
 	// field existed; this is an additive schema change. See
 	// docs/specs/14-content-enrichment-design.md §4.6.
+	//
+	// Record ordering: primary content.raw enrichments first (ok records
+	// before failed records), then per-attachment records in lexicographic
+	// attachment-filename order (ok before failed within each attachment).
+	// Downstream consumers may rely on this order.
 	Enrichments []EnrichmentRecord `json:"enrichments,omitempty"`
 }
 

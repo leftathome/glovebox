@@ -77,7 +77,14 @@ func Summarize(
 
 	switch len(attachmentSources) {
 	case 0:
-		// Nothing more to do.
+		// No sources named. If the caller passed attachment records
+		// anyway, emit them with empty Source rather than silently
+		// dropping (the asymmetric "0 sources but N arts" shape is a
+		// caller mistake; preserving the records means it surfaces in
+		// metadata.json instead of vanishing).
+		if len(attachmentArts) > 0 || len(attachmentErrs) > 0 {
+			out = AppendRecords(out, "", attachmentArts, attachmentErrs)
+		}
 	case 1:
 		out = AppendRecords(out, attachmentSources[0], attachmentArts, attachmentErrs)
 	default:

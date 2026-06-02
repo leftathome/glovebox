@@ -185,6 +185,17 @@ func (si *StagingItem) buildMetadata() (staging.ItemMetadata, error) {
 	return meta, nil
 }
 
+// Commit finalizes the staging item.
+//
+// Backend asymmetry (KNOWN GAP, spec 14 follow-on): when the connector
+// is configured with HTTPStagingBackend (which sets si.commitFunc), the
+// commit path POSTs the raw content to the ingest server and the local
+// enrichment pipeline is SKIPPED. Server-side enrichment (if any) runs
+// on the ingest server. Downstream consumers that read metadata.json
+// CANNOT distinguish "this came via HTTP, enrichment ran server-side"
+// from "this is a legacy item, enrichment didn't run." Threading the
+// enrichment pipeline through the HTTP path (or relying on server-side
+// enrichment with parity) is tracked separately.
 func (si *StagingItem) Commit() error {
 	if si.commitFunc != nil {
 		return si.commitFunc()
@@ -239,7 +250,19 @@ func (si *StagingItem) runEnrichmentPipeline(meta *staging.ItemMetadata) {
 	contentPath := filepath.Join(si.dir, "content.raw")
 	var records []enrich.EnrichmentRecord
 
-	// Primary source. Only run if content.raw actually exists.
+	// Resolve the attachment set BEFORE primary enrichment so that any
+	// primary-enricher sidecars whose names happen to match `attachment-*`
+	// (e.g., a hypothetical enricher that writes `attachment-summary.md`)
+	// cannot accidentally be picked up as attachments themselves. Sort
+	// for deterministic order; filepath.Glob's documented order is
+	// lexicographical but the explicit sort keeps the contract obvious.
+	attachments, _ := filepath.Glob(filepath.Join(si.dir, "attachment-*"))
+	sort.Strings(attachments)
+
+	// Primary source. Spec §4.3 example calls ApplyAll unconditionally;
+	// we guard with os.Stat so connectors that produce attachment-only
+	// items (no content.raw) don't pass a non-existent path through to
+	// enrichers.
 	var primaryErrs []enrich.EnricherError
 	if _, statErr := os.Stat(contentPath); statErr == nil {
 		primaryArts, errs := registry.ApplyAll(ctx, contentPath, *meta, si.dir)
@@ -247,13 +270,8 @@ func (si *StagingItem) runEnrichmentPipeline(meta *staging.ItemMetadata) {
 		primaryErrs = errs
 	}
 
-	// Attachments. Sort the glob output so attachment order is
-	// deterministic (filepath.Glob's documented order is
-	// lexicographical, but sorting explicitly keeps the contract
-	// obvious for the test reader).
+	// Attachments (set was captured above pre-primary-enrichment).
 	var attachmentErrs []enrich.EnricherError
-	attachments, _ := filepath.Glob(filepath.Join(si.dir, "attachment-*"))
-	sort.Strings(attachments)
 	for _, ap := range attachments {
 		arts, errs := registry.ApplyAll(ctx, ap, *meta, si.dir)
 		records = enrich.AppendRecords(records, filepath.Base(ap), arts, errs)
