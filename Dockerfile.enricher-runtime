@@ -9,7 +9,8 @@
 # Identity: nonroot uid/gid 65532 (matches distroless nonroot convention used
 # by all per-connector images in this repo).
 #
-# Expected built size: ~150-200 MB. Enforced by scripts/test-enricher-runtime.sh.
+# Expected built size: ~340 MB (pandoc's Haskell runtime dominates at ~110 MB).
+# Bounds enforced 100-400 MB by scripts/test-enricher-runtime.sh.
 
 FROM docker.io/debian:bookworm-slim
 

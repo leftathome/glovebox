@@ -6,8 +6,8 @@
 # Task: glovebox-afq4.5.
 #
 # Builds Dockerfile.enricher-runtime, then asserts:
-#   1. Image size is between 100 MB and 250 MB (catches silent apt failures
-#      and accidental dep bloat).
+#   1. Image size is between 100 MB and 400 MB (catches silent apt failures
+#      and accidental dep bloat; see size-bound rationale below).
 #   2. pdftotext, tesseract, pandoc are present and executable as the
 #      shipped runtime user.
 #   3. The runtime user is uid 65532 / gid 65532 (nonroot).
@@ -22,7 +22,7 @@
 #   - docker (or podman aliased as docker) on PATH
 #   - jq on PATH (for parsing `docker image inspect` output)
 #
-# CI: invoked by .github/workflows/ci.yml job `docker-enricher-runtime`
+# CI: invoked by .github/workflows/ci.yml job `build-enricher-runtime`
 # before the publish step.
 
 set -euo pipefail
