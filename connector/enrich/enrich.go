@@ -101,6 +101,11 @@ func (r *Registry) Register(e Enricher) {
 // abort iteration: a failing enricher's error is appended to errs and
 // the loop continues with the next enricher.
 //
+// Concurrency: Register() calls made while an ApplyAll is in flight
+// will NOT be observed by that in-flight call; the newly registered
+// enricher takes effect on subsequent ApplyAll invocations. This
+// follows from the snapshot-under-RLock pattern below.
+//
 // Both return slices are nil-safe to range over when no enrichers
 // matched or no errors occurred.
 func (r *Registry) ApplyAll(ctx context.Context, sourcePath string, meta staging.ItemMetadata, outputDir string) (artifacts []Artifact, errs []EnricherError) {
