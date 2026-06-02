@@ -153,9 +153,10 @@ func (si *StagingItem) Commit() error {
     contentPath := filepath.Join(si.dir, "content.raw")
     primaryArts, primaryErrs := enrich.Default.ApplyAll(si.ctx, contentPath, meta, si.dir)
 
-    // Per-attachment sources: any "attachment-*" file in the item dir
-    var attachmentArts []Artifact
-    var attachmentErrs []EnricherError
+    // Per-attachment sources: any "attachment-*" file in the item dir.
+    // enrich.Artifact and enrich.EnricherError are the types from §4.1/§4.2.
+    var attachmentArts []enrich.Artifact
+    var attachmentErrs []enrich.EnricherError
     attachments, _ := filepath.Glob(filepath.Join(si.dir, "attachment-*"))
     for _, ap := range attachments {
         arts, errs := enrich.Default.ApplyAll(si.ctx, ap, meta, si.dir)
@@ -163,10 +164,10 @@ func (si *StagingItem) Commit() error {
         attachmentErrs = append(attachmentErrs, errs...)
     }
 
-    // Record what was produced and what failed
+    // Record what was produced and what failed. summarize() and
+    // writeErrorMarkers() are local helpers in this package; see §4.6 for
+    // the EnrichmentRecord shape and §4.4 for the marker file semantics.
     meta.Enrichments = summarize(primaryArts, primaryErrs, attachmentArts, attachmentErrs)
-
-    // Write per-enricher error markers (one file per failure)
     writeErrorMarkers(si.dir, primaryErrs, attachmentErrs)
     // ---- end pipeline ----
 
@@ -247,7 +248,7 @@ Downstream consumers can introspect `Enrichments[]` to know what's available wit
 | `connector/enrich/html` | pure-Go | `text/html*` | `content.extracted.md` (text-only) | wraps existing `connector/content/html.go` HTML-to-text |
 | `connector/enrich/pdf` | requires `pdftotext` | `application/pdf` | `content.extracted.md` (text content) | `os/exec` invokes `pdftotext -layout -enc UTF-8 - -` (stdin → stdout) |
 | `connector/enrich/ocr` | requires `tesseract` | `image/jpeg`, `image/png`, `image/heic`, `image/tiff` | `content.extracted.md` (OCR'd text; may be empty if image has no text) | `os/exec` invokes `tesseract - - -l eng` |
-| `connector/enrich/office` | requires `pandoc` | `application/vnd.openxmlformats-officedocument*`, `application/msword`, `application/vnd.ms-excel*` | `content.extracted.md` (markdown rendering) | `os/exec` invokes `pandoc -f <fmt> -t markdown` |
+| `connector/enrich/office` | requires `pandoc` | OOXML: `application/vnd.openxmlformats-officedocument*` (.docx, .xlsx, .pptx) | `content.extracted.md` (markdown rendering) | `os/exec` invokes `pandoc -f <fmt> -t markdown`. Legacy `.doc` / `.xls` / `.ppt` (non-OOXML `application/msword`, `application/vnd.ms-excel`) are NOT supported by pandoc directly; they fall through to no-enrichment in v1 and produce a `content.office.error.md` marker explaining the limitation and the FIX (convert to OOXML at the source or wait for a future libreoffice-headless enricher). |
 
 ### 5.1 Per-enricher init() check
 
