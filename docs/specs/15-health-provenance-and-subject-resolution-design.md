@@ -71,11 +71,11 @@ spec for the resolution gate and the normalization bridge. (The medical
   **walhelm importer** that stamps every staged item with the producer-asserted
   provenance instead of running the rule matcher to guess it.
 - A Glovebox **known-subjects registry**: an operator-maintained allowlist that
-  maps subject principals (e.g. `walhelm:steve`) to canonical `data_subject`
-  identifiers and optional default audience.
+  maps opaque subject principals (e.g. `walhelm:9f2a`) to opaque Glovebox
+  `entity_id`s and optional default audience.
 - A **subject resolver** that runs at routing time: items carrying a subject
-  principal are resolved against the registry; the canonical `data_subject` is
-  stamped on the item.
+  principal are resolved against the registry; the resolved `entity_id` is
+  stamped on the item as its `data_subject`.
 - A **fail-closed quarantine gate**: an item whose subject principal does not
   resolve is quarantined, audited, and surfaced for human review -- never routed
   to a destination agent.
@@ -110,7 +110,7 @@ spec for the resolution gate and the normalization bridge. (The medical
 |---|---|---|---|---|
 | **Delivery identity** | Who handed Glovebox this archive? | Glovebox ingest auth (spec 10) | `delivered_by` + `identity` block in `metadata.json` (spec 13 §3.3) | none |
 | **Acquisition identity** | What source credential fetched the data? | The recognizer (it ran the walhelm login) | nowhere | new `Upload-Metadata` keys (§4.2) |
-| **Subject principal** | Whose data is this? | The recognizer (it fetched under a patient context) | nowhere on the archive path | new `Upload-Metadata` key (§4.2), resolved to canonical `data_subject` (§5) |
+| **Subject principal** | Whose data is this? | The recognizer (it fetched under a patient context) | nowhere on the archive path | new `Upload-Metadata` key (§4.2), resolved to an opaque Glovebox `entity_id` (§5) |
 
 In walhelm v0.1 (single signed-in member) the acquisition identity and the
 subject principal collapse onto one person. Under the proxy model (SP2 v0.2)
@@ -150,7 +150,7 @@ Spec 13 §4 carries `archive_id`, `archive_filename`, `media_type`,
 | `acq_provider` | yes for walhelm media | `^[a-z][a-z0-9-]{0,63}$` | Source system the credential authenticated to, e.g. `kp-wa`. |
 | `acq_account_id` | yes for walhelm media | ≤256 chars, no control chars | The source account/login used to fetch (the member's KP user id). |
 | `acq_auth_method` | yes for walhelm media | enum: `browser_session` (v1) | How the credential authenticated. Mirrors `Identity.auth_method`. |
-| `data_subject` | yes for walhelm media | ≤256 chars, no control chars | The **subject principal** -- a connector-scoped identifier such as `walhelm:steve` or `walhelm:<kp-subject-id>`. Opaque to Glovebox until resolved (§5). |
+| `data_subject` | yes for walhelm media | ≤256 chars, no control chars | The **subject principal** -- a connector-scoped **opaque** identifier of the form `walhelm:<kp-subject-id>` (a stable source id, never a human name -- decision #2, §11). Opaque to Glovebox until resolved to an `entity_id` (§5). |
 | `audience` | no | comma-separated enum tokens (spec 11 §3.4) | Producer-asserted audience applied to every item in the archive. If omitted, the registry default (§5.1) applies; if the registry has none, spec 11 §3.6's reader default applies. |
 
 `acq_*` describe the **acquisition identity**; they are distinct from the
@@ -173,11 +173,12 @@ still 400 if a client sends them (spec 13 §3.3 unchanged).
 > **Subject value disambiguation (cf. spec 11 §3.1).** The token `data_subject`
 > now names a value that changes meaning across the resolution boundary:
 > - **Wire / `Upload-Metadata` `data_subject`** = the *subject principal* (a
->   connector-scoped, pre-resolution identifier, e.g. `walhelm:steve`).
+>   connector-scoped, pre-resolution **opaque** id, e.g. `walhelm:9f2a`).
 > - **Post-resolution item `data_subject`** (the spec 11 metadata field stamped
->   on the staged item after §5.2) = the *canonical* identifier (e.g. `steve`).
+>   on the staged item after §5.2) = the opaque Glovebox **`entity_id`** (e.g.
+>   `e_111111`) -- never a human name (§5.1 PHI firewall).
 >
-> Implementers MUST NOT stamp the raw principal where the canonical is expected;
+> Implementers MUST NOT stamp the raw principal where the `entity_id` is expected;
 > resolution (§5.2) is the only step that converts one to the other.
 
 ### 4.3 One subject principal per archive
@@ -202,7 +203,7 @@ producer-asserted `data_subject` / `audience` are recorded:
   "delivered_by": "recognizer-v1",
   "identity":    { "provider": "ingest",  "auth_method": "bearer_token", "account_id": "recognizer-v1" },
   "acquisition": { "provider": "kp-wa",   "auth_method": "browser_session", "account_id": "leftathome" },
-  "data_subject": "walhelm:steve",
+  "data_subject": "walhelm:9f2a",
   "audience": ["subject"],
   "sha256_verified": true,
   "staged_path": "archives/<id>/tree/"
@@ -223,24 +224,37 @@ allowlist -- **not** a relationship roster (§5.4):
 
 ```yaml
 subjects:
-  - canonical: "steve"
-    principals: ["walhelm:steve", "walhelm:leftathome"]   # connector-scoped aliases
+  - entity_id: "e_111111"                            # opaque, stable; the ONLY subject value Glovebox emits
+    display: "Steve"                                 # OPTIONAL, non-functional: operator legibility only; never emitted
+    principals: ["walhelm:9f2a"]                      # opaque source ids (decision #2)
     default_audience: ["subject"]
-  - canonical: "bee"
-    principals: ["walhelm:bee-kp-id", "schoology:bee"]     # cross-connector normalization
+  - entity_id: "e_333333"
+    # display omitted -- full firewall: this entity stays pseudonymous even at rest
+    principals: ["walhelm:2b7e", "schoology:8a"]      # cross-connector normalization -> one entity
     default_audience: ["subject", "guardians"]
 ```
 
 | Field | Meaning |
 |---|---|
-| `canonical` | The canonical `data_subject` identifier stamped on resolved items. The value space spec 11 §10.2 deferred to "a later normalization layer" -- this is that layer. |
-| `principals` | Connector-scoped principals that resolve to this subject. The bridge between the recognizer's namespaced ids and Glovebox's canonical ids. |
+| `entity_id` | An **opaque, stable** Glovebox identifier -- the only subject value Glovebox ever stamps on an item, routes on, or writes to the audit log. It is the canonical `data_subject` for spec 11 §10.2's deferred normalization layer, deliberately *not* a human name (PHI firewall, below). |
+| `display` | **Optional and non-functional.** A human-legible label for operators reading the ConfigMap. Glovebox MUST NEVER emit `display` into a staged item, a routing decision, or an audit record. Omit it for a fully pseudonymous registry. |
+| `principals` | Opaque connector-scoped source ids (decision #2) that resolve to this `entity_id`. The bridge between the recognizer's namespaced ids and the Glovebox entity. |
 | `default_audience` | Audience applied when an item neither the rule nor the producer set one. Validated at config-load per spec 11 §6. |
 
-A principal MUST map to at most one canonical subject (config-load rejects
-duplicates). The registry is the *only* place that knows the principal↔canonical
+A principal MUST map to at most one `entity_id` (config-load rejects
+duplicates). The registry is the *only* place that knows the principal↔entity
 correspondence; the recognizer holds the source-id↔principal map (SP3), and the
 two are deliberately separate so neither component holds the whole chain.
+
+**PHI/PII firewall (Level 2).** Glovebox's data plane -- staged items, routing
+decisions, the audit log -- carries only opaque `entity_id`s and opaque
+principals. No human-identifying value (name, KP id, email) is *required*
+anywhere in Glovebox; the `entity_id → real person` mapping lives at the edge
+(downstream agents / a separate sensitive directory). A leak of Glovebox's audit
+trail then reveals "entity `e_111111`'s data flowed to agent X," not whose. The
+optional `display` field is the single, clearly-marked exception, exists only for
+at-rest operator legibility, and is never emitted -- so a maximalist operator
+omits it and Glovebox holds zero human-identifying information.
 
 ### 5.2 The resolver
 
@@ -252,11 +266,11 @@ and scanned, before it is released to a destination agent. For each item:
    household default stands. (This is what preserves backward compatibility --
    §7.)
 2. If the item carries a `data_subject` that is a **registry principal**, stamp
-   the canonical subject in its place and, if the item declared no audience,
-   apply the registry `default_audience`. Route normally.
-3. If the item carries a `data_subject` that is **already a canonical** registry
-   value (e.g. a connector that emits canonical ids directly, like Schoology
-   after normalization), accept it as-is. Route normally.
+   the resolved `entity_id` in its place and, if the item declared no audience,
+   apply that entity's registry `default_audience`. Route normally.
+3. If the item carries a `data_subject` that is **already a registered
+   `entity_id`** (e.g. a connector that emits entity ids directly after
+   normalization), accept it as-is. Route normally.
 4. Otherwise the subject is **unresolved** -- quarantine (§5.3).
 
 ### 5.3 Fail-closed quarantine gate
@@ -266,10 +280,12 @@ is:
 
 - routed to **quarantine** (the existing quarantine lane; no destination agent
   receives it),
-- recorded in the **audit log** with the unresolved principal and the reason
-  (`subject_unresolved`),
-- surfaced for **human review**: the operator either adds the principal to the
-  registry (and the item can be re-driven) or discards it.
+- recorded in the **audit log** with the unresolved (opaque) principal and the
+  reason (`subject_unresolved`) -- pseudonymous, so quarantine forensics require
+  the operator's out-of-band legend to know who to investigate,
+- surfaced for **human review**: the operator either maps the principal to an
+  `entity_id` in the registry (and the item can be re-driven, §11 decision #3)
+  or discards it.
 
 Rationale: "I don't know whose this is" must degrade to "release to no one until
 a human says," never to the household default. This is the enforcement gate spec
@@ -320,7 +336,7 @@ authority. This split is the whole point.
 - **Every existing connector unchanged.** RSS/IMAP/Schoology/etc. that emit no
   `data_subject` are unaffected by the gate. A connector that *does* emit a
   `data_subject` (Schoology) only becomes subject to the gate once its value is
-  registered as a canonical or principal in the registry -- so rollout is
+  registered as an `entity_id` or principal in the registry -- so rollout is
   opt-in per subject. Until then, to avoid surprise quarantines, the gate is
   enabled by a config flag (`subjects.enforce: true`); with the registry empty
   and enforcement off, behavior is byte-identical to today.
@@ -338,18 +354,23 @@ SP1 is fully testable in-repo with **synthetic archives** -- no KP contact:
 - **Importer stamping**: a fixture walhelm tar produces staged items whose
   `data_subject`, `audience`, and acquisition `Identity` match the manifest, and
   whose `DestinationAgent` still comes from the matcher.
-- **Resolver**: principal → canonical mapping; canonical pass-through;
-  audience-default application; multi-principal aliasing; config-load rejection
-  of duplicate principal mappings and malformed `default_audience`.
+- **Resolver**: principal → `entity_id` mapping; registered-`entity_id`
+  pass-through; audience-default application; multi-principal aliasing to one
+  entity; config-load rejection of duplicate principal mappings and malformed
+  `default_audience`.
+- **Firewall**: `display`, when present, never appears in any staged item,
+  routing decision, or audit record; a registry with `display` omitted resolves
+  identically (behavioral no-op).
 - **Quarantine gate**: unresolved principal → quarantine + audit entry
   (`subject_unresolved`) + no destination delivery; enforcement-off bypass;
-  subjectless item bypass (backward-compat); and the canonical-collision edge --
-  an unregistered string that merely *looks* canonical (e.g. `"steve"` against an
-  empty or non-matching registry) quarantines under enforcement rather than
-  passing through §5.2 step 3.
+  subjectless item bypass (backward-compat); and the entity-collision edge --
+  an unregistered string that merely *looks* like an `entity_id` (e.g.
+  `"e_deadbeef"` against an empty or non-matching registry) quarantines under
+  enforcement rather than passing through §5.2 step 3.
 - **End-to-end**: synthetic `archive/walhelm-export` through finalize → importer
   → scan → resolver → route, asserting a resolved item lands at its destination
-  with canonical subject and an unresolved one lands in quarantine.
+  with its resolved `entity_id` as `data_subject` and an unresolved one lands in
+  quarantine.
 
 All new Go passes `go vet` + `staticcheck`; existing tests stay green.
 
@@ -414,8 +435,9 @@ These were open during review and were settled by the operator (2026-06-01):
    unnecessary for non-secret config.)
 2. **Principal namespace convention** -- **stable opaque ids.** Principals take
    the form `walhelm:<kp-subject-id>`; the human-legible name lives only in the
-   registry's `canonical` field, so display-name changes never churn the wire
-   contract.
+   registry's optional non-functional `display` field (§5.1), so name changes
+   never churn the wire contract -- and the registry resolves to an opaque
+   `entity_id`, never a name (PHI firewall, §5.1).
 3. **Re-drive mechanism after registry update** -- **manual in SP1.** When the
    operator adds a previously-unresolved principal to the registry, they re-drive
    the item by re-pointing the importer at the staged archive. Automatic
@@ -434,11 +456,12 @@ An implementation of SP1 must:
 3. Provide a walhelm importer that stamps items from producer-asserted
    provenance (subject + audience + acquisition identity) while still taking the
    destination from the matcher.
-4. Load and validate a known-subjects registry (canonical, principals,
-   default_audience) at config time, rejecting duplicate principal mappings and
-   malformed audiences.
-5. Resolve subject principals → canonical at routing time, apply registry
-   default audience, and pass through already-canonical subjects.
+4. Load and validate a known-subjects registry (`entity_id`, optional
+   non-functional `display`, `principals`, `default_audience`) at config time,
+   rejecting duplicate principal mappings and malformed audiences.
+5. Resolve subject principals → `entity_id` at routing time, apply registry
+   default audience, and pass through already-registered `entity_id`s -- and
+   never emit `display` into any item, routing decision, or audit record.
 6. Quarantine + audit (`subject_unresolved`) any item whose declared subject does
    not resolve, with no destination delivery, when enforcement is on.
 7. Leave all existing connectors and the existing archive flow byte-identical in
