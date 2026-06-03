@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/internal/ingest/archives"
@@ -42,6 +43,9 @@ func BuildItemOptions(
 	matcher *connector.RuleMatcher,
 	sourceName string,
 ) (connector.ItemOptions, error) {
+	if receipt == nil {
+		return connector.ItemOptions{}, fmt.Errorf("build item options: nil receipt")
+	}
 	ruleKey := ruleKeyForEntry(entry)
 	result, matched := matcher.Match(ruleKey)
 	if !matched {
@@ -80,8 +84,28 @@ func BuildItemOptions(
 		"origin_archive": receipt.ArchiveID + ":" + entry.RelPath,
 	}
 
+	// Sender and Timestamp are required by the staging metadata validator
+	// (internal/staging.Validate). For walhelm the producer-asserted
+	// provenance is the authority: Sender is the uploading principal
+	// (DeliveredBy, falling back to the acquisition account), and
+	// Timestamp is when ingest received the archive (ReceivedAt, falling
+	// back to now so an unset receipt clock does not block staging).
+	sender := receipt.DeliveredBy
+	if sender == "" && receipt.Acquisition != nil {
+		sender = receipt.Acquisition.AccountID
+	}
+	if sender == "" {
+		sender = sourceName
+	}
+	timestamp := receipt.ReceivedAt
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+
 	opts := connector.ItemOptions{
 		Source:           sourceName,
+		Sender:           sender,
+		Timestamp:        timestamp,
 		DestinationAgent: result.Destination,
 		ContentType:      entry.ContentType,
 		Identity:         identity,

@@ -261,3 +261,46 @@ func TestBuildItemOptions_MatcherOnlySetsDest(t *testing.T) {
 		t.Errorf("Identity.Provider = %q, want %q", opts.Identity.Provider, "prov")
 	}
 }
+
+// --- BuildItemOptions: nil receipt guard --------------------------------------
+//
+// A nil receipt is a programming error; BuildItemOptions must fail fast with a
+// clear message rather than dereferencing nil (mirrors mbox's nil-*Message
+// guard).
+func TestBuildItemOptions_NilReceipt(t *testing.T) {
+	matcher := newWalhelmMatcher([]connector.Rule{
+		{Match: "*", Destination: "any-agent"},
+	})
+	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
+
+	_, err := BuildItemOptions(entry, nil, matcher, "src")
+	if err == nil {
+		t.Fatal("expected error for nil receipt, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil receipt") {
+		t.Errorf("error %q does not mention nil receipt", err.Error())
+	}
+}
+
+// --- BuildItemOptions: Sender + Timestamp populated for staging validation ----
+//
+// internal/staging.Validate requires non-empty sender and a non-zero
+// timestamp. BuildItemOptions must populate both from the receipt so the
+// committed item passes validation.
+func TestBuildItemOptions_SetsSenderAndTimestamp(t *testing.T) {
+	acq := &ingest.Identity{Provider: "kp-wa", AuthMethod: "browser_session", AccountID: "acct-1"}
+	receipt := makeReceipt("arch1", "walhelm:9f2a", []string{"subject"}, acq)
+	matcher := newWalhelmMatcher([]connector.Rule{{Match: "*", Destination: "d"}})
+	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
+
+	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.Sender == "" {
+		t.Error("Sender is empty, want non-empty (staging validation requires it)")
+	}
+	if opts.Timestamp.IsZero() {
+		t.Error("Timestamp is zero, want non-zero (staging validation requires it)")
+	}
+}

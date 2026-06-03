@@ -8,10 +8,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/importer"
+	"github.com/leftathome/glovebox/internal/ingest/archives"
 )
+
+// walhelmMediaType is the only media_type a walhelm staged archive may
+// carry. The ingest finalize step stamps it (spec 15 sec 4.4); the
+// importer refuses anything else so a misrouted archive (e.g. an mbox
+// tree) fails loudly instead of being staged with the wrong provenance
+// semantics.
+const walhelmMediaType = "archive/walhelm-export"
 
 // walhelmImporter implements importer.Importer for walhelm staged
 // archive directories. A staged archive is a directory produced by the
@@ -69,18 +83,146 @@ func (w *walhelmImporter) ClearState(_ string) error {
 	return nil
 }
 
-// Import streams the archive directory, applies the filter, and pushes
-// items to glovebox ingest.
+// Import reads the finalized archive's metadata.json (a walhelm
+// FinalizeReceipt), validates that it is a walhelm archive carrying a
+// subject principal, then walks <path>/tree/ and stages one item per
+// regular file. Provenance (subject, audience, identity) comes from the
+// receipt; the matcher only selects the destination agent (see
+// BuildItemOptions). Survey/filter/decision are unused in v1.
 //
-// TODO(T9): implement -- tree-walk raw/, apply filter, build ItemOptions,
-// call fw.Backend.NewItem / WriteContent / Commit per item.
+// Staging runs with bounded concurrency (m.concurrency). A failure to
+// build options for, read, or commit any single file fails the whole
+// import: the first such error is returned after all in-flight work has
+// drained. The receipt-level validation errors (wrong media type, empty
+// subject, missing/empty tree) are reported before any staging begins.
 func (w *walhelmImporter) Import(
-	_ context.Context,
-	_ string,
+	ctx context.Context,
+	path string,
 	_ importer.SurveyFile,
 	_ importer.FilterConfig,
 	_ importer.ResumeDecision,
 ) error {
+	log := w.fw.Logger.With("source", path)
+
+	// --- 1) Read + parse the receipt ------------------------------------
+	metaPath := filepath.Join(path, "metadata.json")
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("read archive metadata %s: %w", metaPath, err)
+	}
+	var receipt archives.FinalizeReceipt
+	if err := json.Unmarshal(metaBytes, &receipt); err != nil {
+		return fmt.Errorf("parse archive metadata %s: %w", metaPath, err)
+	}
+
+	// --- 2) Validate provenance -----------------------------------------
+	if receipt.MediaType != walhelmMediaType {
+		return fmt.Errorf(
+			"archive media_type %q is not %q; refusing to import as walhelm",
+			receipt.MediaType, walhelmMediaType,
+		)
+	}
+	if receipt.DataSubject == "" {
+		return fmt.Errorf(
+			"walhelm archive %q has empty data_subject; a walhelm archive must carry a subject principal",
+			receipt.ArchiveID,
+		)
+	}
+
+	// --- 3) Enumerate tree/ files ---------------------------------------
+	treeRoot := filepath.Join(path, "tree")
+	info, err := os.Stat(treeRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("walhelm archive %q has no tree/ directory; expected content under %s", receipt.ArchiveID, treeRoot)
+		}
+		return fmt.Errorf("stat tree dir %s: %w", treeRoot, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("walhelm archive %q tree path %s is not a directory", receipt.ArchiveID, treeRoot)
+	}
+
+	var rels []string
+	walkErr := filepath.WalkDir(treeRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			// Skip symlinks/devices/etc.; only regular files are content.
+			return nil
+		}
+		rel, err := filepath.Rel(treeRoot, p)
+		if err != nil {
+			return fmt.Errorf("relativize tree path %s: %w", p, err)
+		}
+		rels = append(rels, filepath.ToSlash(rel))
+		return nil
+	})
+	if walkErr != nil {
+		return fmt.Errorf("walk tree dir %s: %w", treeRoot, walkErr)
+	}
+	if len(rels) == 0 {
+		return fmt.Errorf("walhelm archive %q tree/ is empty; expected at least one content file", receipt.ArchiveID)
+	}
+
+	log.Info("staging walhelm archive",
+		"archive_id", receipt.ArchiveID,
+		"data_subject", receipt.DataSubject,
+		"files", len(rels),
+		"concurrency", w.concurrency)
+
+	// --- 4) Stage each file with bounded concurrency --------------------
+	stage := func(_ context.Context, rel string) error {
+		entry := walhelmEntry{RelPath: rel, ContentType: classifyContentType(rel)}
+		opts, err := BuildItemOptions(entry, &receipt, w.fw.Matcher, w.sourceName)
+		if err != nil {
+			return fmt.Errorf("build_item_options %s: %w", rel, err)
+		}
+		content, err := os.ReadFile(filepath.Join(treeRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return fmt.Errorf("read tree file %s: %w", rel, err)
+		}
+		item, err := w.fw.Backend.NewItem(opts)
+		if err != nil {
+			return fmt.Errorf("backend_new_item %s: %w", rel, err)
+		}
+		if err := item.WriteContent(content); err != nil {
+			return fmt.Errorf("write_content %s: %w", rel, err)
+		}
+		if err := item.Commit(); err != nil {
+			return fmt.Errorf("commit %s: %w", rel, err)
+		}
+		return nil
+	}
+
+	results := stageAll(ctx, w.concurrency, rels, stage)
+
+	var (
+		staged   int
+		firstErr error
+	)
+	for _, r := range results {
+		if r.Err != nil {
+			if firstErr == nil {
+				firstErr = r.Err
+			}
+			log.Error("stage item failed", "rel_path", r.RelPath, "error", r.Err)
+			continue
+		}
+		staged++
+	}
+
+	log.Info("walhelm import finished",
+		"archive_id", receipt.ArchiveID,
+		"staged", staged,
+		"failed", len(results)-staged)
+
+	if firstErr != nil {
+		return fmt.Errorf("stage walhelm archive %q: %w", receipt.ArchiveID, firstErr)
+	}
 	return nil
 }
 
