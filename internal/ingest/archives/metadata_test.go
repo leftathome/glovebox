@@ -623,6 +623,42 @@ func TestParseUploadMetadata_WalhelmExport_InvalidAcqAuthMethod(t *testing.T) {
 	}
 }
 
+func TestParseUploadMetadata_WalhelmExport_AcqAccountIDTooLong(t *testing.T) {
+	// provenanceStringMaxBytes is 256; 257 bytes must be rejected.
+	header := walhelmHeader(map[string]string{"acq_account_id": strings.Repeat("a", 257)})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_AcqAccountIDControlChar(t *testing.T) {
+	// acq_account_id containing a C0 control character must be rejected.
+	header := walhelmHeader(map[string]string{"acq_account_id": "user\x01example.com"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_DataSubjectTooLong(t *testing.T) {
+	// provenanceStringMaxBytes is 256; 257 bytes must be rejected.
+	header := walhelmHeader(map[string]string{"data_subject": strings.Repeat("a", 257)})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_DataSubjectControlChar(t *testing.T) {
+	// data_subject containing a C0 control character must be rejected.
+	header := walhelmHeader(map[string]string{"data_subject": "subject\x01opaque-id"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
 func TestParseUploadMetadata_WalhelmExport_InvalidAudience(t *testing.T) {
 	// "unknown-token" is not a valid audience token
 	header := walhelmHeader(map[string]string{"audience": "unknown-token"})
