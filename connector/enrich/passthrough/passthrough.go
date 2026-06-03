@@ -10,8 +10,12 @@
 //
 // Applies() returns true when meta.ContentType matches any of:
 //
-//   - text/plain*   (with or without charset/params)
-//   - text/markdown (with or without charset/params)
+//   - text/plain*    (with or without charset/params)
+//   - text/markdown  (with or without charset/params)
+//   - text/x-markdown (the older RFC-pre-7763 form, still emitted by
+//     Pandoc/older tools and several connectors; spec §5 is silent so
+//     we treat it as a documented extension consistent with markdown's
+//     real-world content-type ecosystem)
 //
 // or when meta.ContentType is empty AND the source file sniffs as text
 // (printable ASCII + whitespace, examining the first sniffPrefix bytes).
@@ -44,6 +48,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -153,21 +158,20 @@ func outputFilename(srcBase string) string {
 // mediaTypeOnly returns the lower-cased media type portion of a
 // Content-Type header value, stripping any parameters (e.g.,
 // "text/plain; charset=utf-8" → "text/plain"). Returns "" when the
-// input is empty or malformed (no slash); this collapses the
-// empty/malformed cases together for the sniff fallback.
+// input is empty, malformed, or fails RFC 2045 parsing; this collapses
+// the empty/malformed cases together for the sniff fallback. Delegates
+// to mime.ParseMediaType (stdlib) for correct handling of quoted-param
+// edge cases like `text/plain; charset="utf-8"; format=flowed`.
 func mediaTypeOnly(ct string) string {
 	ct = strings.TrimSpace(ct)
 	if ct == "" {
 		return ""
 	}
-	if i := strings.IndexByte(ct, ';'); i >= 0 {
-		ct = ct[:i]
-	}
-	ct = strings.TrimSpace(strings.ToLower(ct))
-	if !strings.Contains(ct, "/") {
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil {
 		return ""
 	}
-	return ct
+	return mt
 }
 
 // isTextMediaType reports whether mt is a media type the passthrough
