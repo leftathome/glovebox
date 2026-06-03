@@ -143,10 +143,18 @@ func classifyRunError(sourcePath string, runErr error, stderrText string) error 
 	stderrTrim := strings.TrimSpace(stderrText)
 	lowerErr := strings.ToLower(stderrTrim)
 
-	// Encrypted-PDF signal from pdftotext (poppler).
-	if strings.Contains(lowerErr, "encrypted") ||
-		strings.Contains(lowerErr, "permission denied by") ||
-		strings.Contains(lowerErr, "incorrect password") {
+	// Encrypted-PDF signal from pdftotext (poppler). The wording has
+	// shifted across poppler releases — current 22.x emits "Incorrect
+	// password"; older builds said "encrypted"; future wording could
+	// say "password-protected" or "password required". Matching the
+	// bare word "password" catches all current and plausible future
+	// variants without producing false positives on the corrupt path
+	// (poppler's "Syntax Error: ..." messages never contain "password").
+	// Defense-in-depth: keep the other historically-observed substrings
+	// so a future code reader can see the lineage at a glance.
+	if strings.Contains(lowerErr, "password") ||
+		strings.Contains(lowerErr, "encrypted") ||
+		strings.Contains(lowerErr, "permission denied by") {
 		return fmt.Errorf(
 			"enrich/pdf: pdftotext refused %s as encrypted: %s.\n"+
 				"  CHECK: pdfinfo %s   # confirm the PDF is password-protected\n"+
