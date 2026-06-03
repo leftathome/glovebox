@@ -7,6 +7,13 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
+
+	// Content enrichers registered via init() per docs/specs/14-content-enrichment-design.md sec 6.2.
+	// arxiv items are predominantly PDFs; ocr/office intentionally NOT imported (academic
+	// papers don't need image OCR or office-doc extraction).
+	_ "github.com/leftathome/glovebox/connector/enrich/html"
+	_ "github.com/leftathome/glovebox/connector/enrich/passthrough"
+	_ "github.com/leftathome/glovebox/connector/enrich/pdf"
 )
 
 func main() {

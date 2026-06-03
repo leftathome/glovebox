@@ -5,7 +5,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /connector ./connectors/semantic-scholar/
 
-FROM gcr.io/distroless/static-debian12:nonroot
+# Rebased onto glovebox-enricher-runtime per docs/specs/14-content-enrichment-design.md sec 6.2.
+# semantic-scholar items are predominantly PDFs; the base image carries pdftotext
+# (poppler-utils) so the pdf enricher's init() check finds its binary and activates.
+# TODO: pin to an immutable tag (semver or sha) once a stable enricher-runtime release exists.
+FROM ghcr.io/leftathome/glovebox-enricher-runtime:latest
 COPY --from=build /connector /connector
 COPY connectors/semantic-scholar/config.json /etc/connector/config.json
 USER nonroot:nonroot
