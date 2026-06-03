@@ -84,6 +84,28 @@ config:
     backpressureThreshold: 5000
     requestTimeoutSeconds: 60
 
+# Known-subjects registry (spec 15 §11). Like rules.json, this ships as a
+# static file rendered verbatim into the -config ConfigMap (configmap.yaml
+# via `.Files.Get "subjects.json"`) and mounted at /etc/glovebox/subjects.json
+# (config.json's "subjects_file"). There is intentionally no values key for
+# the registry contents -- edit charts/glovebox/subjects.json directly.
+#
+# File schema (charts/glovebox/subjects.json):
+#   enforce: bool  -- enforcement lives IN the registry file, default false.
+#                     When false the resolver annotates but never rejects;
+#                     flip to true to hard-enforce known subjects. (There is
+#                     no separate config flag for this -- do NOT add a
+#                     subjects_enforce key.)
+#   subjects: []   -- list of subject entries, each:
+#     entity_id: string         -- stable identifier for the subject
+#     principals: [string]      -- principals that resolve to this subject
+#     default_audience: string  -- audience applied when none is specified
+#     display: string           -- OPTIONAL, non-functional human-readable
+#                                  label (ignored by the resolver)
+#
+# Default shipped registry is empty with enforcement off:
+#   {"enforce": false, "subjects": []}
+
 persistence:
   staging:
     size: 1Gi
