@@ -90,7 +90,6 @@ type Config struct {
 	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
 	ScanChunkSizeBytes  int          `json:"scan_chunk_size_bytes"`
 	SubjectsFile        string        `json:"subjects_file"`
-	SubjectsEnforce     bool          `json:"subjects_enforce"`
 	Ingest              IngestConfig  `json:"ingest"`
 }
 
@@ -232,11 +231,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GLOVEBOX_SUBJECTS_FILE"); v != "" {
 		cfg.SubjectsFile = v
-	}
-	if v := os.Getenv("GLOVEBOX_SUBJECTS_ENFORCE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.SubjectsEnforce = b
-		}
 	}
 }
 

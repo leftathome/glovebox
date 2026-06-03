@@ -691,14 +691,14 @@ const validSubjectsJSON = `{
 	]
 }`
 
-// TestSubjectsFile_ValidRegistry: subjects_file + subjects_enforce=true,
-// valid registry -> LoadConfig + Validate succeed.
+// TestSubjectsFile_ValidRegistry: subjects_file pointing at a valid registry
+// -> LoadConfig + Validate succeed.
 func TestSubjectsFile_ValidRegistry(t *testing.T) {
 	subjPath := writeSubjectsFile(t, validSubjectsJSON)
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	cfgJSON := `{"subjects_file":"` + subjPath + `","subjects_enforce":true}`
+	cfgJSON := `{"subjects_file":"` + subjPath + `"}`
 	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -709,9 +709,6 @@ func TestSubjectsFile_ValidRegistry(t *testing.T) {
 	}
 	if cfg.SubjectsFile != subjPath {
 		t.Errorf("SubjectsFile = %q, want %q", cfg.SubjectsFile, subjPath)
-	}
-	if !cfg.SubjectsEnforce {
-		t.Error("SubjectsEnforce = false, want true")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate: unexpected error: %v", err)
@@ -742,7 +739,7 @@ func TestSubjectsFile_MalformedDuplicatePrincipal(t *testing.T) {
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	cfgJSON := `{"subjects_file":"` + subjPath + `","subjects_enforce":true}`
+	cfgJSON := `{"subjects_file":"` + subjPath + `"}`
 	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -796,7 +793,7 @@ func TestSubjectsFile_MalformedBadAudience(t *testing.T) {
 	}
 }
 
-// TestSubjectsFile_Absent: no subjects_file -> Validate succeeds; SubjectsEnforce defaults false.
+// TestSubjectsFile_Absent: no subjects_file -> Validate succeeds.
 func TestSubjectsFile_Absent(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -811,16 +808,13 @@ func TestSubjectsFile_Absent(t *testing.T) {
 	if cfg.SubjectsFile != "" {
 		t.Errorf("SubjectsFile = %q, want empty", cfg.SubjectsFile)
 	}
-	if cfg.SubjectsEnforce {
-		t.Error("SubjectsEnforce = true, want false (default)")
-	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate: unexpected error: %v", err)
 	}
 }
 
-// TestSubjectsEnvOverrides verifies GLOVEBOX_SUBJECTS_FILE and
-// GLOVEBOX_SUBJECTS_ENFORCE env vars are applied.
+// TestSubjectsEnvOverrides verifies the GLOVEBOX_SUBJECTS_FILE env var is
+// applied.
 func TestSubjectsEnvOverrides(t *testing.T) {
 	subjPath := writeSubjectsFile(t, validSubjectsJSON)
 
@@ -831,7 +825,6 @@ func TestSubjectsEnvOverrides(t *testing.T) {
 	}
 
 	t.Setenv("GLOVEBOX_SUBJECTS_FILE", subjPath)
-	t.Setenv("GLOVEBOX_SUBJECTS_ENFORCE", "true")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -839,9 +832,6 @@ func TestSubjectsEnvOverrides(t *testing.T) {
 	}
 	if cfg.SubjectsFile != subjPath {
 		t.Errorf("SubjectsFile = %q, want %q", cfg.SubjectsFile, subjPath)
-	}
-	if !cfg.SubjectsEnforce {
-		t.Error("SubjectsEnforce = false, want true after env override")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate: unexpected error: %v", err)
