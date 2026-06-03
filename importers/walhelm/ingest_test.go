@@ -103,7 +103,7 @@ func TestBuildItemOptions_HappyPath(t *testing.T) {
 
 	entry := walhelmEntry{RelPath: "lab/2026/bloodwork.json", ContentType: "application/json"}
 
-	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestBuildItemOptions_ContentTypeFromEntry(t *testing.T) {
 	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
 
 	entry := walhelmEntry{RelPath: "message/mail.eml", ContentType: "message/rfc822"}
-	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestBuildItemOptions_ReceiptIsSubjectAuthority(t *testing.T) {
 	})
 
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
-	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBuildItemOptions_NilAcquisition(t *testing.T) {
 	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
 	entry := walhelmEntry{RelPath: "lab/data.json", ContentType: "application/json"}
 
-	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestBuildItemOptions_UnmatchedNoWildcard(t *testing.T) {
 	// lab entry won't match the message rule and there's no wildcard.
 	entry := walhelmEntry{RelPath: "lab/result.json", ContentType: "application/json"}
 
-	_, err := BuildItemOptions(entry, receipt, matcher, "src")
+	_, err := BuildItemOptions(entry, receipt, matcher, "src", nil)
 	if err == nil {
 		t.Fatal("expected error when no rule matches and no wildcard, got nil")
 	}
@@ -243,7 +243,7 @@ func TestBuildItemOptions_MatcherOnlySetsDest(t *testing.T) {
 	})
 
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
-	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestBuildItemOptions_NilReceipt(t *testing.T) {
 	})
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
 
-	_, err := BuildItemOptions(entry, nil, matcher, "src")
+	_, err := BuildItemOptions(entry, nil, matcher, "src", nil)
 	if err == nil {
 		t.Fatal("expected error for nil receipt, got nil")
 	}
@@ -289,7 +289,7 @@ func TestBuildItemOptions_SetsSenderAndTimestamp(t *testing.T) {
 	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "d"}})
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
 
-	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src")
+	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,5 +298,56 @@ func TestBuildItemOptions_SetsSenderAndTimestamp(t *testing.T) {
 	}
 	if opts.Timestamp.IsZero() {
 		t.Error("Timestamp is zero, want non-zero (staging validation requires it)")
+	}
+}
+
+// --- BuildItemOptions: fixedTags applied to tag map --------------------------
+
+// TestBuildItemOptions_FixedTags verifies that fixedTags entries appear in
+// opts.Tags, that a bare key (no "=") maps to an empty value, and that
+// origin_archive is always present (computed value wins over any fixed tag
+// with the same key).
+func TestBuildItemOptions_FixedTags(t *testing.T) {
+	acq := &ingest.Identity{Provider: "kp-wa", AuthMethod: "browser_session", AccountID: "acct-1"}
+	receipt := makeReceipt("archF", "walhelm:abc", []string{"subject"}, acq)
+	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "health-agent"}})
+	entry := walhelmEntry{RelPath: "lab/test.json", ContentType: "application/json"}
+
+	fixedTags := []string{"team=health", "flagged"}
+	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src", fixedTags)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opts.Tags["team"] != "health" {
+		t.Errorf("Tags[team] = %q, want %q", opts.Tags["team"], "health")
+	}
+	if v, ok := opts.Tags["flagged"]; !ok || v != "" {
+		t.Errorf("Tags[flagged] = %q (ok=%v), want empty string present", v, ok)
+	}
+	wantOrigin := "archF:lab/test.json"
+	if opts.Tags["origin_archive"] != wantOrigin {
+		t.Errorf("Tags[origin_archive] = %q, want %q", opts.Tags["origin_archive"], wantOrigin)
+	}
+}
+
+// TestBuildItemOptions_FixedTagsOriginArchiveOverride verifies that if a
+// caller puts "origin_archive=something" in fixedTags, it is overridden by
+// the computed origin_archive value.
+func TestBuildItemOptions_FixedTagsOriginArchiveOverride(t *testing.T) {
+	acq := &ingest.Identity{Provider: "p", AuthMethod: "m", AccountID: "a"}
+	receipt := makeReceipt("archG", "walhelm:xyz", nil, acq)
+	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
+	entry := walhelmEntry{RelPath: "message/m.eml", ContentType: "message/rfc822"}
+
+	fixedTags := []string{"origin_archive=SHOULD-BE-OVERRIDDEN"}
+	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src", fixedTags)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantOrigin := "archG:message/m.eml"
+	if opts.Tags["origin_archive"] != wantOrigin {
+		t.Errorf("Tags[origin_archive] = %q, want %q (computed value must win)", opts.Tags["origin_archive"], wantOrigin)
 	}
 }

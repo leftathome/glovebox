@@ -186,7 +186,7 @@ func (w *walhelmImporter) Import(
 	// connector/staging.go; this closure will be updated once that lands.
 	stage := func(_ context.Context, rel string) error {
 		entry := walhelmEntry{RelPath: rel, ContentType: classifyContentType(rel)}
-		opts, err := BuildItemOptions(entry, &receipt, w.fw.Matcher, w.sourceName)
+		opts, err := BuildItemOptions(entry, &receipt, w.fw.Matcher, w.sourceName, w.fixedTags)
 		if err != nil {
 			return fmt.Errorf("build_item_options %s: %w", rel, err)
 		}

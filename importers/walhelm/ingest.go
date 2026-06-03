@@ -33,6 +33,11 @@ type walhelmEntry struct {
 // entry. Provenance (DataSubject, Audience, Identity) is stamped from receipt,
 // not from the matcher. The matcher determines DestinationAgent only.
 //
+// fixedTags carries operator-configured tags (e.g. from --fixed-tags). Each
+// entry is parsed as "key=value"; entries without "=" become a key with an
+// empty value. Tag precedence: fixed tags first, then origin_archive (which
+// always wins its key).
+//
 // If no rule matches the entry's derived rule key and no wildcard fallback is
 // configured, an error is returned describing the unset destination_agent
 // condition (mirroring mbox's early-fail pattern so the operator gets a clear
@@ -42,6 +47,7 @@ func BuildItemOptions(
 	receipt *archives.FinalizeReceipt,
 	matcher *connector.RuleMatcher,
 	sourceName string,
+	fixedTags []string,
 ) (connector.ItemOptions, error) {
 	if receipt == nil {
 		return connector.ItemOptions{}, fmt.Errorf("build item options: nil receipt")
@@ -77,9 +83,16 @@ func BuildItemOptions(
 	// Audience is copied from receipt to prevent aliasing.
 	audience := append([]string(nil), receipt.Audience...)
 
-	tags := map[string]string{
-		"origin_archive": receipt.ArchiveID + ":" + entry.RelPath,
+	tags := make(map[string]string)
+	for _, raw := range fixedTags {
+		k, v := parseFixedTag(raw)
+		if k == "" {
+			continue
+		}
+		tags[k] = v
 	}
+	// origin_archive always wins its key regardless of fixedTags.
+	tags["origin_archive"] = receipt.ArchiveID + ":" + entry.RelPath
 
 	// Sender and Timestamp are required by the staging metadata validator
 	// (internal/staging.Validate). For walhelm the producer-asserted
@@ -134,6 +147,20 @@ func ruleKeyForEntry(entry walhelmEntry) string {
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	return "walhelm:" + stem
+}
+
+// parseFixedTag splits "key=value" into (key, value). An entry without "="
+// returns (trimmed, "") so callers can express bare keys (flag-only tags).
+// An empty or blank raw string returns ("", "").
+func parseFixedTag(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if i := strings.IndexByte(raw, '='); i >= 0 {
+		return strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+1:])
+	}
+	return raw, ""
 }
 
 // classifyContentType returns the MIME type for a file based solely on its
