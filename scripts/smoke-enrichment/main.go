@@ -156,11 +156,17 @@ func run() int {
 			primaryFixture: "email-body.html",
 			expectedSidecars: []sidecarAssertion{
 				{
-					filename:      "content.extracted.md",
-					producer:      "html",
-					mustNonEmpty:  true,
-					mustContain:   "Hello",
-					goldenContent: "Hello\n",
+					filename:     "content.extracted.md",
+					producer:     "html",
+					mustNonEmpty: true,
+					// Loosened from byte-exact "Hello\n" to substring per
+					// code-review M4: the unit test at
+					// connector/enrich/html/html_test.go asserts only
+					// substring-presence, so a byte-exact smoke would invert
+					// the README's stated "unit tests fail first" guarantee
+					// if x/net/html ever changes its trailing-whitespace
+					// behavior.
+					mustContain: "Hello",
 				},
 			},
 		},

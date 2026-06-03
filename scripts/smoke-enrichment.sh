@@ -46,6 +46,12 @@
 #                             with tag T from a registry. Useful when
 #                             CI pre-publishes a pinned smoke image
 #                             alongside the connector images.
+#                             NOTE: this mode is wired but UNTESTED in
+#                             v1 — no CI job builds or publishes
+#                             ghcr.io/leftathome/glovebox-smoke-enrichment
+#                             yet. Tracked in bd issue glovebox-afq4.16.
+#                             Default (--use-local-images) is the only
+#                             supported path today.
 #
 # Usage:
 #
@@ -229,10 +235,9 @@ docker run --rm \
     -staging-dir=/staging \
     2>&1 | tee "$HARNESS_LOG" || HARNESS_RC=$?
 
-# tee swallows the exit code; recover it from PIPESTATUS.
-if [ "$HARNESS_RC" -eq 0 ]; then
-    HARNESS_RC="${PIPESTATUS[0]}"
-fi
+# pipefail is set at the top of this script (set -euo pipefail), so the
+# `|| HARNESS_RC=$?` above already captures the rightmost non-zero status
+# from the pipe — no PIPESTATUS recovery needed.
 
 # ---- assertions on the harness output --------------------------------
 
