@@ -52,18 +52,26 @@ import (
 //
 // RawFilename is present only for raw-file media shapes; the
 // omitempty tag suppresses it for tarball deliveries.
+//
+// Acquisition, DataSubject, and Audience carry producer-asserted
+// provenance per spec 15 §4.4. They are omitted when empty so
+// existing media types (mbox, google-takeout-subtree, etc.) that do
+// not supply provenance are unaffected.
 type FinalizeReceipt struct {
-	ArchiveID        string            `json:"archive_id"`
-	ReceivedAt       time.Time         `json:"received_at"`
-	DeliveredBy      string            `json:"delivered_by"`
-	Identity         *ingest.Identity  `json:"identity"`
-	MediaType        string            `json:"media_type"`
-	SizeBytes        int64             `json:"size_bytes"`
-	SHA256           string            `json:"sha256"`
-	SHA256Verified   bool              `json:"sha256_verified"`
-	StagedPath       string            `json:"staged_path"`
-	EntriesExtracted int               `json:"entries_extracted"`
-	RawFilename      string            `json:"raw_filename,omitempty"`
+	ArchiveID        string           `json:"archive_id"`
+	ReceivedAt       time.Time        `json:"received_at"`
+	DeliveredBy      string           `json:"delivered_by"`
+	Identity         *ingest.Identity `json:"identity"`
+	MediaType        string           `json:"media_type"`
+	SizeBytes        int64            `json:"size_bytes"`
+	SHA256           string           `json:"sha256"`
+	SHA256Verified   bool             `json:"sha256_verified"`
+	StagedPath       string           `json:"staged_path"`
+	EntriesExtracted int              `json:"entries_extracted"`
+	RawFilename      string           `json:"raw_filename,omitempty"`
+	Acquisition      *ingest.Identity `json:"acquisition,omitempty"`
+	DataSubject      string           `json:"data_subject,omitempty"`
+	Audience         []string         `json:"audience,omitempty"`
 }
 
 // FinalizeConfig parameterizes Finalize. StagingRoot is the
@@ -164,6 +172,19 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 		SHA256Verified: true,
 		StagedPath:     filepath.Join("archives", st.ArchiveID),
 	}
+	// Spec 15 §4.4: carry producer-asserted provenance into the receipt.
+	// Acquisition is only populated when acq_provider is set; the other
+	// two acq_* fields are always present for validated provenance media
+	// types, so we include them unconditionally when the block is written.
+	if st.Meta.AcqProvider != "" {
+		receipt.Acquisition = &ingest.Identity{
+			Provider:   st.Meta.AcqProvider,
+			AuthMethod: st.Meta.AcqAuthMethod,
+			AccountID:  st.Meta.AcqAccountID,
+		}
+	}
+	receipt.DataSubject = st.Meta.DataSubject
+	receipt.Audience = st.Meta.Audience
 
 	// Step 4: dispatch on media shape.
 	switch st.Meta.Shape() {
