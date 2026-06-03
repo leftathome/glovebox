@@ -217,6 +217,79 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
+  build-enricher-runtime:
+    # Base image for connectors that need binary-dependent enrichers
+    # (PDF, OCR, office). Built from debian:bookworm-slim with
+    # poppler-utils, tesseract-ocr+eng, pandoc, ca-certificates.
+    # Spec: docs/specs/14-content-enrichment-design.md sec 6.1.
+    # Task: glovebox-afq4.5.
+    #
+    # Sequenced as: (1) load into local daemon for testing,
+    # (2) run scripts/test-enricher-runtime.sh which asserts binary
+    # presence, nonroot identity, and size bounds, (3) push multi-arch
+    # to GHCR if the in-daemon test passed and this is a push event.
+    name: Docker (glovebox-enricher-runtime)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build for local test (amd64 only, load into daemon)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.enricher-runtime
+          push: false
+          load: true
+          tags: glovebox-enricher-runtime:test
+          platforms: linux/amd64
+          cache-from: type=gha,scope=glovebox-enricher-runtime
+          cache-to: type=gha,scope=glovebox-enricher-runtime,mode=max
+
+      - name: Test built image (binaries, nonroot, size)
+        run: bash scripts/test-enricher-runtime.sh
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/glovebox-enricher-runtime
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push (multi-arch)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.enricher-runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=glovebox-enricher-runtime
+          cache-to: type=gha,scope=glovebox-enricher-runtime,mode=max
+
   helm:
     name: Package and push Helm chart
     runs-on: ubuntu-latest

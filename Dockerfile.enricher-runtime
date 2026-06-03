@@ -1,0 +1,27 @@
+# Base image for glovebox connectors that need binary-dependent enrichers
+# (PDF text extraction, OCR, office-format conversion).
+#
+# Per docs/specs/14-content-enrichment-design.md sec 6.1 (spec-14-content-enrichment).
+# Tools shipped:
+#   - poppler-utils (pdftotext): text-layer extraction from PDFs
+#   - tesseract-ocr + tesseract-ocr-eng: OCR for scanned/image content
+#   - pandoc: office-format -> markdown/text conversion
+# Identity: nonroot uid/gid 65532 (matches distroless nonroot convention used
+# by all per-connector images in this repo).
+#
+# Expected built size: ~340 MB (pandoc's Haskell runtime dominates at ~110 MB).
+# Bounds enforced 100-400 MB by scripts/test-enricher-runtime.sh.
+
+FROM docker.io/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      poppler-utils \
+      tesseract-ocr \
+      tesseract-ocr-eng \
+      pandoc \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 65532 nonroot && useradd -u 65532 -g 65532 -s /usr/sbin/nologin nonroot
+
+USER nonroot:nonroot

@@ -116,6 +116,107 @@ func TestItemMetadata_DataSubjectAndAudienceRoundtrip(t *testing.T) {
 	}
 }
 
+func TestItemMetadata_EnrichmentsRoundtrip(t *testing.T) {
+	original := ItemMetadata{
+		Source:           "email",
+		Sender:           "alice@example.com",
+		Subject:          "Hello",
+		Timestamp:        time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/html",
+		Enrichments: []EnrichmentRecord{
+			{
+				Producer: "html",
+				Kind:     "extracted-text",
+				Source:   "content.raw",
+				Filename: "content.extracted.md",
+				Status:   "ok",
+			},
+			{
+				Producer: "pdf",
+				Kind:     "extracted-text",
+				Source:   "attachment-2-report.pdf",
+				Status:   "failed",
+				Error:    "extraction-failed: pdftotext returned exit code 2",
+			},
+		},
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"enrichments":`) {
+		t.Errorf("marshaled JSON missing enrichments key: %s", data)
+	}
+	if !strings.Contains(string(data), `"producer":"html"`) {
+		t.Errorf("marshaled JSON missing producer html: %s", data)
+	}
+	if !strings.Contains(string(data), `"status":"failed"`) {
+		t.Errorf("marshaled JSON missing status failed: %s", data)
+	}
+	// ok records should not carry "error" field
+	if strings.Contains(string(data), `"error":""`) {
+		t.Errorf("marshaled JSON unexpectedly contains empty error field: %s", data)
+	}
+	// failed records should have empty Filename omitted
+	if strings.Contains(string(data), `"filename":""`) {
+		t.Errorf("marshaled JSON unexpectedly contains empty filename field: %s", data)
+	}
+
+	var roundtripped ItemMetadata
+	if err := json.Unmarshal(data, &roundtripped); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(roundtripped.Enrichments) != 2 {
+		t.Fatalf("expected 2 enrichments after roundtrip, got %d", len(roundtripped.Enrichments))
+	}
+	if roundtripped.Enrichments[0] != original.Enrichments[0] {
+		t.Errorf("enrichments[0] mismatch: got %+v want %+v", roundtripped.Enrichments[0], original.Enrichments[0])
+	}
+	if roundtripped.Enrichments[1] != original.Enrichments[1] {
+		t.Errorf("enrichments[1] mismatch: got %+v want %+v", roundtripped.Enrichments[1], original.Enrichments[1])
+	}
+}
+
+func TestItemMetadata_EnrichmentsOmitemptyWhenAbsent(t *testing.T) {
+	m := ItemMetadata{
+		Source:           "rss",
+		Sender:           "feed",
+		Subject:          "title",
+		Timestamp:        time.Unix(0, 0).UTC(),
+		DestinationAgent: "general",
+		ContentType:      "text/plain",
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "enrichments") {
+		t.Errorf("expected enrichments omitted when nil: %s", data)
+	}
+}
+
+func TestParseMetadata_LegacyWithoutEnrichmentsField(t *testing.T) {
+	// Schema-additive guarantee: metadata.json files written before the
+	// Enrichments[] field existed must parse cleanly with Enrichments == nil.
+	input := `{
+		"source": "email",
+		"sender": "alice@example.com",
+		"subject": "Hello",
+		"timestamp": "2026-03-28T12:00:00Z",
+		"destination_agent": "messaging",
+		"content_type": "text/plain",
+		"ordered": true
+	}`
+	meta, err := ParseMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("legacy metadata without enrichments must parse: %v", err)
+	}
+	if meta.Enrichments != nil {
+		t.Errorf("Enrichments should be nil for legacy metadata, got %+v", meta.Enrichments)
+	}
+}
+
 func TestItemMetadata_DataSubjectAndAudienceOmitempty(t *testing.T) {
 	m := ItemMetadata{
 		Source:           "rss",

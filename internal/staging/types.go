@@ -29,6 +29,42 @@ type ItemMetadata struct {
 	Tags             map[string]string `json:"tags,omitempty"`
 	DataSubject      string            `json:"data_subject,omitempty"`
 	Audience         []string          `json:"audience,omitempty"`
+
+	// Enrichments is the list of sidecar artifacts produced (or attempted
+	// and failed) by the enrichment pipeline. Populated by
+	// StagingItem.Commit(). Empty (nil) for items committed before this
+	// field existed; this is an additive schema change. See
+	// docs/specs/14-content-enrichment-design.md §4.6.
+	//
+	// Record ordering: primary content.raw enrichments first (ok records
+	// before failed records), then per-attachment records in lexicographic
+	// attachment-filename order (ok before failed within each attachment).
+	// Downstream consumers may rely on this order.
+	Enrichments []EnrichmentRecord `json:"enrichments,omitempty"`
+}
+
+// EnrichmentRecord describes one sidecar artifact produced (or attempted
+// and failed) by the enrichment pipeline, as recorded in metadata.json.
+// See docs/specs/14-content-enrichment-design.md §4.6.
+type EnrichmentRecord struct {
+	// Producer is the Enricher.Name() that produced (or failed to produce)
+	// this artifact (e.g. "html", "pdf", "ocr").
+	Producer string `json:"producer"`
+	// Kind is the artifact's semantic category (e.g. "extracted-text",
+	// "image-caption", "ocr-text", "transcript"). Empty for failed
+	// enrichments where the enricher never returned an artifact.
+	Kind string `json:"kind"`
+	// Source is the filename (relative to the item directory) the
+	// enricher ran on, e.g. "content.raw" or "attachment-2-report.pdf".
+	Source string `json:"source"`
+	// Filename is the produced sidecar's filename (relative to the item
+	// directory). Empty when Status="failed".
+	Filename string `json:"filename,omitempty"`
+	// Status is "ok" when the artifact was produced, "failed" when the
+	// enricher returned a non-nil error.
+	Status string `json:"status"`
+	// Error is the enricher's error message; present iff Status="failed".
+	Error string `json:"error,omitempty"`
 }
 
 // StagingItem represents a validated item read from the staging directory.
