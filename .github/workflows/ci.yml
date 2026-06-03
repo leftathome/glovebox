@@ -126,9 +126,9 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
-            glovebox${{ matrix.ext }}
-            *-connector${{ matrix.ext }}
-            *-importer${{ matrix.ext }}
+            glovebox${{ matrix.ext || '' }}
+            *-connector${{ matrix.ext || '' }}
+            *-importer${{ matrix.ext || '' }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
