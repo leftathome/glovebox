@@ -12,6 +12,14 @@
 
 **Conventions:** All paths are relative to the worktree root `/root/.config/superpowers/worktrees/glovebox/spec-15`. No emoji in any Go source or strings (project rule). Commit after each task with the message shown.
 
+**Spec-14 (content-enrichment) integration — incorporates beads afq4.12–.17 (2026-06-03):** afq4.12–.17 are content-enrichment (spec 14) follow-ups. Verified fact: this branch's base (`da12b0f`) shares merge-base `4d4aeb4` with `spec-14-content-enrichment`, so it already has the enrich framework + the `staging.Commit()` pipeline hook; and `git diff da12b0f spec-14 --` shows **zero changes** to every core file SP1 touches (`metadata.go`, `finalize.go`, `internal/config`, `internal/staging`, `internal/routing`, `main.go`, `connector/staging.go`, `connector/http_backend.go`). So **Tasks 1–6 are conflict-free on the current base**; only the importer tasks change. Concretely:
+- **Mirror the spec-14 *rebased* mbox importer, not this base's version.** spec-14 changed `importers/mbox/{Dockerfile,main.go}` (enricher-runtime base + enricher wiring). T7–T10 below must mirror those rebased files (read them from `spec-14-content-enrichment`), so the walhelm importer is enrichment-consistent.
+- **afq4.15/.13 → T10 Dockerfile:** base on `ghcr.io/leftathome/glovebox-enricher-runtime:latest` like the rebased mbox Dockerfile, carry the same inline "TODO: pin to immutable tag" comment (afq4.15 will sweep it). pandoc-version (afq4.13) is a runtime-image concern SP1 inherits, not an SP1 change.
+- **afq4.12 → new verification (T6/T9/T13):** the resolver reads `data_subject`/`audience` from the staged `metadata.json`. Verify these + the acquisition `Identity` survive the importer's delivery path (filesystem backend writes them in `Commit()`; HTTP backend must serialize them in the ingest POST). If the HTTP path drops them, the resolver can't see them. Add an assertion.
+- **afq4.17 → T8:** the walhelm importer stages **one item per tree file** with its own `ContentType`, which sidesteps afq4.17's single-ContentType multipart-dispatch gap. v0.1 walhelm has no attachment files yet. Just set accurate per-file content-types.
+- **afq4.14, afq4.16:** spec-14-internal (enricher LookPath refactor; smoke-image CI). **Not SP1.**
+- **Merge order:** land SP1 *after* spec-14 reaches main (the walhelm Dockerfile references the enricher-runtime image spec-14 publishes). SP1 + spec-14 do not conflict (core files disjoint; `importers/walhelm/` is new).
+
 ---
 
 ## File Structure
@@ -299,7 +307,9 @@ Context: `RouteQuarantine(... reason string)` (routing/quarantine.go:42), `Route
 
 Context to mirror: `importers/mbox/main.go` (flags lines 39-54; `RunOneShot` call line 145), `mboxImporter` (importer.go:35-44), `importer.Importer` interface (importer/importer.go:59-97), `importer.RunOneShot` (called main.go:145).
 
-- [ ] **Step 1:** Copy `importers/mbox/main.go` → `importers/walhelm/main.go`; rename flagset to `walhelm-importer`; `--source` now means the staged archive dir (`archives/<id>/`) rather than an mbox file; default `--source-name walhelm`. Keep `--ingest-url`/`--staging-dir`/`--state-dir`/`--config`/`--concurrency`/`--health-port`.
+> **Mirror the spec-14 REBASED mbox importer, not this base's version.** Before copying, read `git show spec-14-content-enrichment:importers/mbox/main.go` — the rebased version added ~12 lines wiring the enrichment pipeline. Mirror those so the walhelm importer is enrichment-consistent (so filesystem-backend staging enriches like the other connectors). The base version is stale for this purpose.
+
+- [ ] **Step 1:** Copy the **spec-14 rebased** `importers/mbox/main.go` → `importers/walhelm/main.go`; rename flagset to `walhelm-importer`; `--source` now means the staged archive dir (`archives/<id>/`) rather than an mbox file; default `--source-name walhelm`. Keep `--ingest-url`/`--staging-dir`/`--state-dir`/`--config`/`--concurrency`/`--health-port` and the enricher-wiring lines from the rebased version.
 - [ ] **Step 2:** Create `walhelmImporter` struct + stub all six `importer.Importer` methods returning `nil`/empty so it compiles; wire `importer.RunOneShot(ctx, fw, imp, cfg)`.
 - [ ] **Step 3:** `go build ./importers/walhelm/` → succeeds.
 - [ ] **Step 4: Commit** — `git add importers/walhelm/ && git commit -m "scaffold(walhelm): importer skeleton mirroring mbox (spec 15 §6)"`
@@ -318,7 +328,7 @@ Context: mbox `BuildItemOptions` (importers/mbox/ingest.go:54-113) derives subje
   - `DestinationAgent` from `matcher.Match(ruleKeyForEntry(entry))` (error if unmatched + no wildcard, mirroring mbox lines 68-82).
   - `DataSubject = receipt.DataSubject`; `Audience = receipt.Audience`.
   - `Identity = &connector.Identity{Provider: receipt.Acquisition.Provider, AuthMethod: receipt.Acquisition.AuthMethod, AccountID: receipt.Acquisition.AccountID}` (guard nil).
-  - `ContentType` from the entry's classification; `Source = sourceName`; `Tags["origin_archive"] = receipt.ArchiveID + ":" + entry.Path`.
+  - `ContentType` from the entry's classification — set it ACCURATELY per file (`message/rfc822`, `application/json`, `application/zip`, etc.), because `enrich.Applies()` dispatches on it. One-item-per-file (this design) sidesteps afq4.17's single-ContentType multipart-dispatch gap by construction. `Source = sourceName`; `Tags["origin_archive"] = receipt.ArchiveID + ":" + entry.Path`.
 
 - [ ] **Step 4: Run, verify pass** → PASS.
 - [ ] **Step 5: Commit** — `git add importers/walhelm/ingest.go importers/walhelm/ingest_test.go && git commit -m "feat(walhelm): BuildItemOptions stamps subject/audience/identity from receipt; matcher only sets destination (spec 15 §6)"`
@@ -340,7 +350,10 @@ Context: mbox `Import` worker-pool pattern (importer.go:175-195): `NewItem -> Wr
 ## Phase E — Delivery + CI
 
 ### Task 10: Dockerfile + config.json
-- [ ] Copy `importers/mbox/Dockerfile` → `importers/walhelm/Dockerfile`, adjust build target to `./importers/walhelm/`. Create `importers/walhelm/config.json` with a rules block (destination matcher) mirroring mbox's. `docker build -f importers/walhelm/Dockerfile .` succeeds (or `go build` if docker unavailable in CI sandbox). Commit: `chore(walhelm): Dockerfile + example config`.
+- [ ] Copy the **spec-14 rebased** mbox Dockerfile as the template: `git show spec-14-content-enrichment:importers/mbox/Dockerfile`. It is a two-stage build whose runtime stage is `FROM ghcr.io/leftathome/glovebox-enricher-runtime:latest` (debian + poppler-utils/tesseract/pandoc) and carries an inline `# TODO: pin to immutable enricher-runtime tag ...` comment. Reproduce that exact base + the pin-TODO comment (afq4.15 will sweep it across all importers/connectors once spec-14 hits main and CI publishes an immutable tag). Adjust the build target to `./importers/walhelm/`. Do NOT use the plain-Go base from this branch's stale mbox Dockerfile.
+- [ ] Create `importers/walhelm/config.json` with a rules block (destination matcher) mirroring mbox's.
+- [ ] `docker build -f importers/walhelm/Dockerfile .` succeeds (or `go build ./importers/walhelm/` if docker is unavailable in the sandbox — note which was run).
+- [ ] Commit: `chore(walhelm): Dockerfile (enricher-runtime base, pin-TODO) + example config`.
 
 ### Task 11: CI matrix
 **File:** `.github/workflows/ci.yml`
@@ -373,7 +386,8 @@ Context: mbox `Import` worker-pool pattern (importer.go:175-195): `NewItem -> Wr
 
 ### Task 13: End-to-end integration test
 **File:** `internal/ingest/archives/` or a top-level `*_integration_test.go`.
-- [ ] Synthetic flow: craft an `archive/walhelm-export` upload (valid `acq_*`+`data_subject`+`audience`) → `Finalize` → run `walhelmImporter.Import` against the staged dir → scan → resolver gate. Two assertions: a registered principal lands at its destination with `data_subject==entity_id`; an unregistered one lands in quarantine with `reason==subject_unresolved`. Commit: `test: e2e walhelm-export provenance + resolution`.
+- [ ] Synthetic flow: craft an `archive/walhelm-export` upload (valid `acq_*`+`data_subject`+`audience`) → `Finalize` → run `walhelmImporter.Import` against the staged dir → scan → resolver gate. Two assertions: a registered principal lands at its destination with `data_subject==entity_id`; an unregistered one lands in quarantine with `reason==subject_unresolved`.
+- [ ] **afq4.12 round-trip assertion:** assert the staged `metadata.json` the resolver consumes actually carries `data_subject`, `audience`, and the acquisition `Identity` for BOTH backend modes the importer supports — filesystem (`--staging-dir`, fields written in `Commit()`) and, if exercised, HTTP (`--ingest-url`, fields must be serialized in the ingest POST and persisted server-side). If the HTTP path drops any of the three, the resolver can't see them — file a bug rather than working around it. Commit: `test: e2e walhelm-export provenance + resolution + backend round-trip`.
 
 ### Task 14: Close-out
 - [ ] `go test ./...`, `go vet ./...`, `staticcheck ./...` all clean from the worktree.
