@@ -1,9 +1,14 @@
 // importer.go -- concrete walhelmImporter satisfying importer.Importer.
 //
-// This is a scaffold for the walhelm archive importer (spec 15 sec 6).
+// Delivered importer for walhelm staged archives (spec 15 sec 6). Import reads
+// the finalize receipt (metadata.json), validates media type and data_subject,
+// walks tree/, and stages one item per regular file via a bounded goroutine
+// pool (stageAll). Provenance fields (subject, audience, identity) are stamped
+// from the receipt on every item.
+//
 // Survey, LoadSurvey, LoadManifest, LoadFilter, and ClearState are
-// stubs returning zero values or nil. Import is also a stub returning
-// nil; real logic for tree-walking and item construction arrives in T8/T9.
+// intentional no-ops for v1: walhelm archives are one-shot imports and do not
+// require resume, survey sidecars, or filter configs in the initial release.
 package main
 
 import (
@@ -175,6 +180,10 @@ func (w *walhelmImporter) Import(
 		"concurrency", w.concurrency)
 
 	// --- 4) Stage each file with bounded concurrency --------------------
+	// ctx is dropped here because the downstream calls (ReadFile, NewItem,
+	// WriteContent, Commit) are not yet context-aware. HTTP-backend Commit
+	// context-awareness is tracked by the existing TODO in
+	// connector/staging.go; this closure will be updated once that lands.
 	stage := func(_ context.Context, rel string) error {
 		entry := walhelmEntry{RelPath: rel, ContentType: classifyContentType(rel)}
 		opts, err := BuildItemOptions(entry, &receipt, w.fw.Matcher, w.sourceName)
