@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ import (
 	"github.com/leftathome/glovebox/internal/pipeline"
 	"github.com/leftathome/glovebox/internal/routing"
 	"github.com/leftathome/glovebox/internal/staging"
+	"github.com/leftathome/glovebox/internal/subject"
 	"github.com/leftathome/glovebox/internal/watcher"
 )
 
@@ -44,6 +46,14 @@ func main() {
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
+	}
+
+	// Load the known-subjects registry. config.Validate already parsed it for
+	// validation; this is the retained load whose registry (subjects + the
+	// enforce flag) drives the fail-closed subject-resolution gate.
+	reg, err := subject.Load(cfg.SubjectsFile)
+	if err != nil {
+		log.Fatalf("load subjects registry: %v", err)
 	}
 
 	rulesFile, err := os.Open(cfg.RulesFile)
@@ -89,7 +99,7 @@ func main() {
 	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
 
 	router := pipeline.NewRouter(func(resp pipeline.ScanResponse) error {
-		return deliverResult(resp, cfg, logger, rules.QuarantineThreshold, boostConfig, m)
+		return deliverResult(resp, cfg, reg, logger, rules.QuarantineThreshold, boostConfig, m)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -338,7 +348,7 @@ func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 	}
 }
 
-func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.Logger, threshold float64, boostConfig map[string]float64, m *gloveboxmetrics.Metrics) error {
+func deliverResult(resp pipeline.ScanResponse, cfg config.Config, reg *subject.SubjectRegistry, logger *audit.Logger, threshold float64, boostConfig map[string]float64, m *gloveboxmetrics.Metrics) error {
 	ctx := context.Background()
 	notifyDir := filepath.Join(cfg.SharedDir, "glovebox-notifications")
 
@@ -416,6 +426,25 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, logger *audit.
 
 	result := engine.ScoreSignals(scoringSignals, boosts, threshold)
 	result.Signals = resp.Signals // Preserve all signals including boosts for audit
+
+	// Fail-closed subject-resolution gate (spec 15 sec 5.2-5.3). Runs after the
+	// scan verdict is computed and BEFORE the pass/quarantine routing so the
+	// destination copy + audit carry the resolved entity_id. A resolved
+	// principal mutates resp.Item.Metadata in place and is persisted to disk;
+	// a subjectless item is untouched; an unresolved subject quarantines when
+	// the registry enforces, otherwise passes through with a warning.
+	switch action, err := routing.SubjectGate(&resp.Item, reg); {
+	case err != nil:
+		log.Printf("subject gate error for %s, moving to failed/: %v", resp.Item.DirPath, err)
+		removePendingForItem(resp, cfg)
+		return routing.RouteToFailed(resp.Item.DirPath, cfg.FailedDir, "subject_gate_error")
+	case action == routing.GateQuarantine:
+		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
+		return routing.RouteQuarantine(resp.Item, result, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, routing.ReasonSubjectUnresolved)
+	case action == routing.GatePassUnresolved:
+		slog.Warn("subject unresolved; enforcement off, passing through", "data_subject", resp.Item.Metadata.DataSubject)
+	}
 
 	if result.Verdict == engine.VerdictQuarantine {
 		notifyDir := notifyDir
