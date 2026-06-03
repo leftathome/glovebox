@@ -133,7 +133,7 @@ func TestSubjectGate_ResolvedRoutesWithEntityID(t *testing.T) {
 
 	// The destination copy's metadata.json must carry the resolved entity_id
 	// and the registry default audience.
-	destMeta := filepath.Join(destDir, "20260603-gateitem", "metadata.json")
+	destMeta := filepath.Join(destDir, filepath.Base(item.DirPath), "metadata.json")
 	data, err := os.ReadFile(destMeta)
 	if err != nil {
 		t.Fatalf("read dest metadata: %v", err)
@@ -187,7 +187,7 @@ func TestSubjectGate_UnresolvedEnforceQuarantines(t *testing.T) {
 	}
 
 	// No destination copy must exist.
-	if _, err := os.Stat(filepath.Join(destDir, "20260603-gateitem")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(destDir, filepath.Base(item.DirPath))); !os.IsNotExist(err) {
 		t.Errorf("destination copy exists, want none (err=%v)", err)
 	}
 }
@@ -230,5 +230,28 @@ func TestSubjectGate_UnresolvedEnforceOffPasses(t *testing.T) {
 	}
 	if item.Metadata.DataSubject != "walhelm:unknown" {
 		t.Errorf("DataSubject = %q, want walhelm:unknown (unresolved, untouched)", item.Metadata.DataSubject)
+	}
+}
+
+// TestSubjectGate_PersistFailureQuarantines verifies the fail-closed contract:
+// when persistMetadata fails (DirPath points to a non-existent directory so
+// os.OpenFile for the .tmp cannot succeed), SubjectGate must return a non-nil
+// error AND an action other than GatePass (fail closed -- callers that check
+// only the action must not route the item as if it succeeded).
+func TestSubjectGate_PersistFailureQuarantines(t *testing.T) {
+	reg := writeGateRegistry(t, true)
+	item, _, _, _, logger := setupGateItem(t, "walhelm:9f2a")
+	defer logger.Close()
+
+	// Point DirPath at a non-existent directory so the .tmp file cannot be
+	// created, forcing persistMetadata to fail.
+	item.DirPath = filepath.Join(t.TempDir(), "does-not-exist", "subdir")
+
+	action, err := SubjectGate(&item, reg)
+	if err == nil {
+		t.Fatalf("SubjectGate returned nil error on persist failure, want non-nil")
+	}
+	if action == GatePass {
+		t.Errorf("action = GatePass on persist failure, want GateQuarantine (fail-closed)")
 	}
 }
