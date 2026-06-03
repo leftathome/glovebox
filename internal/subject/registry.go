@@ -8,10 +8,12 @@ import (
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
-// SubjectEntry is one known subject. display is intentionally unexported and
+// subjectEntry is one known subject. display is intentionally unexported and
 // has no accessor: it is at-rest operator legibility only and must never reach
 // an item, route, or audit record (spec 15 sec 5.1 PHI firewall).
-type SubjectEntry struct {
+// subjectEntry is also intentionally unexported to prevent external packages
+// from holding direct references to registry internals.
+type subjectEntry struct {
 	EntityID        string
 	display         string
 	Principals      []string
@@ -21,8 +23,8 @@ type SubjectEntry struct {
 // SubjectRegistry maps principals and entity_ids to opaque entity_ids.
 type SubjectRegistry struct {
 	enforce  bool
-	entities map[string]*SubjectEntry // entity_id -> entry
-	byPrinc  map[string]*SubjectEntry // principal  -> entry
+	entities map[string]*subjectEntry // entity_id -> entry
+	byPrinc  map[string]*subjectEntry // principal  -> entry
 }
 
 // Enforce reports whether subject enforcement is active.
@@ -78,8 +80,8 @@ func Load(path string) (*SubjectRegistry, error) {
 	if path == "" {
 		return &SubjectRegistry{
 			enforce:  false,
-			entities: make(map[string]*SubjectEntry),
-			byPrinc:  make(map[string]*SubjectEntry),
+			entities: make(map[string]*subjectEntry),
+			byPrinc:  make(map[string]*subjectEntry),
 		}, nil
 	}
 
@@ -96,8 +98,8 @@ func Load(path string) (*SubjectRegistry, error) {
 
 	reg := &SubjectRegistry{
 		enforce:  wire.Enforce,
-		entities: make(map[string]*SubjectEntry, len(wire.Subjects)),
-		byPrinc:  make(map[string]*SubjectEntry),
+		entities: make(map[string]*subjectEntry, len(wire.Subjects)),
+		byPrinc:  make(map[string]*subjectEntry),
 	}
 
 	for i, ws := range wire.Subjects {
@@ -114,7 +116,7 @@ func Load(path string) (*SubjectRegistry, error) {
 			return nil, fmt.Errorf("subject registry: entity_id %q: default_audience: %w", ws.EntityID, err)
 		}
 
-		entry := &SubjectEntry{
+		entry := &subjectEntry{
 			EntityID:        ws.EntityID,
 			display:         ws.Display,
 			Principals:      ws.Principals,
@@ -128,6 +130,17 @@ func Load(path string) (*SubjectRegistry, error) {
 					p, existing.EntityID, ws.EntityID)
 			}
 			reg.byPrinc[p] = entry
+		}
+	}
+
+	// Second pass: reject any principal that equals a registered entity_id.
+	// This must run after the entities map is fully built so that ordering of
+	// entries in the file does not affect the outcome.
+	for _, ws := range wire.Subjects {
+		for _, p := range ws.Principals {
+			if _, clash := reg.entities[p]; clash {
+				return nil, fmt.Errorf("subject registry: principal %q collides with a registered entity_id", p)
+			}
 		}
 	}
 

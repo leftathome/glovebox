@@ -1,7 +1,9 @@
 package subject
 
 import (
+	"encoding"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -286,28 +288,89 @@ func TestDefaultAudience_UnknownEntity_ReturnsNil(t *testing.T) {
 	}
 }
 
-// TestDisplayFieldUnreachable is a compile-time assertion: the SubjectEntry
+// TestDisplayFieldUnreachable is a compile-time assertion: the subjectEntry
 // type must not expose a Display getter or an exported Display field. This
 // test ensures no public API surfaces the display name (spec 15 sec 5.1
-// PHI firewall). If SubjectEntry had an exported Display field or a
+// PHI firewall). If subjectEntry had an exported Display field or a
 // Display() method, this file would not compile (or a reflection check
-// would catch it at test time).
+// would catch it at test time). It also guards against fmt.Stringer and
+// encoding.TextMarshaler, either of which could leak the display field
+// through formatting or serialization.
 func TestDisplayFieldUnreachable(t *testing.T) {
-	// Verify at runtime via reflection: SubjectEntry must have no exported
+	// Verify at runtime via reflection: subjectEntry must have no exported
 	// field named "Display" and no exported method named "Display".
-	var e SubjectEntry
+	var e subjectEntry
 	rt := reflect.TypeOf(e)
 	for i := range rt.NumField() {
 		f := rt.Field(i)
 		if f.Name == "Display" {
-			t.Errorf("SubjectEntry must not have an exported field named Display (spec 15 sec 5.1 PHI firewall)")
+			t.Errorf("subjectEntry must not have an exported field named Display (spec 15 sec 5.1 PHI firewall)")
 		}
 	}
 	for i := range reflect.TypeOf(&e).NumMethod() {
 		m := reflect.TypeOf(&e).Method(i)
 		if m.Name == "Display" {
-			t.Errorf("SubjectEntry must not have a Display() method (spec 15 sec 5.1 PHI firewall)")
+			t.Errorf("subjectEntry must not have a Display() method (spec 15 sec 5.1 PHI firewall)")
 		}
+	}
+
+	// Guard against fmt.Stringer or encoding.TextMarshaler, which could leak
+	// the display field via formatting or serialization (PHI firewall).
+	if _, ok := any(&e).(fmt.Stringer); ok {
+		t.Error("subjectEntry must not implement fmt.Stringer (PHI firewall)")
+	}
+	if _, ok := any(&e).(encoding.TextMarshaler); ok {
+		t.Error("subjectEntry must not implement encoding.TextMarshaler (PHI firewall)")
+	}
+}
+
+// TestLoad_PrincipalCollidesWithEntityID_ReturnsError checks that a principal
+// equal to any registered entity_id is rejected at load time (spec 15 sec 5.2
+// namespace-collision guard). This includes the degenerate self-principal case.
+func TestLoad_PrincipalCollidesWithEntityID_ReturnsError(t *testing.T) {
+	// Entry A has entity_id "e_1"; entry B lists "e_1" as a principal.
+	path := writeRegistry(t, map[string]any{
+		"enforce": true,
+		"subjects": []map[string]any{
+			{
+				"entity_id":        "e_1",
+				"display":          "Alice",
+				"principals":       []string{"walhelm:aaaa"},
+				"default_audience": []string{"subject"},
+			},
+			{
+				"entity_id":        "e_2",
+				"display":          "Bob",
+				"principals":       []string{"e_1"}, // collides with Alice's entity_id
+				"default_audience": []string{"subject"},
+			},
+		},
+	})
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with principal colliding entity_id: expected error, got nil")
+	}
+}
+
+// TestLoad_SelfPrincipalCollidesWithEntityID_ReturnsError checks the
+// degenerate case where an entry lists its own entity_id as a principal.
+func TestLoad_SelfPrincipalCollidesWithEntityID_ReturnsError(t *testing.T) {
+	path := writeRegistry(t, map[string]any{
+		"enforce": true,
+		"subjects": []map[string]any{
+			{
+				"entity_id":        "e_1",
+				"display":          "Alice",
+				"principals":       []string{"e_1"}, // self-collision
+				"default_audience": []string{"subject"},
+			},
+		},
+	})
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with self-principal collision: expected error, got nil")
 	}
 }
 
