@@ -9,6 +9,8 @@
 //   TestFinalize_TarSafetyViolationPropagated -- B3 sentinel wrapped + cleanup
 //   TestFinalize_RenameCollision           -- ErrArchiveExists; target preserved
 //   TestFinalize_IdentityBlockInMetadata   -- spec 06 §5.2 fields written
+//   TestFinalize_ProvenanceInReceipt       -- walhelm provenance fields in receipt + on-disk metadata.json
+//   TestFinalize_MboxOmitsProvenanceFields -- mbox omits all three new fields (omitempty)
 //
 // Fixtures kept local rather than added to helpers_test.go because they
 // are finalize-specific (tar builder, sha256 helper, staging-dir
@@ -529,7 +531,7 @@ func TestFinalize_ProvenanceInReceipt(t *testing.T) {
 	fx.state.Meta.AcqAccountID = "user-42"
 	fx.state.Meta.AcqAuthMethod = "browser_session"
 	fx.state.Meta.DataSubject = "alice@example.com"
-	fx.state.Meta.Audience = []string{"home-agent", "search-index"}
+	fx.state.Meta.Audience = []string{"subject", "guardians"}
 	fx.state.SourceID = "recognizer"
 
 	ctx := authedCtx("recognizer")
@@ -556,9 +558,9 @@ func TestFinalize_ProvenanceInReceipt(t *testing.T) {
 		t.Errorf("DataSubject=%q want alice@example.com", receipt.DataSubject)
 	}
 	if len(receipt.Audience) != 2 ||
-		receipt.Audience[0] != "home-agent" ||
-		receipt.Audience[1] != "search-index" {
-		t.Errorf("Audience=%v want [home-agent search-index]", receipt.Audience)
+		receipt.Audience[0] != "subject" ||
+		receipt.Audience[1] != "guardians" {
+		t.Errorf("Audience=%v want [subject guardians]", receipt.Audience)
 	}
 
 	// --- on-disk metadata.json assertions ---
@@ -603,8 +605,8 @@ func TestFinalize_ProvenanceInReceipt(t *testing.T) {
 	if !ok {
 		t.Fatalf(`metadata.json "audience" is %T, want array`, audAny)
 	}
-	if len(audSlice) != 2 || audSlice[0] != "home-agent" || audSlice[1] != "search-index" {
-		t.Errorf(`metadata.json audience=%v, want ["home-agent","search-index"]`, audSlice)
+	if len(audSlice) != 2 || audSlice[0] != "subject" || audSlice[1] != "guardians" {
+		t.Errorf(`metadata.json audience=%v, want ["subject","guardians"]`, audSlice)
 	}
 }
 
