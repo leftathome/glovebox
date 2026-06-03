@@ -75,10 +75,7 @@ func BuildItemOptions(
 	}
 
 	// Audience is copied from receipt to prevent aliasing.
-	var audience []string
-	if len(receipt.Audience) > 0 {
-		audience = append([]string(nil), receipt.Audience...)
-	}
+	audience := append([]string(nil), receipt.Audience...)
 
 	tags := map[string]string{
 		"origin_archive": receipt.ArchiveID + ":" + entry.RelPath,

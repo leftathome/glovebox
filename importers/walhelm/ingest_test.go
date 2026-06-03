@@ -20,10 +20,6 @@ func makeReceipt(archiveID, dataSubject string, audience []string, acq *ingest.I
 	}
 }
 
-func newWalhelmMatcher(rules []connector.Rule) *connector.RuleMatcher {
-	return connector.NewRuleMatcher(rules)
-}
-
 // --- classifyContentType tests -----------------------------------------------
 
 func TestClassifyContentType_EML(t *testing.T) {
@@ -101,7 +97,7 @@ func TestBuildItemOptions_HappyPath(t *testing.T) {
 	}
 	receipt := makeReceipt("arch1", "walhelm:9f2a", []string{"subject"}, acq)
 
-	matcher := newWalhelmMatcher([]connector.Rule{
+	matcher := connector.NewRuleMatcher([]connector.Rule{
 		{Match: "*", Destination: "health-agent"},
 	})
 
@@ -149,7 +145,7 @@ func TestBuildItemOptions_HappyPath(t *testing.T) {
 
 func TestBuildItemOptions_ContentTypeFromEntry(t *testing.T) {
 	receipt := makeReceipt("arch2", "subj", []string{"agent"}, &ingest.Identity{Provider: "p", AuthMethod: "m", AccountID: "a"})
-	matcher := newWalhelmMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
+	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
 
 	entry := walhelmEntry{RelPath: "message/mail.eml", ContentType: "message/rfc822"}
 	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
@@ -170,7 +166,7 @@ func TestBuildItemOptions_ReceiptIsSubjectAuthority(t *testing.T) {
 	receipt := makeReceipt("archX", "receipt-subject", []string{"receipt-audience"}, nil)
 
 	// Rule carries conflicting data_subject / audience.
-	matcher := newWalhelmMatcher([]connector.Rule{
+	matcher := connector.NewRuleMatcher([]connector.Rule{
 		{
 			Match:       "*",
 			Destination: "agent",
@@ -202,7 +198,7 @@ func TestBuildItemOptions_ReceiptIsSubjectAuthority(t *testing.T) {
 
 func TestBuildItemOptions_NilAcquisition(t *testing.T) {
 	receipt := makeReceipt("archY", "subj", nil, nil) // Acquisition == nil
-	matcher := newWalhelmMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
+	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "dst"}})
 	entry := walhelmEntry{RelPath: "lab/data.json", ContentType: "application/json"}
 
 	opts, err := BuildItemOptions(entry, receipt, matcher, "src")
@@ -218,7 +214,7 @@ func TestBuildItemOptions_NilAcquisition(t *testing.T) {
 
 func TestBuildItemOptions_UnmatchedNoWildcard(t *testing.T) {
 	receipt := makeReceipt("archZ", "subj", nil, nil)
-	matcher := newWalhelmMatcher([]connector.Rule{
+	matcher := connector.NewRuleMatcher([]connector.Rule{
 		{Match: "walhelm:message", Destination: "messaging"},
 	})
 
@@ -242,7 +238,7 @@ func TestBuildItemOptions_MatcherOnlySetsDest(t *testing.T) {
 	acq := &ingest.Identity{Provider: "prov", AuthMethod: "meth", AccountID: "acct"}
 	receipt := makeReceipt("archA", "receipt-ds", []string{"aud-a"}, acq)
 
-	matcher := newWalhelmMatcher([]connector.Rule{
+	matcher := connector.NewRuleMatcher([]connector.Rule{
 		{Match: "walhelm:lab", Destination: "lab-agent"},
 	})
 
@@ -268,7 +264,7 @@ func TestBuildItemOptions_MatcherOnlySetsDest(t *testing.T) {
 // clear message rather than dereferencing nil (mirrors mbox's nil-*Message
 // guard).
 func TestBuildItemOptions_NilReceipt(t *testing.T) {
-	matcher := newWalhelmMatcher([]connector.Rule{
+	matcher := connector.NewRuleMatcher([]connector.Rule{
 		{Match: "*", Destination: "any-agent"},
 	})
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
@@ -290,7 +286,7 @@ func TestBuildItemOptions_NilReceipt(t *testing.T) {
 func TestBuildItemOptions_SetsSenderAndTimestamp(t *testing.T) {
 	acq := &ingest.Identity{Provider: "kp-wa", AuthMethod: "browser_session", AccountID: "acct-1"}
 	receipt := makeReceipt("arch1", "walhelm:9f2a", []string{"subject"}, acq)
-	matcher := newWalhelmMatcher([]connector.Rule{{Match: "*", Destination: "d"}})
+	matcher := connector.NewRuleMatcher([]connector.Rule{{Match: "*", Destination: "d"}})
 	entry := walhelmEntry{RelPath: "lab/x.json", ContentType: "application/json"}
 
 	opts, err := BuildItemOptions(entry, receipt, matcher, "walhelm-src")

@@ -103,13 +103,15 @@ func TestStageAll_MixedErrors(t *testing.T) {
 	// Jobs at even indices will fail.
 	sentinel := errors.New("synthetic failure")
 
-	fn := func(_ context.Context, rel string) error {
-		for i, j := range jobs {
-			if j == rel && i%2 == 0 {
-				return sentinel
-			}
+	shouldFail := make(map[string]error, len(jobs))
+	for i, j := range jobs {
+		if i%2 == 0 {
+			shouldFail[j] = sentinel
 		}
-		return nil
+	}
+
+	fn := func(_ context.Context, rel string) error {
+		return shouldFail[rel]
 	}
 
 	results := stageAll(context.Background(), 2, jobs, fn)
