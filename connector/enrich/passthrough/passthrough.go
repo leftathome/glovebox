@@ -22,19 +22,16 @@
 //
 // # Output filename convention
 //
-// The output is the identity of the input, so naming is the only thing
-// that varies. The convention chosen here (and pinned by the tests in
-// this package):
-//
-//   - source basename `content.raw`   → `content.extracted.md`
-//   - any other source basename `X.Y` → `content.X.extracted.md`
-//     (the trailing extension is stripped from X.Y if present)
+// Per spec 14 §4.3: primary content uses `content.extracted.md`;
+// attachments use `content.attachment-<n>.extracted.md` where `<n>` is
+// the attachment ordinal parsed from the source's `attachment-<n>-...`
+// filename. This matches the other enrichers (html, pdf, ocr, office).
 //
 // Examples:
 //
 //   - content.raw                 → content.extracted.md
-//   - attachment-2-report.txt     → content.attachment-2-report.extracted.md
-//   - attachment-1-LICENSE        → content.attachment-1-LICENSE.extracted.md
+//   - attachment-2-report.txt     → content.attachment-2.extracted.md
+//   - attachment-1-LICENSE        → content.attachment-1.extracted.md
 //
 // Rationale: a uniform `content.<scope>.extracted.md` shape lets
 // downstream consumers glob with a single `content.*.extracted.md`
@@ -49,6 +46,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/leftathome/glovebox/connector/enrich"
@@ -132,27 +130,24 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, meta staging.I
 	}}, nil
 }
 
+// attachmentStem matches the spec §4.3 source-filename pattern
+// `attachment-<n>-...` and captures the ordinal `<n>`.
+var attachmentStem = regexp.MustCompile(`^attachment-(\d+)(?:-|$)`)
+
 // outputFilename maps a source basename to the corresponding passthrough
-// sidecar name per the convention documented at package scope.
+// sidecar name per the convention documented at package scope (spec §4.3).
 func outputFilename(srcBase string) string {
 	if srcBase == "content.raw" {
 		return "content.extracted.md"
 	}
-	stem := stripExt(srcBase)
-	return "content." + stem + ".extracted.md"
-}
-
-// stripExt removes the final extension (if any) from name. Unlike
-// strings.TrimSuffix(name, filepath.Ext(name)), this is a no-op on
-// names without an extension (filepath.Ext already returns "" in that
-// case, so it's equivalent; we keep this thin wrapper for readability
-// at the call site).
-func stripExt(name string) string {
-	ext := filepath.Ext(name)
-	if ext == "" {
-		return name
+	if m := attachmentStem.FindStringSubmatch(srcBase); m != nil {
+		return "content.attachment-" + m[1] + ".extracted.md"
 	}
-	return strings.TrimSuffix(name, ext)
+	// Defensive fallback for unconventional source names: derive a
+	// sanitized stem from the basename so we never clobber the primary
+	// `content.extracted.md` from a malformed attachment label.
+	stem := strings.TrimSuffix(srcBase, filepath.Ext(srcBase))
+	return "content." + stem + ".extracted.md"
 }
 
 // mediaTypeOnly returns the lower-cased media type portion of a

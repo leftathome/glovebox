@@ -198,7 +198,7 @@ func TestEnrich_AttachmentSource(t *testing.T) {
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	wantName := "content.attachment-2-report.extracted.md"
+	wantName := "content.attachment-2.extracted.md"
 	if arts[0].Filename != wantName {
 		t.Errorf("Filename = %q, want %q", arts[0].Filename, wantName)
 	}
@@ -224,7 +224,7 @@ func TestEnrich_AttachmentSourceNoExtension(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
-	wantName := "content.attachment-1-LICENSE.extracted.md"
+	wantName := "content.attachment-1.extracted.md"
 	if arts[0].Filename != wantName {
 		t.Errorf("Filename = %q, want %q", arts[0].Filename, wantName)
 	}
