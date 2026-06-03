@@ -12,6 +12,17 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
+
+	// Blank-imported enrichers register themselves with enrich.Default via
+	// each subpackage's init(). The set below matches
+	// docs/specs/14-content-enrichment-design.md §6.2 (outlook row):
+	// passthrough + html + pdf + ocr + office. Removing an import simply
+	// removes that enricher from this connector's pipeline.
+	_ "github.com/leftathome/glovebox/connector/enrich/html"
+	_ "github.com/leftathome/glovebox/connector/enrich/ocr"
+	_ "github.com/leftathome/glovebox/connector/enrich/office"
+	_ "github.com/leftathome/glovebox/connector/enrich/passthrough"
+	_ "github.com/leftathome/glovebox/connector/enrich/pdf"
 )
 
 const (
