@@ -39,8 +39,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -421,13 +423,8 @@ func TestE2E_WalhelmExport_ResolvedRoutesToDestination(t *testing.T) {
 			t.Errorf("dest data_subject = %q, want e_1", destMeta.DataSubject)
 		}
 		wantAud := []string{"subject"}
-		if len(destMeta.Audience) != len(wantAud) {
-			t.Fatalf("dest audience = %v, want %v", destMeta.Audience, wantAud)
-		}
-		for i, a := range wantAud {
-			if destMeta.Audience[i] != a {
-				t.Errorf("dest audience[%d] = %q, want %q", i, destMeta.Audience[i], a)
-			}
+		if !slices.Equal(destMeta.Audience, wantAud) {
+			t.Errorf("destination audience = %v, want %v", destMeta.Audience, wantAud)
 		}
 	}
 }
@@ -474,7 +471,7 @@ func TestE2E_WalhelmExport_UnresolvedQuarantines(t *testing.T) {
 		}
 
 		// No destination copy may exist for a quarantined item.
-		if _, err := os.Stat(filepath.Join(destDir, baseID)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(destDir, baseID)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("destination copy exists for quarantined item, want none (err=%v)", err)
 		}
 	}
