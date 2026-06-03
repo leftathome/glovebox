@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/leftathome/glovebox/internal/subject"
 )
 
 type IngestConfig struct {
@@ -87,6 +89,7 @@ type Config struct {
 	ScanWorkers         int      `json:"scan_workers"`
 	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
 	ScanChunkSizeBytes  int          `json:"scan_chunk_size_bytes"`
+	SubjectsFile        string        `json:"subjects_file"`
 	Ingest              IngestConfig  `json:"ingest"`
 }
 
@@ -226,9 +229,17 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Ingest.RequestTimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("GLOVEBOX_SUBJECTS_FILE"); v != "" {
+		cfg.SubjectsFile = v
+	}
 }
 
 func (c *Config) Validate() error {
+	if c.SubjectsFile != "" {
+		if _, err := subject.Load(c.SubjectsFile); err != nil {
+			return fmt.Errorf("subjects registry: %w", err)
+		}
+	}
 	if !c.Ingest.Enabled {
 		return nil
 	}

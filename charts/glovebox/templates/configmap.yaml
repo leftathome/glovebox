@@ -19,6 +19,7 @@ data:
       "watch_mode": {{ .Values.config.watchMode | quote }},
       "poll_interval_seconds": {{ .Values.config.pollIntervalSeconds }},
       "rules_file": "/etc/glovebox/rules.json",
+      "subjects_file": "/etc/glovebox/subjects.json",
       "scan_workers": {{ .Values.config.scanWorkers }},
       "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
       "scan_chunk_size_bytes": {{ .Values.config.scanChunkSizeBytes }},
@@ -77,3 +78,5 @@ data:
     }
   rules.json: |
     {{- .Files.Get "rules.json" | nindent 4 }}
+  subjects.json: |
+    {{- .Files.Get "subjects.json" | nindent 4 }}

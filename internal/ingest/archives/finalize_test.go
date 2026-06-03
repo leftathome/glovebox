@@ -9,6 +9,8 @@
 //   TestFinalize_TarSafetyViolationPropagated -- B3 sentinel wrapped + cleanup
 //   TestFinalize_RenameCollision           -- ErrArchiveExists; target preserved
 //   TestFinalize_IdentityBlockInMetadata   -- spec 06 §5.2 fields written
+//   TestFinalize_ProvenanceInReceipt       -- walhelm provenance fields in receipt + on-disk metadata.json
+//   TestFinalize_MboxOmitsProvenanceFields -- mbox omits all three new fields (omitempty)
 //
 // Fixtures kept local rather than added to helpers_test.go because they
 // are finalize-specific (tar builder, sha256 helper, staging-dir
@@ -501,6 +503,163 @@ func TestFinalize_IdentityBlockInMetadata(t *testing.T) {
 	}
 	if id["account_id"] != "specific-source" {
 		t.Errorf(`identity.account_id=%v, want "specific-source"`, id["account_id"])
+	}
+}
+
+// ---------------------------------------------------------------------
+// TestFinalize_ProvenanceInReceipt
+// ---------------------------------------------------------------------
+//
+// Drives Finalize with an archive/walhelm-export UploadState whose Meta
+// carries all acq_* + data_subject + audience fields. Asserts that the
+// returned FinalizeReceipt and the on-disk metadata.json both contain
+// the acquisition block (provider/auth_method/account_id), data_subject,
+// and audience per spec 15 sec 4.4.
+//
+// archive/walhelm-export is MediaTar, so we build a valid single-entry
+// tarball for the fixture.
+
+func TestFinalize_ProvenanceInReceipt(t *testing.T) {
+	tarball := buildFinalizeTar(t, map[string][]byte{
+		"data.json": []byte(`{"hello":"world"}`),
+	})
+
+	fx := setupFixture(t, "archive/walhelm-export", "walhelm.tar", tarball)
+	// Populate provenance fields on Meta (as ParseUploadMetadata would
+	// have done for a walhelm-export upload).
+	fx.state.Meta.AcqProvider = "walhelm"
+	fx.state.Meta.AcqAccountID = "user-42"
+	fx.state.Meta.AcqAuthMethod = "browser_session"
+	fx.state.Meta.DataSubject = "alice@example.com"
+	fx.state.Meta.Audience = []string{"subject", "guardians"}
+	fx.state.SourceID = "recognizer"
+
+	ctx := authedCtx("recognizer")
+	receipt, err := Finalize(ctx, fx.state, FinalizeConfig{StagingRoot: fx.stagingRoot})
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// --- struct-level assertions ---
+
+	if receipt.Acquisition == nil {
+		t.Fatal("receipt.Acquisition is nil; want populated block")
+	}
+	if receipt.Acquisition.Provider != "walhelm" {
+		t.Errorf("Acquisition.Provider=%q want walhelm", receipt.Acquisition.Provider)
+	}
+	if receipt.Acquisition.AuthMethod != "browser_session" {
+		t.Errorf("Acquisition.AuthMethod=%q want browser_session", receipt.Acquisition.AuthMethod)
+	}
+	if receipt.Acquisition.AccountID != "user-42" {
+		t.Errorf("Acquisition.AccountID=%q want user-42", receipt.Acquisition.AccountID)
+	}
+	if receipt.DataSubject != "alice@example.com" {
+		t.Errorf("DataSubject=%q want alice@example.com", receipt.DataSubject)
+	}
+	if len(receipt.Audience) != 2 ||
+		receipt.Audience[0] != "subject" ||
+		receipt.Audience[1] != "guardians" {
+		t.Errorf("Audience=%v want [subject guardians]", receipt.Audience)
+	}
+
+	// --- on-disk metadata.json assertions ---
+
+	metaPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "metadata.json")
+	raw, rerr := os.ReadFile(metaPath)
+	if rerr != nil {
+		t.Fatalf("read metadata.json: %v", rerr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+
+	acqAny, ok := parsed["acquisition"]
+	if !ok {
+		t.Fatal(`metadata.json missing "acquisition" key`)
+	}
+	acq, ok := acqAny.(map[string]any)
+	if !ok {
+		t.Fatalf(`metadata.json "acquisition" is %T, want object`, acqAny)
+	}
+	if acq["provider"] != "walhelm" {
+		t.Errorf(`acquisition.provider=%v, want "walhelm"`, acq["provider"])
+	}
+	if acq["auth_method"] != "browser_session" {
+		t.Errorf(`acquisition.auth_method=%v, want "browser_session"`, acq["auth_method"])
+	}
+	if acq["account_id"] != "user-42" {
+		t.Errorf(`acquisition.account_id=%v, want "user-42"`, acq["account_id"])
+	}
+
+	if parsed["data_subject"] != "alice@example.com" {
+		t.Errorf(`metadata.json data_subject=%v, want "alice@example.com"`, parsed["data_subject"])
+	}
+
+	audAny, ok := parsed["audience"]
+	if !ok {
+		t.Fatal(`metadata.json missing "audience" key`)
+	}
+	audSlice, ok := audAny.([]any)
+	if !ok {
+		t.Fatalf(`metadata.json "audience" is %T, want array`, audAny)
+	}
+	if len(audSlice) != 2 || audSlice[0] != "subject" || audSlice[1] != "guardians" {
+		t.Errorf(`metadata.json audience=%v, want ["subject","guardians"]`, audSlice)
+	}
+}
+
+// ---------------------------------------------------------------------
+// TestFinalize_MboxOmitsProvenanceFields
+// ---------------------------------------------------------------------
+//
+// Verifies backward compatibility: an archive/mbox finalize (no acq_* /
+// data_subject / audience in Meta) must produce a receipt and on-disk
+// metadata.json that omit all three new fields entirely (omitempty).
+
+func TestFinalize_MboxOmitsProvenanceFields(t *testing.T) {
+	content := []byte("From foo@bar.com\nSubject: omit test\n\nbody\n")
+	fx := setupFixture(t, "archive/mbox", "omit.mbox", content)
+	// Meta has zero values for AcqProvider / AcqAccountID / AcqAuthMethod /
+	// DataSubject / Audience -- the mbox path never sets them.
+	fx.state.SourceID = "recognizer"
+
+	ctx := authedCtx("recognizer")
+	receipt, err := Finalize(ctx, fx.state, FinalizeConfig{StagingRoot: fx.stagingRoot})
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// Struct-level: all three fields must be absent / zero.
+	if receipt.Acquisition != nil {
+		t.Errorf("receipt.Acquisition=%+v, want nil for mbox", receipt.Acquisition)
+	}
+	if receipt.DataSubject != "" {
+		t.Errorf("receipt.DataSubject=%q, want empty for mbox", receipt.DataSubject)
+	}
+	if len(receipt.Audience) != 0 {
+		t.Errorf("receipt.Audience=%v, want nil/empty for mbox", receipt.Audience)
+	}
+
+	// On-disk metadata.json must not contain these keys at all (omitempty).
+	metaPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "metadata.json")
+	raw, rerr := os.ReadFile(metaPath)
+	if rerr != nil {
+		t.Fatalf("read metadata.json: %v", rerr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+	if _, has := parsed["acquisition"]; has {
+		t.Error(`metadata.json has "acquisition" key for mbox; want omitted`)
+	}
+	if _, has := parsed["data_subject"]; has {
+		t.Error(`metadata.json has "data_subject" key for mbox; want omitted`)
+	}
+	if _, has := parsed["audience"]; has {
+		t.Error(`metadata.json has "audience" key for mbox; want omitted`)
 	}
 }
 

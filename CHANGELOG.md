@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Health-data provenance + subject resolution (spec 15, SP1)** -- the
+  Glovebox-side foundation for ingesting health data fetched from
+  credentialed sources (initially Kaiser Permanente WA via the recognizer
+  using the walhelm-go library). See
+  `docs/specs/15-health-provenance-and-subject-resolution-design.md`.
+  - **Archive contract extension:** new `archive/walhelm-export` media type
+    (tar) and producer-asserted provenance keys on the spec-13
+    `Upload-Metadata`: acquisition identity (`acq_provider`,
+    `acq_account_id`, `acq_auth_method`) and an opaque subject principal
+    (`data_subject`) plus optional `audience`. The finalize receipt
+    (`metadata.json`) now records an `acquisition` identity block and the
+    producer-asserted `data_subject`/`audience`. Other media types are
+    unchanged (the provenance keys are required only for walhelm-export).
+  - **Known-subjects registry** (`internal/subject/`): an operator-maintained
+    allowlist mapping opaque source principals (e.g. `walhelm:<id>`) to an
+    opaque Glovebox `entity_id`. PHI/PII firewall -- the data plane (staged
+    items, routing, audit log) carries only opaque `entity_id`s; an optional
+    `display` label is non-functional and never emitted. Cross-connector
+    normalization (one entity, many principals); rejects principal/entity_id
+    collisions at load.
+  - **Fail-closed subject-resolution gate** at the routing decision: items
+    carrying a `data_subject` are resolved to their `entity_id` (rewriting
+    the staged metadata) before delivery; subjects that do not resolve are
+    quarantined with reason `subject_unresolved` when the registry enforces.
+    Enforcement lives in the registry file's `enforce` field (default
+    **false**) -- with an empty registry and enforcement off, behavior is
+    unchanged and subjectless items (every existing connector) bypass the
+    gate untouched.
+  - **walhelm importer** (`importers/walhelm/`): a one-shot importer that
+    reads a finalized `archive/walhelm-export` directory and stages one item
+    per tree file, stamping each with the receipt's subject/audience/
+    acquisition-identity (the rule matcher chooses only the destination
+    agent). Ships with an enricher-runtime Dockerfile, CI binary + image
+    build, and a Helm-delivered `subjects.json` registry ConfigMap.
+
 ## [0.6.0] - 2026-05-XX
 
 ### Added

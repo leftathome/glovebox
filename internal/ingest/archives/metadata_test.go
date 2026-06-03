@@ -505,6 +505,207 @@ func TestParseUploadMetadata_SizeMismatchBeatsRegexChecks(t *testing.T) {
 	}
 }
 
+// ---- archive/walhelm-export happy path (spec 15 sec 4.2) ----
+
+// walhelmHeader builds a valid walhelm-export header. The base validHeader
+// fixture uses archive/mbox; this helper overrides media_type and injects
+// all required provenance keys. Extra overrides are merged on top.
+func walhelmHeader(overrides map[string]string) string {
+	base := map[string]string{
+		"media_type":      "archive/walhelm-export",
+		"archive_filename": "health.tar",
+		"acq_provider":    "apple-health",
+		"acq_account_id":  "user@example.com",
+		"acq_auth_method": "browser_session",
+		"data_subject":    "subject-opaque-id-001",
+	}
+	for k, v := range overrides {
+		base[k] = v
+	}
+	return validHeader(base)
+}
+
+func TestParseUploadMetadata_WalhelmExport_HappyPath(t *testing.T) {
+	header := walhelmHeader(nil)
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.MediaType != "archive/walhelm-export" {
+		t.Errorf("MediaType=%q", m.MediaType)
+	}
+	if m.AcqProvider != "apple-health" {
+		t.Errorf("AcqProvider=%q want %q", m.AcqProvider, "apple-health")
+	}
+	if m.AcqAccountID != "user@example.com" {
+		t.Errorf("AcqAccountID=%q want %q", m.AcqAccountID, "user@example.com")
+	}
+	if m.AcqAuthMethod != "browser_session" {
+		t.Errorf("AcqAuthMethod=%q want %q", m.AcqAuthMethod, "browser_session")
+	}
+	if m.DataSubject != "subject-opaque-id-001" {
+		t.Errorf("DataSubject=%q want %q", m.DataSubject, "subject-opaque-id-001")
+	}
+	if m.Audience != nil {
+		t.Errorf("Audience=%v want nil (not set)", m.Audience)
+	}
+	if m.Shape() != MediaTar {
+		t.Errorf("Shape()=%q want %q", m.Shape(), MediaTar)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_HappyPath_WithAudience(t *testing.T) {
+	// "subject,guardians" is valid: both are household-subset tokens;
+	// neither is "household" itself, so the subset-exclusion rule does not fire.
+	// data_subject is set (required for walhelm), satisfying the
+	// subject-relative rule for "subject".
+	header := walhelmHeader(map[string]string{"audience": "subject,guardians"})
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(m.Audience) != 2 || m.Audience[0] != "subject" || m.Audience[1] != "guardians" {
+		t.Errorf("Audience=%v want [subject guardians]", m.Audience)
+	}
+}
+
+// ---- archive/walhelm-export missing required provenance keys ----
+
+func TestParseUploadMetadata_WalhelmExport_MissingAcqProvider(t *testing.T) {
+	header := walhelmHeader(map[string]string{"acq_provider": ""})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("err=%v, want ErrMetadataMissing", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_MissingAcqAccountID(t *testing.T) {
+	header := walhelmHeader(map[string]string{"acq_account_id": ""})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("err=%v, want ErrMetadataMissing", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_MissingAcqAuthMethod(t *testing.T) {
+	header := walhelmHeader(map[string]string{"acq_auth_method": ""})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("err=%v, want ErrMetadataMissing", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_MissingDataSubject(t *testing.T) {
+	header := walhelmHeader(map[string]string{"data_subject": ""})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("err=%v, want ErrMetadataMissing", err)
+	}
+}
+
+// ---- archive/walhelm-export invalid provenance field values ----
+
+func TestParseUploadMetadata_WalhelmExport_InvalidAcqProvider(t *testing.T) {
+	// acq_provider must match providerRe: ^[a-z][a-z0-9-]{0,63}$
+	header := walhelmHeader(map[string]string{"acq_provider": "Apple-Health"}) // uppercase
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_InvalidAcqAuthMethod(t *testing.T) {
+	// only "browser_session" is valid for v1
+	header := walhelmHeader(map[string]string{"acq_auth_method": "oauth2"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_AcqAccountIDTooLong(t *testing.T) {
+	// provenanceStringMaxBytes is 256; 257 bytes must be rejected.
+	header := walhelmHeader(map[string]string{"acq_account_id": strings.Repeat("a", 257)})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_AcqAccountIDControlChar(t *testing.T) {
+	// acq_account_id containing a C0 control character must be rejected.
+	header := walhelmHeader(map[string]string{"acq_account_id": "user\x01example.com"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_DataSubjectTooLong(t *testing.T) {
+	// provenanceStringMaxBytes is 256; 257 bytes must be rejected.
+	header := walhelmHeader(map[string]string{"data_subject": strings.Repeat("a", 257)})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_DataSubjectControlChar(t *testing.T) {
+	// data_subject containing a C0 control character must be rejected.
+	header := walhelmHeader(map[string]string{"data_subject": "subject\x01opaque-id"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+func TestParseUploadMetadata_WalhelmExport_InvalidAudience(t *testing.T) {
+	// "unknown-token" is not a valid audience token
+	header := walhelmHeader(map[string]string{"audience": "unknown-token"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataInvalid) {
+		t.Fatalf("err=%v, want ErrMetadataInvalid", err)
+	}
+}
+
+// ---- backward compatibility: mbox unaffected by provenance enforcement ----
+
+func TestParseUploadMetadata_MboxUnaffectedByProvenanceFields(t *testing.T) {
+	// archive/mbox with NO acq_* / data_subject must still parse (additive).
+	header := validHeader(nil)
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("mbox parse: %v", err)
+	}
+	if m.AcqProvider != "" || m.AcqAccountID != "" || m.AcqAuthMethod != "" || m.DataSubject != "" {
+		t.Errorf("unexpected provenance fields on mbox: provider=%q account=%q auth=%q subject=%q",
+			m.AcqProvider, m.AcqAccountID, m.AcqAuthMethod, m.DataSubject)
+	}
+}
+
+func TestParseUploadMetadata_MboxWithStrayAcqProviderIsIgnored(t *testing.T) {
+	// A stray acq_provider on archive/mbox must NOT cause an error.
+	header := validHeader(map[string]string{"acq_provider": "extra-provider"})
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("mbox with stray acq_provider should parse: %v", err)
+	}
+	// The value is copied into the struct (round-trip) but not enforced.
+	if m.AcqProvider != "extra-provider" {
+		t.Errorf("AcqProvider=%q want %q (stray key should round-trip)", m.AcqProvider, "extra-provider")
+	}
+}
+
+// ---- regression: delivered_by still rejected ----
+
+func TestParseUploadMetadata_DeliveredByStillRejected_Regression(t *testing.T) {
+	header := walhelmHeader(map[string]string{"delivered_by": "recognizer"})
+	_, err := ParseUploadMetadata(header, 1024)
+	if !errors.Is(err, ErrMetadataReservedKey) {
+		t.Fatalf("err=%v, want ErrMetadataReservedKey", err)
+	}
+}
+
 // ---- hasControlChar unit coverage ----
 
 func TestHasControlChar(t *testing.T) {

@@ -666,3 +666,174 @@ func TestLoadConfig_AllEnvVars(t *testing.T) {
 		t.Errorf("scan_workers = %d, want 16", cfg.ScanWorkers)
 	}
 }
+
+// writeSubjectsFile writes raw JSON to a temp file and returns its path.
+func writeSubjectsFile(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subjects.json")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("writeSubjectsFile: %v", err)
+	}
+	return path
+}
+
+// validSubjectsJSON is a minimal well-formed registry.
+const validSubjectsJSON = `{
+	"enforce": true,
+	"subjects": [
+		{
+			"entity_id": "alice",
+			"display": "Alice",
+			"principals": ["alice@example.com"],
+			"default_audience": ["subject"]
+		}
+	]
+}`
+
+// TestSubjectsFile_ValidRegistry: subjects_file pointing at a valid registry
+// -> LoadConfig + Validate succeed.
+func TestSubjectsFile_ValidRegistry(t *testing.T) {
+	subjPath := writeSubjectsFile(t, validSubjectsJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := `{"subjects_file":"` + subjPath + `"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SubjectsFile != subjPath {
+		t.Errorf("SubjectsFile = %q, want %q", cfg.SubjectsFile, subjPath)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error: %v", err)
+	}
+}
+
+// TestSubjectsFile_MalformedDuplicatePrincipal: a registry where two entries
+// share the same principal must make Validate return an error.
+func TestSubjectsFile_MalformedDuplicatePrincipal(t *testing.T) {
+	badJSON := `{
+		"enforce": true,
+		"subjects": [
+			{
+				"entity_id": "alice",
+				"display": "Alice",
+				"principals": ["shared@example.com"],
+				"default_audience": ["subject"]
+			},
+			{
+				"entity_id": "bob",
+				"display": "Bob",
+				"principals": ["shared@example.com"],
+				"default_audience": ["subject"]
+			}
+		]
+	}`
+	subjPath := writeSubjectsFile(t, badJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := `{"subjects_file":"` + subjPath + `"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate: expected error for duplicate principal, got nil")
+	}
+	if !contains(err.Error(), "subjects registry:") {
+		t.Errorf("Validate error %q does not contain expected prefix", err.Error())
+	}
+}
+
+// TestSubjectsFile_MalformedBadAudience: a registry with an illegal
+// default_audience combo must make Validate return an error.
+func TestSubjectsFile_MalformedBadAudience(t *testing.T) {
+	badJSON := `{
+		"enforce": true,
+		"subjects": [
+			{
+				"entity_id": "alice",
+				"display": "Alice",
+				"principals": ["alice@example.com"],
+				"default_audience": ["public", "subject"]
+			}
+		]
+	}`
+	subjPath := writeSubjectsFile(t, badJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := `{"subjects_file":"` + subjPath + `"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate: expected error for bad audience combo, got nil")
+	}
+	if !contains(err.Error(), "subjects registry:") {
+		t.Errorf("Validate error %q does not contain expected prefix", err.Error())
+	}
+}
+
+// TestSubjectsFile_Absent: no subjects_file -> Validate succeeds.
+func TestSubjectsFile_Absent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SubjectsFile != "" {
+		t.Errorf("SubjectsFile = %q, want empty", cfg.SubjectsFile)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error: %v", err)
+	}
+}
+
+// TestSubjectsEnvOverrides verifies the GLOVEBOX_SUBJECTS_FILE env var is
+// applied.
+func TestSubjectsEnvOverrides(t *testing.T) {
+	subjPath := writeSubjectsFile(t, validSubjectsJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("GLOVEBOX_SUBJECTS_FILE", subjPath)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SubjectsFile != subjPath {
+		t.Errorf("SubjectsFile = %q, want %q", cfg.SubjectsFile, subjPath)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error: %v", err)
+	}
+}

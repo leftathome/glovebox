@@ -84,6 +84,12 @@ config:
     backpressureThreshold: 5000
     requestTimeoutSeconds: 60
 
+# Known-subjects registry (spec 15 sec 11). Edit charts/glovebox/subjects.json
+# directly -- there is no values key for its contents; the file is rendered
+# verbatim into the ConfigMap and mounted at /etc/glovebox/subjects.json.
+# Enforcement lives IN subjects.json ("enforce": true|false, default false);
+# do NOT add a subjects_enforce config key (it was deliberately removed).
+
 persistence:
   staging:
     size: 1Gi
