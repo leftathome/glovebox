@@ -13,12 +13,19 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/leftathome/glovebox/internal/staging"
 )
 
 // Metadata is the parsed + validated Upload-Metadata block per spec 13
 // §4.2. Server-set fields (delivered_by, delivered_at) are NOT carried
 // here -- they are written by the finalize path after authentication
 // resolves the source-id and after the receipt is built.
+//
+// Spec 15 §4.2 adds producer-asserted provenance fields (AcqProvider,
+// AcqAccountID, AcqAuthMethod, DataSubject, Audience). These are always
+// copied from the header when present; they are ENFORCED (required) only
+// for media types in requiredProvenance.
 type Metadata struct {
 	ArchiveID           string
 	ArchiveFilename     string
@@ -28,6 +35,14 @@ type Metadata struct {
 	Provider            string
 	SHA256              string // 64 lowercase hex chars
 	SizeBytes           int64
+
+	// Provenance fields (spec 15 §4.2). Required for requiredProvenance
+	// media types; optional/informational for all others.
+	AcqProvider   string
+	AcqAccountID  string
+	AcqAuthMethod string
+	DataSubject   string
+	Audience      []string
 }
 
 // MediaShape is "raw" or "tar"; the dispatch table in finalize.go uses
@@ -69,7 +84,12 @@ var mediaAllowList = map[string]MediaShape{
 	"archive/google-takeout-subtree": MediaTar,
 	"archive/generic-tarball":        MediaTar,
 	"archive/imap-export":            MediaRaw,
+	"archive/walhelm-export":         MediaTar,
 }
+
+// requiredProvenance lists media types that MUST carry producer-asserted
+// provenance keys (spec 15 sec 4.2). Other media types ignore these keys.
+var requiredProvenance = map[string]bool{"archive/walhelm-export": true}
 
 // Validation regexes per spec 13 §4.2.
 var (
@@ -104,6 +124,10 @@ const archiveFilenameMaxBytes = 256
 // subtreeRelativePathMaxBytes caps subtree_relative_path per spec 13
 // §4.2 ("UTF-8, max 1024 bytes").
 const subtreeRelativePathMaxBytes = 1024
+
+// provenanceStringMaxBytes caps acq_account_id and data_subject per spec 15
+// §4.2 ("max 256 bytes, no control characters").
+const provenanceStringMaxBytes = 256
 
 // ParseUploadMetadata parses the Upload-Metadata header and validates
 // every field per spec 13 §4.2. uploadLength is the declared
@@ -144,6 +168,10 @@ func ParseUploadMetadata(header string, uploadLength int64) (*Metadata, error) {
 		MatcherID:           raw["matcher_id"],
 		Provider:            raw["provider"],
 		SHA256:              raw["sha256"],
+		AcqProvider:         raw["acq_provider"],
+		AcqAccountID:        raw["acq_account_id"],
+		AcqAuthMethod:       raw["acq_auth_method"],
+		DataSubject:         raw["data_subject"],
 	}
 
 	sizeStr, hasSize := raw["size_bytes"]
@@ -189,6 +217,48 @@ func ParseUploadMetadata(header string, uploadLength int64) (*Metadata, error) {
 	if _, ok := mediaAllowList[m.MediaType]; !ok {
 		return nil, fmt.Errorf("%w: %q", ErrMetadataUnknownMediaType, m.MediaType)
 	}
+
+	// Spec 15 §4.2: enforce producer-asserted provenance for media types
+	// in requiredProvenance. Other media types copy fields when present
+	// (for round-trip fidelity) but do not require them.
+	if requiredProvenance[m.MediaType] {
+		if m.AcqProvider == "" {
+			return nil, fmt.Errorf("%w: acq_provider", ErrMetadataMissing)
+		}
+		if !providerRe.MatchString(m.AcqProvider) {
+			return nil, fmt.Errorf("%w: acq_provider", ErrMetadataInvalid)
+		}
+		if m.AcqAccountID == "" {
+			return nil, fmt.Errorf("%w: acq_account_id", ErrMetadataMissing)
+		}
+		if len(m.AcqAccountID) > provenanceStringMaxBytes || hasControlChar(m.AcqAccountID) {
+			return nil, fmt.Errorf("%w: acq_account_id", ErrMetadataInvalid)
+		}
+		if m.AcqAuthMethod == "" {
+			return nil, fmt.Errorf("%w: acq_auth_method", ErrMetadataMissing)
+		}
+		if m.AcqAuthMethod != "browser_session" {
+			return nil, fmt.Errorf("%w: acq_auth_method", ErrMetadataInvalid)
+		}
+		if m.DataSubject == "" {
+			return nil, fmt.Errorf("%w: data_subject", ErrMetadataMissing)
+		}
+		if len(m.DataSubject) > provenanceStringMaxBytes || hasControlChar(m.DataSubject) {
+			return nil, fmt.Errorf("%w: data_subject", ErrMetadataInvalid)
+		}
+	}
+
+	// Parse optional audience. Split on comma; nil when absent or empty.
+	// ValidateAudience enforces spec 11 §3.5 token rules.
+	if audRaw, hasAud := raw["audience"]; hasAud && audRaw != "" {
+		tokens := strings.Split(audRaw, ",")
+		hasDataSubject := m.DataSubject != ""
+		if err := staging.ValidateAudience(tokens, hasDataSubject); err != nil {
+			return nil, fmt.Errorf("%w: audience: %s", ErrMetadataInvalid, err.Error())
+		}
+		m.Audience = tokens
+	}
+
 	return m, nil
 }
 
