@@ -104,9 +104,13 @@ jobs:
 
       - name: Build all binaries
         run: |
-          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/; do
+          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/ ./importers/walhelm/; do
             name=$(basename "$target")
-            if [ "$name" = "." ]; then name="glovebox"; else name="${name}-connector"; fi
+            case "$target" in
+              .) name="glovebox" ;;
+              ./importers/*) name="${name}-importer" ;;
+              *) name="${name}-connector" ;;
+            esac
             echo "Building $name..."
             CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "${name}${{ matrix.ext || '' }}" "$target"
           done
@@ -124,6 +128,7 @@ jobs:
           subject-path: |
             glovebox${{ matrix.ext }}
             *-connector${{ matrix.ext }}
+            *-importer${{ matrix.ext }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -132,6 +137,7 @@ jobs:
           path: |
             glovebox${{ matrix.ext || '' }}
             *-connector${{ matrix.ext || '' }}
+            *-importer${{ matrix.ext || '' }}
             sbom.spdx.json
 
   build-docker:
@@ -174,6 +180,9 @@ jobs:
             context: .
           - image: glovebox-x
             dockerfile: ./connectors/x/Dockerfile
+            context: .
+          - image: glovebox-walhelm-importer
+            dockerfile: ./importers/walhelm/Dockerfile
             context: .
     steps:
       - name: Checkout
