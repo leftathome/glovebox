@@ -269,6 +269,8 @@ Context: `RouteQuarantine(... reason string)` (routing/quarantine.go:42), `Route
 
 > **Verified wiring point:** the decision site is the package-level function `deliverResult(...)` in `main.go` (RouteQuarantine at lines 370/389/403/424, RoutePass at 434). Add a `*subject.SubjectRegistry` parameter to `deliverResult` and thread it from its call site in the scan loop (it is a function arg, not a constructor). No import cycle: `internal/staging` and `internal/config` are leaves w.r.t. glovebox internal packages.
 
+> **ENFORCE SOURCE-OF-TRUTH DECISION (2026-06-03):** Enforcement is governed by **the registry file's `enforce` field** (`reg.Enforce()`, from T3), NOT by a separate config flag. The `config.subjects_enforce` field added in T5 is **redundant and must be reverted** as the first step of this task (remove the `SubjectsEnforce` field, the `GLOVEBOX_SUBJECTS_ENFORCE` env override, and its test assertions in `internal/config`; KEEP `SubjectsFile`). Startup: `reg, err := subject.Load(cfg.SubjectsFile)` — the loaded registry carries both the subjects and the enforce flag; the gate uses `reg.Enforce()`. `subjects.json` (T12) carries `"enforce": false` by default.
+
 - [ ] **Step 1: Write failing test** at the decision site:
   - Build the scanner/pipeline with a registry mapping `walhelm:9f2a → e_1` and `enforce=true`.
   - Item with `DataSubject="walhelm:9f2a"`, clean scan → routed to its destination; assert the destination copy's `metadata.json` has `data_subject:"e_1"` (resolved) and the resolved default audience.
@@ -375,9 +377,9 @@ Context: mbox `Import` worker-pool pattern (importer.go:175-195): `NewItem -> Wr
 
 ### Task 12: Helm registry delivery
 **Files:** `charts/glovebox/subjects.json` (new), `charts/glovebox/values.yaml`, `charts/glovebox/templates/configmap.yaml`
-- [ ] Create `charts/glovebox/subjects.json` = `{"enforce": false, "subjects": []}`.
-- [ ] In `configmap.yaml`, render it next to `rules.json` (configmap.yaml ~line 76 pattern `{{- .Files.Get "subjects.json" | nindent 4 }}` under a `subjects.json:` key) and add `"subjects_file": "/etc/glovebox/subjects.json"`, `"subjects_enforce": {{ .Values.config.subjectsEnforce }}` to the rendered `config.json`.
-- [ ] In `values.yaml` add `config.subjectsEnforce: false` and document the `subjects.json` block (entity_id/principals/default_audience; optional non-functional `display`). Mount path matches `subjects_file`.
+- [ ] Create `charts/glovebox/subjects.json` = `{"enforce": false, "subjects": []}` (the `enforce` field here is the single enforcement switch — see the T6 decision note).
+- [ ] In `configmap.yaml`, render it next to `rules.json` (configmap.yaml ~line 76 pattern `{{- .Files.Get "subjects.json" | nindent 4 }}` under a `subjects.json:` key) and add `"subjects_file": "/etc/glovebox/subjects.json"` to the rendered `config.json`. Do NOT add a `subjects_enforce` config key (reverted in T6 — enforcement lives in subjects.json).
+- [ ] In `values.yaml` document the `subjects.json` block: top-level `enforce` (default false) + `subjects[]` (entity_id/principals/default_audience; optional non-functional `display`). Mount path matches `subjects_file`. Operators flip enforcement by setting `enforce: true` in the subjects block.
 - [ ] `helm template charts/glovebox` renders without error. Commit: `feat(chart): deliver subjects registry via ConfigMap, enforcement default off (spec 15 §11)`.
 
 ---
