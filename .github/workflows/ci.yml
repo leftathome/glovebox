@@ -143,7 +143,13 @@ jobs:
   build-docker:
     name: Docker (${{ matrix.image }})
     runs-on: ubuntu-latest
-    needs: test
+    # Several images here use ghcr.io/leftathome/glovebox-enricher-runtime:latest
+    # as their runtime base (rebased connectors, mbox-importer, walhelm-importer).
+    # Depend on build-enricher-runtime so we build against the freshly published
+    # base instead of racing it and pulling a stale :latest. On PRs
+    # build-enricher-runtime does not push, so this ordering only affects push
+    # events -- which is exactly where the stale-:latest race would occur.
+    needs: [test, build-enricher-runtime]
     strategy:
       fail-fast: false
       matrix:
