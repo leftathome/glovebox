@@ -26,10 +26,10 @@
 // publish path rather than a hand-crafted staged dir.
 //
 // Backend coverage: filesystem StagingWriter only. The round-trip assertion
-// reads the committed metadata.json off disk.
-// TODO: HTTP-backend round-trip (POST to a test ingest server) is not covered
-// here; it would require standing up the ingest server in-test. The filesystem
-// path is the one the resolver consumes today.
+// reads the committed metadata.json off disk. The HTTP-backend round-trip
+// (connector.HTTPStagingBackend -> POST /v1/ingest -> on-disk metadata.json)
+// is covered by TestHTTPBackendProvenanceRoundTrip in http_roundtrip_test.go,
+// which stands up the real ingest handler on an httptest.Server.
 package main
 
 import (
