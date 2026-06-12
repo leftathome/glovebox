@@ -19,15 +19,15 @@
     },
     "parse_failure_threshold": 10,
     "rules": [
-        {"match": "schoology:k1:assignment",        "data_subject": "k1", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:k1:feed",              "data_subject": "k1", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:k1:attachment",        "data_subject": "k1", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:k2:assignment",        "data_subject": "k2", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:k2:feed",              "data_subject": "k2", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:k2:attachment",        "data_subject": "k2", "audience": ["household"], "destination": "school"},
-        {"match": "schoology:message",                                    "audience": ["guardians"], "destination": "school"},
-        {"match": "schoology:message-attachment",                         "audience": ["guardians"], "destination": "school"},
-        {"match": "schoology-parse-failure:*",                            "audience": ["guardians"], "destination": "school"}
+        {"match": "schoology:k1:assignment",        "data_subject": "e_333333", "audience": ["household"],            "destination": "school"},
+        {"match": "schoology:k1:feed",              "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:k1:attachment",        "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:k2:assignment",        "data_subject": "e_444444", "audience": ["household"],            "destination": "school"},
+        {"match": "schoology:k2:feed",              "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:k2:attachment",        "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "schoology:message",                                          "audience": ["guardians"],           "destination": "school"},
+        {"match": "schoology:message-attachment",                               "audience": ["guardians"],           "destination": "school"},
+        {"match": "schoology-parse-failure:*",                                  "audience": ["guardians"],           "destination": "school"}
     ],
     "identity": {
         "provider": "schoology",

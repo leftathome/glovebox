@@ -338,6 +338,52 @@ func TestStagingWriter_CommitWritesTags(t *testing.T) {
 	}
 }
 
+// TestStagingWriter_CommitWritesConfigDefaultSubjectAudience proves the
+// connector-level data_subject / audience defaults (glovebox-qlkv: the
+// mbox-importer and Gmail "Steve-private" posture) actually land on a
+// committed item's metadata.json when neither a rule nor the item overrides
+// them. This is the merge-chain config-default fallback (spec 11 §5 step 3):
+// every Gmail/mbox item ends up attributed to Steve's opaque entity_id and a
+// Steve-private audience.
+func TestStagingWriter_CommitWritesConfigDefaultSubjectAudience(t *testing.T) {
+	base := t.TempDir()
+	stagingDir := filepath.Join(base, "staging")
+	os.MkdirAll(stagingDir, 0755)
+
+	w, _ := NewStagingWriter(stagingDir, "mbox")
+	w.SetConfigDataSubject("e_111111")       // Steve (registered entity_id)
+	w.SetConfigAudience([]string{"subject"}) // Steve-private
+
+	item, _ := w.NewItem(ItemOptions{
+		Source:           "mbox",
+		Sender:           "someone@example.com",
+		Timestamp:        time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+		DestinationAgent: "messaging",
+		ContentType:      "text/plain",
+		// No per-item or rule data_subject/audience: exercise the config default.
+	})
+	item.WriteContent([]byte("archived message body"))
+	if err := item.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := readCommittedMetadata(t, stagingDir)
+	if meta["data_subject"] != "e_111111" {
+		t.Errorf("data_subject = %v, want e_111111", meta["data_subject"])
+	}
+	audRaw, ok := meta["audience"]
+	if !ok {
+		t.Fatal("metadata.json missing audience field")
+	}
+	audSlice, ok := audRaw.([]any)
+	if !ok {
+		t.Fatalf("audience is not an array: %T", audRaw)
+	}
+	if len(audSlice) != 1 || audSlice[0] != "subject" {
+		t.Errorf("audience = %v, want [subject]", audSlice)
+	}
+}
+
 func TestStagingWriter_TagMerge_ItemWinsOverRuleTags(t *testing.T) {
 	base := t.TempDir()
 	stagingDir := filepath.Join(base, "staging")

@@ -1,6 +1,8 @@
 {
   "label_ids": ["INBOX"],
   "max_results": 25,
+  "data_subject_default": "e_111111",
+  "audience_default": ["subject"],
   "rules": [
     {"match": "label:INBOX", "destination": "messaging"},
     {"match": "*", "destination": "general"}

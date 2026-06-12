@@ -1,1 +1,29 @@
-{"enforce": false, "subjects": []}
+{
+  "enforce": true,
+  "subjects": [
+    {
+      "entity_id": "e_111111",
+      "display": "Steve",
+      "principals": [],
+      "default_audience": ["subject"]
+    },
+    {
+      "entity_id": "e_222222",
+      "display": "Guardian",
+      "principals": [],
+      "default_audience": ["subject"]
+    },
+    {
+      "entity_id": "e_333333",
+      "display": "Child 1",
+      "principals": [],
+      "default_audience": ["subject", "guardians"]
+    },
+    {
+      "entity_id": "e_444444",
+      "display": "Casey",
+      "principals": [],
+      "default_audience": ["subject", "guardians"]
+    }
+  ]
+}
