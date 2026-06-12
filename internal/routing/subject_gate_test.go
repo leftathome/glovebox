@@ -255,3 +255,62 @@ func TestSubjectGate_PersistFailureQuarantines(t *testing.T) {
 		t.Errorf("action = GatePass on persist failure, want GateQuarantine (fail-closed)")
 	}
 }
+
+// realRegistryPath is the committed operator registry shipped in the glovebox
+// Helm chart (charts/glovebox/subjects.json). The two tests below drive the
+// gate with the *real* file rather than a synthetic fixture, so the routing
+// posture that production actually runs is exercised end-to-end (glovebox-ptst).
+const realRegistryPath = "../../charts/glovebox/subjects.json"
+
+// TestSubjectGate_RealRegistryQuarantinesUnregistered: with the committed
+// (enforce=true) registry, an item whose subject is not registered must
+// quarantine rather than leak to a destination -- the fail-closed posture the
+// openclaw glovebox->memory resolver depends on.
+func TestSubjectGate_RealRegistryQuarantinesUnregistered(t *testing.T) {
+	reg, err := subject.Load(realRegistryPath)
+	if err != nil {
+		t.Fatalf("load real registry: %v", err)
+	}
+	item, _, _, _, logger := setupGateItem(t, "schoology:k1:assignment-but-not-an-entity-id")
+	defer logger.Close()
+
+	action, err := SubjectGate(&item, reg)
+	if err != nil {
+		t.Fatalf("SubjectGate: %v", err)
+	}
+	if action != GateQuarantine {
+		t.Fatalf("action = %v, want GateQuarantine (unregistered subject, enforce on)", action)
+	}
+}
+
+// TestSubjectGate_RealRegistryPassesRegisteredEntityID: a registered entity_id
+// stamped directly (the connector pass-through posture wired in glovebox-qlkv)
+// resolves to itself and picks up the registry default audience.
+func TestSubjectGate_RealRegistryPassesRegisteredEntityID(t *testing.T) {
+	reg, err := subject.Load(realRegistryPath)
+	if err != nil {
+		t.Fatalf("load real registry: %v", err)
+	}
+	item, _, _, _, logger := setupGateItem(t, "e_333333") // Child 1
+	defer logger.Close()
+
+	action, err := SubjectGate(&item, reg)
+	if err != nil {
+		t.Fatalf("SubjectGate: %v", err)
+	}
+	if action != GatePass {
+		t.Fatalf("action = %v, want GatePass", action)
+	}
+	if item.Metadata.DataSubject != "e_333333" {
+		t.Errorf("DataSubject = %q, want e_333333 (pass-through)", item.Metadata.DataSubject)
+	}
+	wantAud := []string{"subject", "guardians"}
+	if len(item.Metadata.Audience) != len(wantAud) {
+		t.Fatalf("Audience = %v, want %v (registry default)", item.Metadata.Audience, wantAud)
+	}
+	for i, a := range wantAud {
+		if item.Metadata.Audience[i] != a {
+			t.Errorf("Audience[%d] = %q, want %q", i, item.Metadata.Audience[i], a)
+		}
+	}
+}

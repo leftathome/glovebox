@@ -89,12 +89,16 @@ config:
       tags:
         importer: mbox
 
-  # Spec 11 §3 defaults applied to every item lacking a per-rule
-  # override. "household" is the safe broad default (does not need a
-  # data_subject).
-  dataSubjectDefault: ""
+  # Spec 11 §3 / spec 15 §5.2 defaults applied to every item lacking a
+  # per-rule override. The mbox archive is Steve's whole-Gmail export, so
+  # every item is attributed to Steve's opaque entity_id (registered in
+  # charts/glovebox/subjects.json) and defaults to a Steve-private
+  # audience. data_subject is stamped as the entity_id directly, which the
+  # glovebox subject gate accepts via the registered-entity_id pass-through
+  # (spec 15 §5.2 step 3) -- no raw principal reaches the data plane.
+  dataSubjectDefault: "e_111111"
   audienceDefault:
-    - household
+    - subject
 
 resources:
   requests:
