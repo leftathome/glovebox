@@ -63,6 +63,11 @@ type FinalizeReceipt struct {
 	DeliveredBy      string           `json:"delivered_by"`
 	Identity         *ingest.Identity `json:"identity"`
 	MediaType        string           `json:"media_type"`
+	// Source carries the AUTHENTICATED ingest source-id for registered
+	// connector lanes (e.g. "recognizer-scanner", glovebox-9s60). Empty for
+	// ordinary archive deliveries. It is the bearer-token identity, never a
+	// producer-asserted field, so it cannot be spoofed.
+	Source string `json:"source,omitempty"`
 	SizeBytes        int64            `json:"size_bytes"`
 	SHA256           string           `json:"sha256"`
 	SHA256Verified   bool             `json:"sha256_verified"`

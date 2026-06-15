@@ -134,6 +134,23 @@ func TestParseUploadMetadata_HappyPath_GenericTarball(t *testing.T) {
 	}
 }
 
+// archive/recognizer-scan (glovebox-9s60) is a tar shape; finalize gates it
+// to the authenticated recognizer-scanner source and produces
+// content.extracted.md. Parsing only needs to accept the media type.
+func TestParseUploadMetadata_HappyPath_RecognizerScan(t *testing.T) {
+	header := validHeader(map[string]string{
+		"media_type":       "archive/recognizer-scan",
+		"archive_filename": "scan-0001.tar",
+	})
+	m, err := ParseUploadMetadata(header, 1024)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.Shape() != MediaTar {
+		t.Errorf("Shape()=%q want %q", m.Shape(), MediaTar)
+	}
+}
+
 func TestParseUploadMetadata_HappyPath_ImapExport(t *testing.T) {
 	header := validHeader(map[string]string{
 		"media_type":       "archive/imap-export",

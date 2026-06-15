@@ -85,6 +85,11 @@ var mediaAllowList = map[string]MediaShape{
 	"archive/generic-tarball":        MediaTar,
 	"archive/imap-export":            MediaRaw,
 	"archive/walhelm-export":         MediaTar,
+	// archive/recognizer-scan (glovebox-9s60): a tar from recognizer's
+	// document scanner. Finalize GATES this media type to the authenticated
+	// recognizer-scanner source (fail-closed) and renders the bundled
+	// pre-extracted OCR text (tree/ocr.txt) to content.extracted.md.
+	"archive/recognizer-scan": MediaTar,
 }
 
 // requiredProvenance lists media types that MUST carry producer-asserted
