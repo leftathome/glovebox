@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // tusVersion is the single tus.io protocol version this server speaks.
@@ -102,6 +103,13 @@ type HandlerConfig struct {
 	// (defaultPatchIdleTimeout); NewHandler fills in the default when
 	// zero. Tests override with shorter values.
 	PatchIdleTimeout time.Duration
+
+	// Sources is the connector-lane registry (glovebox-9s60), threaded into
+	// FinalizeConfig so a registered recognizer-scanner source gets
+	// operator-lane treatment and the recognizer-scan media type is gated
+	// (fail-closed) to it. Nil disables the lane (and rejects the scanner
+	// media type). Loaded at boot from config.SourcesFile by the listener.
+	Sources *source.Registry
 }
 
 // QuotaProvider is the seam C3 fills in with the real storage measurer
@@ -721,9 +729,10 @@ func (p *patchBodyReader) Read(b []byte) (int, error) {
 // 409 upload_busy IMMEDIATELY (TryLock, do NOT block). HEAD/DELETE are
 // blocking on the same mutex; this asymmetry is intentional.
 //
-//nolint:gocyclo // The handler's branching is dictated by the spec's
 // PATCH validation ordering (§4.4 steps 1-8); collapsing further would
 // obscure the spec mapping.
+//
+//nolint:gocyclo // The handler's branching is dictated by the spec's
 func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
 	if !h.checkTusResumable(w, r) {
 		return
@@ -913,7 +922,7 @@ func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st 
 	mediaType := st.Meta.MediaType
 	duration := time.Since(st.CreatedAt)
 
-	_, err := Finalize(ctx, st, FinalizeConfig{StagingRoot: h.cfg.StagingRoot})
+	_, err := Finalize(ctx, st, FinalizeConfig{StagingRoot: h.cfg.StagingRoot, Sources: h.cfg.Sources})
 	if err != nil {
 		status, code := h.recordFinalizeFailure(ctx, st, sourceID, uploadID, mediaType, err)
 		// Decrement in-flight gauge on every terminal failure path.
@@ -978,6 +987,12 @@ func (h *Handler) recordFinalizeFailure(ctx context.Context, st *UploadState, so
 		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_idempotency")
 		slog.Warn(EventUploadAborted, append(logBase, "reason", string(AbortIdempotencyConflict))...)
 		return http.StatusConflict, "archive_id_conflict"
+	case errors.Is(err, ErrSourceNotAuthorized):
+		// recognizer-scan lane gate (glovebox-9s60): the media type was used
+		// by a source not registered as the recognizer-scanner kind.
+		h.tel.RecordUploadFailed(ctx, sourceID, mediaType, "failed_authz")
+		slog.Warn(EventUploadAborted, append(logBase, "reason", "source_not_authorized")...)
+		return http.StatusForbidden, "source_not_authorized"
 	default:
 		// Tar-safety sentinels are %w-wrapped onto a top-level "untar:"
 		// error by Finalize; ClassifyReason returns ok=true for any
@@ -1080,7 +1095,6 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	h.store.Remove(uploadID)
 	st.Mu.Unlock()
 
-
 	h.tel.RecordUploadFailed(r.Context(), sourceID, mediaType, "terminated")
 	h.tel.RecordUploadInFlight(r.Context(), sourceID, -1)
 	slog.Info(EventUploadAborted,
@@ -1180,4 +1194,3 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 			"err", err)
 	}
 }
-

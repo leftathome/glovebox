@@ -67,6 +67,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest/auth"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // ---------------------------------------------------------------------
@@ -984,5 +985,178 @@ func TestIntegration_Auth_401_BodiesByteEqual(t *testing.T) {
 	}
 	if !bytes.Equal(bodyMissing, bodyUnknown) {
 		t.Errorf("401 bodies differ:\n  missing=%q\n  unknown=%q\nspec 10 §5.1 requires byte-equal bodies", bodyMissing, bodyUnknown)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Scenario: recognizer-scanner operator lane (glovebox-9s60)
+// ---------------------------------------------------------------------
+
+const integScannerTokenHex = "1111111111111111111111111111111111111111111111111111111111111111"
+const integNonScannerTokenHex = "2222222222222222222222222222222222222222222222222222222222222222"
+
+// setupScannerIntegServer mirrors setupIntegrationServer but wires a source
+// registry (recognizer-scanner kind) and TWO authorized tokens: the scanner
+// source-id and a non-scanner "rss" source-id (for the spoof case). It returns
+// the server bound to the scanner identity plus the non-scanner token hex.
+func setupScannerIntegServer(t *testing.T) (*integTestServer, string) {
+	t.Helper()
+	stagingRoot := t.TempDir()
+	for _, d := range []string{".tmp-archives", "archives"} {
+		if err := os.MkdirAll(filepath.Join(stagingRoot, d), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	fv := &integFakeVault{tokens: map[string]string{
+		"recognizer-scanner": integScannerTokenHex,
+		"rss":                integNonScannerTokenHex,
+	}}
+	store := auth.NewTokenStore()
+	if err := store.Reload(context.Background(), auth.ReloadConfig{
+		Source: auth.NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
+	}); err != nil {
+		t.Fatalf("token store reload: %v", err)
+	}
+
+	rl := auth.NewRateLimiter(auth.RateLimitConfig{
+		Window:            time.Minute,
+		PerIPMaxRejected:  1000,
+		GlobalMaxRejected: 10000,
+	})
+	pr := &auth.ProxyResolver{}
+
+	tel, err := NewTelemetry("integration-scanner", "integration-scanner")
+	if err != nil {
+		t.Fatalf("NewTelemetry: %v", err)
+	}
+
+	uploadStore := NewStore(StoreConfig{PerSourceMaxConcurrent: 4, GlobalMaxConcurrent: 32})
+
+	srcJSON := `{ "enforce": true, "sources": [
+		{ "source_id": "recognizer-scanner", "kind": "recognizer-scanner",
+		  "data_subject_default": "e_111111", "audience_default": ["operator"] } ] }`
+	srcPath := filepath.Join(stagingRoot, "sources.json")
+	if err := os.WriteFile(srcPath, []byte(srcJSON), 0o600); err != nil {
+		t.Fatalf("write sources.json: %v", err)
+	}
+	reg, err := source.Load(srcPath)
+	if err != nil {
+		t.Fatalf("source.Load: %v", err)
+	}
+
+	handler := NewHandler(uploadStore, nil, tel, HandlerConfig{
+		StagingRoot:      stagingRoot,
+		TusMaxSize:       100 * 1024 * 1024,
+		TmpExpiry:        72 * time.Hour,
+		PatchIdleTimeout: 5 * time.Minute,
+		Sources:          reg,
+	})
+
+	mux := http.NewServeMux()
+	mw := auth.Middleware(store, rl, pr, tel)
+	handler.Mount(mux, Middleware(mw))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	return &integTestServer{
+		srv:         srv,
+		stagingRoot: stagingRoot,
+		sourceID:    "recognizer-scanner",
+		tokenHex:    integScannerTokenHex,
+	}, integNonScannerTokenHex
+}
+
+func recognizerScanMeta(archiveID, sha256Hex string, sizeBytes int64) map[string]string {
+	return map[string]string{
+		"archive_id":            archiveID,
+		"archive_filename":      "scan-0001.tar",
+		"subtree_relative_path": ".",
+		"media_type":            "archive/recognizer-scan",
+		"matcher_id":            "recognizer/scan",
+		"provider":              "recognizer",
+		"sha256":                sha256Hex,
+		"size_bytes":            strconv.FormatInt(sizeBytes, 10),
+	}
+}
+
+func TestIntegration_RecognizerScanner_OperatorLane(t *testing.T) {
+	ts, _ := setupScannerIntegServer(t)
+
+	body := buildIntegrationTar(t, map[string][]byte{
+		"manifest.json": []byte(`{"scan_id":"s1"}`),
+		"scan.pdf":      []byte("%PDF-1.7 fake"),
+		"ocr.txt":       []byte("Invoice 2026\nTotal: $40"),
+	})
+	sum := sha256.Sum256(body)
+	archiveID := "test-scan-001"
+
+	uploadID, _, _ := doTusPOST(t, ts,
+		recognizerScanMeta(archiveID, hex.EncodeToString(sum[:]), int64(len(body))),
+		int64(len(body)), http.StatusCreated)
+
+	res := uploadInChunks(t, ts, uploadID, body, 4*1024)
+	if res.FinalStatus != http.StatusNoContent {
+		t.Fatalf("final PATCH status = %d, want 204; body=%q", res.FinalStatus, res.FinalBody)
+	}
+
+	// metadata.json carries source + data_subject + operator marker.
+	metaBytes, err := os.ReadFile(filepath.Join(ts.stagingRoot, "archives", archiveID, "metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata.json: %v", err)
+	}
+	var r FinalizeReceipt
+	if err := json.Unmarshal(metaBytes, &r); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+	if r.Source != "recognizer-scanner" {
+		t.Errorf("Source=%q want recognizer-scanner", r.Source)
+	}
+	if r.DataSubject != "e_111111" {
+		t.Errorf("DataSubject=%q want e_111111", r.DataSubject)
+	}
+	if len(r.Audience) != 1 || r.Audience[0] != "operator" {
+		t.Errorf("Audience=%v want [operator]", r.Audience)
+	}
+
+	// content.extracted.md present with the OCR body.
+	md, err := os.ReadFile(filepath.Join(ts.stagingRoot, "archives", archiveID, "content.extracted.md"))
+	if err != nil {
+		t.Fatalf("read content.extracted.md: %v", err)
+	}
+	if !bytes.Contains(md, []byte("Invoice 2026")) {
+		t.Errorf("content.extracted.md missing OCR body: %q", md)
+	}
+}
+
+func TestIntegration_RecognizerScanner_SpoofRejected403(t *testing.T) {
+	ts, rssToken := setupScannerIntegServer(t)
+	// Same server, but authenticate as the non-scanner "rss" source.
+	spoof := *ts
+	spoof.sourceID = "rss"
+	spoof.tokenHex = rssToken
+
+	body := buildIntegrationTar(t, map[string][]byte{
+		"manifest.json": []byte(`{"scan_id":"s1"}`),
+		"ocr.txt":       []byte("hi"),
+	})
+	sum := sha256.Sum256(body)
+	archiveID := "test-scan-spoof-001"
+
+	uploadID, _, _ := doTusPOST(t, &spoof,
+		recognizerScanMeta(archiveID, hex.EncodeToString(sum[:]), int64(len(body))),
+		int64(len(body)), http.StatusCreated)
+
+	res := uploadInChunks(t, &spoof, uploadID, body, 4*1024)
+	if res.FinalStatus != http.StatusForbidden {
+		t.Fatalf("final PATCH status = %d, want 403; body=%q", res.FinalStatus, res.FinalBody)
+	}
+	if !bytes.Contains(res.FinalBody, []byte("source_not_authorized")) {
+		t.Errorf("403 body = %q, want source_not_authorized", res.FinalBody)
+	}
+	// Nothing published.
+	if _, err := os.Stat(filepath.Join(spoof.stagingRoot, "archives", archiveID)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("spoofed scan was published, want nothing at archives/%s", archiveID)
 	}
 }
