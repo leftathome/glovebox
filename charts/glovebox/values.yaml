@@ -90,6 +90,14 @@ config:
 # Enforcement lives IN subjects.json ("enforce": true|false, default false);
 # do NOT add a subjects_enforce config key (it was deliberately removed).
 
+# Ingest source-policy registry (glovebox-9s60). Edit charts/glovebox/sources.json
+# directly -- same model as subjects.json: rendered verbatim into the ConfigMap
+# and mounted at /etc/glovebox/sources.json. It maps an AUTHENTICATED ingest
+# source-id to its connector lane (kind, data_subject_default, audience_default).
+# The recognizer-scanner entry's data_subject_default is the operator knob
+# (e_111111=Steve | household). audience_default ["operator"] keeps scans out of
+# the openclaw per-person triage resolver.
+
 persistence:
   staging:
     size: 1Gi

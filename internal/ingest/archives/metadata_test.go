@@ -529,12 +529,12 @@ func TestParseUploadMetadata_SizeMismatchBeatsRegexChecks(t *testing.T) {
 // all required provenance keys. Extra overrides are merged on top.
 func walhelmHeader(overrides map[string]string) string {
 	base := map[string]string{
-		"media_type":      "archive/walhelm-export",
+		"media_type":       "archive/walhelm-export",
 		"archive_filename": "health.tar",
-		"acq_provider":    "apple-health",
-		"acq_account_id":  "user@example.com",
-		"acq_auth_method": "browser_session",
-		"data_subject":    "subject-opaque-id-001",
+		"acq_provider":     "apple-health",
+		"acq_account_id":   "user@example.com",
+		"acq_auth_method":  "browser_session",
+		"data_subject":     "subject-opaque-id-001",
 	}
 	for k, v := range overrides {
 		base[k] = v

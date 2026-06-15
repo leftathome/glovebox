@@ -1,0 +1,11 @@
+{
+  "enforce": true,
+  "sources": [
+    {
+      "source_id": "recognizer-scanner",
+      "kind": "recognizer-scanner",
+      "data_subject_default": "e_111111",
+      "audience_default": ["operator"]
+    }
+  ]
+}

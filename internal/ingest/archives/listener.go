@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest/auth"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // ArchiveListenerConfig parameterizes StartArchiveListener. Every
@@ -106,6 +107,13 @@ type ArchiveListenerConfig struct {
 	// QuotaInterval drives the storage-measurement goroutine
 	// (default 60s per spec 13 §5.4).
 	QuotaInterval time.Duration
+
+	// Sources is the connector-lane registry (glovebox-9s60), passed
+	// through to the handler's FinalizeConfig. When a registered
+	// recognizer-scanner source delivers, finalize stamps the operator
+	// lane and renders content.extracted.md; the recognizer-scan media
+	// type is gated (fail-closed) to it. May be nil (lane disabled).
+	Sources *source.Registry
 }
 
 // StartArchiveListener wires the spec 13 archive-delivery routes onto
@@ -150,6 +158,7 @@ func StartArchiveListener(ctx context.Context, cfg ArchiveListenerConfig) *Quota
 			StagingRoot:      cfg.StagingRoot,
 			TusMaxSize:       cfg.TusMaxSize,
 			PatchIdleTimeout: cfg.PatchIdleTimeout,
+			Sources:          cfg.Sources,
 		},
 	)
 	mw := auth.Middleware(cfg.TokenStore, cfg.RateLimiter, cfg.ProxyResolver, cfg.Telemetry)

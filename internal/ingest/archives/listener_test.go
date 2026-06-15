@@ -14,7 +14,10 @@
 package archives
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +32,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest/auth"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // fakeListenerVault is an in-memory VaultClient for the C3 listener
@@ -355,4 +359,81 @@ func TestStartTokenReloadGoroutine_ExitsOnCtxCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("goroutine did not exit within 1s after cancel")
 	}
+}
+
+// TestStartArchiveListener_ThreadsSourceRegistry guards the production boot
+// wiring (glovebox-9s60 Task 7b): StartArchiveListener must pass cfg.Sources
+// into the handler's FinalizeConfig. With the registry set, a recognizer-scan
+// from the registered scanner source publishes content.extracted.md + the
+// operator marker; with a nil registry the fail-closed gate 403s. A regression
+// that drops `Sources: cfg.Sources` from listener.go fails the positive case.
+func TestStartArchiveListener_ThreadsSourceRegistry(t *testing.T) {
+	scannerTok := "cd" + strings.Repeat("00", 31)
+
+	boot := func(t *testing.T, withRegistry bool) *integTestServer {
+		t.Helper()
+		vc := &fakeListenerVault{data: map[string]map[string]any{
+			"recognizer-scanner": {"token": scannerTok},
+		}}
+		mux, cfg := newArchiveTestCfg(t, vc)
+		if withRegistry {
+			srcJSON := `{ "enforce": true, "sources": [
+				{ "source_id": "recognizer-scanner", "kind": "recognizer-scanner",
+				  "data_subject_default": "e_111111", "audience_default": ["operator"] } ] }`
+			p := filepath.Join(cfg.StagingRoot, "sources.json")
+			if err := os.WriteFile(p, []byte(srcJSON), 0o600); err != nil {
+				t.Fatalf("write sources.json: %v", err)
+			}
+			reg, err := source.Load(p)
+			if err != nil {
+				t.Fatalf("source.Load: %v", err)
+			}
+			cfg.Sources = reg
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		if StartArchiveListener(ctx, cfg) == nil {
+			t.Fatal("StartArchiveListener returned nil (503 fallback) on happy path")
+		}
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		return &integTestServer{srv: srv, stagingRoot: cfg.StagingRoot, sourceID: "recognizer-scanner", tokenHex: scannerTok}
+	}
+
+	body := buildIntegrationTar(t, map[string][]byte{
+		"manifest.json": []byte(`{"scan_id":"s1"}`),
+		"ocr.txt":       []byte("Listener wired OCR"),
+	})
+	sum := sha256.Sum256(body)
+
+	t.Run("registry-set-publishes", func(t *testing.T) {
+		ts := boot(t, true)
+		archiveID := "listener-scan-ok"
+		uploadID, _, _ := doTusPOST(t, ts,
+			recognizerScanMeta(archiveID, hex.EncodeToString(sum[:]), int64(len(body))),
+			int64(len(body)), http.StatusCreated)
+		res := uploadInChunks(t, ts, uploadID, body, 4*1024)
+		if res.FinalStatus != http.StatusNoContent {
+			t.Fatalf("final status = %d, want 204; body=%q", res.FinalStatus, res.FinalBody)
+		}
+		md, err := os.ReadFile(filepath.Join(ts.stagingRoot, "archives", archiveID, "content.extracted.md"))
+		if err != nil {
+			t.Fatalf("read content.extracted.md: %v", err)
+		}
+		if !bytes.Contains(md, []byte("Listener wired OCR")) {
+			t.Errorf("content.extracted.md missing OCR body: %q", md)
+		}
+	})
+
+	t.Run("nil-registry-fail-closed-403", func(t *testing.T) {
+		ts := boot(t, false)
+		archiveID := "listener-scan-403"
+		uploadID, _, _ := doTusPOST(t, ts,
+			recognizerScanMeta(archiveID, hex.EncodeToString(sum[:]), int64(len(body))),
+			int64(len(body)), http.StatusCreated)
+		res := uploadInChunks(t, ts, uploadID, body, 4*1024)
+		if res.FinalStatus != http.StatusForbidden {
+			t.Fatalf("final status = %d, want 403; body=%q", res.FinalStatus, res.FinalBody)
+		}
+	})
 }
