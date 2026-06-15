@@ -33,6 +33,7 @@ import (
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/ingest"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // stagedFixture wires up the on-disk + UploadState fixture for a
@@ -264,11 +265,11 @@ func TestFinalize_HappyRaw(t *testing.T) {
 
 func TestFinalize_HappyTar(t *testing.T) {
 	entries := map[string][]byte{
-		"a.txt":       []byte("hello a"),
-		"b.txt":       []byte("hello b"),
-		"sub/c.txt":   []byte("hello c"),
-		"sub/d.txt":   []byte("hello d"),
-		"deep/e.txt":  []byte("hello e"),
+		"a.txt":      []byte("hello a"),
+		"b.txt":      []byte("hello b"),
+		"sub/c.txt":  []byte("hello c"),
+		"sub/d.txt":  []byte("hello d"),
+		"deep/e.txt": []byte("hello e"),
 	}
 	tarball := buildFinalizeTar(t, entries)
 
@@ -670,3 +671,207 @@ func TestFinalize_MboxOmitsProvenanceFields(t *testing.T) {
 // ---------------------------------------------------------------------
 
 var _ hash.Hash = sha256.New()
+
+// ---------------------------------------------------------------------
+// recognizer-scanner operator-lane tests (glovebox-9s60)
+// ---------------------------------------------------------------------
+
+// scannerRegistry builds a source.Registry with a single recognizer-scanner
+// entry whose data_subject_default is the supplied value and whose audience
+// default is ["operator"].
+func scannerRegistry(t *testing.T, dataSubjectDefault string) *source.Registry {
+	t.Helper()
+	js := `{ "enforce": true, "sources": [
+		{ "source_id": "recognizer-scanner", "kind": "recognizer-scanner",
+		  "data_subject_default": "` + dataSubjectDefault + `", "audience_default": ["operator"] } ] }`
+	path := filepath.Join(t.TempDir(), "sources.json")
+	if err := os.WriteFile(path, []byte(js), 0o600); err != nil {
+		t.Fatalf("write sources.json: %v", err)
+	}
+	reg, err := source.Load(path)
+	if err != nil {
+		t.Fatalf("source.Load: %v", err)
+	}
+	return reg
+}
+
+// scanFixture sets up a recognizer-scan tar fixture (with or without ocr.txt)
+// authenticated as the given source-id.
+func scanFixture(t *testing.T, sourceID string, withOCR bool) *stagedFixture {
+	t.Helper()
+	entries := map[string][]byte{
+		"manifest.json": []byte(`{"scan_id":"s1"}`),
+		"scan.pdf":      []byte("%PDF-1.7 fake"),
+	}
+	if withOCR {
+		entries["ocr.txt"] = []byte("Invoice 2026\nTotal: $40")
+	}
+	tarball := buildFinalizeTar(t, entries)
+	fx := setupFixture(t, "archive/recognizer-scan", "scan-0001.tar", tarball)
+	fx.state.SourceID = sourceID
+	return fx
+}
+
+// readStagedReceipt reads and unmarshals a published metadata.json.
+func readStagedReceipt(t *testing.T, fx *stagedFixture) FinalizeReceipt {
+	t.Helper()
+	metaPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "metadata.json")
+	b, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read metadata.json: %v", err)
+	}
+	var r FinalizeReceipt
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+	return r
+}
+
+func assertNothingPublished(t *testing.T, fx *stagedFixture) {
+	t.Helper()
+	archDir := filepath.Join(fx.stagingRoot, "archives", fx.archiveID)
+	if _, err := os.Stat(archDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected nothing published at %s, stat err=%v", archDir, err)
+	}
+	tmpPath := filepath.Join(fx.stagingRoot, ".tmp-archives", fx.uploadID)
+	if _, err := os.Stat(tmpPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("tmp file lingered after rejected finalize")
+	}
+}
+
+func TestFinalize_ScannerStampsPolicy(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", true)
+	reg := scannerRegistry(t, "e_111111")
+
+	_, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	staged := readStagedReceipt(t, fx)
+	if staged.Source != "recognizer-scanner" {
+		t.Errorf("Source=%q want recognizer-scanner", staged.Source)
+	}
+	if staged.DataSubject != "e_111111" {
+		t.Errorf("DataSubject=%q want e_111111", staged.DataSubject)
+	}
+	if len(staged.Audience) != 1 || staged.Audience[0] != "operator" {
+		t.Errorf("Audience=%v want [operator]", staged.Audience)
+	}
+
+	mdPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "content.extracted.md")
+	body, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("read content.extracted.md: %v", err)
+	}
+	if !bytes.Contains(body, []byte("Invoice 2026")) {
+		t.Errorf("content.extracted.md missing OCR body: %q", body)
+	}
+}
+
+func TestFinalize_ScannerDataSubjectDefaultHonored(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", true)
+	reg := scannerRegistry(t, "household")
+
+	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if staged := readStagedReceipt(t, fx); staged.DataSubject != "household" {
+		t.Errorf("DataSubject=%q want household (per-connector knob)", staged.DataSubject)
+	}
+}
+
+func TestFinalize_ScannerExplicitDataSubjectWins(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", true)
+	fx.state.Meta.DataSubject = "e_333333"
+	reg := scannerRegistry(t, "e_111111")
+
+	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	staged := readStagedReceipt(t, fx)
+	if staged.DataSubject != "e_333333" {
+		t.Errorf("DataSubject=%q want e_333333 (per-item override wins)", staged.DataSubject)
+	}
+	if len(staged.Audience) != 1 || staged.Audience[0] != "operator" {
+		t.Errorf("Audience=%v want [operator]", staged.Audience)
+	}
+}
+
+func TestFinalize_ScannerForcesOperatorMarker(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", true)
+	// Producer asserts a non-operator audience; the lane must override it.
+	fx.state.Meta.Audience = []string{"household"}
+	reg := scannerRegistry(t, "e_111111")
+
+	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if staged := readStagedReceipt(t, fx); len(staged.Audience) != 1 || staged.Audience[0] != "operator" {
+		t.Errorf("Audience=%v want forced [operator]", staged.Audience)
+	}
+}
+
+func TestFinalize_SpoofRejected(t *testing.T) {
+	fx := scanFixture(t, "rss", true) // valid-looking source, NOT the scanner
+	reg := scannerRegistry(t, "e_111111")
+
+	_, err := Finalize(authedCtx("rss"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+	if !errors.Is(err, ErrSourceNotAuthorized) {
+		t.Fatalf("err=%v want ErrSourceNotAuthorized", err)
+	}
+	assertNothingPublished(t, fx)
+}
+
+func TestFinalize_SpoofRejectedNilRegistry(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", true)
+	// Registry unconfigured (nil): the media-type gate is fail-CLOSED.
+	_, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot})
+	if !errors.Is(err, ErrSourceNotAuthorized) {
+		t.Fatalf("err=%v want ErrSourceNotAuthorized for nil registry", err)
+	}
+	assertNothingPublished(t, fx)
+}
+
+func TestFinalize_ScannerMissingOCR(t *testing.T) {
+	fx := scanFixture(t, "recognizer-scanner", false) // no ocr.txt
+	reg := scannerRegistry(t, "e_111111")
+
+	_, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+	if !errors.Is(err, ErrScanMissingOCR) {
+		t.Fatalf("err=%v want ErrScanMissingOCR", err)
+	}
+	assertNothingPublished(t, fx)
+}
+
+func TestFinalize_NonScannerUnaffected(t *testing.T) {
+	// An ordinary mbox delivery with a registry present but a non-scanner
+	// source must behave exactly as before: no Source, no operator marker.
+	content := []byte("From a@b\nSubject: x\n\nbody\n")
+	fx := setupFixture(t, "archive/mbox", "test.mbox", content)
+	fx.state.SourceID = "imap"
+	reg := scannerRegistry(t, "e_111111")
+
+	receipt, err := Finalize(authedCtx("imap"), fx.state,
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if receipt.Source != "" {
+		t.Errorf("Source=%q want empty for non-scanner", receipt.Source)
+	}
+	if receipt.Audience != nil {
+		t.Errorf("Audience=%v want nil for non-scanner", receipt.Audience)
+	}
+	mdPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "content.extracted.md")
+	if _, err := os.Stat(mdPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("content.extracted.md should not exist for non-scanner delivery")
+	}
+}

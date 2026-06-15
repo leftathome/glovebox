@@ -14,7 +14,7 @@
 //  4. Media-shape dispatch:
 //     - MediaRaw: rename the tmp file under .finalize/raw/<archive_filename>.
 //     - MediaTar: stream-untar through B3's Untar into .finalize/tree/;
-//       remove the tmp file on success.
+//     remove the tmp file on success.
 //  5. Write metadata.json LAST inside .finalize/ via atomic temp+rename.
 //  6. os.Rename(.finalize, archives/<archive_id>) -- single atomic publish.
 //
@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/ingest"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // FinalizeReceipt is the spec §4.8 receipt JSON shape. It is the
@@ -58,16 +59,16 @@ import (
 // existing media types (mbox, google-takeout-subtree, etc.) that do
 // not supply provenance are unaffected.
 type FinalizeReceipt struct {
-	ArchiveID        string           `json:"archive_id"`
-	ReceivedAt       time.Time        `json:"received_at"`
-	DeliveredBy      string           `json:"delivered_by"`
-	Identity         *ingest.Identity `json:"identity"`
-	MediaType        string           `json:"media_type"`
+	ArchiveID   string           `json:"archive_id"`
+	ReceivedAt  time.Time        `json:"received_at"`
+	DeliveredBy string           `json:"delivered_by"`
+	Identity    *ingest.Identity `json:"identity"`
+	MediaType   string           `json:"media_type"`
 	// Source carries the AUTHENTICATED ingest source-id for registered
 	// connector lanes (e.g. "recognizer-scanner", glovebox-9s60). Empty for
 	// ordinary archive deliveries. It is the bearer-token identity, never a
 	// producer-asserted field, so it cannot be spoofed.
-	Source string `json:"source,omitempty"`
+	Source           string           `json:"source,omitempty"`
 	SizeBytes        int64            `json:"size_bytes"`
 	SHA256           string           `json:"sha256"`
 	SHA256Verified   bool             `json:"sha256_verified"`
@@ -84,7 +85,23 @@ type FinalizeReceipt struct {
 // in production this is GLOVEBOX_STAGING_DIR. Tests use t.TempDir().
 type FinalizeConfig struct {
 	StagingRoot string
+	// Sources is the connector-lane registry (glovebox-9s60). When set, an
+	// upload authenticated as a registered recognizer-scanner source-id gets
+	// operator-lane treatment: source/data_subject/audience stamping plus
+	// content.extracted.md rendering. The media-type gate below is FAIL-CLOSED
+	// and consults Sources even when it is nil (a nil registry rejects the
+	// scanner media type). Nil is otherwise fine for non-scanner deliveries.
+	Sources *source.Registry
 }
+
+// recognizerScanMediaType is the tar media type reserved for recognizer's
+// document scanner. It is gated to the authenticated recognizer-scanner
+// source at finalize.
+const recognizerScanMediaType = "archive/recognizer-scan"
+
+// recognizerScannerKind is the source-registry kind that authorizes the
+// operator scanner lane.
+const recognizerScannerKind = "recognizer-scanner"
 
 // Sentinel errors returned by Finalize. The C2b handler inspects each
 // with errors.Is to decide the HTTP response shape:
@@ -99,6 +116,12 @@ var (
 	ErrSHAMismatch   = errors.New("sha256 mismatch")
 	ErrSizeMismatch  = errors.New("size mismatch")
 	ErrArchiveExists = errors.New("archive_id already exists")
+	// ErrSourceNotAuthorized is returned when an upload uses the
+	// recognizer-scan media type but is not authenticated as a registered
+	// recognizer-scanner source (glovebox-9s60). The C2b handler maps it to
+	// 403 source_not_authorized. The gate is FAIL-CLOSED: a nil/unconfigured
+	// registry rejects the media type rather than publishing it unchecked.
+	ErrSourceNotAuthorized = errors.New("source not authorized for recognizer-scan lane")
 )
 
 // Mode constants per spec §5.2. Directories at 0700, files at 0600.
@@ -125,6 +148,18 @@ const (
 func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*FinalizeReceipt, error) {
 	tmpPath := filepath.Join(cfg.StagingRoot, ".tmp-archives", st.ID)
 	finalizeDir := filepath.Join(cfg.StagingRoot, ".tmp-archives", st.ID+".finalize")
+
+	// Step 0: recognizer-scan lane gate (glovebox-9s60) -- FAIL-CLOSED.
+	// The recognizer-scan media type may ONLY be delivered by a source-id
+	// registered as the recognizer-scanner kind. A nil/unconfigured registry,
+	// an unregistered source-id, or a source of a different kind is rejected
+	// here, BEFORE any staging work, so an unset GLOVEBOX_SOURCES_FILE can
+	// never let the scanner media type publish unchecked.
+	scanPolicy, isScanner := scannerLanePolicy(cfg.Sources, st.SourceID)
+	if st.Meta.MediaType == recognizerScanMediaType && !isScanner {
+		cleanupTmp(cfg.StagingRoot, st.ID)
+		return nil, ErrSourceNotAuthorized
+	}
 
 	// Step 1: sha256 verify. Constant-time compare so attacker-controlled
 	// PATCH bodies cannot derive the hash via timing.
@@ -190,6 +225,21 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 	}
 	receipt.DataSubject = st.Meta.DataSubject
 	receipt.Audience = st.Meta.Audience
+
+	// Connector-lane stamping (glovebox-9s60). For a registered
+	// recognizer-scanner source: stamp the authenticated source-id, apply the
+	// per-connector data_subject default when the producer omitted one (a
+	// producer-asserted data_subject still wins), and GUARANTEE the operator
+	// audience marker -- overriding any producer audience, since a scan that
+	// escaped the marker would be auto-routed by the openclaw per-person
+	// resolver, violating the operator-lane contract §4.2.
+	if isScanner {
+		receipt.Source = st.SourceID
+		if receipt.DataSubject == "" {
+			receipt.DataSubject = scanPolicy.DataSubjectDefault()
+		}
+		receipt.Audience = scanPolicy.AudienceDefault()
+	}
 
 	// Step 4: dispatch on media shape.
 	switch st.Meta.Shape() {
@@ -260,6 +310,17 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 			return nil, fmt.Errorf("remove tmp after untar: %w", rerr)
 		}
 		receipt.EntriesExtracted = entries
+		// Connector extraction (glovebox-9s60): render the recognizer
+		// pre-extracted OCR text (tree/ocr.txt) to content.extracted.md at the
+		// archive root. Runs only for the scanner lane and BEFORE the metadata
+		// write/publish, so a missing OCR layer aborts the whole finalize
+		// rather than publishing a scan with no recallable text.
+		if isScanner {
+			if err := writeExtractedMarkdown(finalizeDir); err != nil {
+				cleanupTmp(cfg.StagingRoot, st.ID)
+				return nil, fmt.Errorf("extract: %w", err)
+			}
+		}
 	default:
 		// Defense-in-depth: B1's allow-list rejects unknown media types
 		// at POST, so this branch is unreachable in production. If we
@@ -315,6 +376,18 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 	}
 
 	return receipt, nil
+}
+
+// scannerLanePolicy looks up sourceID in the registry and reports the lane
+// Policy plus whether it is a recognizer-scanner source. Nil-registry safe:
+// a nil registry yields (_, false), which the fail-closed gate treats as
+// "not authorized" for the recognizer-scan media type.
+func scannerLanePolicy(reg *source.Registry, sourceID string) (source.Policy, bool) {
+	pol, ok := reg.Lookup(sourceID)
+	if !ok || pol.Kind() != recognizerScannerKind {
+		return source.Policy{}, false
+	}
+	return pol, true
 }
 
 // cleanupTmp removes both the tmp upload file and the finalize-staging
@@ -376,4 +449,3 @@ func atomicWriteSibling(path string, data []byte, mode os.FileMode) error {
 	}
 	return nil
 }
-
