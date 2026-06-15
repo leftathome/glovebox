@@ -42,6 +42,9 @@ func TestValidateAudience_ValidCombinations(t *testing.T) {
 		{"household-and-caregivers-without-data-subject", []string{"household", "caregivers"}, false},
 		{"guardians-and-caregivers", []string{"guardians", "caregivers"}, true},
 		{"subject-guardians-caregivers", []string{"subject", "guardians", "caregivers"}, true},
+		// operator lane marker (glovebox-9s60): stands alone, needs no data_subject.
+		{"operator-alone", []string{"operator"}, false},
+		{"operator-alone-with-subject", []string{"operator"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,6 +73,8 @@ func TestValidateAudience_RejectedCombinations(t *testing.T) {
 		{"subject-token-without-data-subject", []string{"subject"}, false, "requires data_subject"},
 		{"role-plus-household-without-data-subject", []string{"siblings"}, false, "requires data_subject"},
 		{"household-with-caregivers-and-subset", []string{"household", "guardians", "caregivers"}, true, "household must appear alone"},
+		{"operator-with-subject-token", []string{"operator", "subject"}, true, "operator must appear alone"},
+		{"operator-with-household", []string{"operator", "household"}, true, "operator must appear alone"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

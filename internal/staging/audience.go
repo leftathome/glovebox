@@ -16,6 +16,12 @@ const (
 	AudienceHousehold  = "household"
 	AudienceCaregivers = "caregivers"
 	AudiencePublic     = "public"
+	// AudienceOperator marks an item for the openclaw operator (`main`)
+	// lane (spec operator-scanner-lane §4.2, glovebox-9s60). It is a
+	// standalone marker: it must appear alone and needs no data_subject.
+	// The openclaw per-person triage resolver skips items carrying it,
+	// leaving operator-driven secondary triage to `main`.
+	AudienceOperator = "operator"
 )
 
 const maxAudienceEntries = 16
@@ -27,6 +33,7 @@ var validAudienceTokens = map[string]bool{
 	AudienceHousehold:  true,
 	AudienceCaregivers: true,
 	AudiencePublic:     true,
+	AudienceOperator:   true,
 }
 
 // householdSubsetTokens are members of `household`; they cannot appear
@@ -67,6 +74,7 @@ func ValidateAudience(audience []string, hasDataSubject bool) error {
 	seen := make(map[string]bool, len(audience))
 	hasPublic := false
 	hasHousehold := false
+	hasOperator := false
 	hasHouseholdSubset := false
 	hasSubjectRelative := false
 
@@ -83,6 +91,8 @@ func ValidateAudience(audience []string, hasDataSubject bool) error {
 			hasPublic = true
 		case AudienceHousehold:
 			hasHousehold = true
+		case AudienceOperator:
+			hasOperator = true
 		}
 		if householdSubsetTokens[tok] {
 			hasHouseholdSubset = true
@@ -94,6 +104,9 @@ func ValidateAudience(audience []string, hasDataSubject bool) error {
 
 	if hasPublic && len(audience) > 1 {
 		return fmt.Errorf("public must appear alone in audience")
+	}
+	if hasOperator && len(audience) > 1 {
+		return fmt.Errorf("operator must appear alone in audience")
 	}
 	if hasHousehold && hasHouseholdSubset {
 		return fmt.Errorf("household must appear alone with its subsets (subject/guardians/siblings); only caregivers may coexist")
