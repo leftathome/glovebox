@@ -882,3 +882,88 @@ func TestSubjectsEnvOverrides(t *testing.T) {
 		t.Errorf("Validate: unexpected error: %v", err)
 	}
 }
+
+// validSourcesJSON is a minimal well-formed source registry (glovebox-9s60).
+const validSourcesJSON = `{
+	"enforce": true,
+	"sources": [
+		{ "source_id": "recognizer-scanner", "kind": "recognizer-scanner",
+		  "data_subject_default": "e_111111", "audience_default": ["operator"] }
+	]
+}`
+
+// TestSourcesFile_ValidRegistry: sources_file pointing at a valid registry ->
+// LoadConfig + Validate succeed and the field round-trips.
+func TestSourcesFile_ValidRegistry(t *testing.T) {
+	srcPath := writeSubjectsFile(t, validSourcesJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := `{"sources_file":"` + srcPath + `"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SourcesFile != srcPath {
+		t.Errorf("SourcesFile = %q, want %q", cfg.SourcesFile, srcPath)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error: %v", err)
+	}
+}
+
+// TestSourcesFile_Malformed: a registry with a duplicate source_id must make
+// Validate return an error tagged with the source-registry prefix.
+func TestSourcesFile_Malformed(t *testing.T) {
+	badJSON := `{ "sources": [
+		{ "source_id": "a", "kind": "k" },
+		{ "source_id": "a", "kind": "k" } ] }`
+	srcPath := writeSubjectsFile(t, badJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := `{"sources_file":"` + srcPath + `"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate: expected error for duplicate source_id, got nil")
+	}
+	if !contains(err.Error(), "sources registry:") {
+		t.Errorf("Validate error %q does not contain expected prefix", err.Error())
+	}
+}
+
+// TestSourcesEnvOverrides verifies GLOVEBOX_SOURCES_FILE is applied.
+func TestSourcesEnvOverrides(t *testing.T) {
+	srcPath := writeSubjectsFile(t, validSourcesJSON)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("GLOVEBOX_SOURCES_FILE", srcPath)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SourcesFile != srcPath {
+		t.Errorf("SourcesFile = %q, want %q", cfg.SourcesFile, srcPath)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error: %v", err)
+	}
+}
