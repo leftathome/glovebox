@@ -13,6 +13,7 @@ import (
 	"github.com/leftathome/glovebox/internal/config"
 	"github.com/leftathome/glovebox/internal/ingest/archives"
 	"github.com/leftathome/glovebox/internal/ingest/auth"
+	"github.com/leftathome/glovebox/internal/source"
 )
 
 // bootstrapArchives wires spec 10 auth + spec 13 archive delivery onto
@@ -95,6 +96,16 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 
 	pvcCapacity := stagingCapacityBytes(cfg.Ingest.Archives.StagingRoot)
 
+	// Connector-lane registry (glovebox-9s60). Fail-fast on a malformed
+	// registry: config.Validate already loaded it once at boot, so a parse
+	// error here is an invariant violation, but loading is also how we get
+	// the *Registry to thread into the listener. A nil SourcesFile yields a
+	// non-enforcing registry that rejects the recognizer-scan media type.
+	sources, err := source.Load(cfg.SourcesFile)
+	if err != nil {
+		return fmt.Errorf("load sources registry: %w", err)
+	}
+
 	listenerCfg := archives.ArchiveListenerConfig{
 		Mux:              mux,
 		StagingRoot:      cfg.Ingest.Archives.StagingRoot,
@@ -112,6 +123,7 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 		TokenReloadInterval: time.Duration(cfg.Ingest.Auth.ReloadIntervalSeconds) * time.Second,
 		CleanupInterval:     time.Duration(cfg.Ingest.Archives.CleanupIntervalSeconds) * time.Second,
 		QuotaInterval:       60 * time.Second,
+		Sources:             sources,
 	}
 
 	if archives.StartArchiveListener(ctx, listenerCfg) == nil {
