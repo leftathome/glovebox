@@ -1,0 +1,17 @@
+# Keep the Docker build context to the Go source the multi-stage build
+# actually needs. Everything here is either irrelevant to `go build` or
+# actively harmful to include.
+
+# Beads issue tracker's Dolt database. It mutates while the repo is in
+# use (issue updates rewrite stats/noms files), which makes `COPY . .`
+# fail intermittently with "archive/tar: write too long" when a file
+# grows between stat and read. Never needed in the image.
+.beads/
+
+# Version control metadata -- large, never needed at build time.
+.git/
+.gitignore
+
+# Local scratch / artifacts that are not part of the build.
+mbox
+*.log

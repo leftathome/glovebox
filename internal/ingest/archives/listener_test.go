@@ -122,9 +122,7 @@ func newArchiveTestCfg(t *testing.T, vc auth.VaultClient) (*http.ServeMux, Archi
 		Telemetry:  tel,
 		TokenStore: auth.NewTokenStore(),
 		AuthReloadConfig: auth.ReloadConfig{
-			Client:   vc,
-			KVMount:  "secret",
-			BasePath: "glovebox/ingest-tokens",
+			Source: auth.NewVaultTokenSource(vc, "secret", "glovebox/ingest-tokens"),
 		},
 		RateLimiter: auth.NewRateLimiter(auth.RateLimitConfig{
 			Window:            time.Minute,
@@ -215,9 +213,7 @@ func TestStartTokenReloadGoroutine_PeriodicTick(t *testing.T) {
 	vc := newFakeListenerVault()
 	store := auth.NewTokenStore()
 	cfg := auth.ReloadConfig{
-		Client:   vc,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: auth.NewVaultTokenSource(vc, "secret", "glovebox/ingest-tokens"),
 	}
 	if err := store.Reload(context.Background(), cfg); err != nil {
 		t.Fatalf("priming Reload: %v", err)
@@ -256,9 +252,7 @@ func TestStartTokenReloadGoroutine_SIGHUP(t *testing.T) {
 	vc := newFakeListenerVault()
 	store := auth.NewTokenStore()
 	cfg := auth.ReloadConfig{
-		Client:   vc,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: auth.NewVaultTokenSource(vc, "secret", "glovebox/ingest-tokens"),
 	}
 	if err := store.Reload(context.Background(), cfg); err != nil {
 		t.Fatalf("priming Reload: %v", err)
@@ -305,9 +299,7 @@ func TestStartTokenReloadGoroutine_PeriodicFailureDoesNotCrash(t *testing.T) {
 	vc := newFakeListenerVault()
 	store := auth.NewTokenStore()
 	cfg := auth.ReloadConfig{
-		Client:   vc,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: auth.NewVaultTokenSource(vc, "secret", "glovebox/ingest-tokens"),
 	}
 	if err := store.Reload(context.Background(), cfg); err != nil {
 		t.Fatalf("priming Reload: %v", err)
@@ -349,9 +341,7 @@ func TestStartTokenReloadGoroutine_ExitsOnCtxCancel(t *testing.T) {
 	vc := newFakeListenerVault()
 	store := auth.NewTokenStore()
 	cfg := auth.ReloadConfig{
-		Client:   vc,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: auth.NewVaultTokenSource(vc, "secret", "glovebox/ingest-tokens"),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

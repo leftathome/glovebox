@@ -27,12 +27,27 @@ type IngestConfig struct {
 // IngestAuthConfig configures the spec 10 bearer-token middleware
 // applied to /v1/archives*. Mirrors values.yaml -> ingest.auth.
 type IngestAuthConfig struct {
-	Enabled               bool                `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Source selects where ingest bearer tokens come from:
+	//   "vault" (default) -- production: Vault KV v2 via K8s auth.
+	//   "env"             -- DEV ONLY: a single token from
+	//                        GLOVEBOX_INGEST_SOURCE_ID/GLOVEBOX_INGEST_TOKEN.
+	//   "file"            -- DEV ONLY: a JSON source-id->token map at
+	//                        File.Path.
+	// The non-vault sources exist so the auth + archive-delivery path is
+	// testable on a single node/container without a cluster (glovebox-4ypk).
+	Source                string              `json:"source"`
 	Vault                 VaultClientConfig   `json:"vault"`
+	File                  TokenFileConfig     `json:"file"`
 	ReloadIntervalSeconds int                 `json:"reload_interval_seconds"`
 	TrustedProxyCIDRs     []string            `json:"trusted_proxy_cidrs"`
 	PerIPRateLimit        RateLimitWindowConf `json:"per_ip_rate_limit"`
 	GlobalRateLimit       RateLimitWindowConf `json:"global_rate_limit"`
+}
+
+// TokenFileConfig configures the DEV-ONLY file-backed token source.
+type TokenFileConfig struct {
+	Path string `json:"path"`
 }
 
 // VaultClientConfig is the in-process Vault client wiring for the
@@ -75,22 +90,22 @@ type IngestArchivesConfig struct {
 }
 
 type Config struct {
-	StagingDir          string   `json:"staging_dir"`
-	QuarantineDir       string   `json:"quarantine_dir"`
-	AuditDir            string   `json:"audit_dir"`
-	FailedDir           string   `json:"failed_dir"`
-	AgentsDir           string   `json:"agents_dir"`
-	SharedDir           string   `json:"shared_dir"`
-	AgentAllowlist      []string `json:"agent_allowlist"`
-	MetricsPort         int      `json:"metrics_port"`
-	WatchMode           string   `json:"watch_mode"`
-	PollIntervalSeconds int      `json:"poll_interval_seconds"`
-	RulesFile           string   `json:"rules_file"`
-	ScanWorkers         int      `json:"scan_workers"`
-	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
+	StagingDir          string       `json:"staging_dir"`
+	QuarantineDir       string       `json:"quarantine_dir"`
+	AuditDir            string       `json:"audit_dir"`
+	FailedDir           string       `json:"failed_dir"`
+	AgentsDir           string       `json:"agents_dir"`
+	SharedDir           string       `json:"shared_dir"`
+	AgentAllowlist      []string     `json:"agent_allowlist"`
+	MetricsPort         int          `json:"metrics_port"`
+	WatchMode           string       `json:"watch_mode"`
+	PollIntervalSeconds int          `json:"poll_interval_seconds"`
+	RulesFile           string       `json:"rules_file"`
+	ScanWorkers         int          `json:"scan_workers"`
+	ScanTimeoutSeconds  int          `json:"scan_timeout_seconds"`
 	ScanChunkSizeBytes  int          `json:"scan_chunk_size_bytes"`
-	SubjectsFile        string        `json:"subjects_file"`
-	Ingest              IngestConfig  `json:"ingest"`
+	SubjectsFile        string       `json:"subjects_file"`
+	Ingest              IngestConfig `json:"ingest"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -271,14 +286,28 @@ func (c *Config) Validate() error {
 }
 
 func (a *IngestAuthConfig) validate() error {
-	if a.Vault.Addr == "" {
-		return fmt.Errorf("ingest.auth.vault.addr required when ingest.auth.enabled")
-	}
-	if a.Vault.K8sRole == "" {
-		return fmt.Errorf("ingest.auth.vault.k8s_role required when ingest.auth.enabled")
-	}
-	if a.Vault.TokensPath == "" {
-		return fmt.Errorf("ingest.auth.vault.tokens_path required when ingest.auth.enabled")
+	// Source selects which fields are required. Vault is the production
+	// default; env/file are DEV-ONLY single-node sources (glovebox-4ypk).
+	switch a.Source {
+	case "", "vault":
+		if a.Vault.Addr == "" {
+			return fmt.Errorf("ingest.auth.vault.addr required when ingest.auth.enabled")
+		}
+		if a.Vault.K8sRole == "" {
+			return fmt.Errorf("ingest.auth.vault.k8s_role required when ingest.auth.enabled")
+		}
+		if a.Vault.TokensPath == "" {
+			return fmt.Errorf("ingest.auth.vault.tokens_path required when ingest.auth.enabled")
+		}
+	case "env":
+		// No additional required fields; tokens come from
+		// GLOVEBOX_INGEST_SOURCE_ID / GLOVEBOX_INGEST_TOKEN at runtime.
+	case "file":
+		if a.File.Path == "" {
+			return fmt.Errorf("ingest.auth.file.path required when ingest.auth.source=file")
+		}
+	default:
+		return fmt.Errorf("unknown ingest.auth.source %q (want vault|env|file)", a.Source)
 	}
 	if a.ReloadIntervalSeconds <= 0 {
 		return fmt.Errorf("ingest.auth.reload_interval_seconds must be > 0, got %d", a.ReloadIntervalSeconds)
@@ -332,4 +361,3 @@ func (ar *IngestArchivesConfig) validate() error {
 	}
 	return nil
 }
-

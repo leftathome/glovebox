@@ -139,10 +139,13 @@ type VaultClient interface {
 
 // ReloadConfig controls a single Reload invocation.
 type ReloadConfig struct {
-	Client   VaultClient
-	KVMount  string // e.g. "secret"
-	BasePath string // e.g. "glovebox/ingest-tokens"
-	Logger   *slog.Logger
+	// Source supplies the current token set. The production source is
+	// VaultTokenSource; dev/single-node deployments use EnvTokenSource
+	// or FileTokenSource (see glovebox-4ypk). Vault KV-v2 specifics
+	// (mount, base path, the data["token"] field) live inside the
+	// source, not here.
+	Source TokenSource
+	Logger *slog.Logger
 	// OnError, if non-nil, is invoked once per per-entry error
 	// (malformed source-id, vault read failure, malformed token,
 	// duplicate-token collision). The caller wires this to a metric
@@ -175,13 +178,10 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	if cfg.KVMount == "" {
-		cfg.KVMount = "secret"
-	}
-	sourceIDs, err := cfg.Client.ListPath(ctx, cfg.KVMount, cfg.BasePath)
+	sourceIDs, err := cfg.Source.List(ctx)
 	if err != nil {
 		s.loadErr.Store(&err)
-		return fmt.Errorf("list %s: %w", cfg.BasePath, err)
+		return fmt.Errorf("list tokens: %w", err)
 	}
 
 	// PASS 1: validate per-entry; build counts and parsed entries.
@@ -196,16 +196,15 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
 			}
 			continue
 		}
-		data, readErr := cfg.Client.ReadKV(ctx, cfg.KVMount, cfg.BasePath+"/"+sid)
+		tokStr, readErr := cfg.Source.Read(ctx, sid)
 		if readErr != nil {
-			cfg.Logger.Error("glovebox ingest vault read failed",
+			cfg.Logger.Error("glovebox ingest token read failed",
 				"source_id", sid, "error", readErr.Error())
 			if cfg.OnError != nil {
 				cfg.OnError(sid)
 			}
 			continue
 		}
-		tokStr, _ := data["token"].(string)
 		tok, ok := decodeToken(tokStr)
 		if !ok {
 			cfg.Logger.Error("glovebox ingest token malformed",

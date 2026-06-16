@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"syscall"
 	"time"
 
@@ -28,18 +29,45 @@ func bootstrapArchives(ctx context.Context, cfg config.Config, mux *http.ServeMu
 	if !cfg.Ingest.Auth.Enabled || !cfg.Ingest.Archives.Enabled {
 		return nil
 	}
-	vc := loginVault(ctx, cfg.Ingest.Auth.Vault)
-	return bootstrapArchivesWithClient(ctx, cfg, mux, vc)
+	src, err := buildTokenSource(ctx, cfg.Ingest.Auth)
+	if err != nil {
+		return err
+	}
+	return bootstrapArchivesWithSource(ctx, cfg, mux, src)
 }
 
-// bootstrapArchivesWithClient is the testable seam: it accepts a
-// caller-supplied auth.VaultClient instead of doing the K8s login. The
-// production helper (bootstrapArchives) wraps it; integration tests
-// pass an in-memory fake. Failures from the supplied client surface
-// through archives.StartArchiveListener as the 503 fallback path per
-// spec 10 §4.1 (a failingVaultClient produces the same outcome a Vault
-// outage would).
-func bootstrapArchivesWithClient(ctx context.Context, cfg config.Config, mux *http.ServeMux, vc auth.VaultClient) error {
+// buildTokenSource selects the bearer-token source from config. Vault is
+// the production default; the env and file sources are DEV-ONLY escape
+// hatches so the auth + archive path can be brought up on a single
+// node/container without a Vault-backed cluster (glovebox-4ypk). The
+// dev sources log loudly so a misconfigured production deploy is
+// obvious in the pod logs.
+func buildTokenSource(ctx context.Context, cfg config.IngestAuthConfig) (auth.TokenSource, error) {
+	switch cfg.Source {
+	case "", "vault":
+		vc := loginVault(ctx, cfg.Vault)
+		return auth.NewVaultTokenSource(vc, cfg.Vault.KVMount, cfg.Vault.TokensPath), nil
+	case "env":
+		sid := os.Getenv("GLOVEBOX_INGEST_SOURCE_ID")
+		log.Printf("glovebox ingest auth source=env (DEV ONLY, not for production) source_id=%q", sid)
+		return auth.NewEnvTokenSource(sid, os.Getenv("GLOVEBOX_INGEST_TOKEN")), nil
+	case "file":
+		log.Printf("glovebox ingest auth source=file (DEV ONLY, not for production) path=%s", cfg.File.Path)
+		return auth.NewFileTokenSource(cfg.File.Path), nil
+	default:
+		return nil, fmt.Errorf("unknown ingest.auth.source %q (want vault|env|file)", cfg.Source)
+	}
+}
+
+// bootstrapArchivesWithSource is the testable seam: it accepts a
+// caller-supplied auth.TokenSource instead of selecting one from config
+// and (for Vault) doing the K8s login. The production helper
+// (bootstrapArchives) builds the source via buildTokenSource and wraps
+// this; integration tests pass an in-memory source. A source whose List
+// fails surfaces through archives.StartArchiveListener as the 503
+// fallback path per spec 10 §4.1 (a VaultTokenSource wrapping a
+// failingVaultClient produces the same outcome a Vault outage would).
+func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *http.ServeMux, src auth.TokenSource) error {
 	trustedCIDRs, err := parseTrustedCIDRs(cfg.Ingest.Auth.TrustedProxyCIDRs)
 	if err != nil {
 		return fmt.Errorf("parse ingest.auth.trusted_proxy_cidrs: %w", err)
@@ -68,18 +96,16 @@ func bootstrapArchivesWithClient(ctx context.Context, cfg config.Config, mux *ht
 	pvcCapacity := stagingCapacityBytes(cfg.Ingest.Archives.StagingRoot)
 
 	listenerCfg := archives.ArchiveListenerConfig{
-		Mux:                 mux,
-		StagingRoot:         cfg.Ingest.Archives.StagingRoot,
-		PVCCapacityBytes:    pvcCapacity,
-		TusMaxSize:          cfg.Ingest.Archives.MaxUploadSize,
-		PatchIdleTimeout:    time.Duration(cfg.Ingest.Archives.PatchIdleTimeoutSeconds) * time.Second,
-		Store:               uploadStore,
-		Telemetry:           telemetry,
-		TokenStore:          tokenStore,
+		Mux:              mux,
+		StagingRoot:      cfg.Ingest.Archives.StagingRoot,
+		PVCCapacityBytes: pvcCapacity,
+		TusMaxSize:       cfg.Ingest.Archives.MaxUploadSize,
+		PatchIdleTimeout: time.Duration(cfg.Ingest.Archives.PatchIdleTimeoutSeconds) * time.Second,
+		Store:            uploadStore,
+		Telemetry:        telemetry,
+		TokenStore:       tokenStore,
 		AuthReloadConfig: auth.ReloadConfig{
-			Client:   vc,
-			KVMount:  cfg.Ingest.Auth.Vault.KVMount,
-			BasePath: cfg.Ingest.Auth.Vault.TokensPath,
+			Source: src,
 		},
 		RateLimiter:         rl,
 		ProxyResolver:       pr,

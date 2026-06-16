@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/config"
+	"github.com/leftathome/glovebox/internal/ingest/auth"
 )
 
 // fakeVault is a minimal in-memory auth.VaultClient for the
@@ -114,7 +115,7 @@ func TestBootstrapArchives_BadCIDR(t *testing.T) {
 	cfg := makeArchiveTestConfig(t.TempDir())
 	cfg.Ingest.Auth.TrustedProxyCIDRs = []string{"not-a-cidr"}
 
-	err := bootstrapArchivesWithClient(context.Background(), cfg, mux, &fakeVault{tokens: map[string]string{}})
+	err := bootstrapArchivesWithSource(context.Background(), cfg, mux, auth.NewVaultTokenSource(&fakeVault{tokens: map[string]string{}}, "secret", "glovebox/ingest-tokens"))
 	if err == nil {
 		t.Fatal("expected CIDR parse error, got nil")
 	}
@@ -147,8 +148,8 @@ func TestBootstrapArchives_AuthGuards(t *testing.T) {
 	cfg := makeArchiveTestConfig(stagingRoot)
 	fv := &fakeVault{tokens: map[string]string{sourceID: tokenHex}}
 
-	if err := bootstrapArchivesWithClient(ctx, cfg, mux, fv); err != nil {
-		t.Fatalf("bootstrapArchivesWithClient: %v", err)
+	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens")); err != nil {
+		t.Fatalf("bootstrapArchivesWithSource: %v", err)
 	}
 
 	srv := httptest.NewServer(mux)
@@ -218,8 +219,8 @@ func TestBootstrapArchives_VaultLoadFailureMountsFallback(t *testing.T) {
 	cfg := makeArchiveTestConfig(stagingRoot)
 	failing := &failingVaultClient{err: fmt.Errorf("simulated vault outage")}
 
-	if err := bootstrapArchivesWithClient(ctx, cfg, mux, failing); err != nil {
-		t.Fatalf("bootstrapArchivesWithClient: %v", err)
+	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(failing, "secret", "glovebox/ingest-tokens")); err != nil {
+		t.Fatalf("bootstrapArchivesWithSource: %v", err)
 	}
 
 	srv := httptest.NewServer(mux)
@@ -248,4 +249,57 @@ func buildArchiveMetadataHeader(m map[string]string) string {
 		parts = append(parts, k+" "+base64.StdEncoding.EncodeToString([]byte(v)))
 	}
 	return strings.Join(parts, ",")
+}
+
+// TestBuildTokenSource_Env verifies the dev env-backed source is
+// selected and populated from GLOVEBOX_INGEST_* env vars (glovebox-4ypk).
+func TestBuildTokenSource_Env(t *testing.T) {
+	const sid = "recognizer"
+	const tok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	t.Setenv("GLOVEBOX_INGEST_SOURCE_ID", sid)
+	t.Setenv("GLOVEBOX_INGEST_TOKEN", tok)
+
+	src, err := buildTokenSource(context.Background(), config.IngestAuthConfig{Source: "env"})
+	if err != nil {
+		t.Fatalf("buildTokenSource(env): %v", err)
+	}
+	ids, err := src.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != sid {
+		t.Fatalf("List = %v, want [%q]", ids, sid)
+	}
+}
+
+// TestBuildTokenSource_File verifies the dev file-backed source reads
+// the configured JSON token map.
+func TestBuildTokenSource_File(t *testing.T) {
+	const sid = "recognizer"
+	const tok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	if err := os.WriteFile(path, []byte(`{"`+sid+`":"`+tok+`"}`), 0o600); err != nil {
+		t.Fatalf("write tokens file: %v", err)
+	}
+	src, err := buildTokenSource(context.Background(), config.IngestAuthConfig{
+		Source: "file",
+		File:   config.TokenFileConfig{Path: path},
+	})
+	if err != nil {
+		t.Fatalf("buildTokenSource(file): %v", err)
+	}
+	ids, err := src.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != sid {
+		t.Fatalf("List = %v, want [%q]", ids, sid)
+	}
+}
+
+// TestBuildTokenSource_UnknownErrors rejects an unrecognized source.
+func TestBuildTokenSource_UnknownErrors(t *testing.T) {
+	if _, err := buildTokenSource(context.Background(), config.IngestAuthConfig{Source: "bogus"}); err == nil {
+		t.Fatal("buildTokenSource(bogus): expected error, got nil")
+	}
 }

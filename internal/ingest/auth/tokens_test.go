@@ -135,9 +135,7 @@ func TestReload_HappyPath_TwoSources(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -166,9 +164,7 @@ func TestReload_MalformedSourceID_Skipped(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -193,9 +189,7 @@ func TestReload_MalformedToken_Skipped(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -223,9 +217,7 @@ func TestReload_VaultReadError_PerEntrySkipped(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -252,9 +244,7 @@ func TestReload_DuplicateToken_DropsBoth(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -292,9 +282,7 @@ func TestReload_TripleDuplicateToken_DropsAllThree(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -330,9 +318,7 @@ func TestReload_TopLevelListError_PreservesPriorStore(t *testing.T) {
 		ListErr: errors.New("vault unreachable"),
 	}
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 	}
 	if err := s.Reload(context.Background(), cfg); err == nil {
 		t.Fatal("Reload returned nil err on top-level list failure; want non-nil")
@@ -353,9 +339,7 @@ func TestReload_MissingTokenField_Skipped(t *testing.T) {
 	s := NewTokenStore()
 	var onErrors []string
 	cfg := ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 		OnError:  func(sid string) { onErrors = append(onErrors, sid) },
 	}
 	if err := s.Reload(context.Background(), cfg); err != nil {
@@ -378,7 +362,7 @@ func TestLoadErr_HealthyAfterSuccess(t *testing.T) {
 			"recognizer": {"token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 		},
 	}
-	if err := s.Reload(context.Background(), ReloadConfig{Client: fv, BasePath: "glovebox/ingest-tokens"}); err != nil {
+	if err := s.Reload(context.Background(), ReloadConfig{Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens")}); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if err := s.LoadErr(); err != nil {
@@ -390,7 +374,7 @@ func TestLoadErr_ReportsListFailure(t *testing.T) {
 	s := NewTokenStore()
 	listErr := errors.New("vault is sealed")
 	fv := &fakeVault{ListErr: listErr}
-	if err := s.Reload(context.Background(), ReloadConfig{Client: fv, BasePath: "glovebox/ingest-tokens"}); err == nil {
+	if err := s.Reload(context.Background(), ReloadConfig{Source: NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens")}); err == nil {
 		t.Fatal("Reload returned nil; expected list error")
 	}
 	got := s.LoadErr()

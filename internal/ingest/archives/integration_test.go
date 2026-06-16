@@ -149,9 +149,7 @@ func setupIntegrationServer(t *testing.T) *integTestServer {
 	fv := &integFakeVault{tokens: map[string]string{integTestSourceID: integTestTokenHex}}
 	store := auth.NewTokenStore()
 	if err := store.Reload(context.Background(), auth.ReloadConfig{
-		Client:   fv,
-		KVMount:  "secret",
-		BasePath: "glovebox/ingest-tokens",
+		Source: auth.NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"),
 	}); err != nil {
 		t.Fatalf("token store reload: %v", err)
 	}

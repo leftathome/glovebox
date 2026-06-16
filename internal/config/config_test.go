@@ -452,6 +452,51 @@ func TestIngestAuthValidation(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		{
+			name: "source=env does not require vault fields",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Source = "env"
+				c.Ingest.Auth.Vault = VaultClientConfig{}
+			},
+			wantErr: "",
+		},
+		{
+			name: "source=file requires file.path",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Source = "file"
+				c.Ingest.Auth.Vault = VaultClientConfig{}
+			},
+			wantErr: "ingest.auth.file.path required",
+		},
+		{
+			name: "source=file with path does not require vault fields",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Source = "file"
+				c.Ingest.Auth.Vault = VaultClientConfig{}
+				c.Ingest.Auth.File.Path = "/etc/glovebox/tokens.json"
+			},
+			wantErr: "",
+		},
+		{
+			name: "unknown source rejected",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Source = "bogus"
+			},
+			wantErr: "unknown ingest.auth.source",
+		},
+		{
+			name: "source=vault still requires vault addr",
+			modify: func(c *Config) {
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Source = "vault"
+				c.Ingest.Auth.Vault.Addr = ""
+			},
+			wantErr: "vault.addr required",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
