@@ -9,6 +9,10 @@ docs/specs/02-*.md
 docs/specs/03-*.md
 
 # Beads / Dolt files (added by bd init)
+# The beads tracker (issues.jsonl, Dolt creds, hooks) is local-only: it carried
+# PII (owner emails), homelab topology, and a credential key. Canonical state
+# lives in Dolt; do not ship the tracker to public remotes.
+.beads/
 .beads-credential-key
 hackernews
 trello

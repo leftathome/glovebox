@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-19
+
 ### Added
+
+- **Content enrichment framework (spec 14)** -- a pluggable pipeline that
+  derives clean, model-ready text sidecars (`content.<name>.md`) from
+  binary/rich attachments during staging. See
+  `docs/specs/14-content-enrichment-design.md`.
+  - **Enricher interface + registry** (`connector/enrich/`): enrichers are
+    registered by media type and run from `StagingItem.Commit()` between
+    metadata build and atomic rename. Per-source artifacts are recorded in
+    `metadata.json` as `Enrichments[]`; per-enricher failures write
+    `content.<name>.error.md` markers without failing the commit (additive
+    schema -- old metadata without `Enrichments` still parses).
+  - **Enrichers shipped:** passthrough (identity copy), a pure-Go HTML text
+    extractor, and binary-dependent PDF (pdftotext), OCR (tesseract), and
+    Office/OOXML (pandoc) enrichers.
+  - **enricher-runtime base image** -- a shared Debian-based image bundling
+    poppler-utils, tesseract-ocr, and pandoc for the binary enrichers; the
+    attachment-heavy connectors (gmail, imap, outlook, mbox, arxiv,
+    semantic-scholar) are rebased onto it and wire the full enricher set.
+
+- **Recognizer-scanner ingest lane (glovebox-9s60)** -- a push ingest
+  source for the OpenClaw recognizer's document scanner, riding the spec-13
+  tus.io archive path. The authenticated bearer-token source-id is the
+  anti-spoof identity: a config-driven source registry (`internal/source/`,
+  `charts/glovebox/sources.json`, env `GLOVEBOX_SOURCES_FILE`) holds each
+  connector's `data_subject_default` and `audience_default`, and a
+  fail-closed gate in `Finalize` rejects the `archive/recognizer-scan`
+  media type from any non-scanner source (403 `source_not_authorized`).
+  Adds a standalone `operator` audience token (must appear alone) that marks
+  items for OpenClaw's operator lane, and renders the recognizer's
+  pre-extracted `ocr.txt` to `content.extracted.md`.
+
+- **Pluggable ingest token-source (glovebox-4ypk)** -- the archive
+  listener's bearer-token store is now selectable via `ingest.auth.source`
+  (`vault` | `env` | `file`). Vault remains the production default; the
+  env/file sources are opt-in and dev-only, enabling single-node and
+  in-container smoke testing of the auth + archives path without a
+  Kubernetes cluster.
 
 - **Health-data provenance + subject resolution (spec 15, SP1)** -- the
   Glovebox-side foundation for ingesting health data fetched from
@@ -44,9 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     agent). Ships with an enricher-runtime Dockerfile, CI binary + image
     build, and a Helm-delivered `subjects.json` registry ConfigMap.
 
-## [0.6.0] - 2026-05-XX
-
-### Added
+- **mbox importer + archive media types** -- a one-shot importer for
+  `mbox` email archives (the 20-year backfill use case), plus two new
+  archive media types on the spec-13 ingest path: `archive/generic-tarball`
+  and `archive/imap-export` (glovebox-4enb, glovebox-7ey). Previously
+  shipped under the out-of-order `v0.4.1`-`v0.4.3` tags; documented here.
 
 - **Schoology connector** (`connectors/schoology/`) -- ingests
   assignments, faculty feed posts, inbox messages, and attachments from
@@ -71,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
+- This release consolidates all work since `v0.5.0` into a single `v0.6.0`
+  tag: the Schoology connector (previously drafted as an untagged `0.6.0`
+  changelog entry), the mbox/media-type work shipped under the out-of-order
+  `v0.4.1`-`v0.4.3` tags, and the first tagged appearance of the spec-14
+  enrichment, spec-15 provenance, and recognizer-scanner features. The
+  earlier `v0.3.1`-`v0.3.5` / `v0.4.1`-`v0.4.3` patch tags were never
+  documented here individually.
 - Schoology session cookies expire approximately every 14 days; the
   connector surfaces expiry as `PermanentError` with a recovery-
   instruction message and exits non-zero so K8s reports
