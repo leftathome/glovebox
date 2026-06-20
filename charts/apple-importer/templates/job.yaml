@@ -1,0 +1,116 @@
+{{- if not .Values.archive.archiveID -}}
+{{- fail "archive.archiveID must be set; nothing to import otherwise" -}}
+{{- end -}}
+{{- if not .Values.archive.sourceName -}}
+{{- fail "archive.sourceName must be set; landed staging items need a source value" -}}
+{{- end -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apple-importer.fullname" . }}-{{ .Values.archive.archiveID | trunc 30 | trimSuffix "-" }}
+  labels:
+    {{- include "apple-importer.labels" . | nindent 4 }}
+spec:
+  # Keep finished Jobs around for inspection. The watcher-mode bead
+  # (glovebox-c9zt) will eventually take over the auto-pickup; for
+  # the one-shot model, operators delete the Job between archives.
+  ttlSecondsAfterFinished: 86400
+  # backoffLimit 0: a failure is investigation-worthy. The importer
+  # writes a manifest on every interrupt, so a re-run resumes
+  # cleanly via dedup + checkpoint; we want a human in the loop
+  # before that re-run rather than an automatic retry that masks the
+  # cause.
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "apple-importer.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.podNodeName }}
+      nodeName: {{ .Values.podNodeName }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: importer
+          image: {{ include "apple-importer.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --source={{ include "apple-importer.archivePath" . }}
+            - --config=/etc/importer/config.json
+            - --state-dir=/var/lib/importer/state
+            - --ingest-url={{ .Values.glovebox.ingestURL }}
+            - --source-name={{ .Values.archive.sourceName }}
+            - --concurrency={{ .Values.importer.concurrency }}
+            - --health-port={{ .Values.healthPort }}
+            {{- if .Values.importer.surveyOnly }}
+            - --survey-only
+            {{- end }}
+            {{- if .Values.importer.regenerateSurvey }}
+            - --regenerate-survey
+            {{- end }}
+            {{- if .Values.importer.filterJSON }}
+            - --filter=/etc/importer/filter.json
+            {{- end }}
+            {{- if .Values.importer.fixedTags }}
+            - --fixed-tags={{ .Values.importer.fixedTags }}
+            {{- end }}
+          env:
+            {{- if .Values.goMemLimit }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.goMemLimit | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          ports:
+            - name: health
+              containerPort: {{ .Values.healthPort }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/importer
+              readOnly: true
+            - name: storage
+              # NOT readOnly: importer writes the survey + manifest +
+              # checkpoint sidecars next to the archive source tree.
+              mountPath: {{ .Values.archive.storagePath }}
+            - name: state
+              mountPath: /var/lib/importer/state
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "apple-importer.fullname" . }}-config
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.storageClaim }}
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

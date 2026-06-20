@@ -64,6 +64,10 @@ type FinalizeReceipt struct {
 	DeliveredBy string           `json:"delivered_by"`
 	Identity    *ingest.Identity `json:"identity"`
 	MediaType   string           `json:"media_type"`
+	// MatcherID carries the producer-asserted Upload-Metadata matcher_id
+	// (spec 13 §4.2) so downstream importers can route on it. Empty when
+	// the producer omits it.
+	MatcherID string `json:"matcher_id,omitempty"`
 	// Source carries the AUTHENTICATED ingest source-id for registered
 	// connector lanes (e.g. "recognizer-scanner", glovebox-9s60). Empty for
 	// ordinary archive deliveries. It is the bearer-token identity, never a
@@ -207,6 +211,7 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 		DeliveredBy:    st.SourceID,
 		Identity:       ingest.BuildIdentity(ctx),
 		MediaType:      st.Meta.MediaType,
+		MatcherID:      st.Meta.MatcherID,
 		SizeBytes:      st.UploadLength,
 		SHA256:         st.Meta.SHA256,
 		SHA256Verified: true,
