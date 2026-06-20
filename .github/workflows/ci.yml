@@ -193,6 +193,12 @@ jobs:
           - image: glovebox-apple-importer
             dockerfile: ./importers/apple/Dockerfile
             context: .
+          - image: glovebox-schoology
+            dockerfile: ./connectors/schoology/Dockerfile
+            context: .
+          - image: glovebox-schoology-auth-refresher
+            dockerfile: ./connectors/schoology-auth-refresher/Dockerfile
+            context: .
     steps:
       - name: Checkout
         uses: actions/checkout@v6
