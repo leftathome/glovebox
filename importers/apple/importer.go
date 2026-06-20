@@ -244,6 +244,22 @@ func (a *appleImporter) Import(
 		staged++
 	}
 
+	// --- 5) media-services: additively normalize purchase-history CSVs -----
+	// The passthrough above keeps every raw file; for the media-services
+	// bucket we additionally emit queryable markdown items so OpenClaw can
+	// answer purchase questions (openclaw-e6f). Only attempted if passthrough
+	// staging succeeded so a partial failure is not masked.
+	if firstErr == nil && receipt.MatcherID == mediaServicesBucket {
+		normalized, mErr := a.stageMediaServicesPurchases(treeRoot, &receipt)
+		staged += normalized
+		if mErr != nil {
+			firstErr = mErr
+			log.Error("media-services normalization failed", "error", mErr)
+		} else {
+			log.Info("media-services purchases normalized", "items", normalized)
+		}
+	}
+
 	log.Info("apple import finished",
 		"archive_id", receipt.ArchiveID,
 		"staged", staged,
