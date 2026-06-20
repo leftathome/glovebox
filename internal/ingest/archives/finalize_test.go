@@ -665,6 +665,47 @@ func TestFinalize_MboxOmitsProvenanceFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
+// TestFinalize_MatcherIDInReceipt
+// ---------------------------------------------------------------------
+//
+// Drives Finalize with an UploadState whose parsed Metadata carries a
+// matcher_id and asserts the field is persisted onto the returned
+// FinalizeReceipt AND round-trips through the on-disk metadata.json so
+// importers can route on it (glovebox-ugfx).
+
+func TestFinalize_MatcherIDInReceipt(t *testing.T) {
+	content := []byte("From foo@bar.com\nSubject: route me\n\nbody\n")
+	fx := setupFixture(t, "archive/mbox", "route.mbox", content)
+	fx.state.Meta.MatcherID = "apple/media-services"
+	fx.state.SourceID = "recognizer"
+
+	ctx := authedCtx("recognizer")
+	receipt, err := Finalize(ctx, fx.state, FinalizeConfig{StagingRoot: fx.stagingRoot})
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// --- struct-level assertion ---
+	if receipt.MatcherID != "apple/media-services" {
+		t.Errorf("receipt.MatcherID=%q want apple/media-services", receipt.MatcherID)
+	}
+
+	// --- on-disk metadata.json round-trip ---
+	metaPath := filepath.Join(fx.stagingRoot, "archives", fx.archiveID, "metadata.json")
+	raw, rerr := os.ReadFile(metaPath)
+	if rerr != nil {
+		t.Fatalf("read metadata.json: %v", rerr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+	if parsed["matcher_id"] != "apple/media-services" {
+		t.Errorf(`metadata.json matcher_id=%v, want "apple/media-services"`, parsed["matcher_id"])
+	}
+}
+
+// ---------------------------------------------------------------------
 // Compile-time guard: confirm UploadState.Hasher satisfies hash.Hash so
 // the assumption that st.Hasher.Sum(nil) returns the running digest
 // holds regardless of any future store.go evolution.
