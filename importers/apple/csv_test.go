@@ -59,6 +59,40 @@ func TestReadCSVRaggedRowIsError(t *testing.T) {
 	}
 }
 
+// Real Apple media-services exports use non-RFC-4180 backslash-escaped quotes
+// inside quoted fields (e.g. a book title rendered as "\"Who Could That Be at
+// This Hour?\""). Go's strict encoding/csv rejects this with "extraneous or
+// missing \" in quoted-field". The reader must tolerate it (LazyQuotes) so a
+// single malformed-by-spec title does not abort the entire purchase import.
+func TestReadCSVTolueratesBackslashEscapedQuotes(t *testing.T) {
+	in := "Item Description,Content Type\n" +
+		"Normal App,iOS and tvOS Apps\n" +
+		"\"\\\"Who Could That Be at This Hour?\\\"\",Books\n" +
+		"Another App,iOS and tvOS Apps\n"
+
+	var rows []map[string]string
+	err := ReadCSV(strings.NewReader(in), func(row map[string]string) error {
+		cp := make(map[string]string, len(row))
+		for k, v := range row {
+			cp[k] = v
+		}
+		rows = append(rows, cp)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ReadCSV with backslash-escaped quotes: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
+	}
+	if !strings.Contains(rows[1]["Item Description"], "Who Could That Be at This Hour") {
+		t.Fatalf("row1 title = %q, want it to contain the book title", rows[1]["Item Description"])
+	}
+	if rows[2]["Item Description"] != "Another App" {
+		t.Fatalf("row2 title = %q, want \"Another App\" (parsing must continue past the escaped row)", rows[2]["Item Description"])
+	}
+}
+
 func TestReadCSVEmptyInputIsNoHeader(t *testing.T) {
 	err := ReadCSV(strings.NewReader(""), func(map[string]string) error { return nil })
 	if !errors.Is(err, ErrCSVNoHeader) {
