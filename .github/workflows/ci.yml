@@ -339,19 +339,18 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          # 1.27 here (vs 1.26 elsewhere): govulncheck v1.4.0 segfaults
-          # analysing our generics under the 1.26 toolchain (x/tools
-          # ForEachElement / *types.TypeParam panic). 1.27's go/types
-          # dodges it. See glovebox-fslv.
-          go-version: "1.27"
+          go-version: "1.26"
           cache: true
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      # Non-gating for now (glovebox-fslv): the scan still runs and logs, but a
-      # govulncheck tool-crash must not block releases. Re-enable gating (drop
-      # continue-on-error) once the 1.27 toolchain is confirmed to fix the panic.
+      # Non-gating (glovebox-fslv): govulncheck v1.4.0 segfaults analysing our
+      # generics under go1.26 (x/tools ForEachElement / *types.TypeParam panic).
+      # go1.27 dodges it, but actions/setup-go cannot resolve 1.27 yet, so we
+      # tolerate the tool-crash instead of blocking releases. The scan still
+      # runs and logs; Trivy below remains gating. Drop continue-on-error once
+      # a govulncheck/toolchain combo that survives our generics is available.
       - name: Run govulncheck
         continue-on-error: true
         run: govulncheck ./...
