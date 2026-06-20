@@ -321,8 +321,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a v* tag, stamp the chart + appVersion from the tag so the published
+      # chart version always tracks the release. On a plain main push, fall back
+      # to Chart.yaml's version. Previously this always used Chart.yaml's static
+      # version, so tagged releases silently re-published a stale chart
+      # (glovebox-fslv sibling: chart never bumped for v0.6.0).
       - name: Package Helm chart
-        run: helm package charts/glovebox
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+            echo "tagged release: packaging chart version ${V}"
+            helm package charts/glovebox --version "${V}" --app-version "${V}"
+          else
+            helm package charts/glovebox
+          fi
 
       - name: Push Helm chart to GHCR
         run: |
