@@ -110,6 +110,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry recovery (detect via `kubectl logs`, re-auth on workstation
   via `auth.Login`, update 1Password item, wait for ESO sync, verify).
 
+### Fixed
+
+- **Per-source `data_subject` routing (privacy)** -- the mbox importer and
+  the gmail, imap, outlook, linkedin, x, meta, bluesky, jira, and trello
+  connectors dropped the matched routing rule's `data_subject`/`audience`
+  when building items, so personal data (e.g. one person's Gmail Takeout)
+  defaulted to the shared **household** audience group -- recallable by
+  every household agent. All ten now carry the rule's
+  `data_subject`/`audience` through the staging merge chain so an item
+  routes to the intended person's agent (`glovebox-hyvp`, `glovebox-do3z`).
+  The framework also logs a startup warning when a connector has no
+  `data_subject` configured at any level (empty `data_subject_default` and
+  no rule sets one), since such a connector silently defaults to household.
+- **Windows cross-compilation** -- `internal/ingest/archives` (st_dev check)
+  and the `stagingCapacityBytes` quota gauge used `syscall.Stat_t` /
+  `syscall.Statfs` inline, breaking `GOOS=windows` release builds. Both are
+  now split into `//go:build unix` implementations with non-Unix stubs, so
+  the full release matrix (linux, darwin, windows; amd64/arm64) builds.
+
 ### Notes
 
 - This release consolidates all work since `v0.5.0` into a single `v0.6.0`

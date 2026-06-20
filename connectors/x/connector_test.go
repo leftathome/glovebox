@@ -314,6 +314,63 @@ func TestWebhookInvalidSignatureRejected(t *testing.T) {
 	}
 }
 
+func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {
+	tweets := []struct{ ID, Text, AuthorID string }{
+		{ID: "4001", Text: "Personal mention", AuthorID: "555"},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(makeMentionsResponse(tweets...))
+	}))
+	defer srv.Close()
+
+	rules := []connector.Rule{
+		{
+			Match:       "feed:mentions",
+			Destination: "social-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, "12345", []string{"mentions"}, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		if meta["data_subject"] != "e_111111" {
+			t.Errorf("data_subject = %v, want %q (a personal feed must not fall to household)", meta["data_subject"], "e_111111")
+		}
+		audience, ok := meta["audience"].([]interface{})
+		if !ok || len(audience) != 1 || audience[0] != "subject" {
+			t.Errorf("audience = %v, want [subject]", meta["audience"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}
+
 func TestIdentityInMetadata(t *testing.T) {
 	tweets := []struct{ ID, Text, AuthorID string }{
 		{ID: "3001", Text: "Test tweet", AuthorID: "555"},

@@ -1,13 +1,13 @@
 package main
 
 import (
-	"strings"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,10 +38,10 @@ func mockBlueskyServer(t *testing.T, posts []map[string]interface{}) *httptest.S
 		}
 
 		resp := map[string]interface{}{
-			"did":         "did:plc:testuser123",
-			"handle":      body.Identifier,
-			"accessJwt":   "test-access-jwt",
-			"refreshJwt":  "test-refresh-jwt",
+			"did":        "did:plc:testuser123",
+			"handle":     body.Identifier,
+			"accessJwt":  "test-access-jwt",
+			"refreshJwt": "test-refresh-jwt",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
@@ -288,6 +288,53 @@ func TestIdentityInMetadata(t *testing.T) {
 	}
 	if identity["account_id"] != "testuser.bsky.social" {
 		t.Errorf("expected identity account_id 'testuser.bsky.social', got %v", identity["account_id"])
+	}
+}
+
+// TestBuildItemOptions_WiresRuleDataSubjectAndAudience verifies that the matched
+// rule's data_subject/audience are carried onto the staged item so a personal
+// feed does not fall through to the shared household audience.
+func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {
+	posts := []map[string]interface{}{
+		{
+			"uri":       "at://did:plc:testuser123/app.bsky.feed.post/post1",
+			"cid":       "cid-post-1",
+			"author":    map[string]interface{}{"did": "did:plc:testuser123", "handle": "testuser.bsky.social"},
+			"record":    map[string]interface{}{"text": "Personal post", "createdAt": "2024-01-01T12:00:00Z"},
+			"indexedAt": "2024-01-01T12:00:00Z",
+		},
+	}
+
+	srv := mockBlueskyServer(t, posts)
+	defer srv.Close()
+
+	c, stagingDir, stateDir := newTestBlueskyConnector(t, srv.URL)
+	c.matcher = connector.NewRuleMatcher([]connector.Rule{
+		{
+			Match:       "feed:timeline",
+			Destination: "test-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	})
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	metas := readMetadata(t, stagingDir)
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 staged item, got %d", len(metas))
+	}
+
+	meta := metas[0]
+	if meta["data_subject"] != "e_111111" {
+		t.Errorf("data_subject = %v, want %q (a personal feed must not fall to household)", meta["data_subject"], "e_111111")
+	}
+	audience, ok := meta["audience"].([]interface{})
+	if !ok || len(audience) != 1 || audience[0] != "subject" {
+		t.Errorf("audience = %v, want [subject]", meta["audience"])
 	}
 }
 

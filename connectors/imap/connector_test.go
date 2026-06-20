@@ -181,7 +181,7 @@ func setupTestConnector(t *testing.T, mock *mockIMAPClient, rules []connector.Ru
 		},
 		writer:       writer,
 		matcher:      matcher,
-		imapUsername:  username,
+		imapUsername: username,
 		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 		newClient: func() IMAPClient {
 			return mock
@@ -568,5 +568,46 @@ func TestRuleTagsInStagedMetadata(t *testing.T) {
 	}
 	if tags["category"] != "personal" {
 		t.Errorf("expected tag category=personal, got %v", tags["category"])
+	}
+}
+
+// TestRuleDataSubjectAndAudienceInStagedMetadata verifies that a matched
+// rule's data_subject/audience flow into the staged item. A per-person folder
+// must route to that person's agent instead of defaulting to the household
+// audience; these rule fields were previously dropped.
+func TestRuleDataSubjectAndAudienceInStagedMetadata(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	mock := newMockIMAPClient(map[string][]mockMessage{
+		"Personal": {
+			{UID: 1, Raw: makeRawEmail("steve@example.com", "Personal", "Body"), Sender: "steve@example.com", Subject: "Personal", Date: now},
+		},
+	})
+
+	rules := []connector.Rule{
+		{
+			Match:       "folder:Personal",
+			Destination: "messaging",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	c, cp, stagingDir := setupTestConnector(t, mock, rules, "steve@homelab.local")
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+
+	dirs := stagingItemDirs(t, stagingDir)
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 staging item, got %d", len(dirs))
+	}
+
+	meta := readStagingMetadata(t, dirs[0])
+	if meta["data_subject"] != "e_111111" {
+		t.Errorf("expected data_subject=e_111111, got %v", meta["data_subject"])
+	}
+	audience, ok := meta["audience"].([]interface{})
+	if !ok || len(audience) != 1 || audience[0] != "subject" {
+		t.Errorf("expected audience=[subject], got %v", meta["audience"])
 	}
 }

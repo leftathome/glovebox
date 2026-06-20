@@ -107,6 +107,12 @@ func BuildItemOptions(
 		ContentType:      "message/rfc822",
 		Tags:             itemTags,
 		RuleTags:         result.Tags,
+		// glovebox-hyvp: carry the matched rule's data_subject/audience so a
+		// per-person mbox (e.g. Steve's Gmail Takeout) routes to that person's
+		// agent. Empty values fall through to the config default, then to the
+		// household audience (unchanged for unconfigured archives).
+		RuleDataSubject: result.DataSubject,
+		RuleAudience:    result.Audience,
 	}
 
 	return opts, nil

@@ -99,6 +99,8 @@ func (c *JiraConnector) pollProject(ctx context.Context, project string, checkpo
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity: &connector.Identity{
 				Provider:   "jira",
 				AuthMethod: "api_key",

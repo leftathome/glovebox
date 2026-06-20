@@ -322,3 +322,64 @@ func TestRuleTagsInMetadata(t *testing.T) {
 		t.Fatal("no staged items found")
 	}
 }
+
+// TestRuleDataSubjectAndAudienceInMetadata verifies that a matched rule's
+// data_subject/audience flow into the staged item. A per-person work label
+// must route to that person's agent instead of defaulting to the household
+// audience; these rule fields were previously dropped.
+func TestRuleDataSubjectAndAudienceInMetadata(t *testing.T) {
+	issues := []map[string]interface{}{
+		makeIssue("DEV-1", "Subject test", "Open", "Test desc", "2024-01-15T10:00:00.000+0000"),
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(buildSearchResponse(issues))
+	}))
+	defer srv.Close()
+
+	rules := []connector.Rule{
+		{
+			Match:       "project:DEV",
+			Destination: "test-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, srv.URL, []string{"DEV"}, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		if meta["data_subject"] != "e_111111" {
+			t.Errorf("expected data_subject=e_111111, got %v", meta["data_subject"])
+		}
+		audience, ok := meta["audience"].([]interface{})
+		if !ok || len(audience) != 1 || audience[0] != "subject" {
+			t.Errorf("expected audience=[subject], got %v", meta["audience"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}

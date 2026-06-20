@@ -35,6 +35,35 @@ func TestBuildItemOptions_RoutesByGmailLabel(t *testing.T) {
 	}
 }
 
+// glovebox-hyvp: a per-person mbox (e.g. Steve's Gmail Takeout) must carry the
+// matched rule's data_subject/audience so triage routes it to THAT person's
+// agent instead of household-wide. The rule fields were previously dropped.
+func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {
+	matcher := newTestMatcher([]connector.Rule{
+		{Match: "label:Personal", Destination: "messaging", DataSubject: "e_111111", Audience: []string{"subject"}},
+		{Match: "*", Destination: "general"},
+	})
+
+	msg := &Message{
+		From:        "steve@example.com",
+		Subject:     "Personal mail",
+		Date:        time.Date(2026, 4, 11, 12, 0, 0, 0, time.UTC),
+		GmailLabels: []string{"Personal"},
+		ByteOffset:  2048,
+	}
+
+	opts, err := BuildItemOptions(msg, matcher, "steve-takeout-2026", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.RuleDataSubject != "e_111111" {
+		t.Errorf("RuleDataSubject = %q, want %q (a person's mbox must not fall to household)", opts.RuleDataSubject, "e_111111")
+	}
+	if len(opts.RuleAudience) != 1 || opts.RuleAudience[0] != "subject" {
+		t.Errorf("RuleAudience = %v, want [subject]", opts.RuleAudience)
+	}
+}
+
 func TestBuildItemOptions_FallsThroughToWildcard(t *testing.T) {
 	matcher := newTestMatcher([]connector.Rule{
 		{Match: "label:INBOX", Destination: "messaging"},

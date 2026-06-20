@@ -135,6 +135,8 @@ func (c *MetaConnector) pollFeed(ctx context.Context, checkpoint connector.Check
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity:         &connector.Identity{Provider: "meta", AuthMethod: "oauth"},
 		})
 		if err != nil {
@@ -254,6 +256,8 @@ func (c *MetaConnector) handleWebhookEvent(w http.ResponseWriter, r *http.Reques
 		DestinationAgent: result.Destination,
 		ContentType:      "application/json",
 		RuleTags:         result.Tags,
+		RuleDataSubject:  result.DataSubject,
+		RuleAudience:     result.Audience,
 		Identity:         &connector.Identity{Provider: "meta", AuthMethod: "webhook"},
 	})
 	if err != nil {

@@ -129,6 +129,8 @@ func (c *LinkedInConnector) pollFeed(ctx context.Context, feedType string, check
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity:         &connector.Identity{Provider: "linkedin", AuthMethod: "oauth"},
 		})
 		if err != nil {

@@ -1,13 +1,13 @@
 package main
 
 import (
-	"strings"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +206,60 @@ func TestIdentityFieldsInMetadata(t *testing.T) {
 		}
 		if identity["auth_method"] != "oauth" {
 			t.Errorf("expected identity auth_method 'oauth', got %v", identity["auth_method"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}
+
+func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(makeShares("s400"))
+	}))
+	defer srv.Close()
+
+	feedTypes := []string{"shares"}
+	rules := []connector.Rule{
+		{
+			Match:       "feed:shares",
+			Destination: "test-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, feedTypes, srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		if meta["data_subject"] != "e_111111" {
+			t.Errorf("data_subject = %v, want %q (a personal feed must not fall to household)", meta["data_subject"], "e_111111")
+		}
+		audience, ok := meta["audience"].([]interface{})
+		if !ok || len(audience) != 1 || audience[0] != "subject" {
+			t.Errorf("audience = %v, want [subject]", meta["audience"])
 		}
 	}
 	if !found {

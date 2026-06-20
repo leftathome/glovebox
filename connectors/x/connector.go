@@ -127,6 +127,8 @@ func (c *XConnector) pollMentions(ctx context.Context, checkpoint connector.Chec
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity: &connector.Identity{
 				Provider:   "x",
 				AuthMethod: "oauth",
@@ -264,6 +266,8 @@ func (c *XConnector) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		DestinationAgent: result.Destination,
 		ContentType:      "application/json",
 		RuleTags:         result.Tags,
+		RuleDataSubject:  result.DataSubject,
+		RuleAudience:     result.Audience,
 		Identity: &connector.Identity{
 			Provider:   "x",
 			AuthMethod: "webhook",

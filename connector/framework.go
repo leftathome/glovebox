@@ -74,6 +74,25 @@ func (f *Framework) PollInterval() time.Duration {
 // NewFramework does not install signal handlers and does not run the
 // poll/watch loop. Callers drive the runtime on top of the returned
 // Framework and must call (*Framework).Shutdown when finished.
+// dataSubjectConfigured reports whether a connector sets data_subject at any
+// level -- a non-empty data_subject_default or at least one rule with a
+// data_subject. When false, every staged item lacks a subject and the routing
+// gate leaves audience at the household default (shared with the whole
+// household). For personal-data sources (email, social, work tools) that is a
+// privacy footgun; the operator should set data_subject_default or a per-rule
+// data_subject. Household-scoped sources (public feeds) can ignore the warning.
+func dataSubjectConfigured(cfg BaseConfig) bool {
+	if cfg.DataSubjectDefault != "" {
+		return true
+	}
+	for _, r := range cfg.Rules {
+		if r.DataSubject != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func NewFramework(opts Options) (*Framework, error) {
 	if opts.HealthPort == 0 {
 		opts.HealthPort = 8080
@@ -128,6 +147,10 @@ func NewFramework(opts Options) (*Framework, error) {
 	}
 	backend.SetConfigDataSubject(baseCfg.DataSubjectDefault)
 	backend.SetConfigAudience(baseCfg.AudienceDefault)
+	if !dataSubjectConfigured(baseCfg) {
+		logger.Warn("no data_subject configured (data_subject_default empty and no rule sets data_subject); " +
+			"staged items will default to the household audience group, shared with the whole household")
+	}
 
 	metrics, err := NewMetrics(opts.Name)
 	if err != nil {

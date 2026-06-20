@@ -138,6 +138,8 @@ func (c *TrelloConnector) pollBoard(ctx context.Context, board BoardConfig, chec
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity:         &connector.Identity{Provider: "trello", AuthMethod: "api_key"},
 		})
 		if err != nil {

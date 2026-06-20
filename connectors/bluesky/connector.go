@@ -151,6 +151,8 @@ func (c *BlueskyConnector) Poll(ctx context.Context, checkpoint connector.Checkp
 			DestinationAgent: result.Destination,
 			ContentType:      "application/json",
 			RuleTags:         result.Tags,
+			RuleDataSubject:  result.DataSubject,
+			RuleAudience:     result.Audience,
 			Identity: &connector.Identity{
 				Provider:   "bluesky",
 				AuthMethod: "app_password",

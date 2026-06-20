@@ -220,25 +220,6 @@ func verifySameFilesystem(stagingRoot string) error {
 	return nil
 }
 
-// statDev returns the Stat_t.Dev field for path on Linux. On other
-// platforms it returns 0 (so the comparison always passes); this
-// matches the spec note that the same-filesystem check is a Linux
-// production hardening, not a portability concern.
-func statDev(path string) (uint64, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0, err
-	}
-	sys := fi.Sys()
-	if sys == nil {
-		return 0, nil
-	}
-	if st, ok := sys.(*syscall.Stat_t); ok {
-		return uint64(st.Dev), nil
-	}
-	return 0, nil
-}
-
 // mountArchive503 attaches the 503 fallback to /v1/archives and
 // /v1/archives/ on the mux. The fallback responds with Retry-After: 60
 // and a plain-text body so clients know to back off.

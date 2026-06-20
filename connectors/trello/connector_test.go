@@ -1,13 +1,13 @@
 package main
 
 import (
-	"strings"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -361,6 +361,101 @@ func TestRuleTagsInMetadata(t *testing.T) {
 		}
 		if tags["priority"] != "medium" {
 			t.Errorf("expected tag priority 'medium', got %v", tags["priority"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}
+
+// TestRuleDataSubjectAndAudienceInMetadata verifies that a matched rule's
+// data_subject/audience flow into the staged item. A per-person work board
+// must route to that person's agent instead of defaulting to the household
+// audience; these rule fields were previously dropped.
+func TestRuleDataSubjectAndAudienceInMetadata(t *testing.T) {
+	actions := []map[string]interface{}{
+		{
+			"id":   "action-030",
+			"type": "moveCard",
+			"date": "2024-06-15T12:00:00.000Z",
+			"data": map[string]interface{}{
+				"card": map[string]interface{}{
+					"name": "Subject card",
+				},
+			},
+			"memberCreator": map[string]interface{}{
+				"fullName": "Diana",
+			},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fakeTrelloActions(actions)))
+	}))
+	defer srv.Close()
+
+	stagingDir := t.TempDir()
+	stateDir := t.TempDir()
+
+	writer, err := connector.NewStagingWriter(stagingDir, "trello")
+	if err != nil {
+		t.Fatalf("NewStagingWriter: %v", err)
+	}
+
+	rules := []connector.Rule{
+		{
+			Match:       "board:subject-board",
+			Destination: "test-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	matcher := connector.NewRuleMatcher(rules)
+
+	boards := []BoardConfig{{ID: "board-subject", Name: "subject-board"}}
+	c := &TrelloConnector{
+		config: Config{
+			Boards: boards,
+		},
+		apiKey:       "test-key",
+		token:        "test-token",
+		writer:       writer,
+		matcher:      matcher,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		baseURL:      srv.URL,
+		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
+	}
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		if meta["data_subject"] != "e_111111" {
+			t.Errorf("expected data_subject=e_111111, got %v", meta["data_subject"])
+		}
+		audience, ok := meta["audience"].([]interface{})
+		if !ok || len(audience) != 1 || audience[0] != "subject" {
+			t.Errorf("expected audience=[subject], got %v", meta["audience"])
 		}
 	}
 	if !found {

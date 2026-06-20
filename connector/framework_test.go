@@ -39,6 +39,26 @@ func waitForPort(t *testing.T, port int, timeout time.Duration) {
 	t.Fatalf("port %d did not become ready within %v", port, timeout)
 }
 
+func TestDataSubjectConfigured(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  BaseConfig
+		want bool
+	}{
+		{"nothing set", BaseConfig{}, false},
+		{"config default set", BaseConfig{DataSubjectDefault: "e_111111"}, true},
+		{"rule sets data_subject", BaseConfig{Rules: []Rule{{Match: "*", Destination: "x", DataSubject: "e_111111"}}}, true},
+		{"rules without data_subject", BaseConfig{Rules: []Rule{{Match: "*", Destination: "x"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dataSubjectConfigured(tc.cfg); got != tc.want {
+				t.Errorf("dataSubjectConfigured = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewFramework_Bootstrap(t *testing.T) {
 	port := pickPort(t)
 	mock := &mockPollConnector{}

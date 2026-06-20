@@ -89,7 +89,12 @@ func (c *OutlookConnector) Poll(ctx context.Context, cp connector.Checkpoint) er
 				DestinationAgent: result.Destination,
 				ContentType:      "text/plain",
 				RuleTags:         result.Tags,
-				Identity:         identity,
+				// Carry the matched rule's data_subject/audience so a
+				// per-person folder routes to that person's agent. Empty
+				// values fall through to the config default, then household.
+				RuleDataSubject: result.DataSubject,
+				RuleAudience:    result.Audience,
+				Identity:        identity,
 			})
 			if err != nil {
 				return fmt.Errorf("create staging item: %w", err)

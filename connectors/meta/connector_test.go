@@ -293,6 +293,59 @@ func TestWebhookInvalidSignatureRejected(t *testing.T) {
 	}
 }
 
+func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(makeFeedResponse("page_400"))
+	}))
+	defer srv.Close()
+
+	rules := []connector.Rule{
+		{
+			Match:       "platform:facebook",
+			Destination: "test-agent",
+			DataSubject: "e_111111",
+			Audience:    []string{"subject"},
+		},
+	}
+	c, stagingDir, stateDir := newTestConnector(t, "123456", srv.URL, rules)
+	cp := newCheckpoint(t, stateDir)
+
+	if err := c.Poll(context.Background(), cp); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	entries, _ := os.ReadDir(stagingDir)
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found = true
+		metaPath := filepath.Join(stagingDir, e.Name(), "metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+
+		if meta["data_subject"] != "e_111111" {
+			t.Errorf("data_subject = %v, want %q (a personal feed must not fall to household)", meta["data_subject"], "e_111111")
+		}
+		audience, ok := meta["audience"].([]interface{})
+		if !ok || len(audience) != 1 || audience[0] != "subject" {
+			t.Errorf("audience = %v, want [subject]", meta["audience"])
+		}
+	}
+	if !found {
+		t.Fatal("no staged items found")
+	}
+}
+
 func TestIdentityInMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
