@@ -1,0 +1,10 @@
+{
+  "data_subject_default": "e_111111",
+  "audience_default": ["subject"],
+  "rules": [
+    {
+      "match": "*",
+      "destination": "apple"
+    }
+  ]
+}
