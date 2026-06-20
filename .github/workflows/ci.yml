@@ -104,7 +104,7 @@ jobs:
 
       - name: Build all binaries
         run: |
-          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/ ./importers/walhelm/; do
+          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/ ./importers/walhelm/ ./importers/apple/; do
             name=$(basename "$target")
             case "$target" in
               .) name="glovebox" ;;
@@ -189,6 +189,9 @@ jobs:
             context: .
           - image: glovebox-walhelm-importer
             dockerfile: ./importers/walhelm/Dockerfile
+            context: .
+          - image: glovebox-apple-importer
+            dockerfile: ./importers/apple/Dockerfile
             context: .
     steps:
       - name: Checkout
