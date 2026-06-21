@@ -430,6 +430,102 @@ schoologyAuthRefresher:
       cpu: 1000m
       memory: 512Mi
 
+# Schoology CONNECTOR (spec 12). Disabled by default; opt-in by setting
+# schoologyConnector.enabled=true. When enabled the chart renders a
+# Deployment, a Service, and a ConfigMap. The Deployment consumes the
+# -schoology-session Secret (a single credentials.json) produced by the
+# schoologyAuthRefresher ExternalSecret, so in a real install both
+# schoologyConnector.enabled and schoologyAuthRefresher.enabled are set.
+schoologyConnector:
+  enabled: false
+  image:
+    repository: ghcr.io/leftathome/glovebox-schoology
+    # tag defaults to .Chart.AppVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Optional explicit Schoology tenant host (e.g. yourschool.schoology.com).
+  # When empty (the default) the connector reads SCHOOLOGY_HOST from the
+  # -schoology-refresher-credentials Secret so it always matches the host
+  # the refresher logged into.
+  host: ""
+  # Scheduler timezone (spec 12 §6.1).
+  timezone: America/Los_Angeles
+  # Name of an operator-provisioned Secret holding the bearer token for
+  # POST /v1/poll under key SCHOOLOGY_TRIGGER_TOKEN. Empty leaves the
+  # trigger token unset (the connector then accepts unauthenticated polls
+  # from in-cluster callers reachable via NetworkPolicy).
+  triggerTokenSecret: ""
+  # Framework health/metrics port. The POST /v1/poll trigger listener is
+  # served on healthPort+1.
+  healthPort: 8080
+  # Operator config rendered verbatim into config.json. Per spec 12 §10
+  # kids use opaque labels (k1, k2) -- never legal names -- so PII stays
+  # out of metadata/audit logs. The per-kid rules carry data_subject so
+  # each child's school data routes under its own subject; the wildcard
+  # tail + data_subject_default catch anything unmatched.
+  config:
+    rules:
+      - match: "schoology:k1:assignment"
+        destination: school
+        data_subject: k1
+        audience:
+          - operator
+      - match: "schoology:k1:feed"
+        destination: school
+        data_subject: k1
+        audience:
+          - operator
+      - match: "schoology:k2:assignment"
+        destination: school
+        data_subject: k2
+        audience:
+          - operator
+      - match: "schoology:k2:feed"
+        destination: school
+        data_subject: k2
+        audience:
+          - operator
+      - match: "schoology:message"
+        destination: school
+        data_subject: household
+        audience:
+          - operator
+      - match: "*"
+        destination: school
+        audience:
+          - operator
+    data_subject_default: household
+    audience_default:
+      - operator
+    kids:
+      # REPLACE the placeholder schoology_uid values with each child's real
+      # Schoology UID before enabling the connector -- a 0 UID fails
+      # ValidateConfig at startup.
+      - name: k1
+        schoology_uid: 0
+      - name: k2
+        schoology_uid: 0
+    poll_schedule:
+      weekdays_only: true
+      windows:
+        - start: "07:00"
+          end: "19:00"
+    trigger:
+      debounce_seconds: 60
+      listen_port: 8081
+    attachments:
+      max_size_mb: 25
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
 # Spec 10 (external ingest auth) + spec 13 (archive delivery) wiring.
 # These live at the top-level `ingest:` key (separate from `config.ingest:`,
 # which carries the connector-scale /v1/ingest knobs from spec 08).

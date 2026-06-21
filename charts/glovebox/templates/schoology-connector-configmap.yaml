@@ -1,0 +1,17 @@
+{{- if .Values.schoologyConnector.enabled }}
+# Schoology connector config (spec 12). Rendered verbatim from
+# .Values.schoologyConnector.config into config.json and mounted at
+# /etc/connector/config.json. Operators MUST replace the placeholder
+# schoology_uid values for each kid before enabling the connector.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "glovebox.fullname" . }}-schoology-config
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: schoology
+data:
+  config.json: |
+    {{- .Values.schoologyConnector.config | toJson | nindent 4 }}
+{{- end }}
