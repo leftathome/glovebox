@@ -2,12 +2,12 @@
 # Schoology browser-session refresher (spec 06 §12).
 #
 # A singleton CronJob fires roughly every 12 days, ~48h before the
-# 14-day Schoology session expiry window. The pod drives a headless
-# Chromium through Schoology's native /login form via the
-# schoology-go/auth library, then writes the resulting 5-field session
-# JSON into a Vault KV v2 path. ESO syncs that downstream and the
-# Schoology connector Deployment auto-rolls via its existing checksum
-# annotation.
+# 14-day Schoology session expiry window. The pod drives a remote,
+# cluster-local Browserless browser (BROWSERLESS_URL) through
+# Schoology's native /login form via the schoology-go/auth library
+# (auth.WithBrowserURL), then writes the resulting 5-field session JSON
+# into a Vault KV v2 path. ESO syncs that downstream and the Schoology
+# connector Deployment auto-rolls via its existing checksum annotation.
 #
 # concurrencyPolicy=Forbid + backoffLimit=3 + a non-retried bad-creds
 # exit code (3) form the lockout-safety layers documented in
@@ -78,6 +78,18 @@ spec:
                   value: {{ .Values.schoologyAuthRefresher.vault.kvMount | default "secret" | quote }}
                 - name: VAULT_SESSION_PATH
                   value: {{ .Values.schoologyAuthRefresher.vault.sessionPath | quote }}
+                # Remote Browserless endpoint the refresher drives via
+                # auth.WithBrowserURL (spec 06 §12.10). The connector no
+                # longer bundles Chromium.
+                - name: BROWSERLESS_URL
+                  value: {{ .Values.schoologyAuthRefresher.browserless.url | quote }}
+                {{- if .Values.schoologyAuthRefresher.browserless.tokenSecret.name }}
+                - name: BROWSERLESS_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.schoologyAuthRefresher.browserless.tokenSecret.name | quote }}
+                      key: {{ .Values.schoologyAuthRefresher.browserless.tokenSecret.key | default "token" | quote }}
+                {{- end }}
               envFrom:
                 # SCHOOLOGY_HOST, SCHOOLOGY_USERNAME, SCHOOLOGY_PASSWORD
                 # are projected from this Secret. The Secret itself is

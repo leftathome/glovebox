@@ -9,8 +9,10 @@
 //     VAULT_* configuration from environment variables.
 //  2. Authenticate to Vault using the Kubernetes auth method with the
 //     pod's projected ServiceAccount token (no static Vault token).
-//  3. Call schoology-go/auth.LoginWithPassword to drive a headless
-//     Chromium through Schoology's native Drupal /login form.
+//  3. Call schoology-go/auth.LoginWithPassword to drive a remote
+//     Browserless browser (auth.WithBrowserURL, via BROWSERLESS_URL/
+//     BROWSERLESS_TOKEN) through Schoology's native Drupal /login form.
+//     ROD_BROWSER_PATH stays a local/test fallback to a bundled binary.
 //  4. PUT the resulting *auth.Credentials to a Vault KV v2 path. The
 //     connector Deployment carries a checksum annotation on the rendered
 //     Secret, so writing a new version automatically rolls the connector
@@ -272,14 +274,37 @@ func newVaultClient(ctx context.Context, cfg config) (*vaultapi.Client, error) {
 	return client, nil
 }
 
-// realLogin wires the test seam to auth.LoginWithPassword. The
-// schoology-go library picks up the Chromium binary either via the
-// ROD_BROWSER_PATH env var (when go-rod respects it) or by autodetect;
-// the Dockerfile installs Chromium at /usr/bin/chromium and we pass
-// that through explicitly.
+// browserlessURL builds the rod ControlURL from BROWSERLESS_URL (+ optional
+// BROWSERLESS_TOKEN appended as a query param). Empty BROWSERLESS_URL -> "".
+//
+// When BROWSERLESS_TOKEN is set the token is appended as "?token=..." (or
+// "&token=..." if BROWSERLESS_URL already carries a query string). A token
+// without a URL is meaningless, so BROWSERLESS_URL gates everything.
+func browserlessURL() string {
+	url := os.Getenv("BROWSERLESS_URL")
+	if url == "" {
+		return ""
+	}
+	if token := os.Getenv("BROWSERLESS_TOKEN"); token != "" {
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		return url + sep + "token=" + token
+	}
+	return url
+}
+
+// realLogin wires the test seam to auth.LoginWithPassword. In-cluster the
+// refresher drives a remote Browserless browser: when BROWSERLESS_URL is
+// configured we hand its ControlURL to go-rod via auth.WithBrowserURL.
+// ROD_BROWSER_PATH remains a local/test fallback that points go-rod at a
+// bundled Chromium binary when no Browserless endpoint is set.
 func realLogin(ctx context.Context, host, username, password string) (*auth.Credentials, error) {
 	var opts []auth.Option
-	if bin := os.Getenv("ROD_BROWSER_PATH"); bin != "" {
+	if url := browserlessURL(); url != "" {
+		opts = append(opts, auth.WithBrowserURL(url))
+	} else if bin := os.Getenv("ROD_BROWSER_PATH"); bin != "" {
 		opts = append(opts, auth.WithBrowserBinary(bin))
 	}
 	return auth.LoginWithPassword(ctx, host, username, password, opts...)

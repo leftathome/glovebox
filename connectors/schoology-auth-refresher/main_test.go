@@ -296,6 +296,32 @@ func TestRun_VaultWrite_ResponseError_Structural(t *testing.T) {
 	}
 }
 
+func TestBrowserlessURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		url   string
+		token string
+		want  string
+	}{
+		{"unset", "", "", ""},
+		{"url only", "ws://browserless:3000", "", "ws://browserless:3000"},
+		{"url and token", "ws://browserless:3000", "secret", "ws://browserless:3000?token=secret"},
+		{"url with query and token", "ws://browserless:3000?launch=1", "secret", "ws://browserless:3000?launch=1&token=secret"},
+		// A token with no URL is meaningless; BROWSERLESS_URL gates everything.
+		{"token only", "", "secret", ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BROWSERLESS_URL", tc.url)
+			t.Setenv("BROWSERLESS_TOKEN", tc.token)
+			if got := browserlessURL(); got != tc.want {
+				t.Errorf("browserlessURL(): got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCredentialsToMap(t *testing.T) {
 	t.Parallel()
 	got := credentialsToMap(validCreds())

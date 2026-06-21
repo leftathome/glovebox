@@ -8,7 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
-	github.com/leftathome/schoology-go v0.1.0
+	github.com/leftathome/schoology-go v0.2.0
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/otel v1.43.0

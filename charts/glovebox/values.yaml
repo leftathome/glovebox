@@ -422,6 +422,23 @@ schoologyAuthRefresher:
     secretStoreRef:
       kind: ClusterSecretStore
       name: vault-default
+  # Remote Browserless browser the refresher drives via
+  # auth.WithBrowserURL (spec 06 §12.10). The refresher image no longer
+  # bundles Chromium; it connects out to a cluster-local Browserless
+  # Service instead.
+  browserless:
+    # rod ControlURL for the Browserless endpoint, e.g.
+    # ws://browserless.browserless.svc.cluster.local:3000. Empty (the
+    # default) leaves BROWSERLESS_URL unset, so the binary falls back to
+    # ROD_BROWSER_PATH (local/test only).
+    url: ""
+    # Optional Browserless API token. When tokenSecret.name is set the
+    # CronJob projects BROWSERLESS_TOKEN from secretKeyRef{name,key} and
+    # the binary appends it as a ?token=/&token= query param. Leave name
+    # empty for token-less Browserless deployments.
+    tokenSecret:
+      name: ""
+      key: token
   resources:
     requests:
       cpu: 200m

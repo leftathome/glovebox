@@ -65,8 +65,8 @@ github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zt
 github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
-github.com/leftathome/schoology-go v0.1.0 h1:/5+Lw2LTaVnEzmqNiPH18OAs252aL4k5y1rmsUmqIhE=
-github.com/leftathome/schoology-go v0.1.0/go.mod h1:DDPg9QF3FpV3TNwqvN2vdhcA+LgHgaxCJ88IPxgnvaA=
+github.com/leftathome/schoology-go v0.2.0 h1:InvT8c1PtxQOp01PWfKFT/6gSvKYx3Zq1sTdzFZ7Clk=
+github.com/leftathome/schoology-go v0.2.0/go.mod h1:DDPg9QF3FpV3TNwqvN2vdhcA+LgHgaxCJ88IPxgnvaA=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
