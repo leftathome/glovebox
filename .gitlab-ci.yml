@@ -23,7 +23,7 @@
 
 include:
   - project: 'homelab/ci-templates'
-    ref: main
+    ref: v0.1.0
     file: '/kaniko.yml'
 
 stages:
