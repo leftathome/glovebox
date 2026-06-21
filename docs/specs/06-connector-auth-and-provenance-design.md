@@ -736,3 +736,33 @@ files. Tests stub `auth.LoginWithPassword` and the Vault HTTP API
 (via `httptest.Server`, which the Vault Go client accepts) and cover:
 success path, bad-creds exit, transient-error exit, secret-write
 rejection.
+
+### 12.10 Connection Model: Remote Browserless (Addendum)
+
+Supersedes the bundled-Chromium runtime described in §12.3 (component 2)
+and the Chromium cold-start / `/tmp` notes in §12.4 and the chart.
+
+The refresher no longer ships Chromium inside its own image. Instead it
+drives a **remote, cluster-local Browserless browser** over the Chrome
+DevTools Protocol via `schoology-go/auth.WithBrowserURL` (requires
+`schoology-go >= v0.2.0`). This shrinks the refresher image back to a
+distroless `gcr.io/distroless/static-debian12:nonroot` base (the binary
+is pure-Go, `CGO_ENABLED=0`) and removes the ~150 MiB Debian-slim +
+`chromium` layer, while centralizing browser-runtime upkeep in the
+shared Browserless deployment.
+
+Configuration (env vars, mapped from chart values):
+
+- `BROWSERLESS_URL` (from `schoologyAuthRefresher.browserless.url`,
+  e.g. `ws://browserless.browserless.svc.cluster.local:3000`) -- the rod
+  ControlURL. When set, the binary calls `auth.WithBrowserURL`.
+- `BROWSERLESS_TOKEN` (from
+  `schoologyAuthRefresher.browserless.tokenSecret.{name,key}` via a
+  `secretKeyRef`, rendered only when `tokenSecret.name` is set) -- the
+  binary appends it to the ControlURL as `?token=...` (or `&token=...`
+  if the URL already carries a query string).
+- `ROD_BROWSER_PATH` is retained as a **local/test-only fallback** to a
+  bundled binary, used only when `BROWSERLESS_URL` is empty.
+
+The exit-code contract (§12.4) and lockout-safety layers (§12.5) are
+unchanged.
