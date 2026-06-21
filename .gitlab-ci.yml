@@ -1,27 +1,30 @@
 # GitLab CI configuration for gitlab.orac.local (leftathome/glovebox).
 #
-# PRIMARY (gitlab-first) build + publish pipeline.
+# PRIMARY (gitlab-first) build + publish pipeline. This is the canonical
+# build-and-publish pipeline for the homelab: it runs tests, builds every
+# container image with kaniko, and publishes images + the OCI Helm chart to the
+# built-in Container Registry.
 #
-# This is now the canonical build-and-publish pipeline for the homelab. It runs
-# tests, builds every container image with kaniko, and publishes images + the
-# OCI Helm chart to the gitlab.orac.local built-in Container Registry
-# (registry.orac.local, addressed via $CI_REGISTRY / $CI_REGISTRY_IMAGE).
-# GitHub Actions (.github/workflows/ci.yml) remains as a MIRROR that publishes
-# the same image set to ghcr.io; image naming and tag conventions are kept in
-# sync between the two so artifacts are interchangeable.
+# All homelab-infra detail (node pinning, pod sizing, the in-cluster registry
+# Service, kaniko CA workarounds) lives in the PRIVATE homelab/ci-templates
+# project and is pulled in via the `include:` below. This file is mirrored to
+# public github, so it deliberately contains NO cluster specifics -- only the
+# non-sensitive, project-specific job wiring (image matrix, chart path, etc.).
 #
-# Notes for this runner environment:
-#   * The k8s runner has no docker / DinD, so all image builds use kaniko
-#     (gcr.io/kaniko-project/executor:debug). No buildx, no DinD.
-#   * Registry auth uses the per-job CI token (CI_REGISTRY_USER /
-#     CI_REGISTRY_PASSWORD) written into /kaniko/.docker/config.json.
-#   * glovebox-enricher-runtime is the runtime base for the enricher-capable
-#     connectors/importers; it is built FIRST (build-base) and the dependent
-#     images are built FROM the freshly published base via the ENRICHER_BASE
-#     build-arg (their Dockerfiles default ENRICHER_BASE to the ghcr image so
-#     GitHub Actions keeps working unchanged).
-#   * First golang:1.26 pull on a cold runner can exceed the pod-start timeout;
-#     a re-run after the layer is cached succeeds. Not fixed here.
+# GitHub Actions (.github/workflows/ci.yml) remains a MIRROR that publishes the
+# same image set to ghcr.io; image naming and tag conventions are kept in sync
+# so artifacts are interchangeable. (The enricher Dockerfiles default their
+# ENRICHER_BASE build-arg to the ghcr image, so the GitHub mirror is unaffected
+# by the ENRICHER_BASE override set here.)
+#
+# NOTE: the former build-mr-sanity job (a bespoke --no-push kaniko build on MRs)
+# was dropped -- it needed kaniko infra inlined here, which is no longer allowed
+# in this public-mirrored file. The `test` job remains the MR gate.
+
+include:
+  - project: 'homelab/ci-templates'
+    ref: main
+    file: '/kaniko.yml'
 
 stages:
   - test
@@ -40,6 +43,8 @@ variables:
   # build-base always publishes this tag, so dependent images can FROM it
   # deterministically (no :latest race).
   ENRICHER_TAG: "$CI_COMMIT_SHORT_SHA"
+  # NOTE: KUBERNETES_* pod scheduling/sizing and INTERNAL_REGISTRY_* come from
+  # the included homelab/ci-templates global variables -- do not redefine here.
 
 cache:
   key:
@@ -49,8 +54,20 @@ cache:
     - .cache/go/pkg/mod
     - .cache/go-build
 
+# Local anchor: build/publish only on main and tags (within this one file --
+# anchors do not cross the include boundary, which is fine since this is the
+# only place these rules are reused).
+.build_rules: &build_rules
+  - if: '$CI_COMMIT_BRANCH == "main"'
+  - if: '$CI_COMMIT_TAG'
+  # TEMP (glovebox-npsj): exercise build/chart on the feature branch before
+  # merge so the live kaniko/registry/CA behavior is validated. REMOVE before
+  # merging to main.
+  - if: '$CI_COMMIT_BRANCH == "feat/glovebox-npsj-gitlab-pipeline"'
+
 # ---------------------------------------------------------------------------
-# test (existing MR gate -- kept verbatim in intent: vet + race tests)
+# test (MR gate -- vet + race tests). Inherits node selector / pod sizing from
+# the included global variables automatically.
 # ---------------------------------------------------------------------------
 test:
   stage: test
@@ -70,86 +87,28 @@ test:
     - if: '$CI_COMMIT_BRANCH == "feat/glovebox-npsj-gitlab-pipeline"'
 
 # ---------------------------------------------------------------------------
-# Shared kaniko scaffolding.
-#   .kaniko_auth: writes the registry credentials kaniko reads.
-#   .build_rules: build/publish only on main and tags.
-# ---------------------------------------------------------------------------
-.kaniko_auth: &kaniko_auth
-  - mkdir -p /kaniko/.docker
-  - |
-    AUTH=$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')
-    cat > /kaniko/.docker/config.json <<EOF
-    {"auths":{"$CI_REGISTRY":{"auth":"$AUTH"}}}
-    EOF
-
-.build_rules: &build_rules
-  - if: '$CI_COMMIT_BRANCH == "main"'
-  - if: '$CI_COMMIT_TAG'
-  # TEMP (glovebox-npsj): exercise build/chart on the feature branch before
-  # merge so the live kaniko/registry/CA behavior is validated. REMOVE before
-  # merging to main.
-  - if: '$CI_COMMIT_BRANCH == "feat/glovebox-npsj-gitlab-pipeline"'
-
-# ---------------------------------------------------------------------------
 # build-base: the enricher-runtime base image. MUST publish before `build`
 # so enricher-based connectors/importers can FROM it.
 # ---------------------------------------------------------------------------
 build-base:
+  extends: .kaniko-build
   stage: build-base
-  image:
-    name: gcr.io/kaniko-project/executor:debug
-    entrypoint: [""]
   needs: ["test"]
-  before_script: *kaniko_auth
-  script:
-    - |
-      DEST="--destination $CI_REGISTRY_IMAGE/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        DEST="$DEST --destination $CI_REGISTRY_IMAGE/glovebox-enricher-runtime:latest"
-      fi
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        VERSION="${CI_COMMIT_TAG#v}"
-        DEST="$DEST --destination $CI_REGISTRY_IMAGE/glovebox-enricher-runtime:$VERSION"
-      fi
-    - >-
-      /kaniko/executor
-      --context "$CI_PROJECT_DIR"
-      --dockerfile "$CI_PROJECT_DIR/Dockerfile.enricher-runtime"
-      $DEST
+  variables:
+    IMAGE: glovebox-enricher-runtime
+    DOCKERFILE: Dockerfile.enricher-runtime
   rules: *build_rules
 
 # ---------------------------------------------------------------------------
 # build: every connector + importer + the main image, in parallel via matrix.
-# Enricher-based images (ENRICHER: "1") build FROM the just-published base.
+# Enricher-based images build FROM the just-published base by setting
+# ENRICHER_BASE (referenced by variable name; the literal Service URL lives in
+# the template's INTERNAL_REGISTRY_REPO).
 # ---------------------------------------------------------------------------
 build:
+  extends: .kaniko-build
   stage: build
-  image:
-    name: gcr.io/kaniko-project/executor:debug
-    entrypoint: [""]
   needs: ["build-base"]
-  before_script: *kaniko_auth
-  variables:
-    CONTEXT: "."
-  script:
-    - |
-      DEST="--destination $CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_SHORT_SHA"
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        DEST="$DEST --destination $CI_REGISTRY_IMAGE/$IMAGE:latest"
-      fi
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        VERSION="${CI_COMMIT_TAG#v}"
-        DEST="$DEST --destination $CI_REGISTRY_IMAGE/$IMAGE:$VERSION"
-      fi
-      BUILD_ARGS=""
-      if [ -n "$ENRICHER" ]; then
-        BUILD_ARGS="--build-arg ENRICHER_BASE=$CI_REGISTRY_IMAGE/glovebox-enricher-runtime:$ENRICHER_TAG"
-      fi
-    - >-
-      /kaniko/executor
-      --context "$CI_PROJECT_DIR/$CONTEXT"
-      --dockerfile "$CI_PROJECT_DIR/$DOCKERFILE"
-      $DEST $BUILD_ARGS
   rules: *build_rules
   parallel:
     matrix:
@@ -198,81 +157,55 @@ build:
       # --- connectors (enricher-runtime base) ---
       - IMAGE: glovebox-arxiv
         DOCKERFILE: ./connectors/arxiv/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-gmail
         DOCKERFILE: ./connectors/gmail/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-imap
         DOCKERFILE: ./connectors/imap/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-outlook
         DOCKERFILE: ./connectors/outlook/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-semantic-scholar
         DOCKERFILE: ./connectors/semantic-scholar/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       # --- importers (enricher-runtime base) ---
       - IMAGE: glovebox-apple-importer
         DOCKERFILE: ./importers/apple/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-mbox-importer
         DOCKERFILE: ./importers/mbox/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-walhelm-importer
         DOCKERFILE: ./importers/walhelm/Dockerfile
-        ENRICHER: "1"
+        ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
 
 # ---------------------------------------------------------------------------
-# build-mr-sanity: on merge requests, do a single no-push kaniko build of the
-# main image as a fast "does it still build" gate. Does not touch the registry.
-# ---------------------------------------------------------------------------
-build-mr-sanity:
-  stage: build
-  image:
-    name: gcr.io/kaniko-project/executor:debug
-    entrypoint: [""]
-  needs: ["test"]
-  script:
-    - >-
-      /kaniko/executor
-      --context "$CI_PROJECT_DIR"
-      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
-      --no-push
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-# ---------------------------------------------------------------------------
-# chart: package + push the Helm chart as an OCI artifact.
-# Mirrors the GitHub fix: on a tag, stamp version/appVersion from the tag.
+# chart: package + push the Helm chart as an OCI artifact. On a tag, the chart
+# version/appVersion are stamped from the tag by the template.
 # ---------------------------------------------------------------------------
 chart:
+  extends: .helm-push
   stage: chart
-  image:
-    name: alpine/helm:latest
-    entrypoint: [""]
-  script:
-    - helm registry login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
-    - |
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        V="${CI_COMMIT_TAG#v}"
-        echo "tagged release: packaging chart version ${V}"
-        helm package charts/glovebox --version "${V}" --app-version "${V}"
-      else
-        helm package charts/glovebox
-      fi
-    - helm push glovebox-*.tgz "oci://$CI_REGISTRY_IMAGE/charts"
+  needs: ["build"]
+  variables:
+    CHART_PATH: charts/glovebox
   rules: *build_rules
 
 # ---------------------------------------------------------------------------
 # release: create a GitLab Release for the tag.
 #
 # allow_failure is true for now: the orac instance uses a PRIVATE CA, and
-# release-cli may fail TLS verification against the GitLab API on the first
-# run. If that happens, the fix is to trust the orac CA in the runner image
-# (mount/append the CA bundle) or, as a stopgap, set GIT_SSL_NO_VERIFY=true /
-# the release-cli equivalent. Until the CA is wired in, a TLS hiccup here must
-# not fail the whole pipeline -- the images and chart are already published by
-# the time we reach this stage. Remove allow_failure once the CA is trusted.
+# release-cli talks to the GitLab API over HTTPS, which the executor pod can't
+# verify (the cluster CA isn't mounted into job pods) -- so this call hits x509
+# unknown-authority, exactly the CA problem the build/chart jobs route AROUND by
+# using the in-cluster registry Service over plain HTTP. There is no plain-HTTP
+# equivalent for the GitLab API, hence allow_failure. The fix is to trust the
+# orac CA in the runner image (mount/append the CA bundle). Until then, a TLS
+# hiccup here must not fail the whole pipeline -- the images and chart are
+# already published by the time we reach this stage. Remove allow_failure once
+# the CA is trusted.
 # ---------------------------------------------------------------------------
 release:
   stage: release
