@@ -77,26 +77,36 @@ func ProcessFeed(
 	// poll. All row-parse failures collapse to a single "row_parse"
 	// bucket — matches the assignments + messages processors so an
 	// operator dashboarding on error_class doesn't see arbitrary
-	// per-surface taxonomies.
+	// per-surface taxonomies. Observe EVERY error first so AffectedCount
+	// reflects the full tally, then emit the single receipt AFTER the
+	// loop — emitting inside the loop would freeze the count at the first
+	// observation (=1) instead of the final total (spec 12 §11.3).
+	const rowErrorClass = "row_parse"
+	var shouldEmit bool
+	var repErr *schoologylib.Error
 	for _, pe := range parseErrs {
 		if pe == nil {
 			continue
 		}
-		const errorClass = "row_parse"
 		// Per-occurrence failure counter — fires for every row parse error.
-		tel.RecordParseFailure("feed", errorClass, kid.Name, "feed")
-		receiptEmitted := dedup.Observe("feed", errorClass, "")
-		errsLogged = true
-		if receiptEmitted {
-			emitFeedRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
-			tel.RecordParseFailureReceipt("feed", errorClass)
+		tel.RecordParseFailure("feed", rowErrorClass, kid.Name, "feed")
+		if dedup.Observe("feed", rowErrorClass, "") {
+			shouldEmit = true
 		}
+		if repErr == nil {
+			repErr = pe
+		}
+		errsLogged = true
+	}
+	if shouldEmit {
+		emitFeedRowParseReceipt(writer, matcher, kid, libVersion, repErr, rowErrorClass, dedup)
+		tel.RecordParseFailureReceipt("feed", rowErrorClass)
 		slog.Warn("schoology parse failure",
 			"parser", "feed",
-			"error_class", errorClass,
+			"error_class", rowErrorClass,
 			"kid", kid.Name,
-			"receipt_emitted", receiptEmitted,
-			"affected_count", dedup.AffectedCount("feed", errorClass),
+			"receipt_emitted", true,
+			"affected_count", dedup.AffectedCount("feed", rowErrorClass),
 		)
 	}
 
@@ -414,4 +424,3 @@ func emitReceipt(
 		return
 	}
 }
-

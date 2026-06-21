@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,50 @@ func TestProcessFeed_ParseErrorsEmitReceipt(t *testing.T) {
 	}
 	if posts != 1 {
 		t.Errorf("expected 1 staged post, got %d", posts)
+	}
+}
+
+// TestProcessFeed_ParseErrorsAffectedCount confirms that N>1 row-parse
+// failures in one poll produce exactly ONE receipt whose affected_count
+// tag equals N (the final tally), not 1 (the first observation).
+func TestProcessFeed_ParseErrorsAffectedCount(t *testing.T) {
+	writer, stagingDir := newTestWriter(t)
+	matcher := feedRuleMatcher("k1")
+	cp := newTestCheckpoint(t)
+
+	const n = 3
+	parseErrs := schoologylib.ParseErrors{
+		schoologylib.NewParseError("parseFeed: li", "missing timestamp attr on li#1"),
+		schoologylib.NewParseError("parseFeed: li", "missing timestamp attr on li#2"),
+		schoologylib.NewParseError("parseFeed: li", "missing timestamp attr on li#3"),
+	}
+	client := &fakeClient{
+		FeedFunc: func(ctx context.Context, childUID int64) ([]*schoologylib.Post, schoologylib.ParseErrors, error) {
+			return nil, parseErrs, nil
+		},
+	}
+	kid := Kid{Name: "k1", SchoologyUID: 42}
+
+	_, _, errsLogged := ProcessFeed(
+		context.Background(), client, writer, matcher, cp, nil, NewReceiptDedup(),
+		kid, 8, "v0.1.0",
+	)
+	if !errsLogged {
+		t.Error("errsLogged should be true")
+	}
+
+	items := readFeedItems(t, stagingDir)
+	var receipts []staging.ItemMetadata
+	for _, it := range items {
+		if it.Source == "schoology-parse-failure" {
+			receipts = append(receipts, it)
+		}
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("expected exactly 1 parse-failure receipt, got %d (items=%+v)", len(receipts), items)
+	}
+	if got := receipts[0].Tags["affected_count"]; got != strconv.Itoa(n) {
+		t.Errorf("affected_count = %q, want %q (final tally, not first observation)", got, strconv.Itoa(n))
 	}
 }
 
