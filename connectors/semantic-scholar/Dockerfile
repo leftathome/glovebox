@@ -9,7 +9,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /connector ./connector
 # semantic-scholar items are predominantly PDFs; the base image carries pdftotext
 # (poppler-utils) so the pdf enricher's init() check finds its binary and activates.
 # TODO: pin to an immutable tag (semver or sha) once a stable enricher-runtime release exists.
-FROM ghcr.io/leftathome/glovebox-enricher-runtime:latest
+ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
+FROM ${ENRICHER_BASE}
 COPY --from=build /connector /connector
 COPY connectors/semantic-scholar/config.json /etc/connector/config.json
 USER nonroot:nonroot
