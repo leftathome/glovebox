@@ -69,25 +69,36 @@ func ProcessAssignments(
 
 	// Emit one row-parse receipt per unique (parser, errorClass) in this
 	// poll. Per the task spec, keep the classification simple: all rows
-	// collapse to a single "row_parse" bucket.
+	// collapse to a single "row_parse" bucket. We Observe EVERY parse
+	// error first (so AffectedCount reflects the full tally) and emit the
+	// single receipt only AFTER the loop, otherwise the receipt would
+	// capture the count at the first observation (=1) rather than the
+	// final total (spec 12 §11.3).
+	const rowErrorClass = "row_parse"
+	var shouldEmit bool
+	var repErr *schoologylib.Error
 	for _, pe := range parseErrs {
 		if pe == nil {
 			continue
 		}
-		const errorClass = "row_parse"
-		tel.RecordParseFailure("assignments", errorClass, kid.Name, "assignment")
-		receiptEmitted := dedup.Observe("assignments", errorClass, "")
-		errsLogged = true
-		if receiptEmitted {
-			emitAssignmentsRowParseReceipt(writer, matcher, kid, libVersion, pe, errorClass, dedup)
-			tel.RecordParseFailureReceipt("assignments", errorClass)
+		tel.RecordParseFailure("assignments", rowErrorClass, kid.Name, "assignment")
+		if dedup.Observe("assignments", rowErrorClass, "") {
+			shouldEmit = true
 		}
+		if repErr == nil {
+			repErr = pe
+		}
+		errsLogged = true
+	}
+	if shouldEmit {
+		emitAssignmentsRowParseReceipt(writer, matcher, kid, libVersion, repErr, rowErrorClass, dedup)
+		tel.RecordParseFailureReceipt("assignments", rowErrorClass)
 		slog.Warn("schoology parse failure",
 			"parser", "assignments",
-			"error_class", errorClass,
+			"error_class", rowErrorClass,
 			"kid", kid.Name,
-			"receipt_emitted", receiptEmitted,
-			"affected_count", dedup.AffectedCount("assignments", errorClass),
+			"receipt_emitted", true,
+			"affected_count", dedup.AffectedCount("assignments", rowErrorClass),
 		)
 	}
 

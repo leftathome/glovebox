@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -265,6 +266,47 @@ func TestProcessMessages_ParseErrorsEmitReceipt(t *testing.T) {
 	}
 	if threadItems != 1 {
 		t.Errorf("got %d thread items, want 1", threadItems)
+	}
+}
+
+// TestProcessMessages_ParseErrorsAffectedCount confirms that N>1
+// row-parse failures in one poll produce exactly ONE receipt whose
+// affected_count tag equals N (the final tally), not 1.
+func TestProcessMessages_ParseErrorsAffectedCount(t *testing.T) {
+	writer, stagingDir := newTestWriter(t)
+	matcher := messageMatcher()
+	cp := newTestCheckpoint(t)
+	dedup := NewReceiptDedup()
+
+	const n = 3
+	perrs := schoologylib.ParseErrors{
+		schoologylib.NewParseError("parseInbox: tr", "missing subject"),
+		schoologylib.NewParseError("parseInbox: tr", "missing subject"),
+		schoologylib.NewParseError("parseInbox: tr", "missing subject"),
+	}
+	client := &fakeClient{
+		InboxFunc: func(ctx context.Context) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error) {
+			return nil, perrs, nil
+		},
+	}
+
+	_, errsLogged := ProcessMessages(context.Background(), client, writer, matcher, cp, dedup, nil, "v0.1.0")
+	if !errsLogged {
+		t.Errorf("errsLogged = false, want true (parse errors should log)")
+	}
+
+	items := readMessageItems(t, stagingDir)
+	var receipts []staging.ItemMetadata
+	for _, m := range items {
+		if m.Source == "schoology-parse-failure" {
+			receipts = append(receipts, m)
+		}
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("expected exactly 1 parse-failure receipt, got %d (items=%v)", len(receipts), items)
+	}
+	if got := receipts[0].Tags["affected_count"]; got != strconv.Itoa(n) {
+		t.Errorf("affected_count = %q, want %q (final tally, not first observation)", got, strconv.Itoa(n))
 	}
 }
 

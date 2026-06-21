@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -287,6 +288,51 @@ func TestProcessAssignments_ParseErrorsEmitOneReceiptPerPoll(t *testing.T) {
 	}
 	if assignmentCount != 2 {
 		t.Errorf("expected 2 assignment items staged, got %d", assignmentCount)
+	}
+}
+
+// TestProcessAssignments_ParseErrorsAffectedCount confirms that when N>1
+// row-parse failures occur in a single poll, exactly ONE receipt is
+// staged and its affected_count tag equals N (the final tally), not 1.
+// Spec 12 §11.3 requires the receipt to carry the full count.
+func TestProcessAssignments_ParseErrorsAffectedCount(t *testing.T) {
+	writer, stagingDir := newTestWriter(t)
+	kid := Kid{Name: "k1", SchoologyUID: 1001}
+	matcher := assignmentMatcher(kid.Name)
+	cp := newTestCheckpoint(t)
+	dedup := NewReceiptDedup()
+
+	const n = 3
+	parseErrs := schoologylib.ParseErrors{
+		schoologylib.NewParseError("parseOverdueSubmissions: .upcoming-event", "missing assignment link"),
+		schoologylib.NewParseError("parseOverdueSubmissions: .upcoming-event", "missing assignment link"),
+		schoologylib.NewParseError("parseOverdueSubmissions: .upcoming-event", "missing assignment link"),
+	}
+	client := &fakeClient{
+		OverdueSubmissionsFunc: func(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {
+			return nil, parseErrs, nil
+		},
+	}
+
+	_, errsLogged := ProcessAssignments(
+		context.Background(), client, writer, matcher, cp, dedup, nil, kid, "v0.1.0",
+	)
+	if !errsLogged {
+		t.Errorf("errsLogged = false, want true with parse errors present")
+	}
+
+	items := readAssignmentItems(t, stagingDir)
+	var receipts []staging.ItemMetadata
+	for _, m := range items {
+		if m.Source == "schoology-parse-failure" {
+			receipts = append(receipts, m)
+		}
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("expected exactly 1 parse-failure receipt, got %d (items=%v)", len(receipts), items)
+	}
+	if got := receipts[0].Tags["affected_count"]; got != strconv.Itoa(n) {
+		t.Errorf("affected_count = %q, want %q (final tally, not first observation)", got, strconv.Itoa(n))
 	}
 }
 

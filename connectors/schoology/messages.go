@@ -80,23 +80,35 @@ func ProcessMessages(
 		return 0, errsLogged
 	}
 
+	// Observe EVERY row-parse failure first so AffectedCount reflects the
+	// full tally, then emit the single receipt AFTER the loop. Emitting
+	// inside the loop would freeze the receipt's affected_count at the
+	// first observation (=1) instead of the final total (spec 12 §11.3).
+	const rowErrorClass = "row_parse"
+	var shouldEmit bool
+	var repErrMsg string
 	for _, pe := range parseErrs {
 		if pe == nil {
 			continue
 		}
-		tel.RecordParseFailure("messages", "row_parse", "", "message")
-		receiptEmitted := dedup.Observe("messages", "row_parse", "")
-		errsLogged = true
-		if receiptEmitted {
-			emitMessagesReceipt(writer, matcher, dedup, libVersion, "", "row_parse", pe.Error())
-			tel.RecordParseFailureReceipt("messages", "row_parse")
+		tel.RecordParseFailure("messages", rowErrorClass, "", "message")
+		if dedup.Observe("messages", rowErrorClass, "") {
+			shouldEmit = true
 		}
+		if repErrMsg == "" {
+			repErrMsg = pe.Error()
+		}
+		errsLogged = true
+	}
+	if shouldEmit {
+		emitMessagesReceipt(writer, matcher, dedup, libVersion, "", rowErrorClass, repErrMsg)
+		tel.RecordParseFailureReceipt("messages", rowErrorClass)
 		slog.Warn("schoology parse failure",
 			"parser", "messages",
-			"error_class", "row_parse",
+			"error_class", rowErrorClass,
 			"kid", "",
-			"receipt_emitted", receiptEmitted,
-			"affected_count", dedup.AffectedCount("messages", "row_parse"),
+			"receipt_emitted", true,
+			"affected_count", dedup.AffectedCount("messages", rowErrorClass),
 		)
 	}
 
