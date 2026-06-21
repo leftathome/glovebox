@@ -1,0 +1,146 @@
+{{- if .Values.schoologyConnector.enabled }}
+# Schoology connector Deployment (spec 12).
+#
+# Runs the glovebox-schoology connector binary. The binary loads its
+# operator config (rules/kids/poll_schedule/trigger/attachments) from the
+# ConfigMap-mounted config.json and its live Schoology session from the
+# credentials.json the session ExternalSecret materializes.
+#
+# The pod carries two checksum annotations:
+#   checksum/config  -- rolls the pod when the ConfigMap changes.
+#   checksum/session -- rolls the pod when the session ExternalSecret
+#                       template changes; combined with ESO's in-place
+#                       Secret refresh this keeps the connector pinned to
+#                       a usable session (spec 06 §12 / spec 12).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "glovebox.fullname" . }}-schoology
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: schoology
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "glovebox.connectorSelectorLabels" (dict "Chart" .Chart "Release" .Release "Values" .Values "connector" "schoology") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "glovebox.connectorSelectorLabels" (dict "Chart" .Chart "Release" .Release "Values" .Values "connector" "schoology") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/schoology-connector-configmap.yaml") . | sha256sum }}
+        checksum/session: {{ include (print $.Template.BasePath "/schoology-auth-refresher-externalsecret.yaml") . | sha256sum }}
+        {{- if .Values.metrics.annotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.schoologyConnector.healthPort | default 8080 | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "glovebox.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: schoology
+          image: "{{ .Values.schoologyConnector.image.repository }}:{{ .Values.schoologyConnector.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.schoologyConnector.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: GLOVEBOX_INGEST_URL
+              value: "http://{{ include "glovebox.fullname" . }}-ingest:{{ .Values.config.ingest.port }}/v1/ingest"
+            - name: GLOVEBOX_STATE_DIR
+              value: /state
+            - name: GLOVEBOX_CONNECTOR_CONFIG
+              value: /etc/connector/config.json
+            # Single-file session form: the -schoology-session Secret is
+            # mounted read-only at /etc/schoology and auth.LoadCredentials
+            # reads credentials.json from there.
+            - name: SCHOOLOGY_CREDENTIALS_FILE
+              value: /etc/schoology/credentials.json
+            {{- if .Values.schoologyConnector.host }}
+            - name: SCHOOLOGY_HOST
+              value: {{ .Values.schoologyConnector.host | quote }}
+            {{- else }}
+            # Reuse the host the refresher logged into so the connector and
+            # session always agree on the tenant.
+            - name: SCHOOLOGY_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "glovebox.fullname" . }}-schoology-refresher-credentials
+                  key: SCHOOLOGY_HOST
+            {{- end }}
+            - name: SCHOOLOGY_TIMEZONE
+              value: {{ .Values.schoologyConnector.timezone | default "America/Los_Angeles" | quote }}
+            {{- if .Values.schoologyConnector.triggerTokenSecret }}
+            - name: SCHOOLOGY_TRIGGER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.schoologyConnector.triggerTokenSecret | quote }}
+                  key: SCHOOLOGY_TRIGGER_TOKEN
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.schoologyConnector.healthPort | default 8080 }}
+              protocol: TCP
+            # The framework starts the trigger listener (POST /v1/poll) on
+            # HealthPort+1.
+            - name: trigger
+              containerPort: {{ add (.Values.schoologyConnector.healthPort | default 8080) 1 }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.schoologyConnector.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: config
+              mountPath: /etc/connector
+              readOnly: true
+            - name: session
+              mountPath: /etc/schoology
+              readOnly: true
+      {{- with (.Values.schoologyConnector.nodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.schoologyConnector.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.schoologyConnector.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        # State is checkpoint-only (last-seen IDs); emptyDir is sufficient
+        # for v1. A restart re-reads the live Schoology surfaces from the
+        # most recent checkpoint Schoology itself exposes, so a lost
+        # emptyDir at most re-stages a small backlog. Switch to a PVC if
+        # strict de-dup across pod restarts is required.
+        - name: state
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "glovebox.fullname" . }}-schoology-config
+        - name: session
+          secret:
+            secretName: {{ include "glovebox.fullname" . }}-schoology-session
+{{- end }}
