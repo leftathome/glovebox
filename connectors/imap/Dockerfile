@@ -18,7 +18,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /connector ./connector
 # stabilizes. The published base image already runs as nonroot uid/gid 65532
 # so the USER directive below is a drop-in continuation of the prior
 # distroless:nonroot identity.
-FROM ghcr.io/leftathome/glovebox-enricher-runtime:latest
+ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
+FROM ${ENRICHER_BASE}
 COPY --from=build /connector /connector
 COPY connectors/imap/config.json /etc/connector/config.json
 USER nonroot:nonroot
