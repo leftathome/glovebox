@@ -60,10 +60,6 @@ cache:
 .build_rules: &build_rules
   - if: '$CI_COMMIT_BRANCH == "main"'
   - if: '$CI_COMMIT_TAG'
-  # TEMP (glovebox-npsj): exercise build/chart on the feature branch before
-  # merge so the live kaniko/registry/CA behavior is validated. REMOVE before
-  # merging to main.
-  - if: '$CI_COMMIT_BRANCH == "feat/glovebox-npsj-gitlab-pipeline"'
 
 # ---------------------------------------------------------------------------
 # test (MR gate -- vet + race tests). Inherits node selector / pod sizing from
@@ -82,9 +78,6 @@ test:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
-    # TEMP (glovebox-npsj): run test on the feature branch so build-base's
-    # needs:[test] resolves during live validation. REMOVE before merge.
-    - if: '$CI_COMMIT_BRANCH == "feat/glovebox-npsj-gitlab-pipeline"'
 
 # ---------------------------------------------------------------------------
 # build-base: the enricher-runtime base image. MUST publish before `build`
