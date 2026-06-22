@@ -17,9 +17,11 @@ import (
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
-// appleDataSubjectDefault mirrors config.json's data_subject_default: Apple
-// deliveries carry no producer-asserted subject, so the owner's principal is
-// supplied by config and wired into the StagingWriter via SetConfigDataSubject.
+// appleDataSubjectDefault is a synthetic example entity_id standing in for the
+// operator-configured data_subject_default. Apple deliveries carry no
+// producer-asserted subject, so the owner's principal is supplied by config
+// (left empty in the PUBLIC config.json -- glovebox-0nzk) and wired into the
+// StagingWriter via SetConfigDataSubject; this test sets it explicitly.
 const appleDataSubjectDefault = "e_111111"
 
 // testLogger returns a discard logger so test output stays clean.

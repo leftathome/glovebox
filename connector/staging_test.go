@@ -340,19 +340,19 @@ func TestStagingWriter_CommitWritesTags(t *testing.T) {
 
 // TestStagingWriter_CommitWritesConfigDefaultSubjectAudience proves the
 // connector-level data_subject / audience defaults (glovebox-qlkv: the
-// mbox-importer and Gmail "Steve-private" posture) actually land on a
-// committed item's metadata.json when neither a rule nor the item overrides
-// them. This is the merge-chain config-default fallback (spec 11 §5 step 3):
-// every Gmail/mbox item ends up attributed to Steve's opaque entity_id and a
-// Steve-private audience.
+// per-person mbox-importer / Gmail "subject-private" posture an operator
+// configures) actually land on a committed item's metadata.json when neither a
+// rule nor the item overrides them. This is the merge-chain config-default
+// fallback (spec 11 §5 step 3): every Gmail/mbox item ends up attributed to the
+// configured opaque entity_id and a subject-private audience.
 func TestStagingWriter_CommitWritesConfigDefaultSubjectAudience(t *testing.T) {
 	base := t.TempDir()
 	stagingDir := filepath.Join(base, "staging")
 	os.MkdirAll(stagingDir, 0755)
 
 	w, _ := NewStagingWriter(stagingDir, "mbox")
-	w.SetConfigDataSubject("e_111111")       // Steve (registered entity_id)
-	w.SetConfigAudience([]string{"subject"}) // Steve-private
+	w.SetConfigDataSubject("e_111111")       // a registered entity_id
+	w.SetConfigAudience([]string{"subject"}) // subject-private
 
 	item, _ := w.NewItem(ItemOptions{
 		Source:           "mbox",

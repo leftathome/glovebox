@@ -34,7 +34,7 @@ func TestLoad_ParsesValidRegistry(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -72,7 +72,7 @@ func TestResolve_ByPrincipal(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -99,7 +99,7 @@ func TestResolve_ByEntityID_Passthrough(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -127,7 +127,7 @@ func TestResolve_UnknownPrincipal(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -154,7 +154,7 @@ func TestResolve_UnknownEntityID(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -206,7 +206,7 @@ func TestLoad_BadAudienceToken_ReturnsError(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"admin"},
 			},
@@ -226,7 +226,7 @@ func TestLoad_PublicWithSubject_ReturnsError(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"public", "subject"},
 			},
@@ -245,7 +245,7 @@ func TestDefaultAudience(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -270,7 +270,7 @@ func TestDefaultAudience_UnknownEntity_ReturnsNil(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "e_1",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},
@@ -381,7 +381,7 @@ func TestLoad_EmptyEntityID_ReturnsError(t *testing.T) {
 		"subjects": []map[string]any{
 			{
 				"entity_id":        "",
-				"display":          "Steve",
+				"display":          "Example Subject",
 				"principals":       []string{"walhelm:9f2a"},
 				"default_audience": []string{"subject"},
 			},

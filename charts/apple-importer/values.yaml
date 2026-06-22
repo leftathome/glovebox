@@ -85,16 +85,17 @@ config:
         importer: apple
 
   # Spec 11 §3 / spec 15 §5.2 defaults applied to every item lacking a
-  # per-rule override. The Apple export is Steve's own personal data, so
-  # every item is attributed to Steve's opaque entity_id (registered in
-  # charts/glovebox/subjects.json) and defaults to a Steve-private
-  # audience -- this is what routes Apple data to the owner's agent.
-  # data_subject is stamped as the entity_id directly, which the glovebox
-  # subject gate accepts via the registered-entity_id pass-through
-  # (spec 15 §5.2 step 3) -- no raw principal reaches the data plane.
-  dataSubjectDefault: "e_111111"
+  # per-rule override. An Apple export is one person's own personal data, so the
+  # operator should set dataSubjectDefault to that person's opaque entity_id
+  # (registered in their operator-managed subjects.json) and an audience that
+  # routes the data to the owner's agent. data_subject is stamped as the
+  # entity_id directly, which the glovebox subject gate accepts via the
+  # registered-entity_id pass-through (spec 15 §5.2 step 3) -- no raw principal
+  # reaches the data plane. Left empty here so an unconfigured install falls to
+  # the safe household default, NOT a specific person.
+  dataSubjectDefault: ""
   audienceDefault:
-    - subject
+    - household
 
 resources:
   requests:

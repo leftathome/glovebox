@@ -35,7 +35,7 @@ func TestBuildItemOptions_RoutesByGmailLabel(t *testing.T) {
 	}
 }
 
-// glovebox-hyvp: a per-person mbox (e.g. Steve's Gmail Takeout) must carry the
+// glovebox-hyvp: a per-person mbox (e.g. a Gmail Takeout export) must carry the
 // matched rule's data_subject/audience so triage routes it to THAT person's
 // agent instead of household-wide. The rule fields were previously dropped.
 func TestBuildItemOptions_WiresRuleDataSubjectAndAudience(t *testing.T) {

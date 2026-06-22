@@ -1,6 +1,6 @@
 {
-  "data_subject_default": "e_111111",
-  "audience_default": ["subject"],
+  "data_subject_default": "",
+  "audience_default": ["household"],
   "rules": [
     {
       "match": "*",

@@ -133,7 +133,7 @@ func (a *appleImporter) stageMediaServicesPurchases(
 		md := renderPurchasesMarkdown(c.RelName, purchases)
 
 		// Route + provenance through the normal BuildItemOptions path so the
-		// config data_subject (e_111111) and apple_bucket tag are applied. A
+		// configured data_subject and apple_bucket tag are applied. A
 		// synthetic "media-services/<name>.md" RelPath yields a stable rule key
 		// (apple:media-services); the real source path is recorded separately.
 		base := filepath.Base(c.RelName)

@@ -112,8 +112,8 @@ func BuildItemOptions(
 		RuleTags:         result.Tags,
 		// Carry the matched rule's data_subject / audience so an operator can
 		// route a specific Apple bucket to a particular person's agent. Empty
-		// values fall through to the config default (data_subject_default =
-		// e_111111, audience_default = [subject]).
+		// values fall through to the operator-configured defaults
+		// (data_subject_default / audience_default).
 		RuleDataSubject: result.DataSubject,
 		RuleAudience:    result.Audience,
 	}

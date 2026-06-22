@@ -5,7 +5,7 @@
 // lane policy glovebox applies on finalize: the connector kind, the default
 // data_subject, and the default audience marker. This is the "connector
 // registry" of the operator-scanner-lane design §4.2 and the home of the
-// per-connector data_subject_default knob (Steve | household).
+// per-connector data_subject_default knob (operator-set entity_id | household).
 //
 // It deliberately mirrors internal/subject: a JSON file (sources.json) loaded
 // at boot, an enforce flag, and validation via the staging audience rules so a

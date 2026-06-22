@@ -405,21 +405,21 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 
 	rules := []Rule{
 		{
-			Match:       "schoology:bee:grade",
+			Match:       "schoology:child1:grade",
 			Destination: "school",
-			DataSubject: "bee",
+			DataSubject: "child1",
 			Audience:    []string{"subject", "guardians"},
 		},
 		{
-			Match:       "schoology:bee:flyer",
+			Match:       "schoology:child1:flyer",
 			Destination: "school",
 			Audience:    []string{"public"},
 		},
 	}
 	matcher := NewRuleMatcher(rules)
 
-	// Item 1: Child 1's grade (data_subject + role-relative audience).
-	result, _ := matcher.Match("schoology:bee:grade")
+	// Item 1: Child1's grade (data_subject + role-relative audience).
+	result, _ := matcher.Match("schoology:child1:grade")
 	item, err := writer.NewItem(ItemOptions{
 		Source:           "schoology",
 		Sender:           "Mr. Rodriguez",
@@ -441,7 +441,7 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 	}
 
 	// Item 2: flyer (subjectless, public).
-	result2, _ := matcher.Match("schoology:bee:flyer")
+	result2, _ := matcher.Match("schoology:child1:flyer")
 	item2, err := writer.NewItem(ItemOptions{
 		Source:           "schoology",
 		Sender:           "School",
@@ -481,10 +481,10 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 			t.Fatalf("unmarshal metadata: %v", err)
 		}
 		switch m.DataSubject {
-		case "bee":
+		case "child1":
 			foundGrade = true
 			if len(m.Audience) != 2 || m.Audience[0] != "subject" || m.Audience[1] != "guardians" {
-				t.Errorf("bee's grade audience: got %v, want [subject guardians]", m.Audience)
+				t.Errorf("child1's grade audience: got %v, want [subject guardians]", m.Audience)
 			}
 		case "":
 			foundFlyer = true
@@ -496,7 +496,7 @@ func TestIntegration_DataSubjectAudienceEndToEnd(t *testing.T) {
 		}
 	}
 	if !foundGrade {
-		t.Error("did not find bee's grade in staging output")
+		t.Error("did not find child1's grade in staging output")
 	}
 	if !foundFlyer {
 		t.Error("did not find flyer in staging output")
