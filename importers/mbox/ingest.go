@@ -108,7 +108,7 @@ func BuildItemOptions(
 		Tags:             itemTags,
 		RuleTags:         result.Tags,
 		// glovebox-hyvp: carry the matched rule's data_subject/audience so a
-		// per-person mbox (e.g. Steve's Gmail Takeout) routes to that person's
+		// per-person mbox (e.g. a Gmail Takeout export) routes to that person's
 		// agent. Empty values fall through to the config default, then to the
 		// household audience (unchanged for unconfigured archives).
 		RuleDataSubject: result.DataSubject,

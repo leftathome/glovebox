@@ -94,9 +94,11 @@ config:
 # directly -- same model as subjects.json: rendered verbatim into the ConfigMap
 # and mounted at /etc/glovebox/sources.json. It maps an AUTHENTICATED ingest
 # source-id to its connector lane (kind, data_subject_default, audience_default).
-# The recognizer-scanner entry's data_subject_default is the operator knob
-# (e_111111=Steve | household). audience_default ["operator"] keeps scans out of
-# the openclaw per-person triage resolver.
+# The recognizer-scanner entry's data_subject_default is the operator knob: set
+# it per deployment to the entity_id that owns scanner output (left empty here so
+# an unconfigured install falls to the safe household default, NOT a specific
+# person). audience_default ["operator"] keeps scans out of the openclaw
+# per-person triage resolver.
 
 persistence:
   staging:

@@ -24,7 +24,7 @@ func TestConfigJSON_PerKidEntityIDs(t *testing.T) {
 	}
 
 	// Expected data_subject + audience per match key (the connector's actual
-	// match keys; k1=Child 1=e_333333, k2=Casey=e_444444).
+	// match keys; k1=e_333333, k2=e_444444 -- synthetic example entity_ids).
 	wantSubject := map[string]string{
 		"schoology:k1:assignment": "e_333333",
 		"schoology:k1:feed":       "e_333333",

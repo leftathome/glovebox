@@ -256,21 +256,42 @@ func TestSubjectGate_PersistFailureQuarantines(t *testing.T) {
 	}
 }
 
-// realRegistryPath is the committed operator registry shipped in the glovebox
-// Helm chart (charts/glovebox/subjects.json). The two tests below drive the
-// gate with the *real* file rather than a synthetic fixture, so the routing
-// posture that production actually runs is exercised end-to-end (glovebox-ptst).
-const realRegistryPath = "../../charts/glovebox/subjects.json"
-
-// TestSubjectGate_RealRegistryQuarantinesUnregistered: with the committed
-// (enforce=true) registry, an item whose subject is not registered must
-// quarantine rather than leak to a destination -- the fail-closed posture the
-// openclaw glovebox->memory resolver depends on.
-func TestSubjectGate_RealRegistryQuarantinesUnregistered(t *testing.T) {
-	reg, err := subject.Load(realRegistryPath)
-	if err != nil {
-		t.Fatalf("load real registry: %v", err)
+// syntheticRosterRegistry builds an enforcing registry with one registered
+// entity_id and a role-relative default audience -- a stand-in for an operator's
+// real roster. The PUBLIC chart ships a NEUTRAL subjects.json (glovebox-0nzk),
+// so the gate's enforce-on routing posture is exercised against this synthetic
+// fixture rather than the shipped file (which must never bake a household).
+func syntheticRosterRegistry(t *testing.T) *subject.SubjectRegistry {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subjects.json")
+	content := `{
+		"enforce": true,
+		"subjects": [
+			{
+				"entity_id": "e_333333",
+				"display": "Example Child",
+				"principals": [],
+				"default_audience": ["subject", "guardians"]
+			}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write registry: %v", err)
 	}
+	reg, err := subject.Load(path)
+	if err != nil {
+		t.Fatalf("subject.Load: %v", err)
+	}
+	return reg
+}
+
+// TestSubjectGate_EnforcingRosterQuarantinesUnregistered: with an enforce=true
+// registry, an item whose subject is not registered must quarantine rather than
+// leak to a destination -- the fail-closed posture the openclaw glovebox->memory
+// resolver depends on.
+func TestSubjectGate_EnforcingRosterQuarantinesUnregistered(t *testing.T) {
+	reg := syntheticRosterRegistry(t)
 	item, _, _, _, logger := setupGateItem(t, "schoology:k1:assignment-but-not-an-entity-id")
 	defer logger.Close()
 
@@ -283,15 +304,12 @@ func TestSubjectGate_RealRegistryQuarantinesUnregistered(t *testing.T) {
 	}
 }
 
-// TestSubjectGate_RealRegistryPassesRegisteredEntityID: a registered entity_id
-// stamped directly (the connector pass-through posture wired in glovebox-qlkv)
-// resolves to itself and picks up the registry default audience.
-func TestSubjectGate_RealRegistryPassesRegisteredEntityID(t *testing.T) {
-	reg, err := subject.Load(realRegistryPath)
-	if err != nil {
-		t.Fatalf("load real registry: %v", err)
-	}
-	item, _, _, _, logger := setupGateItem(t, "e_333333") // Child 1
+// TestSubjectGate_EnforcingRosterPassesRegisteredEntityID: a registered
+// entity_id stamped directly (the connector pass-through posture wired in
+// glovebox-qlkv) resolves to itself and picks up the registry default audience.
+func TestSubjectGate_EnforcingRosterPassesRegisteredEntityID(t *testing.T) {
+	reg := syntheticRosterRegistry(t)
+	item, _, _, _, logger := setupGateItem(t, "e_333333")
 	defer logger.Close()
 
 	action, err := SubjectGate(&item, reg)

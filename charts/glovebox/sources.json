@@ -4,7 +4,7 @@
     {
       "source_id": "recognizer-scanner",
       "kind": "recognizer-scanner",
-      "data_subject_default": "e_111111",
+      "data_subject_default": "",
       "audience_default": ["operator"]
     }
   ]
