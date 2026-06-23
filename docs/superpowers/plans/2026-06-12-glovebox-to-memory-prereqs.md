@@ -16,12 +16,12 @@ gate); this work is **populating real config + proving it with tests**.
 
 ## Decisions (confirmed with operator 2026-06-12)
 
-- **Subjects:** Steve, Guardian (spouse), Child 1, Casey.
+- **Subjects:** Steve, Guardian (spouse), Child 1, Child 2.
 - **entity_id style:** opaque ids + optional `display` label (spec 15 §5.1).
   Opaque ids are arbitrary-but-stable; `display` is operator legibility only
   and is never emitted into items/routing/audit.
 - **default_audience:** Steve `[subject]`, Guardian `[subject]` (both private),
-  Child 1 `[subject, guardians]`, Casey `[subject, guardians]` (spec 11 §9.1).
+  Child 1 `[subject, guardians]`, Child 2 `[subject, guardians]` (spec 11 §9.1).
 - **Stamping posture:** connectors stamp the **entity_id directly** in
   `data_subject` (the spec 15 §5.2 step-3 "already a registered entity_id"
   pass-through), so delivered items never carry a raw name/principal.
@@ -33,7 +33,7 @@ gate); this work is **populating real config + proving it with tests**.
 | `e_111111` | Steve   | `["subject"]`           |
 | `e_222222` | Guardian    | `["subject"]`           |
 | `e_333333` | Child 1     | `["subject","guardians"]` |
-| `e_444444` | Casey | `["subject","guardians"]` |
+| `e_444444` | Child 2 | `["subject","guardians"]` |
 
 ## glovebox-ptst — subjects.json + enforce
 
@@ -52,7 +52,7 @@ gate); this work is **populating real config + proving it with tests**.
 - [x] `connectors/gmail/config.json`: `data_subject_default: e_111111`,
       `audience_default: ["subject"]`.
 - [x] `connectors/schoology/config.json`: per-kid rules stamp the entity_id in
-      `data_subject` (k1->Child 1 `e_333333`, k2->Casey `e_444444`). Audience
+      `data_subject` (k1->Child 1 `e_333333`, k2->Child 2 `e_444444`). Audience
       posture realized against the connector's *actual* match keys:
       `assignment -> [household]` (spec 11: assignments are household-wide),
       `feed`/`attachment` -> `[subject, guardians]` (a kid's personal activity /
