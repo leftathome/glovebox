@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-24
+
+### Changed
+
+- **gitlab-first release pipeline (glovebox-npsj)**: `.gitlab-ci.yml` now builds
+  and publishes every connector/importer container image (kaniko) and packages
+  the Helm chart as an OCI artifact to the in-cluster registry, with
+  gitlab.orac.local established as the primary build/release target ahead of
+  GitHub. Closes the CI image-coverage gap (glovebox-i8nd).
+
+### Security
+
+- **PII scrub of public artifacts (glovebox-0nzk)**: removed household entity_ids
+  and de-pseudonymizing name comments that were baked as DEFAULTS into the public
+  Helm charts, connector/importer configs, tests, and docs. Public defaults are
+  now neutral (`subjects.json` ships empty with `enforce: false`;
+  `data_subject_default` defaults to `""`, falling through to the safe household
+  audience); real subject bindings belong only in operator-controlled values.
+
+### Note
+
+- Supersedes **v0.6.0**, which was withdrawn from GitHub (its published artifacts
+  carried the identity defaults scrubbed above). v0.6.0 remains available, clean,
+  on the primary GitLab remote. No functional/source code changed between the
+  intended v0.6.0 and this release beyond the scrub.
+
 ## [0.6.0] - 2026-06-19
 
 ### Added
