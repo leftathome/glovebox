@@ -90,6 +90,13 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
 }
 
+// Provider returns the underlying MeterProvider so importer-specific
+// subsystems (e.g. the mbox archive watcher) can register their own meter
+// against the same Prometheus exporter rather than creating a second one.
+func (m *Metrics) Provider() *sdkmetric.MeterProvider {
+	return m.provider
+}
+
 // Shutdown flushes and shuts down the meter provider.
 func (m *Metrics) Shutdown() error {
 	if m.provider != nil {

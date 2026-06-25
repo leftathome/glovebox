@@ -198,3 +198,14 @@ func scrapeMetrics(t *testing.T, m *Metrics) string {
 	raw, _ := io.ReadAll(resp.Body)
 	return string(raw)
 }
+
+func TestMetrics_Provider_NonNil(t *testing.T) {
+	m, err := NewMetrics("test-connector")
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Shutdown() })
+	if m.Provider() == nil {
+		t.Fatal("Provider() = nil, want the underlying MeterProvider")
+	}
+}
