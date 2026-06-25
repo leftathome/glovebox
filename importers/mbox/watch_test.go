@@ -219,3 +219,111 @@ func TestE2E_WatchArchives_PicksUpAndRetires(t *testing.T) {
 		t.Fatal("runCtx did not return after cancel")
 	}
 }
+
+// watchArgs builds runCtx args for watcher mode against the given dirs/server.
+func watchArgs(t *testing.T, archivesDir, filterPath, configPath, stateDir, ingestURL string) []string {
+	t.Helper()
+	return []string{
+		"--watch-archives", archivesDir,
+		"--filter", filterPath,
+		"--config", configPath,
+		"--state-dir", stateDir,
+		"--ingest-url", ingestURL,
+		"--source-name", sourceName,
+		"--poll-interval", "100ms",
+		"--health-port", fmt.Sprintf("%d", freePort(t)),
+	}
+}
+
+// Media-type mismatch: a non-mbox archive is ignored and left untouched.
+func TestE2E_WatchArchives_IgnoresOtherMediaType(t *testing.T) {
+	root := t.TempDir()
+	archivesDir := filepath.Join(root, "archives")
+	mboxPath := writeMbox(t, root, fixtureSpecs[:2])
+	filterPath, configPath, stateDir := writeSupportFiles(t, root)
+	mock := newIngestMock()
+	srv := httptest.NewServer(http.HandlerFunc(mock.handler))
+	t.Cleanup(srv.Close)
+	stageArchive(t, archivesDir, "arch-pst", "archive/pst", "x.pst", mboxPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go runCtx(ctx, watchArgs(t, archivesDir, filterPath, configPath, stateDir, srv.URL))
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+
+	if mock.count() != 0 {
+		t.Errorf("delivered %d items for an unclaimed media_type, want 0", mock.count())
+	}
+	if _, err := os.Stat(filepath.Join(archivesDir, "arch-pst", "metadata.json")); err != nil {
+		t.Errorf("archive should be left in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archivesDir, ".done", "arch-pst")); !os.IsNotExist(err) {
+		t.Error("unclaimed archive must not be retired to .done")
+	}
+}
+
+// Lock contention: a pre-existing .mbox-importer.lock makes the watcher skip.
+func TestE2E_WatchArchives_SkipsLockedArchive(t *testing.T) {
+	root := t.TempDir()
+	archivesDir := filepath.Join(root, "archives")
+	mboxPath := writeMbox(t, root, fixtureSpecs[:2])
+	filterPath, configPath, stateDir := writeSupportFiles(t, root)
+	mock := newIngestMock()
+	srv := httptest.NewServer(http.HandlerFunc(mock.handler))
+	t.Cleanup(srv.Close)
+	stageArchive(t, archivesDir, "arch-locked", "archive/mbox", "all.mbox", mboxPath)
+	if err := acquireLock(filepath.Join(archivesDir, "arch-locked")); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go runCtx(ctx, watchArgs(t, archivesDir, filterPath, configPath, stateDir, srv.URL))
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+
+	if mock.count() != 0 {
+		t.Errorf("delivered %d items for a locked archive, want 0", mock.count())
+	}
+	if _, err := os.Stat(filepath.Join(archivesDir, ".done", "arch-locked")); !os.IsNotExist(err) {
+		t.Error("locked archive must not be retired to .done")
+	}
+}
+
+// Failure path: an archive whose raw/ file is absent fails RunOneShot's survey
+// open; the watcher releases the lock and leaves the archive in place.
+func TestE2E_WatchArchives_FailureLeavesInPlaceAndUnlocks(t *testing.T) {
+	root := t.TempDir()
+	archivesDir := filepath.Join(root, "archives")
+	filterPath, configPath, stateDir := writeSupportFiles(t, root)
+	mock := newIngestMock()
+	srv := httptest.NewServer(http.HandlerFunc(mock.handler))
+	t.Cleanup(srv.Close)
+
+	// Stage metadata.json referencing a raw file we never create.
+	dir := filepath.Join(archivesDir, "arch-broken")
+	if err := os.MkdirAll(filepath.Join(dir, "raw"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"archive_id":"arch-broken","media_type":"archive/mbox","raw_filename":"missing.mbox"}`
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go runCtx(ctx, watchArgs(t, archivesDir, filterPath, configPath, stateDir, srv.URL))
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+
+	if mock.count() != 0 {
+		t.Errorf("delivered %d items for a broken archive, want 0", mock.count())
+	}
+	if _, err := os.Stat(filepath.Join(dir, lockName)); !os.IsNotExist(err) {
+		t.Error("lock should be released after failure")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "metadata.json")); err != nil {
+		t.Errorf("failed archive must be left in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archivesDir, ".done", "arch-broken")); !os.IsNotExist(err) {
+		t.Error("failed archive must not be retired to .done")
+	}
+}
