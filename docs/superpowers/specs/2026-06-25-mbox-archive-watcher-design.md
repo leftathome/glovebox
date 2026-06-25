@@ -101,6 +101,17 @@ Constructs `watcher.New(archivesDir, poll, handler)` where `handler` closes over
 `ctx`, `fw`, `imp`, `mediaTypes`. Calls `w.Run(ctx)` (blocks until ctx
 cancellation). Returns nil on clean shutdown.
 
+**Startup: ensure the watch target exists.** The importer pod may boot before the
+ingest server has created `archives/` on the shared PVC. `runWatch` calls
+`os.MkdirAll(archivesDir, 0o700)` before constructing the watcher so the fsnotify
+watch attaches immediately rather than `internal/watcher` falling back to polling
+and logging `ReadDir` errors until the directory appears (`watcher.go:75-79,138`).
+Creating it at mode 0700 matches the server's own permissions for the directory
+and is harmless if the server created it first.
+
+The `poll` parameter is the value of the `--poll-interval` flag (§3.1); when the
+flag is unset the caller passes the `internal/watcher` default.
+
 ### 3.3 `archiveHandler` (`watch.go`)
 
 Signature adapts to `watcher.ItemHandler` (`func(dirPath string)`). Steps, mapping
@@ -156,6 +167,17 @@ to spec 13 §5.3:
    loop); a pod restart starts with a fresh `seen` map and the lock gone, so the
    archive is retried then. This realizes the agreed "release lock, mark seen"
    behavior.
+
+   **Retry behavior depends on the manifest status the failed run left.** If the
+   failure left `manifest.status=failed` (an unrecoverable error), the retried
+   run hits `Decide`'s `RequireExplicitResume` branch (`importer/resume.go`) —
+   the watcher passes no resume override — and fails fast on every restart until
+   an operator intervenes (clears state or re-runs one-shot with `--resume`).
+   This is the intended realization of §5.3.7's "manual operator intervention
+   recovers"; it is not a livelock (the watcher marks `seen`, so it is one
+   failure per pod lifetime, not a hot loop). If instead the failure left
+   `status=interrupted` (e.g. a transient backend outage mid-run), the retry
+   resumes from the checkpoint as in step 7.
 
 7. **Shutdown mid-run.** `ctx` cancelled during `RunOneShot`: `RunOneShot`
    returns a context error and leaves `manifest.status=interrupted` +
