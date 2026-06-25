@@ -3,4 +3,4 @@ name: mbox-importer
 description: Imports finished mbox archives into glovebox (spec 09) -- a one-shot Job per archive, or a long-running watcher Deployment that auto-picks up spec-13 archive deliveries (spec 13 sec 5.3).
 type: application
 version: 0.2.0
-appVersion: "0.7.0"
+appVersion: "0.6.2"
