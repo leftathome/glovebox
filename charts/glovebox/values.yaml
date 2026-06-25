@@ -63,6 +63,10 @@ config:
   # back down to 4 if needed.
   scanWorkers: 8
   scanTimeoutSeconds: 30
+  # Bounds a single result delivery (file move + audit write). Prevents a wedged
+  # file op on a networked staging/quarantine mount from stalling the result
+  # consumer and deadlocking the pipeline (glovebox-lnzp). 0 disables the bound.
+  deliveryTimeoutSeconds: 30
   scanChunkSizeBytes: 262144
   agentAllowlist:
     - messaging

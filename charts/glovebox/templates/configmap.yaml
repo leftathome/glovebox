@@ -23,6 +23,7 @@ data:
       "sources_file": "/etc/glovebox/sources.json",
       "scan_workers": {{ .Values.config.scanWorkers }},
       "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
+      "delivery_timeout_seconds": {{ .Values.config.deliveryTimeoutSeconds }},
       "scan_chunk_size_bytes": {{ .Values.config.scanChunkSizeBytes }},
       "ingest": {
         "enabled": {{ .Values.config.ingest.enabled }},

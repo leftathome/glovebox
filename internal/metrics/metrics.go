@@ -12,16 +12,17 @@ import (
 )
 
 type Metrics struct {
-	ItemsProcessed    metric.Int64Counter
-	ProcessingDuration metric.Float64Histogram
-	SignalsTriggered   metric.Int64Counter
-	StagingQueueDepth  metric.Int64Gauge
+	ItemsProcessed       metric.Int64Counter
+	ProcessingDuration   metric.Float64Histogram
+	SignalsTriggered     metric.Int64Counter
+	StagingQueueDepth    metric.Int64Gauge
 	QuarantineQueueDepth metric.Int64Gauge
-	PendingItems       metric.Int64Gauge
-	ScanWorkersBusy    metric.Int64Gauge
-	ScanTimeouts       metric.Int64Counter
-	AuditFailures      metric.Int64Counter
-	FailedItems        metric.Int64Gauge
+	PendingItems         metric.Int64Gauge
+	ScanWorkersBusy      metric.Int64Gauge
+	ScanTimeouts         metric.Int64Counter
+	DeliveryTimeouts     metric.Int64Counter
+	AuditFailures        metric.Int64Counter
+	FailedItems          metric.Int64Gauge
 
 	provider *sdkmetric.MeterProvider
 }
@@ -81,6 +82,12 @@ func New() (*Metrics, error) {
 
 	m.ScanTimeouts, err = meter.Int64Counter("glovebox_scan_timeouts_total",
 		metric.WithDescription("Total scan timeouts"))
+	if err != nil {
+		return nil, err
+	}
+
+	m.DeliveryTimeouts, err = meter.Int64Counter("glovebox_delivery_timeouts_total",
+		metric.WithDescription("Total result-delivery timeouts (stuck staging/quarantine mount)"))
 	if err != nil {
 		return nil, err
 	}
