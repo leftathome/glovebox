@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-25
+
+### Added
+
+- **mbox-importer archive-event watcher mode (glovebox-c9zt)**: a long-running
+  `--watch-archives <dir>` mode on the mbox-importer that picks up `archive/mbox`
+  archives finalized into `staging/archives/` by the spec-13 delivery endpoint,
+  drives the existing per-message import pipeline against each, and retires
+  processed archives to `archives/.done/` (spec 13 sec 5.3). Reuses the fsnotify
+  watcher (polling fallback + metadata.json readiness gate); configurable
+  `--media-types` (default `archive/mbox`); per-archive `O_EXCL` advisory lock so
+  multiple replicas/importers never double-pick; on failure the lock is released
+  and the archive left in place for operator recovery.
+- **mbox-importer watcher Deployment (glovebox-j2s0)**: `charts/mbox-importer`
+  gains an opt-in long-running Deployment (`watch.enabled`) that runs the watcher
+  mode in-cluster with `/healthz` + `/readyz` probes and a `Recreate` strategy
+  (RWO archive-storage PVC), coexisting with the existing one-shot import Job.
+
+### Fixed
+
+- **mbox-importer absolute byte offsets across resume (glovebox-gtxt)**: after a
+  resume seek the parser reported byte offsets relative to the seek base, so the
+  `origin_archive` provenance tag and any second-interruption resume offset were
+  wrong. Offsets are now absolute archive positions (`NewScannerAt`); the
+  interrupt/resume e2e test asserts `origin_archive` uniqueness.
+
 ## [0.6.1] - 2026-06-24
 
 ### Changed
