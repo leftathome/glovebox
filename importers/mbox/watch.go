@@ -172,7 +172,12 @@ type archiveWatcher struct {
 	imp         *mboxImporter
 	archivesDir string
 	mediaTypes  map[string]bool
-	metrics     *archiveMetrics
+	// filterPath is the operator-configured filter JSON applied to every
+	// archive (the --filter flag). Empty means no filter. Without this the
+	// importer's default-exclude rules would reject non-includable messages
+	// as ingest errors instead of cleanly filtering them.
+	filterPath string
+	metrics    *archiveMetrics
 }
 
 // handle implements watcher.ItemHandler for one archives/<id>/ directory.
@@ -214,7 +219,7 @@ func (a *archiveWatcher) handle(dir string) {
 
 	log.Info("processing archive")
 	source := filepath.Join(dir, "raw", meta.RawFilename)
-	cfg := importer.RunConfig{SourcePath: source}
+	cfg := importer.RunConfig{SourcePath: source, FilterPath: a.filterPath}
 	runErr := importer.RunOneShot(a.ctx, a.fw, a.imp, cfg)
 
 	if runErr != nil {
@@ -247,7 +252,7 @@ func (a *archiveWatcher) handle(dir string) {
 // server creates it) so the fsnotify watch attaches immediately instead of
 // falling back to polling.
 func runWatch(ctx context.Context, fw *connector.Framework, imp *mboxImporter,
-	archivesDir string, mediaTypes map[string]bool, poll time.Duration) error {
+	archivesDir, filterPath string, mediaTypes map[string]bool, poll time.Duration) error {
 
 	if err := os.MkdirAll(archivesDir, 0o700); err != nil {
 		return fmt.Errorf("ensure archives dir %s: %w", archivesDir, err)
@@ -258,7 +263,7 @@ func runWatch(ctx context.Context, fw *connector.Framework, imp *mboxImporter,
 	}
 	aw := &archiveWatcher{
 		ctx: ctx, fw: fw, imp: imp,
-		archivesDir: archivesDir, mediaTypes: mediaTypes, metrics: am,
+		archivesDir: archivesDir, mediaTypes: mediaTypes, filterPath: filterPath, metrics: am,
 	}
 	fw.Logger.Info("archive watcher started", "archives_dir", archivesDir,
 		"media_types", mediaTypeKeys(mediaTypes), "poll", poll.String())

@@ -79,13 +79,20 @@ func runCtx(ctx context.Context, args []string) int {
 	stagingDir := fs.String("staging-dir", "", "filesystem staging dir if no ingest-url (default: $GLOVEBOX_STAGING_DIR)")
 	healthPort := fs.Int("health-port", 8080, "port for /healthz, /readyz, /metrics")
 	fixedTagFlag := fs.String("fixed-tags", "", "comma-separated key=value pairs appended to every item's tag map")
+	watchArchives := fs.String("watch-archives", "", "run in watcher mode against this archives/ dir (mutually exclusive with --source)")
+	mediaTypes := fs.String("media-types", "", "comma-separated media_type allow-list for watcher mode (default archive/mbox)")
+	pollInterval := fs.Duration("poll-interval", defaultWatchPollInterval, "watcher poll interval backing fsnotify")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	if *source == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: --source is required")
+	if *watchArchives != "" && *source != "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --source and --watch-archives are mutually exclusive")
+		return 2
+	}
+	if *watchArchives == "" && *source == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: one of --source or --watch-archives is required")
 		return 2
 	}
 
@@ -156,6 +163,18 @@ func runCtx(ctx context.Context, args []string) int {
 		sourceName:  *sourceName,
 		concurrency: *concurrency,
 		fixedTags:   fixedTags,
+	}
+
+	if *watchArchives != "" {
+		if err := runWatch(ctx, fw, imp, *watchArchives, *filterPath, parseMediaTypes(*mediaTypes), *pollInterval); err != nil {
+			if ctx.Err() != nil {
+				slog.Warn("watcher stopped", "err", err)
+				return 0
+			}
+			slog.Error("watcher failed", "err", err)
+			return 1
+		}
+		return 0
 	}
 
 	cfg := importer.RunConfig{
