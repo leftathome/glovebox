@@ -47,7 +47,22 @@ func main() {
 // run is the testable entry point: returns the exit code rather than
 // calling os.Exit directly so integration tests (glovebox-7ey eventual
 // scope; deferred for now) can drive it without process-isolation.
+//
+// run installs the OS-signal context and delegates to runCtx. Tests that
+// need to cancel a run mid-flight (e.g. the interruption/resume e2e in
+// glovebox-544) call runCtx directly with a context they control.
 func run(args []string) int {
+	ctx, cancel := signalContext()
+	defer cancel()
+	return runCtx(ctx, args)
+}
+
+// runCtx is the context-injectable core of run. It performs flag parsing,
+// framework bootstrap, and the one-shot import using the caller-supplied
+// ctx for cancellation. run wires ctx to signalContext(); tests wire it
+// to a cancellable context so they can simulate a mid-run interruption
+// without sending a real OS signal.
+func runCtx(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("mbox-importer", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -120,9 +135,6 @@ func run(args []string) int {
 			}
 		}
 	}
-
-	ctx, cancel := signalContext()
-	defer cancel()
 
 	fw, err := connector.NewFramework(connector.Options{
 		Name:       "mbox-importer",
