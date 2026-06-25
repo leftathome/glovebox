@@ -98,9 +98,21 @@ func main() {
 
 	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
 
-	router := pipeline.NewRouter(func(resp pipeline.ScanResponse) error {
-		return deliverResult(resp, cfg, reg, logger, rules.QuarantineThreshold, boostConfig, m)
-	})
+	// Bound each delivery so a wedged file op on a networked staging/quarantine
+	// mount cannot stall the lone result consumer and deadlock the pipeline
+	// (glovebox-lnzp). On timeout the item is left in staging and surfaced via
+	// the delivery_timeouts metric; the consumer moves on.
+	deliver := pipeline.WithTimeout(
+		func(resp pipeline.ScanResponse) error {
+			return deliverResult(resp, cfg, reg, logger, rules.QuarantineThreshold, boostConfig, m)
+		},
+		time.Duration(cfg.DeliveryTimeoutSeconds)*time.Second,
+		func(resp pipeline.ScanResponse) {
+			m.DeliveryTimeouts.Add(context.Background(), 1)
+			log.Printf("delivery timed out for %s (staging/quarantine mount stuck?)", resp.Item.DirPath)
+		},
+	)
+	router := pipeline.NewRouter(deliver)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -201,13 +213,16 @@ func main() {
 		}
 	})
 
-	// Consume scan results and route them
+	// Consume scan results: route them and flush accumulated ordered items
+	// every poll interval, not just at shutdown (glovebox-v815). Runs on a
+	// single goroutine so the router's pending map is never accessed
+	// concurrently; closed when pool.Output() closes during shutdown.
+	consumerDone := make(chan struct{})
 	go func() {
-		for resp := range pool.Output() {
-			if err := router.Route(resp); err != nil {
-				log.Printf("route error: %v", err)
-			}
-		}
+		pipeline.ConsumeResults(pool.Output(), router,
+			time.Duration(cfg.PollIntervalSeconds)*time.Second,
+			func(err error) { log.Printf("route error: %v", err) })
+		close(consumerDone)
 	}()
 
 	go w.Run(ctx)
@@ -261,7 +276,11 @@ func main() {
 
 	cancel()
 
-	// Flush ordered items
+	// Wait for the result consumer to stop before the final flush so the
+	// router's pending map is not accessed concurrently.
+	<-consumerDone
+
+	// Flush any ordered items accumulated since the last periodic flush.
 	if err := router.Flush(); err != nil {
 		log.Printf("flush error: %v", err)
 	}

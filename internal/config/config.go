@@ -91,33 +91,39 @@ type IngestArchivesConfig struct {
 }
 
 type Config struct {
-	StagingDir          string       `json:"staging_dir"`
-	QuarantineDir       string       `json:"quarantine_dir"`
-	AuditDir            string       `json:"audit_dir"`
-	FailedDir           string       `json:"failed_dir"`
-	AgentsDir           string       `json:"agents_dir"`
-	SharedDir           string       `json:"shared_dir"`
-	AgentAllowlist      []string     `json:"agent_allowlist"`
-	MetricsPort         int          `json:"metrics_port"`
-	WatchMode           string       `json:"watch_mode"`
-	PollIntervalSeconds int          `json:"poll_interval_seconds"`
-	RulesFile           string       `json:"rules_file"`
-	ScanWorkers         int          `json:"scan_workers"`
-	ScanTimeoutSeconds  int          `json:"scan_timeout_seconds"`
-	ScanChunkSizeBytes  int          `json:"scan_chunk_size_bytes"`
-	SubjectsFile        string       `json:"subjects_file"`
-	SourcesFile         string       `json:"sources_file"`
-	Ingest              IngestConfig `json:"ingest"`
+	StagingDir          string   `json:"staging_dir"`
+	QuarantineDir       string   `json:"quarantine_dir"`
+	AuditDir            string   `json:"audit_dir"`
+	FailedDir           string   `json:"failed_dir"`
+	AgentsDir           string   `json:"agents_dir"`
+	SharedDir           string   `json:"shared_dir"`
+	AgentAllowlist      []string `json:"agent_allowlist"`
+	MetricsPort         int      `json:"metrics_port"`
+	WatchMode           string   `json:"watch_mode"`
+	PollIntervalSeconds int      `json:"poll_interval_seconds"`
+	RulesFile           string   `json:"rules_file"`
+	ScanWorkers         int      `json:"scan_workers"`
+	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
+	// DeliveryTimeoutSeconds bounds a single result delivery (file move +
+	// audit write). It prevents a wedged file op on a networked staging mount
+	// from stalling the lone result-consumer goroutine and deadlocking the
+	// whole scan pipeline (glovebox-lnzp). 0 disables the bound.
+	DeliveryTimeoutSeconds int          `json:"delivery_timeout_seconds"`
+	ScanChunkSizeBytes     int          `json:"scan_chunk_size_bytes"`
+	SubjectsFile           string       `json:"subjects_file"`
+	SourcesFile            string       `json:"sources_file"`
+	Ingest                 IngestConfig `json:"ingest"`
 }
 
 func LoadConfig(path string) (Config, error) {
 	cfg := Config{
-		MetricsPort:         9090,
-		WatchMode:           "fsnotify",
-		PollIntervalSeconds: 5,
-		ScanWorkers:         4,
-		ScanTimeoutSeconds:  30,
-		ScanChunkSizeBytes:  262144,
+		MetricsPort:            9090,
+		WatchMode:              "fsnotify",
+		PollIntervalSeconds:    5,
+		ScanWorkers:            4,
+		ScanTimeoutSeconds:     30,
+		DeliveryTimeoutSeconds: 30,
+		ScanChunkSizeBytes:     262144,
 		Ingest: IngestConfig{
 			Enabled:               true,
 			Port:                  9091,
@@ -214,6 +220,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("GLOVEBOX_SCAN_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ScanTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("GLOVEBOX_DELIVERY_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.DeliveryTimeoutSeconds = n
 		}
 	}
 	if v := os.Getenv("GLOVEBOX_INGEST_ENABLED"); v != "" {
