@@ -655,7 +655,7 @@ Add imports: `sort`, `time`, `github.com/leftathome/glovebox/connector`, `github
 - [ ] **Step 3: Verify the build and existing tests stay green**
 
 Run: `go build ./... && go test ./importers/mbox/`
-Expected: build OK; all existing mbox tests PASS (no behavior change to the one-shot path yet — `runWatch` is not yet wired into `main.go`). The `archiveWatcher`/`runWatch` symbols are now referenced by package-internal tests added next; if Go reports them unused at this point, proceed to Task 8 which exercises them (or temporarily reference them in a `_ = runWatch` build check — remove before commit).
+Expected: build OK; all existing mbox tests PASS (no behavior change to the one-shot path yet — `runWatch` is not yet wired into `main.go`). Note: Go does not fail the build on unused package-level functions/types, so `runWatch`/`archiveWatcher` being uncalled here is fine. The build risk to watch for is an *unused import*; every import this task adds (`connector`, `importer`, `internal/watcher`, `sort`, `time`, plus `context`/`encoding/json`/`os`/`path/filepath`/`strings`/`fmt` from earlier tasks and the OTel packages) is referenced in the bodies above, so the build is clean.
 
 - [ ] **Step 4: Commit**
 
@@ -996,3 +996,5 @@ bd close glovebox-c9zt
 - The Helm Deployment workload (running this as a long-lived Deployment vs. a Job) is **out of scope** — file a follow-up bead, sibling to `glovebox-3d4m`.
 - Delivery follows the GitLab-first workflow; the `glab mr create` subcommand fails in this environment's snap sandbox, so use the `glab api` MR-create form shown in Task 11.
 - `gofmt -l` flags some pre-existing files in this tree (untar.go, worker.go, etc.) — those are not ours; only ensure the files this plan touches are clean.
+- **Per-archive manifest isolation holds (verified).** `ManifestPath`/`SurveyPath`/`CheckpointPath` (`importers/mbox/manifest.go:143`, `survey.go:106`, `checkpoint.go:45`) all return `sourcePath + suffix`. Each archive's `sourcePath` is `archives/<unique-archive_id>/raw/<filename>`, so two archives that happen to share a `raw_filename` (e.g. both `all.mbox`) still get distinct sidecar files. The `--state-dir` passed in tests is framework/connector state, not these importer sidecars, so there is no cross-archive collision.
+- **watch_test.go imports:** the test snippets use `context`, `fmt`, `os`, `path/filepath`, `net/http`, `net/http/httptest`, `time`, `reflect`, `testing`, and `otelnoop "go.opentelemetry.io/otel/metric/noop"`. Add imports as the compiler requires (or run `goimports`).
