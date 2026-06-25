@@ -308,3 +308,75 @@ func TestScanner_InMemoryReader(t *testing.T) {
 		t.Errorf("ids = %v", ids)
 	}
 }
+
+// TestScanner_NewScannerAt_AbsoluteOffsets verifies that a scanner seeded with
+// a base offset reports byte offsets that are absolute positions in the
+// original stream, not relative to the seeded reader. This is the resume path:
+// the importer seeks the source file to the persisted resume offset and scans
+// from there, and the origin_archive provenance tag (and a second-interruption
+// resume offset) must locate the message in the whole archive. Regression test
+// for glovebox-gtxt.
+func TestScanner_NewScannerAt_AbsoluteOffsets(t *testing.T) {
+	src := strings.Join([]string{
+		"From MAILER Mon Apr 11 00:00:00 2026",
+		"Message-ID: <a0@example.com>",
+		"From: a0@example.com",
+		"Subject: zero",
+		"",
+		"Body zero.",
+		"",
+		"From MAILER Mon Apr 11 00:01:00 2026",
+		"Message-ID: <a1@example.com>",
+		"From: a1@example.com",
+		"Subject: one",
+		"",
+		"Body one.",
+		"",
+		"From MAILER Mon Apr 11 00:02:00 2026",
+		"Message-ID: <a2@example.com>",
+		"From: a2@example.com",
+		"Subject: two",
+		"",
+		"Body two.",
+		"",
+	}, "\n")
+
+	// Full scan from offset 0: capture each message's absolute byte offset.
+	full := NewScanner(strings.NewReader(src))
+	var absOffsets []int64
+	var ids []string
+	for full.Scan() {
+		absOffsets = append(absOffsets, full.Message().ByteOffset)
+		ids = append(ids, full.Message().MessageID)
+	}
+	if err := full.Err(); err != nil {
+		t.Fatalf("full scan Err() = %v", err)
+	}
+	if len(absOffsets) != 3 {
+		t.Fatalf("full scan got %d messages, want 3", len(absOffsets))
+	}
+
+	// Resume from the second message: seek to its absolute offset and scan the
+	// tail with that offset as the base. Every reported offset must equal the
+	// full-scan absolute offset for the same message.
+	base := absOffsets[1]
+	tail := NewScannerAt(strings.NewReader(src[base:]), base)
+	i := 1
+	for tail.Scan() {
+		m := tail.Message()
+		if m.ByteOffset != absOffsets[i] {
+			t.Errorf("msg %d (%s) ByteOffset = %d, want absolute %d",
+				i, m.MessageID, m.ByteOffset, absOffsets[i])
+		}
+		if m.MessageID != ids[i] {
+			t.Errorf("msg %d MessageID = %q, want %q", i, m.MessageID, ids[i])
+		}
+		i++
+	}
+	if err := tail.Err(); err != nil {
+		t.Fatalf("tail scan Err() = %v", err)
+	}
+	if i != 3 {
+		t.Fatalf("tail scan reached index %d, want 3 (2 messages from base)", i)
+	}
+}
