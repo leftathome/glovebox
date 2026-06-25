@@ -537,21 +537,20 @@ func TestE2E_SecondRun_NoAdditionalIngest(t *testing.T) {
 // POST is blocked, then releases it. So run 1 delivers exactly one item, then
 // the producer/worker drain and the manifest is flushed at status=interrupted.
 //
-// IMPORTANT FINDING (asserted behavior reflects reality, not the bead's ideal):
-// the importer's resume checkpoint is the byte offset of the last message the
-// *producer* scanned, which runs ahead of the *ingester* by up to the worker
-// queue depth. Messages that were scanned (and counted toward the resume
-// offset) but not yet ingested when the cancel landed are therefore skipped on
-// resume -- they are neither re-read nor delivered. Strict at-least-once across
-// a hard mid-flight cancel is thus NOT guaranteed by the current importer for a
-// small archive. What IS guaranteed, and what this test asserts, is:
+// AT-LEAST-ONCE across a hard mid-flight cancel (glovebox-92qr). The resume
+// point is a LOW-WATER mark -- the earliest byte offset still in flight (scanned
+// + dispatched to the pool but not yet confirmed ingested) -- so messages that
+// were queued/in-flight when the cancel landed are re-read on resume and
+// re-attempted; cross-run dedup (seeded from manifest.message_ids_ingested)
+// skips the ones already confirmed. This test asserts:
 //   - the interrupted run leaves a resumable manifest (status=interrupted,
 //     non-zero byte offset, preserved Message-IDs),
 //   - the resumed run completes (status=complete),
-//   - no source position is delivered more than once (at-most-once: dedup +
-//     forward-only resume), and
-//   - every delivered item corresponds to a real includable source position
-//     (no spurious deliveries).
+//   - EVERY includable message is delivered across the two runs (at-least-once:
+//     no message dropped by the cancel), and
+//   - no source position is delivered more than once and every delivered item
+//     is a real includable message (exactly-once for this all-unique-ID
+//     fixture; no spurious deliveries).
 func TestE2E_InterruptResume(t *testing.T) {
 	dir := t.TempDir()
 	source := writeE2EFixtureMbox(t, dir)
@@ -644,28 +643,43 @@ func TestE2E_InterruptResume(t *testing.T) {
 	}
 
 	all := mock.snapshot()
-	seenOrigin := map[string]int{}
+	// Uniqueness is keyed on subject (a stable per-message identity), NOT on
+	// the origin_archive byte-offset tag: the parser reports byte offsets
+	// relative to the scanner's start, so after the resume seek those offsets
+	// restart at 0 and collide with the first run's tags (tracked separately).
+	seenSubject := map[string]int{}
 	for _, it := range all {
-		seenOrigin[it.originArchive]++
+		seenSubject[it.subject]++
 		if !includable[it.subject] {
 			t.Errorf("spurious delivery: subject %q (origin %q) is not an includable message",
 				it.subject, it.originArchive)
 		}
 	}
-	// At-most-once: no source position delivered twice across both runs.
-	for origin, n := range seenOrigin {
-		if n != 1 {
-			t.Errorf("source position %q delivered %d times, want at most 1", origin, n)
+
+	// At-least-once (glovebox-92qr): every includable message must be delivered
+	// across the interrupt + resume -- none dropped by the mid-flight cancel.
+	for subj := range includable {
+		if seenSubject[subj] == 0 {
+			t.Errorf("at-least-once violated: includable message %q was never delivered "+
+				"(dropped on resume -- producer-ahead resume offset?)", subj)
 		}
 	}
 
-	delivered := len(seenOrigin)
-	t.Logf("interrupt/resume: delivered %d/%d includable messages "+
-		"(run1=%d, run2=%d); skipped=%d due to producer-ahead resume offset",
-		delivered, wantIngested, len(run1Items), len(all)-len(run1Items), wantIngested-delivered)
+	// At-most-once: dedup (Message-ID, seeded from the manifest) + low-water
+	// resume means no message is delivered twice across the two runs.
+	for subj, n := range seenSubject {
+		if n != 1 {
+			t.Errorf("message %q delivered %d times, want exactly 1", subj, n)
+		}
+	}
 
-	if delivered < 1 || delivered > wantIngested {
-		t.Errorf("delivered distinct = %d, want in [1, %d]", delivered, wantIngested)
+	delivered := len(seenSubject)
+	t.Logf("interrupt/resume: delivered %d/%d includable messages (run1=%d, run2=%d)",
+		delivered, wantIngested, len(run1Items), len(all)-len(run1Items))
+
+	if delivered != wantIngested {
+		t.Errorf("delivered %d distinct includable messages, want %d (exactly-once across interrupt+resume)",
+			delivered, wantIngested)
 	}
 }
 

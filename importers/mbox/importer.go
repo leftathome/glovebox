@@ -171,7 +171,14 @@ func (m *mboxImporter) Import(
 	// closure is the production wiring through the connector
 	// framework's HTTPStagingBackend (which owns retry / 4xx-vs-5xx /
 	// 429+Retry-After semantics).
-	var mu sync.Mutex // guards mf + dedup; held briefly per update
+	var mu sync.Mutex // guards mf + dedup + inflight; held briefly per update
+	// inflight tracks the start byte offset of every message dispatched to the
+	// pool that has not yet produced a result. On interruption the resume point
+	// is the LOW-WATER mark over this set (not the producer's high-water scan
+	// position), so scanned-but-not-yet-ingested messages are re-read and
+	// re-attempted on resume rather than skipped (glovebox-92qr). Cross-run
+	// dedup then drops the ones already confirmed -> at-least-once.
+	inflight := make(map[int64]struct{})
 	pool := NewWorkerPool(WorkerPoolConfig{
 		Concurrency: m.concurrency,
 		QueueSize:   m.concurrency * 2,
@@ -215,6 +222,7 @@ func (m *mboxImporter) Import(
 					dedup.Add(r.Message.MessageID)
 					mf.MessageIDsIngested = append(mf.MessageIDsIngested, r.Message.MessageID)
 				}
+				delete(inflight, r.Message.ByteOffset)
 				// DestinationRuleHitCounts is per the matched
 				// destination; we'd need to plumb it from the pool
 				// to know it. Deferred -- the rule-hit metric is
@@ -224,10 +232,18 @@ func (m *mboxImporter) Import(
 				mu.Unlock()
 			case StatusFailed:
 				m.recordError(&mu, mf, r.Message, r.Err.Error())
+				mu.Lock()
+				delete(inflight, r.Message.ByteOffset)
+				mu.Unlock()
 			case StatusCancelled:
-				// Pool drained on cancellation; intentionally do
-				// not bump any manifest counter -- the next run
-				// will re-attempt via dedup.
+				// Pool drained on cancellation; intentionally do not
+				// bump any manifest counter. CRUCIALLY, leave this
+				// message in inflight: it was dispatched but never
+				// ingested, so it must hold the low-water resume mark
+				// back to its offset. The next run re-reads from there
+				// and re-attempts it (dedup drops any that did make it
+				// through) -- this is what makes resume at-least-once
+				// (glovebox-92qr).
 			}
 		}
 	}()
@@ -282,16 +298,33 @@ func (m *mboxImporter) Import(
 				}
 			}
 
+			// Mark in flight BEFORE dispatch so a worker can never emit a
+			// result before the producer has recorded the message. This
+			// message has already advanced consumedOffset (the producer
+			// high-water) past itself, so it MUST stay in inflight until a
+			// worker confirms it ingested -- whether it is dispatched and
+			// later cancelled, or never dispatched because ctx was cancelled
+			// here, it needs re-reading on resume and so must hold the
+			// low-water mark back to its offset (glovebox-92qr).
+			mu.Lock()
+			inflight[msg.ByteOffset] = struct{}{}
+			mu.Unlock()
 			select {
 			case pool.Jobs() <- msg:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 
-			// Periodic manifest flush + checkpoint write.
+			// Periodic manifest flush + checkpoint write. Persist the
+			// low-water resume offset (earliest still-in-flight message),
+			// not the producer high-water, so a crash between flushes
+			// cannot skip queued-but-uningested messages (glovebox-92qr).
 			if seenN-lastWriteAtCount >= manifestWriteEveryN {
 				lastWriteAtCount = seenN
-				m.flushProgress(path, mf, msg.ByteOffset+int64(msg.Size), &mu, log)
+				mu.Lock()
+				off := resumeOffsetLocked(consumedOffset, inflight)
+				mu.Unlock()
+				m.flushProgress(path, mf, off, &mu, log)
 			}
 
 			select {
@@ -316,7 +349,12 @@ func (m *mboxImporter) Import(
 
 	scanErr := scanner.Err()
 	mu.Lock()
-	mf.ResumeState.ByteOffset = consumedOffset
+	// The collector has drained (every result processed), so inflight now
+	// holds exactly the messages that were dispatched/scanned but never
+	// confirmed ingested (cancelled or never-dispatched on interruption).
+	// Resume from the low-water mark over that set so none are skipped; on a
+	// clean EOF the set is empty and this is just consumedOffset (glovebox-92qr).
+	mf.ResumeState.ByteOffset = resumeOffsetLocked(consumedOffset, inflight)
 	if produceErr != nil {
 		mf.StatusValue = validatedStatus(importer.StatusInterrupted)
 	} else if scanErr != nil {
@@ -364,6 +402,23 @@ func (m *mboxImporter) recordError(mu *sync.Mutex, mf *ImportManifestV1, msg *Me
 // flushProgress writes the manifest + checkpoint files to disk so that
 // a SIGTERM right after this can be resumed. Best-effort; logs but
 // does not abort on failure.
+// resumeOffsetLocked returns the byte offset the next run should resume from:
+// the low-water mark over all still-in-flight messages (dispatched or scanned
+// but not yet confirmed ingested), or consumed -- the producer high-water --
+// when nothing is in flight. Resuming from this point and relying on cross-run
+// dedup to drop already-confirmed messages makes interruption at-least-once
+// (glovebox-92qr). Erring smaller is always safe (it only re-reads more);
+// caller must hold the mutex guarding inflight.
+func resumeOffsetLocked(consumed int64, inflight map[int64]struct{}) int64 {
+	off := consumed
+	for o := range inflight {
+		if o < off {
+			off = o
+		}
+	}
+	return off
+}
+
 func (m *mboxImporter) flushProgress(sourcePath string, mf *ImportManifestV1, offset int64, mu *sync.Mutex, log *slog.Logger) {
 	mu.Lock()
 	mf.ResumeState.ByteOffset = offset
@@ -402,16 +457,16 @@ func newOrLoadManifest(
 
 	sourceSize, sourceMtime := statSource(sourcePath)
 	mf := &ImportManifestV1{
-		SchemaVersion:   manifestSchemaVersion,
-		Kind:            manifestKind,
-		SourcePath:      sourcePath,
-		SourceSize:      sourceSize,
-		SourceMtime:     sourceMtime,
-		SourceName:      sourceName,
-		StatusValue:     validatedStatus(importer.StatusInProgress),
-		TimestampStart:  time.Now().UTC(),
-		SurveyRef:       filepath.Base(SurveyPath(sourcePath)),
-		FilterRef:       "",
+		SchemaVersion:  manifestSchemaVersion,
+		Kind:           manifestKind,
+		SourcePath:     sourcePath,
+		SourceSize:     sourceSize,
+		SourceMtime:    sourceMtime,
+		SourceName:     sourceName,
+		StatusValue:    validatedStatus(importer.StatusInProgress),
+		TimestampStart: time.Now().UTC(),
+		SurveyRef:      filepath.Base(SurveyPath(sourcePath)),
+		FilterRef:      "",
 	}
 	if filterCfg != nil {
 		if raw, err := json.Marshal(filterCfg); err == nil {
