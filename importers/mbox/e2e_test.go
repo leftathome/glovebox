@@ -643,16 +643,29 @@ func TestE2E_InterruptResume(t *testing.T) {
 	}
 
 	all := mock.snapshot()
-	// Uniqueness is keyed on subject (a stable per-message identity), NOT on
-	// the origin_archive byte-offset tag: the parser reports byte offsets
-	// relative to the scanner's start, so after the resume seek those offsets
-	// restart at 0 and collide with the first run's tags (tracked separately).
+	// Uniqueness is keyed on subject (a stable per-message identity). The
+	// origin_archive byte-offset tag is also asserted unique below: the scanner
+	// reports absolute archive offsets even after the resume seek (glovebox-gtxt),
+	// so a message ingested in run 2 carries its true archive position, distinct
+	// from every run-1 tag.
 	seenSubject := map[string]int{}
+	seenOrigin := map[string]int{}
 	for _, it := range all {
 		seenSubject[it.subject]++
+		seenOrigin[it.originArchive]++
 		if !includable[it.subject] {
 			t.Errorf("spurious delivery: subject %q (origin %q) is not an includable message",
 				it.subject, it.originArchive)
+		}
+	}
+
+	// origin_archive provenance must be absolute and unique per delivered
+	// message across the interrupt + resume. A relative (restart-at-0) offset
+	// after the resume would collide with a run-1 tag and surface here.
+	for _, it := range all {
+		if n := seenOrigin[it.originArchive]; n != 1 {
+			t.Errorf("origin_archive %q delivered %d times, want unique per message "+
+				"(relative offset after resume?)", it.originArchive, n)
 		}
 	}
 

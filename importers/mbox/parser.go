@@ -88,13 +88,27 @@ type Scanner struct {
 	started    bool
 }
 
-// NewScanner returns a Scanner that reads from r. Buffer size defaults to
-// DefaultBufferSize (64 MiB); use SetBufferSize before the first Scan call
-// to change it.
+// NewScanner returns a Scanner that reads from r, reporting byte offsets
+// relative to the start of r (i.e. the first message is at offset 0). Buffer
+// size defaults to DefaultBufferSize (64 MiB); use SetBufferSize before the
+// first Scan call to change it.
 func NewScanner(r io.Reader) *Scanner {
+	return NewScannerAt(r, 0)
+}
+
+// NewScannerAt returns a Scanner that reads from r but reports byte offsets
+// as absolute positions in the underlying archive, by adding baseOffset to
+// every offset. Use this on the resume path: after the importer seeks the
+// source file to a persisted resume offset and scans the remaining region,
+// passing that offset as baseOffset keeps Message.ByteOffset an absolute
+// archive position. This makes the origin_archive provenance tag locate the
+// message in the whole file, and keeps a second-interruption resume offset
+// absolute rather than relative to the seek base (glovebox-gtxt).
+func NewScannerAt(r io.Reader, baseOffset int64) *Scanner {
 	return &Scanner{
-		r:       r,
-		bufSize: DefaultBufferSize,
+		r:          r,
+		bufSize:    DefaultBufferSize,
+		nextOffset: baseOffset,
 	}
 }
 

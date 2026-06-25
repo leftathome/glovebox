@@ -143,7 +143,11 @@ func (m *mboxImporter) Import(
 		log.Info("resuming from offset", "byte_offset", decision.ByteOffset)
 	}
 
-	scanner := NewScanner(f)
+	// Seed the scanner with the seek base so Message.ByteOffset is an
+	// absolute archive position even after a resume seek (origin_archive
+	// provenance + a second-interruption resume offset stay correct;
+	// glovebox-gtxt). When decision.ByteOffset is 0 this is a no-op.
+	scanner := NewScannerAt(f, decision.ByteOffset)
 	dedup := NewDedupSet(decision.PreservedMessageIDs)
 	// Track the byte offset of the last fully-consumed message so the
 	// final checkpoint write is accurate. Scanner doesn't expose its
