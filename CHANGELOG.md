@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **re-enable govulncheck gating (glovebox-fslv)**: the security-scan job's
+  govulncheck step was non-gating (`continue-on-error`) because v1.4.0 segfaulted
+  on our generics under go1.26 (x/tools `ForEachElement` / `*types.TypeParam`
+  panic). govulncheck v1.5.0 fixes the crash (verified clean under go1.26), so
+  the step is gating again and pinned to `@v1.5.0` (not `@latest`) so a future
+  tool regression can't silently re-break the gate.
+
+## [0.6.3] - 2026-06-26
+
 ### Security
 
 - **bump golang.org/x/net to v0.55.0 (glovebox-auq4)**: clears 7 govulncheck
