@@ -25,3 +25,9 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{ .Values.archive.storagePath }}/archives/{{ .Values.archive.archiveID }}/raw
 {{- end -}}
 {{- end -}}
+
+{{- /* archivesDir is the directory the watcher mode (deployment.yaml) watches:
+the spec-13 archives/ root under the storage PVC mount. */ -}}
+{{- define "mbox-importer.archivesDir" -}}
+{{ .Values.archive.storagePath }}/archives
+{{- end -}}

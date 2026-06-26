@@ -1,4 +1,6 @@
-{{- if .Values.archive.archiveID -}}
+{{- /* Render whenever either workload is active: the one-shot Job (archiveID)
+or the watcher Deployment (watch.enabled) both mount this config. */ -}}
+{{- if or .Values.archive.archiveID .Values.watch.enabled -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: mbox-importer
-description: One-shot Kubernetes Job that imports a finished mbox archive into glovebox (spec 09).
+description: Imports finished mbox archives into glovebox (spec 09) -- a one-shot Job per archive, or a long-running watcher Deployment that auto-picks up spec-13 archive deliveries (spec 13 sec 5.3).
 type: application
-version: 0.1.0
-appVersion: "0.4.2"
+version: 0.2.0
+appVersion: "0.6.2"

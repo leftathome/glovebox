@@ -51,6 +51,43 @@ archive:
 # into. Must be an existing claim in the same namespace as the Job.
 storageClaim: glovebox-glovebox-archive-storage
 
+# Watcher mode (bead glovebox-c9zt binary + glovebox-j2s0 chart). When
+# enabled, the chart renders a long-running Deployment (deployment.yaml)
+# instead of relying on a per-archive one-shot Job: it watches
+# `<archive.storagePath>/archives` for archive/mbox archives finalized by the
+# spec-13 delivery endpoint, drives the same per-mbox pipeline against each,
+# and retires processed archives to `archives/.done/`. The Job and the
+# Deployment can both render from one install, but the usual deployment is
+# watcher-only (leave archive.archiveID empty so the Job renders nothing).
+watch:
+  # Set true to deploy the long-running watcher. Default false keeps the chart
+  # one-shot-only and backward compatible.
+  enabled: false
+
+  # Replicas. Keep at 1: the watcher processes archives sequentially via a
+  # single feeder goroutine. A second replica is SAFE (the per-archive O_EXCL
+  # .mbox-importer.lock prevents double-pickup) but adds no throughput. The
+  # archive-storage PVC is RWO, so >1 replica also cannot co-mount it anyway.
+  replicas: 1
+
+  # source-name stamped on every staging item's metadata. REQUIRED when
+  # enabled. Unlike the one-shot Job (one archive => one operator-set
+  # source-name), one watcher Deployment handles MANY archives under a single
+  # source-name; the per-archive origin_archive tag (source:<archive_id>)
+  # distinguishes them. If you need distinct source-names per data subject,
+  # run one watcher release per subject.
+  sourceName: ""
+
+  # media_type allow-list the watcher claims (comma-separated). Empty means the
+  # binary default, archive/mbox. Add archive/imap-export (same raw mbox shape)
+  # to have this watcher also pick those up.
+  mediaTypes: ""
+
+  # Poll interval backing the fsnotify watch (Go duration, e.g. "30s"). Empty
+  # means the binary default (30s). Archives are large and infrequent, so a
+  # slow poll is plenty.
+  pollInterval: ""
+
 # Importer behaviour.
 importer:
   # Parallel POST workers. With glovebox's BackpressureThreshold at

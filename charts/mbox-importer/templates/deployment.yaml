@@ -1,42 +1,45 @@
 {{- /*
-One-shot import Job. OPT-IN: renders only when archive.archiveID is set, so it
-can coexist with the watcher-mode Deployment (deployment.yaml, watch.enabled)
-in the same chart without forcing the operator to set a one-shot archiveID.
-When archiveID IS set, the secondary required fields still fail-fast.
+Watcher-mode Deployment (bead glovebox-c9zt binary + glovebox-j2s0 chart).
+OPT-IN: renders only when watch.enabled is true. A long-running variant of the
+importer that watches <storagePath>/archives for archive/mbox archives finalized
+by the spec-13 delivery endpoint, drives the existing per-mbox pipeline against
+each, and retires processed archives to archives/.done/. Coexists with the
+one-shot Job (job.yaml, gated on archive.archiveID).
 */ -}}
-{{- if .Values.archive.archiveID -}}
-{{- if not .Values.archive.sourceName -}}
-{{- fail "archive.sourceName must be set; landed staging items need a source value" -}}
+{{- if .Values.watch.enabled -}}
+{{- if not .Values.watch.sourceName -}}
+{{- fail "watch.sourceName must be set in watcher mode; landed staging items need a source value" -}}
 {{- end -}}
-{{- if not .Values.archive.filename -}}
-{{- fail "archive.filename must be set so the importer knows which file under archives/<id>/raw/ to read" -}}
-{{- end -}}
-apiVersion: batch/v1
-kind: Job
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: {{ include "mbox-importer.fullname" . }}-{{ .Values.archive.archiveID | trunc 30 | trimSuffix "-" }}
+  name: {{ include "mbox-importer.fullname" . }}-watch
   labels:
     {{- include "mbox-importer.labels" . | nindent 4 }}
 spec:
-  # Keep finished Jobs around for inspection. The watcher-mode bead
-  # (glovebox-c9zt) will eventually take over the auto-pickup; for
-  # the one-shot model, operators delete the Job between archives.
-  ttlSecondsAfterFinished: 86400
-  # backoffLimit 0: a failure is investigation-worthy. The importer
-  # writes a manifest on every interrupt, so a re-run resumes
-  # cleanly via dedup + checkpoint; we want a human in the loop
-  # before that re-run rather than an automatic retry that masks the
-  # cause.
-  backoffLimit: 0
+  # Single replica: the watcher processes archives sequentially via one feeder
+  # goroutine. A second replica is SAFE (the per-archive O_EXCL .mbox-importer.lock
+  # prevents double-pickup) but adds no throughput, so the default is 1.
+  replicas: {{ .Values.watch.replicas }}
+  strategy:
+    # Recreate, not RollingUpdate: the archive-storage PVC is RWO, so two pods
+    # cannot mount it simultaneously during a rollout. Recreate tears the old
+    # pod down before the new one binds the volume.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "mbox-importer.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: watch
   template:
     metadata:
       labels:
         {{- include "mbox-importer.labels" . | nindent 8 }}
+        app.kubernetes.io/component: watch
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      restartPolicy: Never
       {{- if .Values.podNodeName }}
       nodeName: {{ .Values.podNodeName }}
       {{- end }}
@@ -63,18 +66,18 @@ spec:
           image: {{ include "mbox-importer.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --source={{ include "mbox-importer.archivePath" . }}
+            - --watch-archives={{ include "mbox-importer.archivesDir" . }}
             - --config=/etc/importer/config.json
             - --state-dir=/var/lib/importer/state
             - --ingest-url={{ .Values.glovebox.ingestURL }}
-            - --source-name={{ .Values.archive.sourceName }}
+            - --source-name={{ .Values.watch.sourceName }}
             - --concurrency={{ .Values.importer.concurrency }}
             - --health-port={{ .Values.healthPort }}
-            {{- if .Values.importer.surveyOnly }}
-            - --survey-only
+            {{- if .Values.watch.mediaTypes }}
+            - --media-types={{ .Values.watch.mediaTypes }}
             {{- end }}
-            {{- if .Values.importer.regenerateSurvey }}
-            - --regenerate-survey
+            {{- if .Values.watch.pollInterval }}
+            - --poll-interval={{ .Values.watch.pollInterval }}
             {{- end }}
             {{- if .Values.importer.filterJSON }}
             - --filter=/etc/importer/filter.json
@@ -96,6 +99,22 @@ spec:
             - name: health
               containerPort: {{ .Values.healthPort }}
               protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -103,8 +122,10 @@ spec:
               mountPath: /etc/importer
               readOnly: true
             - name: storage
-              # NOT readOnly: importer writes the survey + manifest +
-              # checkpoint sidecars next to the mbox source file.
+              # NOT readOnly: the watcher writes survey + manifest + checkpoint
+              # sidecars next to each archive's mbox, takes the per-archive
+              # .mbox-importer.lock, and renames processed archives into
+              # archives/.done/.
               mountPath: {{ .Values.archive.storagePath }}
             - name: state
               mountPath: /var/lib/importer/state
