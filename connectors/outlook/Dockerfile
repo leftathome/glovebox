@@ -1,3 +1,8 @@
+# ENRICHER_BASE must be declared in the global (pre-FROM) scope so it is in
+# scope for the `FROM ${ENRICHER_BASE}` stage below. A stage-scoped ARG (after
+# the first FROM) resolves blank there, which newer BuildKit rejects with
+# UndefinedArgInFrom (enricher Dockerfile ARG-scope fix).
+ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
 FROM docker.io/golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -18,7 +23,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /connector ./connector
 # stabilizes. The published base image already runs as nonroot uid/gid 65532
 # so the USER directive below is a drop-in continuation of the prior
 # distroless:nonroot identity.
-ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
 FROM ${ENRICHER_BASE}
 COPY --from=build /connector /connector
 COPY connectors/outlook/config.json /etc/connector/config.json
