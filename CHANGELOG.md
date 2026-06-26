@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connector/httpclient.go` idna/http2). govulncheck now reports
   "No vulnerabilities found".
 
+### Fixed
+
+- **enricher Dockerfile ARG scope (CI image builds)**: the 8 enricher-runtime
+  based Dockerfiles (mbox/apple/walhelm importers; arxiv/gmail/imap/outlook/
+  semantic-scholar connectors) declared `ARG ENRICHER_BASE` after the first
+  `FROM`, so it was stage-scoped and resolved blank in `FROM ${ENRICHER_BASE}`.
+  Newer BuildKit (pulled by the docker/build-push-action v7 bump) rejects this
+  with `UndefinedArgInFrom`, breaking every enricher image build (the cause of
+  the failed v0.6.2 image publish). Moved the `ARG` to global (pre-`FROM`)
+  scope; verified `docker buildx build` resolves the base again.
+
 ## [0.6.2] - 2026-06-25
 
 ### Added
