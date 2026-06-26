@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **bump golang.org/x/net to v0.55.0 (glovebox-auq4)**: clears 7 govulncheck
+  findings + 3 Trivy CVEs (GO-2026-5025/5026/5027/5028/5029/5030 in
+  `x/net/html` + `x/net/idna`, GO-2026-4918 in net/http2;
+  CVE-2026-25680/-33814/-39821). All were reachable (schoology `html.Parse`,
+  `connector/httpclient.go` idna/http2). govulncheck now reports
+  "No vulnerabilities found".
+
 ## [0.6.2] - 2026-06-25
 
 ### Added
