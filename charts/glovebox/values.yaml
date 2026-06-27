@@ -9,14 +9,30 @@ image:
   pullPolicy: IfNotPresent
 
 resources:
-  # Limits sized for the spec 13 archive-delivery workload: serving
-  # multi-GiB tus.io PATCH streams plus rolling sha256 + per-connection
-  # http buffer overhead spikes the Go runtime working set well above
-  # the pre-spec-13 128Mi/512Mi tier. 512Mi OOM-killed a 12 GiB mbox
-  # upload mid-PATCH (glovebox-5ud9); 2Gi limit + a GOMEMLIMIT 100Mi
-  # under the cgroup cap lets the runtime self-throttle GC before the
-  # kernel intervenes. If ingest.archives.enabled is false, scaling
-  # back to 128Mi/512Mi is safe.
+  # Limits sized for the spec 13 archive-delivery workload. Profiled under a
+  # streamed multi-GiB tus.io PATCH (glovebox-g499, GODEBUG=gctrace=1 + cgroup
+  # v2 memory.stat). The memory cost is NOT Go allocation -- the PATCH path
+  # genuinely streams (io.Copy over a 32 KiB buffer + rolling sha256), so the
+  # Go heap stays a flat ~4 MiB and total anon ~10 MiB regardless of upload
+  # size. Nearly the entire footprint is OS PAGE CACHE from writing the archive
+  # to the staging file (cgroup memory accounts page cache):
+  #
+  #   upload 2 GiB  -> anon ~9 MiB,  file cache ~2.0 GiB, peak ~2.1 GiB
+  #   upload 12 GiB -> anon ~10 MiB, file cache ~2.9 GiB, peak ~3.0 GiB
+  #
+  # Page cache is reclaimable, but DIRTY pages (not yet flushed) accumulate
+  # under sustained write; 512Mi OOM-killed a 12 GiB upload because dirty pages
+  # outran writeback (glovebox-5ud9). The cache plateaus at the kernel
+  # dirty-page ceiling (vm.dirty_ratio), so it does NOT scale with file size --
+  # a 12 GiB upload peaks at ~3 GiB, the same order as 2 GiB. Size the LIMIT for
+  # (expected concurrent uploads x ~3Gi dirty-page working set), not for archive
+  # size. 2Gi covers a single upload (cache reclaims to fit) with little
+  # concurrency headroom; raise it for the recognizer's expected concurrent set.
+  # NOTE: GOMEMLIMIT does NOT help this path -- it caps the Go heap (~10 MiB
+  # here), not page cache; it only matters for the scan-side heap. A code-side
+  # reduction (sync_file_range / fadvise(DONTNEED) to bound dirty pages) is
+  # tracked as an optional optimization on glovebox-jolp.
+  # If ingest.archives.enabled is false, scaling back to 128Mi/512Mi is safe.
   requests:
     cpu: 100m
     memory: 512Mi
