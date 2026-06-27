@@ -95,6 +95,7 @@ chmod -R 777 "$DATA_DIR"
 # other fields fall back to LoadConfig defaults (rate limits, etc.).
 cat > "$DATA_DIR/config.json" <<EOF
 {
+  "metrics_port": ${METRICS_PORT},
   "staging_dir": "/data/glovebox/staging",
   "quarantine_dir": "/data/glovebox/quarantine",
   "audit_dir": "/data/glovebox/audit",
@@ -150,8 +151,20 @@ if [ "$ready" -ne 1 ]; then
     exit 1
 fi
 
-# Confirm the archive listener mounted (and did NOT fall back to 503).
-if ! docker logs "$CONTAINER_NAME" 2>&1 | grep -q "archive listener mounted on /v1/archives"; then
+# Confirm the archive listener mounted (and did NOT fall back to 503). The
+# metrics server starts a beat BEFORE the archive listener mounts (separate
+# bootstrap steps), so on a fast boot (host networking) the :metrics readiness
+# probe above can pass before the "listener mounted" log line is written. Poll
+# the logs briefly rather than grepping once, or this races to a false FAIL.
+mounted=0
+for i in $(seq 1 15); do
+    if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "archive listener mounted on /v1/archives"; then
+        mounted=1
+        break
+    fi
+    sleep 1
+done
+if [ "$mounted" -ne 1 ]; then
     echo "FAIL: archive listener did not mount (503 fallback or auth disabled)"
     docker logs "$CONTAINER_NAME" || true
     exit 1
@@ -201,13 +214,19 @@ echo "Got upload-id: $UPLOAD_ID (Location: $LOCATION)"
 # Stream the entire body via a single PATCH. The listener is expected to
 # accept this without imposing a 413; that is the bead's criterion.
 echo "PATCH $LOCATION (streaming $ARCHIVE_SIZE bytes)..."
+# Stream the body with --upload-file (-T), NOT --data-binary @file:
+# --data-binary loads the whole file into memory ("curl: option
+# --data-binary: out of memory" on a 12 GiB archive). -T streams the file
+# incrementally. -H "Expect:" disables 100-continue so the PATCH starts
+# immediately. The single streamed PATCH is the bead's "no 413" criterion.
 HTTP_STATUS="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' \
     -X PATCH "$BASE$LOCATION" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Tus-Resumable: 1.0.0" \
     -H "Upload-Offset: 0" \
     -H "Content-Type: application/offset+octet-stream" \
-    --data-binary "@$ARCHIVE_FILE")"
+    -H "Expect:" \
+    --upload-file "$ARCHIVE_FILE")"
 if [ "$HTTP_STATUS" != "204" ]; then
     echo "FAIL: PATCH returned $HTTP_STATUS (expected 204). Body:"
     cat "$BODY_FILE"
@@ -269,13 +288,15 @@ LOCATION2="$(awk -v IGNORECASE=1 '/^Location:/ {print $2}' "$HDR_FILE2" | tr -d 
 echo "Phase 2: upload-id $(basename "$LOCATION2")"
 
 echo "Phase 2: PATCH (streaming $TARBALL_SIZE bytes)..."
+# Streamed upload (-T), not --data-binary @file -- see phase 1 note.
 HTTP_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
     -X PATCH "$BASE$LOCATION2" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Tus-Resumable: 1.0.0" \
     -H "Upload-Offset: 0" \
     -H "Content-Type: application/offset+octet-stream" \
-    --data-binary "@$TARBALL_FILE")"
+    -H "Expect:" \
+    --upload-file "$TARBALL_FILE")"
 if [ "$HTTP_STATUS" != "204" ]; then
     echo "FAIL: Phase 2 PATCH returned $HTTP_STATUS"
     docker logs "$CONTAINER_NAME" || true
