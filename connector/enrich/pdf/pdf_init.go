@@ -25,26 +25,17 @@ func init() {
 	registerIfAvailable(enrich.Default, lookPath, initLogger)
 }
 
-// registerIfAvailable is the testable core of init(): given a registry,
-// a LookPath function, and a logger, it either registers an Enricher
-// instance and returns true, or logs the documented WHAT/CHECK/FIX
-// warning and returns false. Exposed unexported but package-internal
-// for use from tests in this package.
-//
-// Splitting init() this way lets us assert both branches without ever
-// having to mutate $PATH or the package-level lookPath variable from
-// concurrent test runs.
+// pdfDisabledMsg is the WHAT/CHECK/FIX warning logged when pdftotext is
+// absent (spec §5.1 template). enrich.RegisterIfAvailable appends the
+// LookPath error.
+const pdfDisabledMsg = "enrich/pdf: pdftotext not found in PATH; the PDF enricher is disabled for this connector.\n" +
+	"  CHECK: docker inspect <image> for /usr/bin/pdftotext\n" +
+	"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that PDFs will not be text-extracted."
+
+// registerIfAvailable is the testable core of init(): the shared binary-enricher
+// gate (glovebox-afq4.14). Tests drive it directly with their own registry +
+// LookPath + logger and never mutate $PATH or package-global state.
 func registerIfAvailable(reg *enrich.Registry, look func(string) (string, error), logger *log.Logger) bool {
-	if _, err := look(pdftotextBinary); err != nil {
-		logger.Printf(
-			"enrich/pdf: pdftotext not found in PATH; the PDF enricher is disabled for this connector.\n"+
-				"  CHECK: docker inspect <image> for /usr/bin/pdftotext\n"+
-				"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that PDFs will not be text-extracted.\n"+
-				"  (LookPath error: %v)",
-			err,
-		)
-		return false
-	}
-	reg.Register(&Enricher{})
-	return true
+	return enrich.RegisterIfAvailable(reg, pdftotextBinary,
+		func(string) enrich.Enricher { return &Enricher{} }, look, logger, pdfDisabledMsg)
 }

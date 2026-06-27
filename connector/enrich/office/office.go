@@ -69,23 +69,30 @@ const (
 var pandocPath string
 
 // lookPath is indirected through a variable so tests can simulate the
-// "binary not found" scenario without mutating $PATH.
-var lookPath = exec.LookPath
+// "binary not found" scenario without mutating $PATH. initLogger is the
+// init-time warning sink.
+var (
+	lookPath   = exec.LookPath
+	initLogger = log.New(os.Stderr, "", 0)
+)
+
+// officeDisabledMsg is the WHAT/CHECK/FIX warning logged when pandoc is
+// absent (spec §5.1 template); enrich.RegisterIfAvailable appends the
+// LookPath error.
+const officeDisabledMsg = "enrich/office: pandoc not found in PATH; the Office enricher is disabled for this connector.\n" +
+	"  CHECK: docker inspect <image> for /usr/bin/pandoc\n" +
+	"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that office docs will not be rendered."
+
+// registerIfAvailable is the shared binary-enricher gate (glovebox-afq4.14),
+// identical in shape to the pdf/ocr siblings. The constructor captures the
+// resolved pandoc path before registering.
+func registerIfAvailable(reg *enrich.Registry, look func(string) (string, error), logger *log.Logger) bool {
+	return enrich.RegisterIfAvailable(reg, "pandoc",
+		func(p string) enrich.Enricher { pandocPath = p; return New() }, look, logger, officeDisabledMsg)
+}
 
 func init() {
-	path, err := lookPath("pandoc")
-	if err != nil {
-		// Match the spec §5.1 init-warning template (and the pdf/ocr
-		// sibling enrichers): WHAT/CHECK/FIX shape, do NOT register.
-		log.Printf(
-			"enrich/office: pandoc not found in PATH; the Office enricher is disabled for this connector.\n"+
-				"  CHECK: docker inspect <image> for /usr/bin/pandoc\n"+
-				"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that office docs will not be rendered.",
-		)
-		return
-	}
-	pandocPath = path
-	enrich.Default.Register(New())
+	registerIfAvailable(enrich.Default, lookPath, initLogger)
 }
 
 // Enricher implements enrich.Enricher for OOXML office documents.
