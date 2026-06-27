@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **archive listener no longer caps multi-GB uploads at 60s (glovebox-dddn)**:
+  `/v1/archives*` shares the ingest `http.Server`, which set
+  `ReadTimeout`/`WriteTimeout` to `request_timeout_seconds` (default 60s).
+  `http.Server.ReadTimeout` bounds the *entire request including the body*, so
+  any archive PATCH upload taking longer than 60s was force-closed (curl
+  `(55) Send failure: Broken pipe`) -- impossible to deliver the advertised
+  `Tus-Max-Size: 30 GiB`, and the handler's own 5-min `patchBodyReader` idle
+  timeout was overridden. Now the server sets only `ReadHeaderTimeout`
+  (slowloris protection) with `ReadTimeout`/`WriteTimeout` unbounded; per-route
+  body bounds remain (`/v1/ingest` via `http.MaxBytesReader`, `/v1/archives`
+  via the idle timeout). Verified: a 12 GiB mbox + 2 GiB tarball-subtree upload
+  completes under default config (was a broken pipe at 60s).
+- **archive-smoke-test.sh can actually run its 12 GiB criterion (glovebox-3d4m)**:
+  three fixes -- (1) the container metrics port now follows `METRICS_PORT` so a
+  host with something already on 9090 (e.g. Prometheus) can run the test;
+  (2) the archive-listener-mounted check polls instead of grepping once (was
+  racing the metrics-ready probe to a false FAIL on fast boots); (3) the PATCH
+  body streams via `--upload-file` instead of `--data-binary @file`, which
+  loaded the whole archive into memory (`curl: option --data-binary: out of
+  memory` on 12 GiB). The full 12 GiB + 2 GiB acceptance run now passes.
+
 ### Changed
 
 - **re-enable govulncheck gating (glovebox-fslv)**: the security-scan job's

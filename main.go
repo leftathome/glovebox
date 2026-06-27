@@ -166,10 +166,16 @@ func main() {
 		}
 
 		ingestServer = &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Ingest.Port),
-			Handler:      ingestMux,
-			ReadTimeout:  time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
-			WriteTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+			Addr:    fmt.Sprintf(":%d", cfg.Ingest.Port),
+			Handler: ingestMux,
+			// ReadHeaderTimeout bounds ONLY the header-read phase (slowloris
+			// protection). ReadTimeout/WriteTimeout are left 0 (unbounded) so a
+			// multi-GB archive PATCH -- the listener advertises Tus-Max-Size
+			// 30 GiB -- is not killed by a whole-request deadline (glovebox-dddn:
+			// a 60s ReadTimeout force-closed any upload >60s). Per-route body
+			// bounds remain in place: /v1/ingest via http.MaxBytesReader (size),
+			// /v1/archives PATCH via the handler's patchBodyReader idle timeout.
+			ReadHeaderTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
 		}
 		go func() {
 			log.Printf("ingest server listening on :%d", cfg.Ingest.Port)
