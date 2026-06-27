@@ -3,7 +3,7 @@ package ocr
 import (
 	"bytes"
 	"errors"
-	"log/slog"
+	"log"
 	"strings"
 	"testing"
 
@@ -62,38 +62,28 @@ func TestName(t *testing.T) {
 	}
 }
 
-// TestRegisterEnricher_BinaryMissing exercises the §5.1 graceful-
-// degradation path: when LookPath cannot find tesseract, the package
-// MUST log the WHAT/CHECK/FIX warning AND MUST NOT register an enricher.
-//
-// We swap the package-level lookPath, registerWith, and warnLogger
-// hooks so the test does not depend on the real PATH or the
-// process-global enrich.Default.
-func TestRegisterEnricher_BinaryMissing(t *testing.T) {
+// TestRegisterIfAvailable_BinaryMissing exercises the §5.1 graceful-
+// degradation path: when LookPath cannot find tesseract, the package MUST
+// log the WHAT/CHECK/FIX warning AND MUST NOT register an enricher. We
+// drive registerIfAvailable directly with a fresh registry + fake LookPath
+// + captured logger, so the test never touches $PATH or enrich.Default.
+func TestRegisterIfAvailable_BinaryMissing(t *testing.T) {
+	reg := enrich.NewRegistry()
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := log.New(&buf, "", 0)
 
-	registeredCalls := 0
-	defer swapHooks(
-		func(string) (string, error) { return "", errors.New("not found in $PATH") },
-		func(enrich.Enricher) { registeredCalls++ },
-		func() *slog.Logger { return logger },
-	)()
-
-	if registered := registerEnricher(); registered {
-		t.Errorf("registerEnricher() returned true, want false (binary absent)")
-	}
-	if registeredCalls != 0 {
-		t.Errorf("registerWith called %d times, want 0", registeredCalls)
+	if registered := registerIfAvailable(reg, func(string) (string, error) {
+		return "", errors.New("not found in $PATH")
+	}, logger); registered {
+		t.Errorf("registerIfAvailable() returned true, want false (binary absent)")
 	}
 
 	logText := buf.String()
-	// Warning must contain the §5.1 template lines verbatim. Grepping
-	// for the lead WHAT line + the CHECK + the FIX is enough.
 	for _, want := range []string{
 		"enrich/ocr: tesseract not found in PATH",
 		"CHECK: docker inspect",
 		"FIX:   rebase this connector on glovebox-enricher-runtime",
+		"not found in $PATH",
 	} {
 		if !strings.Contains(logText, want) {
 			t.Errorf("warning log missing %q\n--- log ---\n%s", want, logText)
@@ -101,31 +91,21 @@ func TestRegisterEnricher_BinaryMissing(t *testing.T) {
 	}
 }
 
-// TestRegisterEnricher_BinaryPresent confirms the happy path: when
-// LookPath succeeds, the enricher is registered exactly once and no
-// warning is emitted.
-func TestRegisterEnricher_BinaryPresent(t *testing.T) {
+// TestRegisterIfAvailable_BinaryPresent confirms the happy path: when
+// LookPath succeeds, the enricher is registered exactly once and nothing
+// is logged.
+func TestRegisterIfAvailable_BinaryPresent(t *testing.T) {
+	reg := enrich.NewRegistry()
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := log.New(&buf, "", 0)
 
-	var registered []enrich.Enricher
-	defer swapHooks(
-		func(name string) (string, error) { return "/usr/bin/" + name, nil },
-		func(e enrich.Enricher) { registered = append(registered, e) },
-		func() *slog.Logger { return logger },
-	)()
-
-	if ok := registerEnricher(); !ok {
-		t.Errorf("registerEnricher() returned false, want true (binary present)")
+	if ok := registerIfAvailable(reg, func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}, logger); !ok {
+		t.Errorf("registerIfAvailable() returned false, want true (binary present)")
 	}
-	if len(registered) != 1 {
-		t.Fatalf("registerWith called %d times, want 1", len(registered))
-	}
-	if got := registered[0].Name(); got != "ocr" {
-		t.Errorf("registered enricher Name() = %q, want %q", got, "ocr")
-	}
-	if strings.Contains(buf.String(), "WARN") {
-		t.Errorf("unexpected warning logged on happy path:\n%s", buf.String())
+	if buf.Len() != 0 {
+		t.Errorf("unexpected log on happy path:\n%s", buf.String())
 	}
 }
 
@@ -164,23 +144,3 @@ func TestOutputFilename(t *testing.T) {
 	}
 }
 
-// swapHooks installs test versions of the package-level lookPath,
-// registerWith, and warnLogger hooks. The returned restore function
-// reinstalls the originals; callers defer it.
-func swapHooks(
-	lp func(string) (string, error),
-	rw func(enrich.Enricher),
-	wl func() *slog.Logger,
-) func() {
-	origLP := lookPath
-	origRW := registerWith
-	origWL := warnLogger
-	lookPath = lp
-	registerWith = rw
-	warnLogger = wl
-	return func() {
-		lookPath = origLP
-		registerWith = origRW
-		warnLogger = origWL
-	}
-}

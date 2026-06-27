@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,37 +186,29 @@ func normalizeContentType(ct string) string {
 	return strings.TrimSpace(ct)
 }
 
-// lookPath and registerWith are package-level hooks so init() can be
-// exercised without depending on the real exec.LookPath or the
-// process-global registry. Tests swap these, invoke registerEnricher(),
-// and assert the resulting calls.
+// lookPath is the package-level seam so init() can be exercised without
+// the real exec.LookPath; initLogger is the init-time warning sink. Tests
+// drive registerIfAvailable directly with their own registry + LookPath +
+// logger and never mutate $PATH or package-global state.
 var (
-	lookPath     = exec.LookPath
-	registerWith = func(e enrich.Enricher) { enrich.Default.Register(e) }
-	warnLogger   = func() *slog.Logger { return slog.Default() }
+	lookPath   = exec.LookPath
+	initLogger = log.New(os.Stderr, "", 0)
 )
 
-// registerEnricher performs the init()-time LookPath check and either
-// registers the enricher or logs a WHAT/CHECK/FIX warning. Returns true
-// when registration happened (used by tests; ignored by init()).
-//
-// The warning text follows the §5.1 template verbatim so operators can
-// grep for it across connector start-up logs.
-func registerEnricher() bool {
-	if _, err := lookPath(tesseractBin); err != nil {
-		warnLogger().Warn(
-			"enrich/ocr: tesseract not found in PATH; the OCR enricher is disabled for this connector.\n"+
-				"  CHECK: docker inspect <image> for /usr/bin/tesseract\n"+
-				"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that images will not be OCR'd.",
-			"binary", tesseractBin,
-			"lookpath_error", err.Error(),
-		)
-		return false
-	}
-	registerWith(&Enricher{})
-	return true
+// ocrDisabledMsg is the WHAT/CHECK/FIX warning logged when tesseract is
+// absent (spec §5.1 template); enrich.RegisterIfAvailable appends the
+// LookPath error.
+const ocrDisabledMsg = "enrich/ocr: tesseract not found in PATH; the OCR enricher is disabled for this connector.\n" +
+	"  CHECK: docker inspect <image> for /usr/bin/tesseract\n" +
+	"  FIX:   rebase this connector on glovebox-enricher-runtime, or accept that images will not be OCR'd."
+
+// registerIfAvailable is the shared binary-enricher gate (glovebox-afq4.14),
+// identical in shape to the pdf/office siblings.
+func registerIfAvailable(reg *enrich.Registry, look func(string) (string, error), logger *log.Logger) bool {
+	return enrich.RegisterIfAvailable(reg, tesseractBin,
+		func(string) enrich.Enricher { return &Enricher{} }, look, logger, ocrDisabledMsg)
 }
 
 func init() {
-	registerEnricher()
+	registerIfAvailable(enrich.Default, lookPath, initLogger)
 }
