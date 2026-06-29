@@ -13,35 +13,53 @@
 # apt, but pandoc does NOT. bookworm's apt pandoc is 2.17 and trixie's is
 # 3.1.11 -- both below the 3.5 required to READ .xlsx (.pptx needs 3.0).
 # No current Debian stable ships pandoc >=3.5, so we install the upstream
-# release .deb from github.com/jgm/pandoc, pinned by version + sha256.
-# The enricher-runtime container test asserts xlsx + pptx appear in
-# `pandoc --list-input-formats`. (Evaluating a trixie base for the rest of
-# the toolchain is tracked separately as a follow-up bead.)
+# release .deb from github.com/jgm/pandoc, pinned by version + per-arch
+# sha256. The enricher-runtime container test asserts pandoc can actually
+# convert an .xlsx fixture. (Evaluating a trixie base for the rest of the
+# toolchain is tracked separately as glovebox-7eod.)
+#
+# This image is built multi-arch (linux/amd64 + linux/arm64 -- the homelab
+# has arm64 nodes), so the .deb arch must match the build platform: pulling
+# the amd64 .deb into an arm64 build fails dpkg with exit 100. We select the
+# .deb by the image's own architecture (dpkg --print-architecture, falling
+# back to buildx's TARGETARCH), and pin a sha256 per arch.
 #
 # Expected built size: ~340 MB (pandoc's Haskell runtime dominates at ~110 MB).
 # Bounds enforced 100-400 MB by scripts/test-enricher-runtime.sh.
 
 FROM docker.io/debian:bookworm-slim
 
-# Pinned upstream pandoc. Bump PANDOC_VERSION and PANDOC_DEB_SHA256
-# together; the sha256 is computed over the release .deb asset
-# (github.com/jgm/pandoc/releases/download/<ver>/pandoc-<ver>-1-amd64.deb).
+# Pinned upstream pandoc. Bump PANDOC_VERSION and BOTH per-arch sha256s
+# together; each sha256 is computed over the matching release .deb asset
+# (github.com/jgm/pandoc/releases/download/<ver>/pandoc-<ver>-1-<arch>.deb).
 ARG PANDOC_VERSION=3.10
-ARG PANDOC_DEB_SHA256=d502599878eb29af3ae5f0cb5d559134df96534125d452c7a0674a5bad2c5ecf
+ARG PANDOC_DEB_SHA256_AMD64=d502599878eb29af3ae5f0cb5d559134df96534125d452c7a0674a5bad2c5ecf
+ARG PANDOC_DEB_SHA256_ARM64=b651c8bfd5a0a2f6650d6c0830131747ef67a1d9c0475b1399626611419e2205
+# TARGETARCH is populated automatically by buildx on multi-arch builds; the
+# dpkg fallback keeps a plain `docker build` (podman/buildah) working.
+ARG TARGETARCH
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${arch}" in \
+      amd64) pandoc_sha="${PANDOC_DEB_SHA256_AMD64}" ;; \
+      arm64) pandoc_sha="${PANDOC_DEB_SHA256_ARM64}" ;; \
+      *) echo "enricher-runtime: unsupported architecture '${arch}' (want amd64|arm64)" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       poppler-utils \
       tesseract-ocr \
       tesseract-ocr-eng \
       ca-certificates \
-      curl \
-    && curl -fsSL -o /tmp/pandoc.deb \
-        "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb" \
-    && echo "${PANDOC_DEB_SHA256}  /tmp/pandoc.deb" | sha256sum -c - \
-    && apt-get install -y --no-install-recommends /tmp/pandoc.deb \
-    && rm /tmp/pandoc.deb \
-    && apt-get purge -y --auto-remove curl \
-    && rm -rf /var/lib/apt/lists/*
+      curl; \
+    curl -fsSL -o /tmp/pandoc.deb \
+      "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-${arch}.deb"; \
+    echo "${pandoc_sha}  /tmp/pandoc.deb" | sha256sum -c -; \
+    apt-get install -y --no-install-recommends /tmp/pandoc.deb; \
+    rm /tmp/pandoc.deb; \
+    apt-get purge -y --auto-remove curl; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 65532 nonroot && useradd -u 65532 -g 65532 -s /usr/sbin/nologin nonroot
 
