@@ -271,9 +271,18 @@ func (si *StagingItem) runEnrichmentPipeline(meta *staging.ItemMetadata) {
 	}
 
 	// Attachments (set was captured above pre-primary-enrichment).
+	// The item-level meta.ContentType describes only the primary body
+	// (e.g. text/html for a newsletter), so each attachment is typed from
+	// its own filename/bytes before dispatch — otherwise every attachment
+	// would inherit the body's type and the pdf/ocr/office enrichers could
+	// never fire on them (spec 14 §7.3 / glovebox-afq4.17). A blank sniff
+	// result leaves ContentType empty so passthrough's text sniff can
+	// still claim text attachments.
 	var attachmentErrs []enrich.EnricherError
 	for _, ap := range attachments {
-		arts, errs := registry.ApplyAll(ctx, ap, *meta, si.dir)
+		attMeta := *meta
+		attMeta.ContentType = enrich.SniffContentType(ap)
+		arts, errs := registry.ApplyAll(ctx, ap, attMeta, si.dir)
 		records = enrich.AppendRecords(records, filepath.Base(ap), arts, errs)
 		attachmentErrs = append(attachmentErrs, errs...)
 	}

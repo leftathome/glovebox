@@ -24,13 +24,14 @@
 //
 //   - The enricher.Applies() predicates all dispatch on
 //     meta.ContentType (see connector/enrich/html|pdf|ocr|office .go).
-//     ItemMetadata carries one ContentType per item. To exercise html,
-//     pdf, and ocr enrichers we therefore stage three separate items —
-//     one per content type — rather than one multipart item. A future
-//     follow-on bead may add per-attachment content typing or file-
-//     extension sniffing to enrichers; once that lands, this harness
-//     can collapse to a single multipart item and the §7.3 spec text
-//     becomes literally implementable.
+//     ItemMetadata carries one ContentType per item, which describes the
+//     primary body only. For attachments, the commit pipeline synthesizes
+//     a per-source ContentType via enrich.SniffContentType (glovebox-
+//     afq4.17); this harness mirrors that exactly in its attachment loop.
+//     Scenarios 1-4 stage single-source items (one content type each);
+//     scenario 5 is the multipart case the §7.3 spec text describes
+//     literally — one item with an HTML body plus a PDF and an image
+//     attachment producing the full sidecar set.
 //
 // Exit code:
 //
@@ -228,6 +229,40 @@ func run() int {
 				},
 			},
 		},
+		// 5. The literal spec §7.3 case (glovebox-afq4.17): ONE multipart
+		// item — HTML body in content.raw plus a PDF attachment and an
+		// image attachment as siblings. Per-attachment content-type
+		// sniffing dispatches a different enricher to each source: html on
+		// the body, pdf on attachment-1, ocr on attachment-2. Before
+		// afq4.17 this was unimplementable as a single item because every
+		// source inherited the item-level text/html ContentType.
+		{
+			name:           "multipart-email",
+			contentType:    "text/html",
+			primaryFixture: "email-body.html",
+			attachmentFixtures: []attachmentMapping{
+				{fixture: "attachment-report.pdf", basename: "attachment-1-report.pdf"},
+				{fixture: "attachment-screenshot.png", basename: "attachment-2-screenshot.png"},
+			},
+			expectedSidecars: []sidecarAssertion{
+				{
+					filename:     "content.extracted.md",
+					producer:     "html",
+					mustNonEmpty: true,
+					mustContain:  "Hello",
+				},
+				{
+					filename:     "content.attachment-1.extracted.md",
+					producer:     "pdf",
+					mustNonEmpty: true,
+				},
+				{
+					filename:     "content.attachment-2.extracted.md",
+					producer:     "ocr",
+					mustNonEmpty: true,
+				},
+			},
+		},
 	}
 
 	totalPass := 0
@@ -324,10 +359,15 @@ func runScenario(sc scenario, fixturesDir, stagingDir string) (int, int) {
 		}
 	}
 	// Iterate attachments lexicographically (filepath.Glob is
-	// documented as lexicographic; explicit for clarity).
+	// documented as lexicographic; explicit for clarity). Each attachment
+	// is typed from its own filename/bytes via SniffContentType, mirroring
+	// connector/staging.go runEnrichmentPipeline (glovebox-afq4.17); the
+	// item-level ContentType describes only the primary body.
 	attachments, _ := filepath.Glob(filepath.Join(itemDir, "attachment-*"))
 	for _, ap := range attachments {
-		_, errs := enrich.Default.ApplyAll(ctx, ap, meta, itemDir)
+		attMeta := meta
+		attMeta.ContentType = enrich.SniffContentType(ap)
+		_, errs := enrich.Default.ApplyAll(ctx, ap, attMeta, itemDir)
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr,
 				"smoke-enrichment[%s]: enricher %q on %s returned error: %v\n",
