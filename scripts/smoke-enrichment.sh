@@ -43,16 +43,16 @@
 #                             scripts/test-enricher-runtime.sh and
 #                             retag it (see workaround block below).
 #
-#   --use-registry-images <T> Pull (or assume present) the smoke image
-#                             with tag T from a registry. Useful when
-#                             CI pre-publishes a pinned smoke image
-#                             alongside the connector images.
-#                             NOTE: this mode is wired but UNTESTED in
-#                             v1 — no CI job builds or publishes
+#   --use-registry-images <T> Pull the smoke image with tag T from GHCR.
+#                             The build-smoke-enrichment CI job publishes
 #                             ghcr.io/leftathome/glovebox-smoke-enrichment
-#                             yet. Tracked in bd issue glovebox-afq4.16.
-#                             Default (--use-local-images) is the only
-#                             supported path today.
+#                             with the same tag matrix as the connector
+#                             images (latest on main, sha-<short>, semver),
+#                             and re-runs this script with
+#                             --use-registry-images latest on every main
+#                             push to keep this path exercised
+#                             (glovebox-afq4.16). Useful for running the
+#                             smoke from a clean machine without a rebuild.
 #
 # Usage:
 #
