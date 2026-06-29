@@ -2,7 +2,7 @@
 # scope for the `FROM ${ENRICHER_BASE}` stage below. A stage-scoped ARG (after
 # the first FROM) resolves blank there, which newer BuildKit rejects with
 # UndefinedArgInFrom (enricher Dockerfile ARG-scope fix).
-ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
+ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:sha-c4ee4a9
 
 FROM docker.io/golang:1.26 AS build
 WORKDIR /src
@@ -18,14 +18,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /importer ./impor
 # backfill (the driver use case for this rebase). Spec
 # docs/specs/14-content-enrichment-design.md §6.2 (mbox-importer row).
 #
-# Tag rationale: :latest matches the moving tag the CI workflow publishes on
-# main (see .github/workflows/ci.yml build-enricher-runtime job) and follows
-# the prevailing convention in this repo (golang:1.26, debian:bookworm-slim,
-# distroless/static-debian12:nonroot are all moving tags). Pin to an
-# immutable sha-<short> or semver tag once the enricher-runtime base image
-# stabilizes. The published base image already runs as nonroot uid/gid 65532
-# so the USER directive below is a drop-in continuation of the prior
-# distroless:nonroot identity.
+# Tag rationale: ENRICHER_BASE is pinned to the immutable multi-arch tag
+# sha-c4ee4a9 -- the enricher-runtime build for that commit (debian:bookworm-slim
+# + poppler-utils + tesseract + pinned upstream pandoc 3.10). When the base
+# image changes, bump this tag across all rebased connectors AND the gitlab CI
+# template together; it is a manual bump because sha-<short> tags are not
+# renovate-version-sortable. The gitlab pipeline overrides ENRICHER_BASE via
+# ARG to its in-cluster registry tag, so this default governs github + local
+# builds. The base runs as nonroot uid/gid 65532, so the USER directive below
+# is a drop-in continuation of the prior distroless:nonroot identity.
 FROM ${ENRICHER_BASE}
 COPY --from=build /importer /importer
 COPY importers/mbox/config.json /etc/importer/config.json
