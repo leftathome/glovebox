@@ -11,8 +11,9 @@
 #   2. pdftotext, tesseract, pandoc are present and executable as the
 #      shipped runtime user.
 #   2b. pandoc actually READS xlsx (converts the committed sample.xlsx) and
-#      lists pptx input (glovebox-afq4.13; requires the pinned upstream
-#      pandoc >=3.5, not Debian apt pandoc).
+#      pptx (md->pptx->md round-trip) -- not via --list-input-formats, which
+#      is unreliable on CI (glovebox-afq4.13; needs pinned upstream pandoc
+#      >=3.5, not Debian apt pandoc).
 #   3. The runtime user is uid 65532 / gid 65532 (nonroot).
 #   4. /bin/sh exists (required for the inline test commands).
 #
@@ -139,10 +140,11 @@ check_binary pandoc pandoc "--version"
 # too old on every current stable (bookworm 2.17, trixie 3.1.11), so the
 # Dockerfile installs a pinned upstream pandoc .deb.
 #
-# We verify the actual READ CAPABILITY (pandoc -f <fmt> -t markdown on a real
-# fixture), not just `--list-input-formats`. The list proved unreliable: on
-# GitHub's runner pandoc 3.10 omitted xlsx from the list while pptx appeared,
-# so a list-only check is both flaky and weaker than exercising the real
+# We verify the actual READ CAPABILITY (an actual pandoc conversion), never
+# `--list-input-formats`. That list proved unreliable on GitHub's runners:
+# one run omitted xlsx while listing pptx, a later run returned an EMPTY
+# list (failing pptx) even though `pandoc -f xlsx`/`-f pptx` both convert
+# fine. So a list check is both flaky and weaker than exercising the real
 # conversion the office enricher performs in production.
 #
 # Diagnostics are dumped unconditionally so a future regression is easy to
@@ -175,15 +177,23 @@ check_pandoc_reads_xlsx() {
 }
 check_pandoc_reads_xlsx
 
-# pptx-input is reliably listed; a list check is sufficient and avoids
-# committing a second binary fixture (pandoc CAN write pptx, unlike xlsx).
-if ${DOCKER_RUN} "${IMAGE}" sh -c "pandoc --list-input-formats" 2>/dev/null | grep -qx "pptx"; then
-    pass "pandoc lists 'pptx' as an input format"
-else
-    fail "pandoc does not list 'pptx' input format -- pandoc too old (needs >=3.0)" \
-         "${DOCKER_RUN} ${IMAGE} sh -c 'pandoc --list-input-formats' | grep pptx" \
-         "bump the pinned upstream pandoc (PANDOC_VERSION + PANDOC_DEB_SHA256) in Dockerfile.enricher-runtime to >=3.5"
-fi
+# pptx read capability. Unlike xlsx, pandoc CAN write pptx, so we verify
+# via a self-contained md -> pptx -> md round-trip (no committed binary
+# fixture, no reliance on --list-input-formats): generate a pptx with a
+# known slide title, read it back, and assert the title survives.
+check_pandoc_reads_pptx() {
+    local out
+    out=$(${DOCKER_RUN} "${IMAGE}" sh -c \
+        'printf "# PptxTitle\n\nbody\n" | pandoc -f markdown -t pptx -o /tmp/t.pptx && pandoc -f pptx -t markdown /tmp/t.pptx 2>&1' 2>/dev/null || true)
+    if echo "${out}" | grep -q "PptxTitle"; then
+        pass "pandoc reads pptx (md -> pptx -> md round-trip, title present)"
+    else
+        fail "pandoc could not round-trip pptx (md -> pptx -> md missing title); got: ${out}" \
+             "${DOCKER_RUN} ${IMAGE} sh -c 'printf \"# PptxTitle\\n\\nbody\\n\" | pandoc -f markdown -t pptx -o /tmp/t.pptx && pandoc -f pptx -t markdown /tmp/t.pptx'" \
+             "bump the pinned upstream pandoc (PANDOC_VERSION + per-arch sha256) in Dockerfile.enricher-runtime to a build with a working pptx reader (>=3.0)"
+    fi
+}
+check_pandoc_reads_pptx
 
 # --- 3. Runtime user is uid 65532 / gid 65532 (nonroot) ----------------------
 ID_OUTPUT=$(${DOCKER_RUN} "${IMAGE}" id 2>/dev/null || true)
