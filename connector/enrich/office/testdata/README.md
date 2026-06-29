@@ -6,22 +6,31 @@ This directory holds fixture material for `connector/enrich/office`.
 
 The full test matrix needs a pandoc that supports xlsx and pptx as
 *input* formats. Pandoc gained pptx-input in 3.0 and xlsx-input in 3.5+.
-Older pandocs (Debian bookworm ships 2.17; Ubuntu jammy 2.9) skip the
-xlsx and pptx test cases gracefully via `requirePandocFormat`. The
-runtime image (`Dockerfile.enricher-runtime`) needs a recent pandoc for
-production to actually render `.xlsx` and `.pptx` content; bumping that
-base image's pandoc is tracked under the enricher-runtime bead, not
-this one.
+Older pandocs (Debian bookworm ships 2.17; trixie 3.1.11; Ubuntu jammy
+2.9) skip the xlsx and pptx test cases gracefully via
+`requirePandocFormat`. The runtime image (`Dockerfile.enricher-runtime`)
+installs a pinned upstream pandoc >=3.5 (glovebox-afq4.13) -- no current
+Debian stable ships a new enough apt pandoc -- so in the runtime image
+these cases run, not skip.
 
-## Strategy: generated fixtures, not committed binaries
+## Strategy: generate where pandoc can, commit where it cannot
 
 Real OOXML files are zip-of-XML blobs that drift across pandoc versions and bloat the
-repository. Rather than committing them, the build-tagged tests
-(`office_test.go`, `//go:build enrichruntime`) **generate** their docx /
-xlsx / pptx fixtures at test time by invoking `pandoc -f markdown -t
-{docx,xlsx,pptx} -o <tmp>/...`. This keeps the fixtures self-consistent
-with whatever pandoc version the runtime image ships and avoids a
-checked-in binary blob.
+repository. Where possible the build-tagged tests (`office_test.go`,
+`//go:build enrichruntime`) **generate** their fixtures at test time by
+invoking `pandoc -f markdown -t {docx,pptx} -o <tmp>/...`, keeping them
+self-consistent with whatever pandoc the runtime image ships.
+
+**Exception: `sample.xlsx` is committed.** pandoc has a *reader* for xlsx
+but no *writer*, so `pandoc -t xlsx` does not exist and the xlsx fixture
+cannot be self-generated (this is why the xlsx case skipped on every
+pandoc until afq4.13). `sample.xlsx` is a minimal hand-built OOXML
+spreadsheet (sharedStrings; a 3x3 grid: header `Col1/Col2/Col3` plus
+`ZEBRA/TIGER/HORSE` and `LION/BEAR/WOLF`) committed so
+`TestEnrich_XlsxTabular` exercises the xlsx -> markdown input path. It
+was produced by a stdlib-only Python `zipfile` generator (no openpyxl
+dependency); regenerate with an equivalent minimal writer if the cell
+set changes.
 
 The untagged tests (`office_init_test.go`) need only a few bytes of
 synthetic input (a CFB/OLE magic header for the legacy-.doc case) and

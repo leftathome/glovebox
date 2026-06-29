@@ -71,6 +71,18 @@ func makeOOXML(t *testing.T, outDir, basename, toFormat, markdown string) string
 	return dst
 }
 
+// copyTestFile copies a committed fixture (src, relative to the package
+// dir) to dst. Used for formats pandoc cannot generate itself (xlsx has
+// no pandoc writer), so the fixture must be a committed binary blob.
+func copyTestFile(t *testing.T, src, dst string) error {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
+}
+
 func TestEnrich_DocxSimple(t *testing.T) {
 	requirePandoc(t)
 
@@ -108,17 +120,20 @@ func TestEnrich_DocxSimple(t *testing.T) {
 
 func TestEnrich_XlsxTabular(t *testing.T) {
 	requirePandoc(t)
-	requirePandocFormat(t, "output", "xlsx")
+	// Only INPUT support is gated: the office enricher reads xlsx
+	// (xlsx -> markdown), which landed in pandoc 3.5. Unlike docx/pptx we
+	// canNOT self-generate the fixture with pandoc -- pandoc has no xlsx
+	// WRITER -- so a static fixture is committed at testdata/sample.xlsx
+	// (built by scripts in the afq4.13 change; minimal OOXML + sharedStrings).
 	requirePandocFormat(t, "input", "xlsx")
 
 	tmp := t.TempDir()
-	// pandoc can render markdown tables into .xlsx; round-tripping
-	// keeps the assertions tolerant to pandoc's exact cell layout.
-	src := makeOOXML(t, tmp, "content.raw", "xlsx",
-		"| Col1 | Col2 | Col3 |\n"+
-			"|------|------|------|\n"+
-			"| ZEBRA | TIGER | HORSE |\n"+
-			"| LION | BEAR | WOLF |\n")
+	// Use the committed xlsx fixture as the source; it holds a 3x3 grid
+	// (header Col1/Col2/Col3 + ZEBRA/TIGER/HORSE + LION/BEAR/WOLF).
+	src := filepath.Join(tmp, "content.raw")
+	if err := copyTestFile(t, filepath.Join("testdata", "sample.xlsx"), src); err != nil {
+		t.Fatalf("stage xlsx fixture: %v", err)
+	}
 
 	e := New()
 	meta := staging.ItemMetadata{ContentType: ContentTypeXlsx}

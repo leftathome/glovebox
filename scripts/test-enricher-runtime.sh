@@ -10,6 +10,8 @@
 #      and accidental dep bloat; see size-bound rationale below).
 #   2. pdftotext, tesseract, pandoc are present and executable as the
 #      shipped runtime user.
+#   2b. pandoc lists xlsx + pptx as input formats (glovebox-afq4.13;
+#      requires the pinned upstream pandoc >=3.5, not Debian apt pandoc).
 #   3. The runtime user is uid 65532 / gid 65532 (nonroot).
 #   4. /bin/sh exists (required for the inline test commands).
 #
@@ -130,6 +132,27 @@ check_binary() {
 check_binary pdftotext pdftotext "-v"
 check_binary tesseract tesseract "--version"
 check_binary pandoc pandoc "--version"
+
+# --- 2b. pandoc must support xlsx + pptx INPUT (glovebox-afq4.13) -------------
+# xlsx-input requires pandoc >=3.5, pptx-input >=3.0. Debian's apt pandoc is
+# too old on every current stable (bookworm 2.17, trixie 3.1.11), so the
+# Dockerfile installs a pinned upstream pandoc .deb. Assert the formats are
+# actually listed so a regression in the pinned pandoc -- or an accidental
+# revert to apt pandoc -- fails CI rather than silently dropping xlsx/pptx
+# enrichment (the office enricher would then write WHAT/CHECK/FIX error
+# markers in production instead of extracting text).
+check_pandoc_input_format() {
+    local fmt="$1"
+    if ${DOCKER_RUN} "${IMAGE}" sh -c "pandoc --list-input-formats" 2>/dev/null | grep -qx "${fmt}"; then
+        pass "pandoc lists '${fmt}' as an input format"
+    else
+        fail "pandoc does not list '${fmt}' input format -- pandoc too old (xlsx needs >=3.5, pptx >=3.0)" \
+             "${DOCKER_RUN} ${IMAGE} pandoc --version | head -1; ${DOCKER_RUN} ${IMAGE} sh -c 'pandoc --list-input-formats' | grep -E 'xlsx|pptx'" \
+             "bump the pinned upstream pandoc (PANDOC_VERSION + PANDOC_DEB_SHA256) in Dockerfile.enricher-runtime to >=3.5"
+    fi
+}
+check_pandoc_input_format xlsx
+check_pandoc_input_format pptx
 
 # --- 3. Runtime user is uid 65532 / gid 65532 (nonroot) ----------------------
 ID_OUTPUT=$(${DOCKER_RUN} "${IMAGE}" id 2>/dev/null || true)
