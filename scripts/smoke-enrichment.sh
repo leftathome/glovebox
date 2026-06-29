@@ -201,6 +201,16 @@ trap 'cleanup_on_exit' EXIT
 cleanup_on_exit() {
     local rc=$?
     if [ "$rc" -eq 0 ]; then
+        # The harness container writes staging files as its nonroot uid
+        # (65532). A non-root host user (e.g. a GitHub Actions runner) then
+        # cannot `rm` them, which previously failed the job AFTER the smoke
+        # itself passed. Clear the container-written tree via a throwaway
+        # root container first, then remove the rest as the host user.
+        if [ -n "${IMAGE:-}" ]; then
+            docker run --rm --user 0 --entrypoint sh \
+                -v "${SCRATCH_DIR}:/scratch" "$IMAGE" \
+                -c 'rm -rf /scratch/staging' >/dev/null 2>&1 || true
+        fi
         rm -rf "$SCRATCH_DIR"
     else
         echo "${SCOPE}: scratch dir preserved for forensics: ${SCRATCH_DIR}" >&2
