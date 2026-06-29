@@ -314,6 +314,77 @@ jobs:
           cache-from: type=gha,scope=glovebox-enricher-runtime
           cache-to: type=gha,scope=glovebox-enricher-runtime,mode=max
 
+  build-smoke-enrichment:
+    # Spec-14 §7.3 end-to-end enrichment smoke harness image. Built FROM the
+    # glovebox-enricher-runtime base (same base as the rebased connectors)
+    # so pdftotext / tesseract / pandoc presence is exercised exactly as in
+    # production. Published so operators can run
+    # `scripts/smoke-enrichment.sh --use-registry-images <tag>` from a clean
+    # machine without rebuilding. Task: glovebox-afq4.16.
+    #
+    # Sequenced as: (1) build-from-source + run all scenarios via the
+    # script's --use-local-images mode (always-on gate, no published image
+    # needed); (2) on push, build+push multi-arch to GHCR; (3) on a main
+    # push, re-run the smoke against the just-published image via
+    # --use-registry-images to exercise that path end-to-end.
+    name: Docker (glovebox-smoke-enrichment)
+    runs-on: ubuntu-latest
+    needs: build-enricher-runtime
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Smoke (build local image + run all scenarios)
+        run: bash scripts/smoke-enrichment.sh --use-local-images
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        if: github.event_name == 'push'
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/glovebox-smoke-enrichment
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push (multi-arch)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./scripts/smoke-enrichment/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=glovebox-smoke-enrichment
+          cache-to: type=gha,scope=glovebox-smoke-enrichment,mode=max
+
+      - name: Smoke (pull published image + run all scenarios)
+        # Only on a main push, where the `latest` tag was just published
+        # above. Exercises the --use-registry-images path end-to-end so the
+        # registry mode does not rot (the gap glovebox-afq4.16 tracked).
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: bash scripts/smoke-enrichment.sh --use-registry-images latest
+
   helm:
     name: Package and push Helm chart
     runs-on: ubuntu-latest
