@@ -10,8 +10,9 @@
 #      and accidental dep bloat; see size-bound rationale below).
 #   2. pdftotext, tesseract, pandoc are present and executable as the
 #      shipped runtime user.
-#   2b. pandoc lists xlsx + pptx as input formats (glovebox-afq4.13;
-#      requires the pinned upstream pandoc >=3.5, not Debian apt pandoc).
+#   2b. pandoc actually READS xlsx (converts the committed sample.xlsx) and
+#      lists pptx input (glovebox-afq4.13; requires the pinned upstream
+#      pandoc >=3.5, not Debian apt pandoc).
 #   3. The runtime user is uid 65532 / gid 65532 (nonroot).
 #   4. /bin/sh exists (required for the inline test commands).
 #
@@ -133,26 +134,56 @@ check_binary pdftotext pdftotext "-v"
 check_binary tesseract tesseract "--version"
 check_binary pandoc pandoc "--version"
 
-# --- 2b. pandoc must support xlsx + pptx INPUT (glovebox-afq4.13) -------------
+# --- 2b. pandoc must READ xlsx + pptx (glovebox-afq4.13) ---------------------
 # xlsx-input requires pandoc >=3.5, pptx-input >=3.0. Debian's apt pandoc is
 # too old on every current stable (bookworm 2.17, trixie 3.1.11), so the
-# Dockerfile installs a pinned upstream pandoc .deb. Assert the formats are
-# actually listed so a regression in the pinned pandoc -- or an accidental
-# revert to apt pandoc -- fails CI rather than silently dropping xlsx/pptx
-# enrichment (the office enricher would then write WHAT/CHECK/FIX error
-# markers in production instead of extracting text).
-check_pandoc_input_format() {
-    local fmt="$1"
-    if ${DOCKER_RUN} "${IMAGE}" sh -c "pandoc --list-input-formats" 2>/dev/null | grep -qx "${fmt}"; then
-        pass "pandoc lists '${fmt}' as an input format"
+# Dockerfile installs a pinned upstream pandoc .deb.
+#
+# We verify the actual READ CAPABILITY (pandoc -f <fmt> -t markdown on a real
+# fixture), not just `--list-input-formats`. The list proved unreliable: on
+# GitHub's runner pandoc 3.10 omitted xlsx from the list while pptx appeared,
+# so a list-only check is both flaky and weaker than exercising the real
+# conversion the office enricher performs in production.
+#
+# Diagnostics are dumped unconditionally so a future regression is easy to
+# triage from the CI log alone.
+echo "${SCOPE}: pandoc version + input formats (diagnostic):"
+${DOCKER_RUN} "${IMAGE}" sh -c 'pandoc --version | head -1; echo "input-formats:"; pandoc --list-input-formats | tr "\n" " "; echo' 2>/dev/null || true
+
+# Absolute path to the committed office fixtures, mounted read-only so the
+# pandoc reader runs against the same xlsx the office enricher's tests use.
+OFFICE_TD="$(cd "${CONTEXT_DIR}/connector/enrich/office/testdata" 2>/dev/null && pwd || true)"
+
+check_pandoc_reads_xlsx() {
+    if [ -z "${OFFICE_TD}" ] || [ ! -f "${OFFICE_TD}/sample.xlsx" ]; then
+        fail "office xlsx fixture not found at connector/enrich/office/testdata/sample.xlsx" \
+             "ls -la ${CONTEXT_DIR}/connector/enrich/office/testdata/" \
+             "restore the committed sample.xlsx fixture (added in glovebox-afq4.13)"
+        return
+    fi
+    # Convert the fixture and assert a known cell appears. ZEBRA is in row 2.
+    local out
+    out=$(${DOCKER_RUN} -v "${OFFICE_TD}:/td:ro" "${IMAGE}" \
+        sh -c 'pandoc -f xlsx -t markdown /td/sample.xlsx 2>&1' 2>/dev/null || true)
+    if echo "${out}" | grep -q "ZEBRA"; then
+        pass "pandoc reads xlsx (sample.xlsx -> markdown, cell ZEBRA present)"
     else
-        fail "pandoc does not list '${fmt}' input format -- pandoc too old (xlsx needs >=3.5, pptx >=3.0)" \
-             "${DOCKER_RUN} ${IMAGE} pandoc --version | head -1; ${DOCKER_RUN} ${IMAGE} sh -c 'pandoc --list-input-formats' | grep -E 'xlsx|pptx'" \
-             "bump the pinned upstream pandoc (PANDOC_VERSION + PANDOC_DEB_SHA256) in Dockerfile.enricher-runtime to >=3.5"
+        fail "pandoc could not read xlsx (sample.xlsx -> markdown missing cell ZEBRA); got: ${out}" \
+             "${DOCKER_RUN} -v ${OFFICE_TD}:/td:ro ${IMAGE} sh -c 'pandoc -f xlsx -t markdown /td/sample.xlsx'" \
+             "bump the pinned upstream pandoc (PANDOC_VERSION + PANDOC_DEB_SHA256) in Dockerfile.enricher-runtime to a build with a working xlsx reader (>=3.5)"
     fi
 }
-check_pandoc_input_format xlsx
-check_pandoc_input_format pptx
+check_pandoc_reads_xlsx
+
+# pptx-input is reliably listed; a list check is sufficient and avoids
+# committing a second binary fixture (pandoc CAN write pptx, unlike xlsx).
+if ${DOCKER_RUN} "${IMAGE}" sh -c "pandoc --list-input-formats" 2>/dev/null | grep -qx "pptx"; then
+    pass "pandoc lists 'pptx' as an input format"
+else
+    fail "pandoc does not list 'pptx' input format -- pandoc too old (needs >=3.0)" \
+         "${DOCKER_RUN} ${IMAGE} sh -c 'pandoc --list-input-formats' | grep pptx" \
+         "bump the pinned upstream pandoc (PANDOC_VERSION + PANDOC_DEB_SHA256) in Dockerfile.enricher-runtime to >=3.5"
+fi
 
 # --- 3. Runtime user is uid 65532 / gid 65532 (nonroot) ----------------------
 ID_OUTPUT=$(${DOCKER_RUN} "${IMAGE}" id 2>/dev/null || true)
