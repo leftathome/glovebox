@@ -187,15 +187,12 @@ func (si *StagingItem) buildMetadata() (staging.ItemMetadata, error) {
 
 // Commit finalizes the staging item.
 //
-// Backend asymmetry (KNOWN GAP, spec 14 follow-on): when the connector
-// is configured with HTTPStagingBackend (which sets si.commitFunc), the
-// commit path POSTs the raw content to the ingest server and the local
-// enrichment pipeline is SKIPPED. Server-side enrichment (if any) runs
-// on the ingest server. Downstream consumers that read metadata.json
-// CANNOT distinguish "this came via HTTP, enrichment ran server-side"
-// from "this is a legacy item, enrichment didn't run." Threading the
-// enrichment pipeline through the HTTP path (or relying on server-side
-// enrichment with parity) is tracked separately.
+// Backend parity (spec 14 §4.7): both backends run the enrichment pipeline
+// connector-side. The filesystem path runs it below; the HTTP path runs the
+// same runEnrichmentPipeline inside HTTPStagingBackend.commitHTTP (which
+// si.commitFunc points to) before POSTing metadata + content + sidecar
+// parts. Either way meta.Enrichments[] is populated, so downstream
+// consumers see one schema regardless of backend (glovebox-afq4.12).
 func (si *StagingItem) Commit() error {
 	if si.commitFunc != nil {
 		return si.commitFunc()

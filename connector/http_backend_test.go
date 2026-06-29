@@ -20,6 +20,9 @@ type parsedIngest struct {
 	content     []byte
 	contentType string
 	headers     http.Header
+	// sidecars holds any "sidecar" parts keyed by their filename. Used by
+	// the enrichment-parity tests (glovebox-afq4.12).
+	sidecars map[string][]byte
 }
 
 // parseIngestRequest reads a multipart/form-data request body and extracts
@@ -62,6 +65,11 @@ func parseIngestRequest(t *testing.T, r *http.Request) parsedIngest {
 		case "content":
 			result.content = data
 			result.contentType = part.Header.Get("Content-Type")
+		case "sidecar":
+			if result.sidecars == nil {
+				result.sidecars = map[string][]byte{}
+			}
+			result.sidecars[part.FileName()] = data
 		}
 		part.Close()
 	}

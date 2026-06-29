@@ -240,6 +240,54 @@ type EnrichmentRecord struct {
 
 Downstream consumers can introspect `Enrichments[]` to know what's available without scanning the directory.
 
+### 4.7 Backend parity: enrichment always runs connector-side
+
+A connector commits items through one of two `StagingBackend`s: the
+filesystem backend (writes the item directory directly into the staging
+dir) or the `HTTPStagingBackend` (POSTs the item to the scanner's
+`/v1/ingest` endpoint as multipart/form-data). Enrichment **always runs
+connector-side**, in `StagingItem.Commit()` (filesystem) and in
+`HTTPStagingBackend.commitHTTP()` (HTTP), via the same
+`runEnrichmentPipeline`. The ingest server does **not** enrich; it stores
+received artifacts verbatim.
+
+Rationale: the ingest handler historically wrote only `content.raw` +
+`metadata.json` and never invoked the pipeline, so HTTP-backend items were
+committed **completely unenriched** while filesystem items were enriched —
+an asymmetry downstream consumers could not detect (glovebox-afq4.12). The
+fix runs the pipeline on both paths so `metadata.json.Enrichments[]` is
+populated for **both** backends; openclaw's triage pass (top-level spec
+§7.1) can rely on the field regardless of how the item was delivered.
+
+Wire format (HTTP backend). The multipart request gains zero or more
+`sidecar` parts in addition to the existing `metadata` (JSON) and `content`
+(`content.raw`) parts:
+
+```
+metadata   : application/json          (ItemMetadata incl. Enrichments[])
+content    : application/octet-stream  filename=content.raw
+sidecar    : application/octet-stream  filename=content.extracted.md
+sidecar    : application/octet-stream  filename=content.<enricher>.error.md
+sidecar    : ...                       (one per enrichment artifact/marker)
+```
+
+The connector sends every file in the item directory except `content.raw`
+and `metadata.json` (which are their own parts) as a `sidecar` part. The
+ingest handler validates each sidecar filename strictly (a bare filename:
+no path separators, no `..`, not a reserved name) before writing it into
+the item directory, so a malformed or hostile filename cannot escape the
+staging tree. The result is that the staged item directory is identical
+whichever backend produced it.
+
+Binary-enricher availability. Connectors using the HTTP backend run the
+same enrichers as the filesystem path; a connector whose image lacks a
+binary enricher's tool (e.g. a distroless connector without `pandoc`)
+degrades exactly as the filesystem path does — the pure-Go enrichers
+(passthrough, html) still run and the binary enrichers write WHAT/CHECK/FIX
+error markers (§4.4) rather than failing the commit. Connectors that need
+binary enrichment of attachments should base on `glovebox-enricher-runtime`
+(§6.1).
+
 ## 5. First-party enrichers (v1)
 
 | Package | Mode | Applies-on | Output | Implementation |
