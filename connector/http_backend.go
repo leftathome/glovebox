@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
+
+	"github.com/leftathome/glovebox/connector/enrich"
 )
 
 // HTTPStagingBackend implements StagingBackend by POSTing items to the
@@ -25,6 +29,10 @@ type HTTPStagingBackend struct {
 	configIdentity           *ConfigIdentity
 	configDataSubjectDefault string
 	configAudienceDefault    []string
+	// enrichRegistry is the enrichment registry run by commitHTTP. Nil
+	// means "use enrich.Default". Tests inject a fresh registry to avoid
+	// leaking state through enrich.Default. See glovebox-afq4.12.
+	enrichRegistry *enrich.Registry
 }
 
 // Compile-time check: *HTTPStagingBackend satisfies StagingBackend.
@@ -77,6 +85,15 @@ func (h *HTTPStagingBackend) SetConfigAudience(a []string) {
 	h.configAudienceDefault = append([]string(nil), a...)
 }
 
+// SetEnrichRegistry overrides the enrichment registry run by commitHTTP.
+// When unset (or nil), commitHTTP uses the process-global enrich.Default
+// registry. Mirrors StagingWriter.SetEnrichRegistry so HTTP-backend items
+// reach enrichment parity with filesystem items (glovebox-afq4.12); tests
+// inject a fresh registry here to avoid leaking state through enrich.Default.
+func (h *HTTPStagingBackend) SetEnrichRegistry(r *enrich.Registry) {
+	h.enrichRegistry = r
+}
+
 // NewItem creates a StagingItem whose Commit() POSTs to the ingest endpoint
 // instead of writing to the filesystem.
 func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
@@ -85,6 +102,7 @@ func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
 		configIdentity:           h.configIdentity,
 		configDataSubjectDefault: h.configDataSubjectDefault,
 		configAudienceDefault:    h.configAudienceDefault,
+		enrichRegistry:           h.enrichRegistry,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "glovebox-http-*")
@@ -100,8 +118,17 @@ func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
 	return si, nil
 }
 
-// commitHTTP builds metadata, validates it, reads content from the staging
-// item's temp directory, and POSTs the multipart request with retries.
+// sidecarFile is one enrichment artifact (or error marker) produced
+// connector-side and sent to the ingest server as a multipart "sidecar"
+// part so HTTP-backend items match the filesystem layout (glovebox-afq4.12).
+type sidecarFile struct {
+	name string
+	data []byte
+}
+
+// commitHTTP builds metadata, runs the enrichment pipeline connector-side,
+// reads content + the produced sidecar artifacts from the staging item's
+// temp directory, and POSTs the multipart request with retries.
 func (h *HTTPStagingBackend) commitHTTP(si *StagingItem, tmpDir string) error {
 	defer os.RemoveAll(tmpDir)
 
@@ -110,18 +137,58 @@ func (h *HTTPStagingBackend) commitHTTP(si *StagingItem, tmpDir string) error {
 		return err
 	}
 
+	// Run enrichment connector-side (parity with the filesystem Commit):
+	// this populates meta.Enrichments[] and writes sidecar/marker files
+	// into si.dir. Per-enricher failures never abort the commit
+	// (glovebox-afq4.12 / spec 14 §4.4, §4.7).
+	si.runEnrichmentPipeline(&meta)
+
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	contentPath := si.dir + "/content.raw"
+	contentPath := filepath.Join(si.dir, "content.raw")
 	contentData, err := os.ReadFile(contentPath)
 	if err != nil {
 		contentData = nil
 	}
 
-	return h.postWithRetry(metaJSON, contentData)
+	sidecars, err := collectSidecars(si.dir)
+	if err != nil {
+		return fmt.Errorf("collect enrichment sidecars: %w", err)
+	}
+
+	return h.postWithRetry(metaJSON, contentData, sidecars)
+}
+
+// collectSidecars returns every regular file in dir except content.raw and
+// metadata.json (which are sent as their own parts). This is the set of
+// enrichment artifacts, error markers, and any attachment-* files the
+// connector staged. Returned in lexicographic order for deterministic
+// requests.
+func collectSidecars(dir string) ([]sidecarFile, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []sidecarFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "content.raw" || name == "metadata.json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sidecarFile{name: name, data: data})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
 }
 
 // drainAndClose reads remaining bytes from the response body and closes it,
@@ -132,7 +199,7 @@ func drainAndClose(body io.ReadCloser) {
 }
 
 // postWithRetry sends the multipart request and retries on transient errors.
-func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
+func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte, sidecars []sidecarFile) error {
 	var lastErr error
 
 	for attempt := 0; attempt <= h.retryMax; attempt++ {
@@ -140,7 +207,7 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 			h.sleep(h.backoffDuration(attempt - 1))
 		}
 
-		body, contentType, err := h.buildMultipart(metaJSON, content)
+		body, contentType, err := h.buildMultipart(metaJSON, content, sidecars)
 		if err != nil {
 			return fmt.Errorf("build multipart body: %w", err)
 		}
@@ -173,7 +240,7 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 					break
 				}
 
-				retryBody, retryCT, bErr := h.buildMultipart(metaJSON, content)
+				retryBody, retryCT, bErr := h.buildMultipart(metaJSON, content, sidecars)
 				if bErr != nil {
 					return fmt.Errorf("build multipart body: %w", bErr)
 				}
@@ -212,9 +279,10 @@ func (h *HTTPStagingBackend) postWithRetry(metaJSON, content []byte) error {
 	return fmt.Errorf("ingest failed after %d retries: %w", h.retryMax, lastErr)
 }
 
-// buildMultipart creates the multipart/form-data body with "metadata" and
-// "content" parts.
-func (h *HTTPStagingBackend) buildMultipart(metaJSON, content []byte) (*bytes.Buffer, string, error) {
+// buildMultipart creates the multipart/form-data body with "metadata",
+// "content", and zero or more "sidecar" parts (one per enrichment artifact
+// produced connector-side; glovebox-afq4.12).
+func (h *HTTPStagingBackend) buildMultipart(metaJSON, content []byte, sidecars []sidecarFile) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 
@@ -238,6 +306,22 @@ func (h *HTTPStagingBackend) buildMultipart(metaJSON, content []byte) (*bytes.Bu
 	}
 	if _, err := contentPart.Write(content); err != nil {
 		return nil, "", err
+	}
+
+	// Enrichment sidecar artifacts (glovebox-afq4.12). Each part carries
+	// the artifact's filename so the ingest handler can persist it verbatim
+	// alongside content.raw.
+	for _, sc := range sidecars {
+		scHeader := make(textproto.MIMEHeader)
+		scHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="sidecar"; filename=%q`, sc.name))
+		scHeader.Set("Content-Type", "application/octet-stream")
+		scPart, err := w.CreatePart(scHeader)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := scPart.Write(sc.data); err != nil {
+			return nil, "", err
+		}
 	}
 
 	if err := w.Close(); err != nil {

@@ -163,10 +163,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	reader := multipart.NewReader(limitedBody, params["boundary"])
 
-	// Read exactly 2 parts: metadata and content
+	// Read the metadata + content parts, plus zero or more enrichment
+	// "sidecar" parts (glovebox-afq4.12). Sidecars are keyed by their
+	// sanitized filename and persisted alongside content.raw.
 	var metadataBytes []byte
 	var contentBytes []byte
 	var hasMetadata, hasContent bool
+	sidecars := map[string][]byte{}
 	partCount := 0
 
 	for {
@@ -281,6 +284,54 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hasContent = true
 			part.Close()
 
+		case "sidecar":
+			// Enrichment artifact produced connector-side. The filename is
+			// attacker/bug-influenced, so sanitize the RAW Content-
+			// Disposition filename (part.FileName() pre-strips paths via
+			// filepath.Base, which would silently rename a traversal attempt
+			// rather than reject it). Reject anything that is not a bare
+			// filename within the item dir.
+			_, dispParams, _ := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+			name, ok := sanitizeSidecarName(dispParams["filename"])
+			if !ok {
+				part.Close()
+				h.recordReceived("", "rejected")
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"status":  "error",
+					"message": fmt.Sprintf("invalid sidecar filename: %q", part.FileName()),
+				})
+				return
+			}
+			if _, dup := sidecars[name]; dup {
+				part.Close()
+				h.recordReceived("", "rejected")
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"status":  "error",
+					"message": fmt.Sprintf("duplicate sidecar part: %q", name),
+				})
+				return
+			}
+			data, err := io.ReadAll(part)
+			if err != nil {
+				part.Close()
+				if isMaxBytesError(err) {
+					h.recordReceived("", "rejected")
+					writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+						"status":  "error",
+						"message": "request body too large",
+					})
+					return
+				}
+				h.recordReceived("", "rejected")
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"status":  "error",
+					"message": fmt.Sprintf("read sidecar: %v", err),
+				})
+				return
+			}
+			sidecars[name] = data
+			part.Close()
+
 		default:
 			part.Close()
 			h.recordReceived("", "rejected")
@@ -369,6 +420,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Write enrichment sidecar artifacts (glovebox-afq4.12). Names were
+	// sanitized at parse time, so filepath.Join cannot escape tmpItemDir.
+	for name, data := range sidecars {
+		if err := os.WriteFile(filepath.Join(tmpItemDir, name), data, 0644); err != nil {
+			cleanup()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"status":  "error",
+				"message": "internal error",
+			})
+			return
+		}
+	}
+
 	// Write metadata.json
 	if err := os.WriteFile(filepath.Join(tmpItemDir, "metadata.json"), metadataBytes, 0644); err != nil {
 		cleanup()
@@ -409,6 +473,35 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// sanitizeSidecarName validates an attacker/bug-influenced sidecar
+// filename and returns it cleaned, or ok=false to reject. The name must be
+// a single path element within the item dir: non-empty, no path separators,
+// no "." / ".." traversal, and not one of the reserved part names handled
+// separately (content.raw, metadata.json). This prevents a sidecar part
+// from being written outside the staged item directory.
+func sanitizeSidecarName(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	// Reject any path separators (both OS-native and forward slash) and
+	// parent-dir references before they reach filepath.Join.
+	if strings.ContainsAny(name, `/\`) {
+		return "", false
+	}
+	if name == "." || name == ".." {
+		return "", false
+	}
+	// filepath.Base of a clean single element is the element itself; any
+	// divergence means the input carried path structure.
+	if filepath.Base(name) != name {
+		return "", false
+	}
+	if name == "content.raw" || name == "metadata.json" {
+		return "", false
+	}
+	return name, true
 }
 
 func isMaxBytesError(err error) bool {
