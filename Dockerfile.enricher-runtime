@@ -9,17 +9,38 @@
 # Identity: nonroot uid/gid 65532 (matches distroless nonroot convention used
 # by all per-connector images in this repo).
 #
+# pandoc source (glovebox-afq4.13): poppler-utils and tesseract come from
+# apt, but pandoc does NOT. bookworm's apt pandoc is 2.17 and trixie's is
+# 3.1.11 -- both below the 3.5 required to READ .xlsx (.pptx needs 3.0).
+# No current Debian stable ships pandoc >=3.5, so we install the upstream
+# release .deb from github.com/jgm/pandoc, pinned by version + sha256.
+# The enricher-runtime container test asserts xlsx + pptx appear in
+# `pandoc --list-input-formats`. (Evaluating a trixie base for the rest of
+# the toolchain is tracked separately as a follow-up bead.)
+#
 # Expected built size: ~340 MB (pandoc's Haskell runtime dominates at ~110 MB).
 # Bounds enforced 100-400 MB by scripts/test-enricher-runtime.sh.
 
 FROM docker.io/debian:bookworm-slim
 
+# Pinned upstream pandoc. Bump PANDOC_VERSION and PANDOC_DEB_SHA256
+# together; the sha256 is computed over the release .deb asset
+# (github.com/jgm/pandoc/releases/download/<ver>/pandoc-<ver>-1-amd64.deb).
+ARG PANDOC_VERSION=3.10
+ARG PANDOC_DEB_SHA256=d502599878eb29af3ae5f0cb5d559134df96534125d452c7a0674a5bad2c5ecf
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils \
       tesseract-ocr \
       tesseract-ocr-eng \
-      pandoc \
       ca-certificates \
+      curl \
+    && curl -fsSL -o /tmp/pandoc.deb \
+        "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb" \
+    && echo "${PANDOC_DEB_SHA256}  /tmp/pandoc.deb" | sha256sum -c - \
+    && apt-get install -y --no-install-recommends /tmp/pandoc.deb \
+    && rm /tmp/pandoc.deb \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 65532 nonroot && useradd -u 65532 -g 65532 -s /usr/sbin/nologin nonroot
