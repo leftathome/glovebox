@@ -8,10 +8,11 @@
 #      ghcr.io/leftathome/glovebox-enricher-runtime (same base as the
 #      gmail / imap / outlook / mbox-importer / arxiv / semantic-scholar
 #      connector images).
-#   2. Runs that image against four fixture-driven scenarios — html
-#      email, pdf "attachment", image-with-text, image-with-no-text —
-#      and writes the resulting staging items to a host-mounted scratch
-#      dir.
+#   2. Runs that image against five fixture-driven scenarios — html
+#      email, pdf "attachment", image-with-text, image-with-no-text, and
+#      a multipart email (HTML body + PDF + image attachments, spec §7.3 /
+#      glovebox-afq4.17) — and writes the resulting staging items to a
+#      host-mounted scratch dir.
 #   3. Reads back the scratch dir from the host and asserts the smoke
 #      run produced PASS lines and zero FAIL lines.
 #   4. Cleans up (removes container, image tag, and scratch dir on
@@ -254,7 +255,7 @@ fi
 # harness exited 0 but the bind mount silently mapped to a different
 # path (e.g. SELinux relabeling failure).
 STAGED_COUNT="$(find "$SCRATCH_DIR/staging" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-EXPECTED_COUNT=4
+EXPECTED_COUNT=5
 if [ "$STAGED_COUNT" -ne "$EXPECTED_COUNT" ]; then
     fail \
         "expected ${EXPECTED_COUNT} staged items in ${SCRATCH_DIR}/staging, found ${STAGED_COUNT}" \
@@ -286,4 +287,4 @@ if ! grep -qE '^smoke-enrichment: PASS=[0-9]+ FAIL=0' "$HARNESS_LOG"; then
 fi
 
 echo ""
-echo "${SCOPE}: PASS — all 4 scenarios produced their expected sidecars"
+echo "${SCOPE}: PASS — all 5 scenarios produced their expected sidecars"
