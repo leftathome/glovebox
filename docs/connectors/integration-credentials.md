@@ -48,7 +48,6 @@ later only where artifact/runtime verification is justified).
 | rss | none | n/a | n/a | no |
 | hackernews | none | n/a | n/a | no |
 | arxiv | none | n/a | n/a | no |
-| semantic-scholar | none | n/a | n/a | no |
 | gmail | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
 | imap | real-readonly | TBD (private ci-templates) | TBD (host + user + app password) | no |
 | outlook | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
@@ -68,15 +67,22 @@ later only where artifact/runtime verification is justified).
 | notion | test-account | TBD (private ci-templates) | TBD (integration token, test workspace) | no |
 | steam | test-account | TBD (private ci-templates) | TBD (Web API key) | no |
 | youtube | test-account | TBD (private ci-templates) | TBD (Data API key) | no |
+| semantic-scholar | test-account | TBD (private ci-templates) | free SEMANTIC_SCHOLAR_API_KEY | no |
 
-Tally: 4 `none` + 8 `real-readonly` + 11 `test-account` = 23 source connectors.
+Tally: 3 `none` + 8 `real-readonly` + 12 `test-account` = 23 source connectors.
 
 ## Onboarding order
 
 Per the spec's incremental rollout: the `none` connectors
-(rss, hackernews, arxiv, semantic-scholar) onboard first (no secret
-provisioning needed), validating the harness + the `integration` stage
-end-to-end. Credentialed connectors follow as their Vault/ESO secret is
-provisioned; fill this table's `vault path` / `secret shape` cells at that
-time. A connector whose credentials are not yet provisioned is skipped (and
-logged) by the integration job, never silently green.
+(rss, hackernews, arxiv) onboard first (no secret provisioning needed),
+validating the harness + the `integration` stage end-to-end. Credentialed
+connectors follow as their Vault/ESO secret is provisioned; fill this table's
+`vault path` / `secret shape` cells at that time. A connector whose
+credentials are not yet provisioned is skipped (and logged) by the integration
+job, never silently green.
+
+Note: `semantic-scholar` was originally scoped as `none`, but its keyless
+public tier returns HTTP 429 immediately and the connector swallows the
+fetch error (so a keyless run fails rather than skips); it is therefore
+`test-account` with the free `SEMANTIC_SCHOLAR_API_KEY`, and its live test
+skips cleanly until that key is provisioned.
