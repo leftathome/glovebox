@@ -86,3 +86,29 @@ func TestAssertRouting(t *testing.T) {
 		DestinationAgent: "messaging",
 	})
 }
+
+func TestRequireIntegration_SkipsWhenUnset(t *testing.T) {
+	t.Setenv("GLOVEBOX_INTEGRATION", "")
+	var skipped bool
+	t.Run("guarded", func(st *testing.T) {
+		defer func() { skipped = st.Skipped() }()
+		RequireIntegration(st)
+		st.Error("RequireIntegration did not skip")
+	})
+	if !skipped {
+		t.Fatal("expected RequireIntegration to skip when GLOVEBOX_INTEGRATION unset")
+	}
+}
+
+func TestRequireCreds_SkipsWhenMissing(t *testing.T) {
+	t.Setenv("FOO_TOKEN", "")
+	var skipped bool
+	t.Run("guarded", func(st *testing.T) {
+		defer func() { skipped = st.Skipped() }()
+		RequireCreds(st, "FOO_TOKEN")
+		st.Error("RequireCreds did not skip")
+	})
+	if !skipped {
+		t.Fatal("expected RequireCreds to skip when FOO_TOKEN empty")
+	}
+}
