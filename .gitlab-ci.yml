@@ -161,6 +161,21 @@ integration:semantic-scholar:
   variables:
     CONNECTOR: semantic-scholar
 
+# schoology is the reference CREDENTIALED connector (real-readonly household
+# session). Its secret (SCHOOLOGY_HOST / SCHOOLOGY_CREDENTIALS_FILE /
+# SCHOOLOGY_KID_UID) is bound via an ESO ExternalSecret in the PRIVATE
+# homelab/ci-templates; until that is provisioned the test SKIPs clean (green).
+# allow_failure is TEMPORARY: a child's Schoology surfaces can legitimately be
+# empty at any given moment (so a real run may assert-fail on staged>=1 until a
+# min-content window/fixture is agreed), and the session path is still being
+# brought up -- neither should red the nightly. Remove allow_failure once the
+# secret is wired and a reliable min-content source is chosen (registry note).
+integration:schoology:
+  extends: .integration
+  allow_failure: true
+  variables:
+    CONNECTOR: schoology
+
 # ---------------------------------------------------------------------------
 # integration-report: aggregate each connector job's PASS/SKIP/FAIL verdict so
 # coverage gaps (skipped connectors) are visible at a glance. Runs `when: always`
@@ -182,6 +197,8 @@ integration-report:
     - job: integration:arxiv
       artifacts: true
     - job: integration:semantic-scholar
+      artifacts: true
+    - job: integration:schoology
       artifacts: true
   script:
     - 'echo "=== Connector integration summary ==="'
