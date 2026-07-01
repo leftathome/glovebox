@@ -15,8 +15,9 @@ docs/specs/03-*.md
 .beads/
 .beads-credential-key
 
-# Root-built connector binaries (anchored to repo root so they do NOT shadow
-# connectors/hackernews and connectors/trello -- the bare entries previously
-# did, hiding files added under those dirs).
+# Root-built connector/importer binaries (anchored to repo root so they do NOT
+# shadow connectors/hackernews, connectors/trello, and importers/mbox -- bare
+# entries would match those path components and hide files added under them).
 /hackernews
 /trello
+/mbox
