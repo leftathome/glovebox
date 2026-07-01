@@ -55,7 +55,7 @@ later only where artifact/runtime verification is justified).
 | gdrive | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
 | onedrive | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
 | teams | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
-| schoology | real-readonly | TBD (private ci-templates) | credentials.json file + BROWSERLESS_URL/TOKEN | no |
+| schoology | real-readonly | TBD (private ci-templates) | env `SCHOOLOGY_HOST` + `SCHOOLOGY_CREDENTIALS_FILE` (session JSON: SessID/CSRFToken/CSRFKey/UID) + `SCHOOLOGY_KID_UID` | no |
 | github | test-account | TBD (private ci-templates) | TBD (PAT) | no |
 | gitlab | test-account | TBD (private ci-templates) | TBD (PAT) | no |
 | jira | test-account | TBD (private ci-templates) | TBD (API token + email) | no |
@@ -80,6 +80,19 @@ connectors follow as their Vault/ESO secret is provisioned; fill this table's
 `vault path` / `secret shape` cells at that time. A connector whose
 credentials are not yet provisioned is skipped (and logged) by the integration
 job, never silently green.
+
+Note: `schoology` is the reference **credentialed** connector (lyku.4). Its
+live test (`connectors/schoology/live_integration_test.go`) wires the real
+`schoology-go` client exactly as `cmd/schoology/main.go` does, from the env in
+the table above; the session credentials only exist in-cluster (ESO), so the
+test SKIPs clean everywhere else. The `integration:schoology` CI job is
+`allow_failure: true` **temporarily**: a child's Schoology surfaces can be
+legitimately empty at any moment (so a real run may assert-fail on `staged>=1`
+until a min-content window/fixture is chosen), and the session path is still
+being brought up. Drop `allow_failure` once the ESO secret is wired and a
+reliable min-content source is agreed. The connector's read path does **not**
+use Browserless -- that belongs to the separate `schoology-auth-refresher`,
+which produces the session JSON this test consumes.
 
 Note: `semantic-scholar` was originally scoped as `none`, but its keyless
 public tier returns HTTP 429 immediately and the connector swallows the
