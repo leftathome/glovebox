@@ -14,5 +14,10 @@ docs/specs/03-*.md
 # lives in Dolt; do not ship the tracker to public remotes.
 .beads/
 .beads-credential-key
-hackernews
-trello
+
+# Root-built connector/importer binaries (anchored to repo root so they do NOT
+# shadow connectors/hackernews, connectors/trello, and importers/mbox -- bare
+# entries would match those path components and hide files added under them).
+/hackernews
+/trello
+/mbox
