@@ -28,6 +28,8 @@ include:
 
 stages:
   - test
+  - integration
+  - integration-report
   - build-base
   - build
   - chart
@@ -57,7 +59,14 @@ cache:
 # Local anchor: build/publish only on main and tags (within this one file --
 # anchors do not cross the include boundary, which is fine since this is the
 # only place these rules are reused).
+#
+# The leading `never` guard is load-bearing: a scheduled (nightly) or manual
+# (web) pipeline targeting `main` would otherwise match `$CI_COMMIT_BRANCH ==
+# "main"` and rebuild every image nightly (burning the Docker Hub pull limit).
+# The integration stage is the ONLY thing that runs on schedule/web.
 .build_rules: &build_rules
+  - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
+    when: never
   - if: '$CI_COMMIT_BRANCH == "main"'
   - if: '$CI_COMMIT_TAG'
 
@@ -75,9 +84,110 @@ test:
     - "go vet ./..."
     - "go test ./... -count=1 -race"
   rules:
+    # Keep the unit gate off schedule/web pipelines -- those run only the
+    # integration stage (see .build_rules for the same guard rationale).
+    - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
+      when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
+
+# ---------------------------------------------------------------------------
+# integration: in-cluster connector integration tests (sub-project B / lyku.3).
+#
+# Runs ONLY on a scheduled (nightly) pipeline or a manual (web) trigger -- NOT
+# on MRs, main, or tags -- so live-upstream flakiness and rate limits stay out
+# of the merge/build path (the `test` job remains the merge gate). Because the
+# `test`/`build` jobs do not run on schedule/web, integration jobs are
+# self-contained and carry NO `needs:` on them.
+#
+# Each job sets GLOVEBOX_INTEGRATION=1 and runs the connector's
+# `//go:build integration` live test. Node selector / pod sizing are inherited
+# from the included homelab/ci-templates global variables (same as `test`), so
+# no cluster specifics appear here. Credentialed connectors (later) additionally
+# pull an ESO-synced secret bound in the PRIVATE homelab/ci-templates; the
+# no-credential connectors below need none.
+#
+# Exit-code contract: a genuine test failure fails the job (nightly goes red); a
+# connector that SKIPs (creds/env not provisioned -- e.g. semantic-scholar with
+# no API key, or any RequireCreds/RequireIntegration guard) keeps the job green
+# and is surfaced by the integration-report summary. Each job records its
+# PASS/SKIP/FAIL verdict as an artifact the report job aggregates.
+# ---------------------------------------------------------------------------
+.integration:
+  stage: integration
+  image: golang:1.26
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  variables:
+    GLOVEBOX_INTEGRATION: "1"
+  before_script:
+    - "go version"
+  script:
+    - "mkdir -p integration-status"
+    - "go test -tags integration -v -count=1 ./connectors/$CONNECTOR/ > out.txt 2>&1; code=$?"
+    - "cat out.txt"
+    - 'if [ $code -ne 0 ]; then st=FAIL; elif grep -q -- "--- SKIP" out.txt; then st=SKIP; else st=PASS; fi'
+    - 'echo "$CONNECTOR $st" > integration-status/$CONNECTOR.txt'
+    - "exit $code"
+  artifacts:
+    when: always
+    paths:
+      - integration-status/
+    expire_in: 1 week
+
+integration:rss:
+  extends: .integration
+  variables:
+    CONNECTOR: rss
+
+integration:hackernews:
+  extends: .integration
+  variables:
+    CONNECTOR: hackernews
+
+integration:arxiv:
+  extends: .integration
+  variables:
+    CONNECTOR: arxiv
+
+# semantic-scholar is test-account (keyless public tier 429s + the connector
+# swallows the error); with no SEMANTIC_SCHOLAR_API_KEY provisioned it SKIPs
+# clean (job stays green) and is listed as skipped in the report. Its key is
+# bound via ESO in the private ci-templates when provisioned.
+integration:semantic-scholar:
+  extends: .integration
+  variables:
+    CONNECTOR: semantic-scholar
+
+# ---------------------------------------------------------------------------
+# integration-report: aggregate each connector job's PASS/SKIP/FAIL verdict so
+# coverage gaps (skipped connectors) are visible at a glance. Runs `when: always`
+# so it reports even when a connector job failed; pulls each job's status
+# artifact. Does not itself fail the pipeline -- the connector jobs already do.
+# ---------------------------------------------------------------------------
+integration-report:
+  stage: integration-report
+  image: alpine:3
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  when: always
+  needs:
+    - job: integration:rss
+      artifacts: true
+    - job: integration:hackernews
+      artifacts: true
+    - job: integration:arxiv
+      artifacts: true
+    - job: integration:semantic-scholar
+      artifacts: true
+  script:
+    - 'echo "=== Connector integration summary ==="'
+    - "cat integration-status/*.txt 2>/dev/null || echo '(no status artifacts collected)'"
+    - 'echo "-----"'
+    - 'echo "PASS = live round-trip verified; SKIP = creds/env not provisioned (expected until Vault/ESO wired); FAIL = real failure (job above is red)."'
 
 # ---------------------------------------------------------------------------
 # build-base: the enricher-runtime base image. MUST publish before `build`
