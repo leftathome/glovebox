@@ -1,0 +1,108 @@
+{{- /*
+Per-importer one-shot Job. Importers (apple/mbox/walhelm) read a local archive
+(mounted from input.existingClaim) and ingest it via the in-cluster ingest
+Service, then exit. Re-running an import = re-applying the release (or deleting
+and recreating the Job). Long-running connectors use connector-deployment.yaml;
+importers are batch, hence a Job.
+*/}}
+{{- range $name, $importer := .Values.importers }}
+{{- if $importer.enabled }}
+{{- if not $importer.input.existingClaim }}
+{{- fail (printf "importers.%s.enabled is true but importers.%s.input.existingClaim is empty: an importer needs a PVC holding the archive to import" $name $name) }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-importer-{{ $name }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: importer
+    glovebox.io/importer: {{ $name }}
+spec:
+  backoffLimit: {{ $importer.backoffLimit | default 3 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "glovebox.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: importer
+        glovebox.io/importer: {{ $name }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: {{ $name }}
+          image: "{{ $importer.image.repository }}:{{ $importer.image.tag }}"
+          imagePullPolicy: {{ $importer.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - "--source"
+            - {{ $importer.source | quote }}
+            - "--source-name"
+            - {{ $importer.sourceName | default $name | quote }}
+            - "--config"
+            - "/etc/importer/config.json"
+            - "--state-dir"
+            - "/state"
+            {{- range $importer.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: GLOVEBOX_INGEST_URL
+              value: "http://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.config.ingest.port }}/v1/ingest"
+            - name: GLOVEBOX_STATE_DIR
+              value: /state
+            - name: GLOVEBOX_IMPORTER_CONFIG
+              value: /etc/importer/config.json
+          resources:
+            {{- toYaml $importer.resources | nindent 12 }}
+          volumeMounts:
+            - name: input
+              mountPath: /data/import
+              readOnly: {{ $importer.input.readOnly | default true }}
+              {{- if $importer.input.subPath }}
+              subPath: {{ $importer.input.subPath }}
+              {{- end }}
+            - name: state
+              mountPath: /state
+            - name: config
+              mountPath: /etc/importer
+              readOnly: true
+      {{- with ($importer.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($importer.affinity | default $.Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($importer.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: input
+          persistentVolumeClaim:
+            claimName: {{ $importer.input.existingClaim }}
+            readOnly: {{ $importer.input.readOnly | default true }}
+        - name: state
+          {{- if $importer.state.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ $importer.state.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "glovebox.fullname" $ }}-importer-{{ $name }}-config
+{{- end }}
+{{- end }}

@@ -1,0 +1,17 @@
+{{- /* Per-importer config.json ConfigMap, mounted read-only at /etc/importer. */}}
+{{- range $name, $importer := .Values.importers }}
+{{- if $importer.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-importer-{{ $name }}-config
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: importer
+    glovebox.io/importer: {{ $name }}
+data:
+  config.json: |
+    {{- $importer.config | toJson | nindent 4 }}
+{{- end }}
+{{- end }}

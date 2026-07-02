@@ -1,6 +1,7 @@
 {{- range $name, $connector := .Values.connectors }}
 {{- if $connector.enabled }}
 {{- $ingestMode := $connector.ingestMode | default "http" }}
+{{- $es := $connector.externalSecret | default dict }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -63,10 +64,16 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- if $connector.secrets }}
+          {{- if or $connector.secrets $es.enabled }}
           envFrom:
+            {{- if $connector.secrets }}
             - secretRef:
                 name: {{ $connector.secrets }}
+            {{- end }}
+            {{- if $es.enabled }}
+            - secretRef:
+                name: {{ include "glovebox.fullname" $ }}-{{ $name }}-secret
+            {{- end }}
           {{- end }}
           ports:
             - name: health

@@ -199,6 +199,50 @@ jobs:
           - image: glovebox-schoology-auth-refresher
             dockerfile: ./connectors/schoology-auth-refresher/Dockerfile
             context: .
+          # --- full-coverage additions (lyku.8): every remaining connector +
+          # importer with a Dockerfile now ships a ghcr image on main/tag. The
+          # enricher-runtime-based ones (arxiv, gmail, outlook, semantic-scholar,
+          # mbox-importer) inherit the needs: build-enricher-runtime ordering
+          # above and use their Dockerfile's default ENRICHER_BASE pin.
+          - image: glovebox-arxiv
+            dockerfile: ./connectors/arxiv/Dockerfile
+            context: .
+          - image: glovebox-gcalendar
+            dockerfile: ./connectors/gcalendar/Dockerfile
+            context: .
+          - image: glovebox-gdrive
+            dockerfile: ./connectors/gdrive/Dockerfile
+            context: .
+          - image: glovebox-gmail
+            dockerfile: ./connectors/gmail/Dockerfile
+            context: .
+          - image: glovebox-hackernews
+            dockerfile: ./connectors/hackernews/Dockerfile
+            context: .
+          - image: glovebox-notion
+            dockerfile: ./connectors/notion/Dockerfile
+            context: .
+          - image: glovebox-onedrive
+            dockerfile: ./connectors/onedrive/Dockerfile
+            context: .
+          - image: glovebox-outlook
+            dockerfile: ./connectors/outlook/Dockerfile
+            context: .
+          - image: glovebox-semantic-scholar
+            dockerfile: ./connectors/semantic-scholar/Dockerfile
+            context: .
+          - image: glovebox-steam
+            dockerfile: ./connectors/steam/Dockerfile
+            context: .
+          - image: glovebox-teams
+            dockerfile: ./connectors/teams/Dockerfile
+            context: .
+          - image: glovebox-youtube
+            dockerfile: ./connectors/youtube/Dockerfile
+            context: .
+          - image: glovebox-mbox-importer
+            dockerfile: ./importers/mbox/Dockerfile
+            context: .
     steps:
       - name: Checkout
         uses: actions/checkout@v7
