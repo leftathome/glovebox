@@ -175,15 +175,41 @@ networkPolicy:
   enabled: true
 
 connectors:
+  # Generic source connectors. Each is disabled by default; set
+  # enabled: true to deploy. `config` ships the connector's test-derived
+  # sample config (edit for your sources). Secrets: either set `secrets`
+  # to a pre-existing Secret name (envFrom) or set externalSecret.enabled
+  # to have ESO materialize one from Vault (see docs/connectors/<name>.md).
+  # schoology is configured separately via schoologyConnector below.
+
   rss:
     enabled: false
     image:
       repository: ghcr.io/leftathome/glovebox-rss
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      rules:
+        - match: "feed:example-blog"
+          destination: reader
+        - match: "*"
+          destination: inbox
+      feeds:
+        - name: example-blog
+          url: "https://example.com/feed.xml"
+      fetch_links: false
+      link_policy:
+        default: safe
+        rules: []
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -205,9 +231,23 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-imap
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      folders:
+        - name: INBOX
+      rules:
+        - match: "folder:INBOX"
+          destination: messaging
+        - match: "*"
+          destination: general
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -229,9 +269,30 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-github
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      rules:
+        - match: "repo:myorg/myrepo"
+          destination: dev-agent
+          tags:
+            source_type: vcs
+            priority: normal
+        - match: "event:push"
+          destination: dev-agent
+        - match: "event:pull_request"
+          destination: dev-agent
+      repos:
+        - owner: myorg
+          repo: myrepo
+      webhook_secret_env: GITHUB_WEBHOOK_SECRET
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -253,9 +314,22 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-gitlab
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      base_url: "https://gitlab.com"
+      projects:
+        - path: mygroup/myproject
+      rules:
+        - match: "project:mygroup/myproject"
+          destination: dev-agent
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -277,9 +351,27 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-jira
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      base_url: "https://mycompany.atlassian.net"
+      projects:
+        - PROJ
+        - OPS
+      rules:
+        - match: "project:PROJ"
+          destination: project-agent
+        - match: "project:OPS"
+          destination: ops-agent
+        - match: "*"
+          destination: default-agent
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -301,9 +393,20 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-trello
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      boards: []
+      rules:
+        - match: "*"
+          destination: home-agent
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -325,9 +428,30 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-linkedin
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      rules:
+        - match: "feed:shares"
+          destination: social-agent
+          tags:
+            source_type: social
+            priority: low
+        - match: "feed:posts"
+          destination: social-agent
+          tags:
+            source_type: social
+            priority: low
+      feed_types:
+        - posts
+        - shares
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -349,9 +473,29 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-meta
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      rules:
+        - match: "platform:facebook"
+          destination: social-agent
+          tags:
+            source_type: social
+            platform: facebook
+        - match: "event:feed"
+          destination: social-agent
+        - match: "event:messages"
+          destination: social-agent
+      page_id: 123456789
+      fetch_posts: true
+      fetch_comments: false
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -373,9 +517,24 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-bluesky
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      service: "https://bsky.social"
+      feed_uris: []
+      rules:
+        - match: "feed:timeline"
+          destination: home-agent
+          tags:
+            source_type: social
+            platform: bluesky
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -397,9 +556,509 @@ connectors:
       repository: ghcr.io/leftathome/glovebox-x
       tag: latest
       pullPolicy: IfNotPresent
-    config: {}
+    config:
+      rules:
+        - match: "feed:mentions"
+          destination: social-agent
+          tags:
+            source_type: social
+            priority: normal
+        - match: "event:tweet_create_events"
+          destination: social-agent
+        - match: "event:favorite_events"
+          destination: social-agent
+      user_id: YOUR_USER_ID
+      feed_types:
+        - mentions
     env: {}
     secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  arxiv:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-arxiv
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "query:ai-papers"
+          destination: research
+        - match: "*"
+          destination: inbox
+      queries:
+        - name: ai-papers
+          query: "cat:cs.AI"
+          max_results: 25
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  gcalendar:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-gcalendar
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "calendar:primary"
+          destination: schedule-agent
+          tags:
+            source_type: calendar
+            priority: normal
+      calendar_ids:
+        - primary
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  gdrive:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-gdrive
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "drive:changes"
+          destination: file-agent
+          tags:
+            source_type: cloud_storage
+            priority: normal
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  gmail:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-gmail
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      label_ids:
+        - INBOX
+      max_results: 25
+      data_subject_default: ""
+      audience_default:
+        - household
+      rules:
+        - match: "label:INBOX"
+          destination: messaging
+        - match: "*"
+          destination: general
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  hackernews:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-hackernews
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      feeds:
+        - top
+        - new
+        - best
+      follow_comments: true
+      max_comments: 10
+      rules:
+        - match: "feed:top"
+          destination: news-agent
+        - match: "feed:new"
+          destination: news-agent
+        - match: "feed:best"
+          destination: news-agent
+        - match: "feed:ask"
+          destination: news-agent
+        - match: "feed:show"
+          destination: news-agent
+      fetch_limits:
+        per_source: 30
+        per_poll: 100
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  notion:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-notion
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "database:your-database-id"
+          destination: knowledge-agent
+          tags:
+            source_type: knowledge_base
+            priority: normal
+        - match: "page:your-page-id"
+          destination: knowledge-agent
+      database_ids:
+        - your-database-id
+      page_ids:
+        - your-page-id
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  onedrive:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-onedrive
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "drive:changes"
+          destination: file-agent
+          tags:
+            source_type: cloud_storage
+            priority: normal
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  outlook:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-outlook
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      folder_ids:
+        - inbox
+      max_results: 25
+      rules:
+        - match: "folder:inbox"
+          destination: messaging
+        - match: "*"
+          destination: general
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  semantic-scholar:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-semantic-scholar
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "query:*"
+          destination: research
+      queries:
+        - name: example-topic
+          query: large language models
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  steam:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-steam
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "app:*"
+          destination: inbox
+      apps:
+        - id: 440
+          name: team-fortress-2
+      fetch_reviews: true
+      fetch_news: true
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  teams:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-teams
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      channels: []
+      rules:
+        - match: "channel:*"
+          destination: messaging
+        - match: "*"
+          destination: general
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  youtube:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-youtube
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      rules:
+        - match: "channel:UC_EXAMPLE_CHANNEL_ID"
+          destination: media-agent
+          tags:
+            source_type: video
+            priority: normal
+      channel_ids:
+        - UC_EXAMPLE_CHANNEL_ID
+    env: {}
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
     resources:
       requests:
         cpu: 50m
@@ -616,3 +1275,96 @@ ingest:
       # kubernetes.io/metadata.name auto-label). The chart's NetworkPolicy
       # matches on `name: <this-value>` per spec 13 §8.1.
       recognizerNamespaceLabel: "openclaw-recognizer"
+
+# File-driven importers (apple, mbox, walhelm). Unlike connectors (long-running
+# Deployments), importers are one-shot batch Jobs that read a local archive and
+# ingest it. Each is disabled by default; enable one and point `input.existingClaim`
+# at a PVC containing the archive, then `source` at its path inside the container.
+# See docs/connectors/importers.md.
+importers:
+  apple:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-apple-importer
+      tag: latest
+      pullPolicy: IfNotPresent
+    # Path INSIDE the container to the staged archive dir (mounted from input).
+    source: /data/import
+    sourceName: apple
+    # Extra flags appended to the importer invocation, e.g. ["--concurrency", "4"].
+    args: []
+    config: {}
+    input:
+      existingClaim: ""     # PVC holding the archive; REQUIRED when enabled
+      subPath: ""
+      readOnly: true
+    state:
+      existingClaim: ""     # optional; emptyDir when unset
+    backoffLimit: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  mbox:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-mbox-importer
+      tag: latest
+      pullPolicy: IfNotPresent
+    # For mbox, `source` is the path to the .mbox FILE (not a directory).
+    source: /data/import/archive.mbox
+    sourceName: mbox
+    args: []
+    config: {}
+    input:
+      existingClaim: ""
+      subPath: ""
+      readOnly: true
+    state:
+      existingClaim: ""
+    backoffLimit: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
+  walhelm:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-walhelm-importer
+      tag: latest
+      pullPolicy: IfNotPresent
+    source: /data/import
+    sourceName: walhelm
+    args: []
+    config: {}
+    input:
+      existingClaim: ""
+      subPath: ""
+      readOnly: true
+    state:
+      existingClaim: ""
+    backoffLimit: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
