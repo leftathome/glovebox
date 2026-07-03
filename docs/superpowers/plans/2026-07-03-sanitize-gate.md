@@ -22,7 +22,7 @@
 - **Create `internal/scan/scan_test.go`** — unit tests (no build tag).
 - **Modify `main.go`** — replace `buildScanFuncs`/boost/threshold-scoring with `scan.New`; pass the `*scan.Scanner` to the worker pool; mount the sanitize route.
 - **Modify `internal/pipeline/worker.go`** (+ `pool.go`, `ScanRequest`/`ScanResponse` as needed) — the worker calls `scanner.Scan` instead of inlining `Preprocess`/`ScanContent`/dedupe.
-- **Create `api/openapi.yaml`** — OpenAPI 3.1 contract (source of truth).
+- **Create `api/openapi.yaml`** — OpenAPI 3.0.3 contract (source of truth).
 - **Create `internal/sanitizeapi/generate.go`** — `//go:generate` directive + oapi-codegen config; generated `internal/sanitizeapi/sanitizeapi.gen.go` (committed).
 - **Create `internal/sanitizeapi/handler.go`** — the hand-written `Sanitize` method implementing the generated `ServerInterface`.
 - **Create `internal/sanitizeapi/handler_test.go`** — httptest contract tests + OpenAPI schema-conformance test.
@@ -307,10 +307,10 @@ Author the spec and generate types + server interface from it.
 - Create: `tools/tools.go`
 - Create: `internal/sanitizeapi/generate.go` (+ `oapi-codegen.yaml` config) → generates `internal/sanitizeapi/sanitizeapi.gen.go`
 
-- [ ] **Step 3.1: Write `api/openapi.yaml`** (OpenAPI 3.1). Verdict enum is `pass`/`quarantine` only (per spec §6).
+- [ ] **Step 3.1: Write `api/openapi.yaml`** (OpenAPI 3.0.3). Verdict enum is `pass`/`quarantine` only (per spec §6).
 
 ```yaml
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: Glovebox Sanitize Gate
   version: "1.0.0"
@@ -407,7 +407,7 @@ Expected: `internal/sanitizeapi/sanitizeapi.gen.go` created with `SanitizeReques
 
 ```bash
 git add api/ tools/ internal/sanitizeapi/ go.mod go.sum
-git commit -m "feat(sanitizeapi): OpenAPI 3.1 contract + oapi-codegen std-http-server (glovebox-t6fz)"
+git commit -m "feat(sanitizeapi): OpenAPI 3.0.3 contract + oapi-codegen std-http-server (glovebox-t6fz)"
 ```
 
 ---

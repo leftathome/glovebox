@@ -62,11 +62,14 @@ over "glovebox owns the connectors." Consequences, and what this spec is NOT:
 ## 4. The contract is OpenAPI-first, generated
 
 The endpoint is a synchronous JSON-over-HTTP operation, so the right contract
-tool is **OpenAPI 3.1** (not protobuf/gRPC — glovebox has no gRPC transport;
+tool is **OpenAPI 3.0.3** (not protobuf/gRPC — glovebox has no gRPC transport;
 introducing one for a single JSON endpoint would fragment the service). The
 spec is authoritative and the Go plumbing is generated from it, not hand-rolled:
 
-- **`api/openapi.yaml`** (OpenAPI 3.1) is the single source of truth: the
+- **`api/openapi.yaml`** (OpenAPI 3.0.3 -- downgraded from 3.1 during
+  implementation: our schema uses only the 3.0/3.1 common subset and
+  oapi-codegen v2.7.1 fully supports 3.0.x but only partially 3.1) is the
+  single source of truth: the
   `SanitizeRequest` / `SanitizeResponse` / `Signal` schemas, the `bearerAuth`
   security scheme, and every response code.
 - **`oapi-codegen`** (`std-http-server` target — Go 1.22+ `net/http` `ServeMux`
