@@ -196,13 +196,21 @@ func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, e
 		signals = appendDeduped(signals, htmlSignals)
 	}
 
+	// Separate boost signals (weight_booster rules) from scored signals, matching
+	// deliverResult (main.go:441-452): a boost signal contributes its multiplier
+	// only, NOT its own weight, to the total. (Today the sole booster has
+	// weight 0.0 so this is invisible, but replicate the separation so a future
+	// non-zero booster can't silently change the score.)
+	var scored []engine.Signal
 	var boosts []engine.BoostRule
 	for _, sig := range signals {
 		if factor, ok := s.boostConfig[sig.Name]; ok {
 			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: factor})
+			continue
 		}
+		scored = append(scored, sig)
 	}
-	return engine.ScoreSignals(signals, boosts, s.threshold), nil
+	return engine.ScoreSignals(scored, boosts, s.threshold), nil
 }
 
 // Matchers / Detectors / Boosts / Threshold expose the compiled inputs so the
@@ -570,11 +578,17 @@ Expected: PASS.
 
 Mount only when ingest + auth are enabled, reusing the same auth components the archive listener builds. In the `cfg.Ingest.Enabled` block (after `ingestMux.Handle("/v1/ingest", ingestHandler)` and before/after `bootstrapArchives`):
 ```go
-if sc != nil && cfg.Auth.Enabled {
+if sc != nil && cfg.Ingest.Auth.Enabled {   // NOTE: field is cfg.Ingest.Auth.Enabled (config.go:291), not cfg.Auth
 	// Reuse the bearer-token middleware components. Build the auth store/rl/pr
-	// once and share with bootstrapArchives (refactor bootstrapArchives to
-	// accept and reuse them, or expose a buildAuth(cfg) helper returning
+	// once and share with bootstrapArchives (refactor bootstrapArchivesWithSource
+	// in archive_listener.go:76-84 to accept and reuse them, or expose a
+	// buildIngestAuth(cfg) helper returning
 	// (*auth.TokenStore, *auth.RateLimiter, *auth.ProxyResolver)).
+	// IMPORTANT: the TokenStore is populated by a background reload goroutine
+	// currently started inside StartArchiveListener. When sharing the store,
+	// make ONE path own/start that reload (and have both routes use the same
+	// store instance) so the sanitize middleware never sees an empty,
+	// all-401 store. Do not start two competing reloaders.
 	store, rl, pr, err := buildIngestAuth(ctx, cfg)   // new small helper
 	if err != nil {
 		log.Fatalf("sanitize auth: %v", err)
