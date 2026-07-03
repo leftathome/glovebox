@@ -130,11 +130,11 @@ func TestWorkerPool_SlowItemDoesNotBlockOthers(t *testing.T) {
 	go pool.Run(ctx)
 
 	// Two items processed concurrently across the pool's workers.
-	slow := testStagingItem(t, "slow content")
-	fast := testStagingItem(t, "fast content")
+	itemA := testStagingItem(t, "content one")
+	itemB := testStagingItem(t, "content two")
 
-	pool.Input() <- ScanRequest{Item: slow}
-	pool.Input() <- ScanRequest{Item: fast}
+	pool.Input() <- ScanRequest{Item: itemA}
+	pool.Input() <- ScanRequest{Item: itemB}
 	close(pool.input)
 
 	var results []ScanResponse

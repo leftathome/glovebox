@@ -69,13 +69,6 @@ func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, e
 	return result, nil
 }
 
-// Accessors so Task 2 can rewire the async worker/deliverResult onto this one
-// build path without duplicating rule compilation.
-func (s *Scanner) Matchers() []engine.ScanFunc  { return s.matchers }
-func (s *Scanner) Detectors() []engine.ScanFunc { return s.detectors }
-func (s *Scanner) Threshold() float64           { return s.threshold }
-func (s *Scanner) Boosts() map[string]float64   { return s.boostConfig }
-
 func makeMatcherScanFunc(m engine.Matcher, rule engine.Rule) engine.ScanFunc {
 	return func(content []byte) ([]engine.Signal, error) {
 		results, err := m.Match(content, rule.Patterns)

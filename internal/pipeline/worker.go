@@ -33,6 +33,9 @@ type WorkerPool struct {
 }
 
 func NewWorkerPool(numWorkers int, timeout time.Duration, scanner *scan.Scanner) *WorkerPool {
+	if scanner == nil {
+		panic("pipeline.NewWorkerPool: scanner is nil")
+	}
 	return &WorkerPool{
 		numWorkers: numWorkers,
 		timeout:    timeout,
