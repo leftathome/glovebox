@@ -31,7 +31,9 @@ over "glovebox owns the connectors." Consequences, and what this spec is NOT:
 
 - glovebox does **not** build an eBay connector, a Craigslist RSS config, or an
   item-handoff. nagus keeps its own in-process connectors (it already has a
-  complete eBay Browse connector and a Craigslist connector).
+  code-complete, offline-tested eBay Browse connector — live verification is
+  gated on eBay EPN approval, not a glovebox concern — and a Craigslist
+  connector).
 - glovebox exposes the sanitize gate; nagus calls it. The **nagus-side client**
   (`glovebox.Sanitizer` replacing `sanitize.Passthrough`) is a **follow-up
   bead**, implemented against the contract this spec defines — not part of this
@@ -121,7 +123,10 @@ func New(rules engine.RuleConfig, cfg ScanConfig) (*Scanner, error)
 
 // Scan runs Preprocess -> ScanContent -> ScoreSignals with no filesystem,
 // queue, or goroutine coupling. This is the worker's scan path minus I/O.
-func (s *Scanner) Scan(content []byte, contentType string) engine.ScanResult
+// It returns an error when the underlying engine.ScanContent fails (e.g. a
+// detector error); the handler maps that to a FAIL-CLOSED 5xx (Section 7) --
+// never to a pass. A gate that errored must never look like a clean listing.
+func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, error)
 ```
 
 The async daemon (`main.go`) is refactored to build its scan path through
@@ -134,10 +139,14 @@ enforces).
 
 The handler mounts on the existing `ingestMux` alongside `/v1/ingest` and
 `/v1/archives`, in the same scanner process and image (chosen over a standalone
-binary: it reuses the already-compiled scanner + one deploy). It is wrapped in
-the **existing** `auth.Middleware` (bearer token, 64-hex, constant-time lookup,
-Vault/ESO-sourced) — unlike `/v1/ingest` today, the sanitize route **requires**
-auth, with a dedicated source-id (e.g. `nagus`).
+binary: it reuses the already-compiled scanner + one deploy). oapi-codegen's
+`std-http-server` emits a `HandlerFromMux(si, mux)` that registers the Go 1.22
+method-pattern route (`"POST /v1/sanitize"`) onto a supplied `*http.ServeMux` —
+we pass the existing `ingestMux`, so the generated route coexists with the
+current plain-pattern `/v1/ingest` and `/v1/archives` handlers (fine on Go
+1.26). It is wrapped in the **existing** `auth.Middleware` (bearer token,
+64-hex, constant-time lookup, Vault/ESO-sourced) — unlike `/v1/ingest` today,
+the sanitize route **requires** auth, with a dedicated source-id (e.g. `nagus`).
 
 ## 6. Behavior: classify, don't rewrite
 
@@ -148,7 +157,14 @@ the passing payload. This maps exactly onto nagus's `Sanitizer` gate:
 |---|---|---|
 | `pass` | score below threshold | keep the original bytes, stamp `Boundary` provenance |
 | `quarantine` | score >= threshold | drop the listing (do not extract/store) |
-| `reject` | structurally invalid | drop the listing |
+
+The scan path (`engine.ScoreSignals`) only ever emits **`pass` or
+`quarantine`** — those are the two verdict values the gate returns. glovebox's
+third engine value `reject` is a *routing-layer* concept (invalid destination
+etc.) that does not apply to a stateless text gate, so it is **not** part of
+this contract. An engine/scan **error** is not a verdict at all: it surfaces as
+a **fail-closed 5xx** (Section 7), which the caller treats as "drop," so a gate
+failure can never be mistaken for a clean listing.
 
 The gate never returns a "cleaned" body — the caller uses the original bytes on
 `pass` and drops otherwise. This matches nagus's existing `Passthrough` byte
@@ -178,17 +194,21 @@ semantics, now with a real verdict gating it, and keeps the boundary a
   "signals": [ { "name": "prompt_template_structure", "weight": 0.6, "matched": "<...>" } ]
 }
 ```
-- `verdict`: `pass` | `quarantine` | `reject`.
+- `verdict`: `pass` | `quarantine` (the only two values the scan path emits;
+  see Section 6).
 - `total_score`: weighted signal sum after boosts.
 - `signals`: the matched signals (name/weight/matched) for the caller's audit
   log. Any `matched` echo is a substring of the *input* the caller already holds;
   it introduces no new untrusted content.
 
-**Errors** (reusing the ingest conventions):
+**Errors** (reusing the ingest conventions; all non-2xx = the caller drops the
+listing, i.e. the gate fails closed):
 - `400` malformed JSON / missing `content`.
 - `401` missing or invalid bearer token (opaque).
 - `413` body exceeds the shared max size (reuses the ingest size cap).
 - `429` rate-limited (reuses the ingest rate limiter; `Retry-After`).
+- `500` engine/scan error (`Scan` returned an error) — fail closed, never a
+  verdict.
 - `503` scanner not ready.
 
 ## 8. Security
