@@ -1,25 +1,24 @@
 package pipeline
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/engine"
+	"github.com/leftathome/glovebox/internal/scan"
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
 type ScanRequest struct {
-	Item      staging.StagingItem
-	Matchers  []engine.ScanFunc
-	Detectors []engine.ScanFunc
+	Item staging.StagingItem
 }
 
 type ScanResponse struct {
 	Item     staging.StagingItem
 	Signals  []engine.Signal
+	Result   *engine.ScanResult
 	Duration time.Duration
 	TimedOut bool
 	Err      error
@@ -28,14 +27,19 @@ type ScanResponse struct {
 type WorkerPool struct {
 	numWorkers int
 	timeout    time.Duration
+	scanner    *scan.Scanner
 	input      chan ScanRequest
 	output     chan ScanResponse
 }
 
-func NewWorkerPool(numWorkers int, timeout time.Duration) *WorkerPool {
+func NewWorkerPool(numWorkers int, timeout time.Duration, scanner *scan.Scanner) *WorkerPool {
+	if scanner == nil {
+		panic("pipeline.NewWorkerPool: scanner is nil")
+	}
 	return &WorkerPool{
 		numWorkers: numWorkers,
 		timeout:    timeout,
+		scanner:    scanner,
 		input:      make(chan ScanRequest, numWorkers*2),
 		output:     make(chan ScanResponse, numWorkers*2),
 	}
@@ -93,34 +97,12 @@ func (p *WorkerPool) scan(ctx context.Context, req ScanRequest) ScanResponse {
 			return
 		}
 
-		pp := engine.Preprocess(rawContent, req.Item.Metadata.ContentType)
-
-		// Run matchers against normalized content
-		var allSignals []engine.Signal
-		normalizedReader := bytes.NewReader(pp.Normalized)
-		signals, err := engine.ScanContent(normalizedReader, req.Matchers, req.Detectors)
+		res, err := p.scanner.Scan(rawContent, req.Item.Metadata.ContentType)
 		if err != nil {
 			done <- ScanResponse{Item: req.Item, Err: err, Duration: time.Since(start)}
 			return
 		}
-		allSignals = append(allSignals, signals...)
-
-		// For HTML content, also run matchers against raw HTML (pre-strip)
-		if pp.RawHTML != nil {
-			htmlReader := bytes.NewReader(pp.RawHTML)
-			htmlSignals, err := engine.ScanContent(htmlReader, req.Matchers, nil)
-			if err != nil {
-				done <- ScanResponse{Item: req.Item, Err: err, Duration: time.Since(start)}
-				return
-			}
-			allSignals = appendDeduped(allSignals, htmlSignals)
-		}
-
-		done <- ScanResponse{
-			Item:     req.Item,
-			Signals:  allSignals,
-			Duration: time.Since(start),
-		}
+		done <- ScanResponse{Item: req.Item, Signals: res.Signals, Result: &res, Duration: time.Since(start)}
 	}()
 
 	select {
@@ -134,22 +116,3 @@ func (p *WorkerPool) scan(ctx context.Context, req ScanRequest) ScanResponse {
 		}
 	}
 }
-
-// appendDeduped adds signals from src to dst, skipping signals with the
-// same name that already exist in dst (avoids double-counting from dual scan).
-func appendDeduped(dst, src []engine.Signal) []engine.Signal {
-	if len(src) == 0 {
-		return dst
-	}
-	seen := make(map[string]bool, len(dst))
-	for _, s := range dst {
-		seen[s.Name] = true
-	}
-	for _, s := range src {
-		if !seen[s.Name] {
-			dst = append(dst, s)
-		}
-	}
-	return dst
-}
-

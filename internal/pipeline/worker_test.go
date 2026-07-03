@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leftathome/glovebox/internal/detector"
 	"github.com/leftathome/glovebox/internal/engine"
+	"github.com/leftathome/glovebox/internal/scan"
 	"github.com/leftathome/glovebox/internal/staging"
 )
 
@@ -28,26 +30,55 @@ func testStagingItem(t *testing.T, content string) staging.StagingItem {
 	}
 }
 
-func noopMatcher(c []byte) ([]engine.Signal, error) {
-	return nil, nil
+// noopScanner builds a Scanner with no rules: Scan returns an empty result.
+func noopScanner(t *testing.T) *scan.Scanner {
+	t.Helper()
+	sc, err := scan.New(engine.RuleConfig{QuarantineThreshold: 1.0}, detector.NewRegistry())
+	if err != nil {
+		t.Fatalf("build noop scanner: %v", err)
+	}
+	return sc
 }
 
-func slowMatcher(d time.Duration) engine.ScanFunc {
-	return func(c []byte) ([]engine.Signal, error) {
-		time.Sleep(d)
-		return []engine.Signal{{Name: "slow", Weight: 0.5}}, nil
+// sleepDetector sleeps for a fixed duration then fires one signal. It lets the
+// pipeline tests exercise pool timing/timeout behavior through the real Scanner
+// (custom matchers can no longer be injected per-request).
+type sleepDetector struct{ d time.Duration }
+
+func (s sleepDetector) Detect(content []byte) ([]engine.Signal, error) {
+	time.Sleep(s.d)
+	return []engine.Signal{{Name: "slow", Weight: 0.5}}, nil
+}
+
+func slowScanner(t *testing.T, d time.Duration) *scan.Scanner {
+	t.Helper()
+	reg := detector.NewRegistry()
+	reg.Register("sleep", sleepDetector{d: d})
+	rules := engine.RuleConfig{
+		QuarantineThreshold: 1.0,
+		Rules: []engine.Rule{{
+			Name:      "slow",
+			Weight:    0.5,
+			MatchType: engine.MatchCustomDetector,
+			Detector:  "sleep",
+		}},
 	}
+	sc, err := scan.New(rules, reg)
+	if err != nil {
+		t.Fatalf("build slow scanner: %v", err)
+	}
+	return sc
 }
 
 func TestWorkerPool_ProcessesItems(t *testing.T) {
-	pool := NewWorkerPool(2, 5*time.Second)
+	pool := NewWorkerPool(2, 5*time.Second, noopScanner(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go pool.Run(ctx)
 
 	item := testStagingItem(t, "hello world")
-	pool.Input() <- ScanRequest{Item: item, Matchers: []engine.ScanFunc{noopMatcher}}
+	pool.Input() <- ScanRequest{Item: item}
 	close(pool.input)
 
 	resp := <-pool.Output()
@@ -60,7 +91,7 @@ func TestWorkerPool_ProcessesItems(t *testing.T) {
 }
 
 func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
-	pool := NewWorkerPool(4, 5*time.Second)
+	pool := NewWorkerPool(4, 5*time.Second, slowScanner(t, 100*time.Millisecond))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -69,10 +100,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 4; i++ {
 		item := testStagingItem(t, "content")
-		pool.Input() <- ScanRequest{
-			Item:     item,
-			Matchers: []engine.ScanFunc{slowMatcher(100 * time.Millisecond)},
-		}
+		pool.Input() <- ScanRequest{Item: item}
 	}
 	close(pool.input)
 
@@ -95,18 +123,18 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 }
 
 func TestWorkerPool_SlowItemDoesNotBlockOthers(t *testing.T) {
-	pool := NewWorkerPool(2, 5*time.Second)
+	pool := NewWorkerPool(2, 5*time.Second, slowScanner(t, 200*time.Millisecond))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go pool.Run(ctx)
 
-	// One slow item, one fast item
-	slow := testStagingItem(t, "slow content")
-	fast := testStagingItem(t, "fast content")
+	// Two items processed concurrently across the pool's workers.
+	itemA := testStagingItem(t, "content one")
+	itemB := testStagingItem(t, "content two")
 
-	pool.Input() <- ScanRequest{Item: slow, Matchers: []engine.ScanFunc{slowMatcher(200 * time.Millisecond)}}
-	pool.Input() <- ScanRequest{Item: fast, Matchers: []engine.ScanFunc{noopMatcher}}
+	pool.Input() <- ScanRequest{Item: itemA}
+	pool.Input() <- ScanRequest{Item: itemB}
 	close(pool.input)
 
 	var results []ScanResponse
@@ -125,17 +153,14 @@ func TestWorkerPool_SlowItemDoesNotBlockOthers(t *testing.T) {
 }
 
 func TestWorkerPool_ScanTimeout(t *testing.T) {
-	pool := NewWorkerPool(1, 50*time.Millisecond)
+	pool := NewWorkerPool(1, 50*time.Millisecond, slowScanner(t, 500*time.Millisecond))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go pool.Run(ctx)
 
 	item := testStagingItem(t, "content that takes too long")
-	pool.Input() <- ScanRequest{
-		Item:     item,
-		Matchers: []engine.ScanFunc{slowMatcher(500 * time.Millisecond)},
-	}
+	pool.Input() <- ScanRequest{Item: item}
 	close(pool.input)
 
 	resp := <-pool.Output()
@@ -145,7 +170,7 @@ func TestWorkerPool_ScanTimeout(t *testing.T) {
 }
 
 func TestWorkerPool_GracefulShutdown(t *testing.T) {
-	pool := NewWorkerPool(2, 5*time.Second)
+	pool := NewWorkerPool(2, 5*time.Second, noopScanner(t))
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})

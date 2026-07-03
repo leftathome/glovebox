@@ -134,6 +134,56 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 	return nil
 }
 
+// buildIngestAuth constructs a standalone bearer-auth stack (token store +
+// rate limiter + proxy resolver) from cfg.Ingest.Auth, performs an initial
+// token load, and starts ONE periodic reload goroutine. It is used to gate
+// POST /v1/sanitize (glovebox-t6fz).
+//
+// This is a DEDICATED stack: it owns its own TokenStore and reload goroutine
+// over the same Vault source the archive path uses. A second read-only store
+// over the same source is safe (both only ever read the token set). Sharing a
+// single store with the archive path would require threading externally-built
+// components through bootstrapArchivesWithSource + ArchiveListenerConfig, which
+// is invasive and would risk the archive tests; that unification is deferred.
+//
+// TODO(glovebox-t6fz follow-up): unify sanitize + archive auth into one shared
+// token store.
+//
+// The initial Reload failing is NOT fatal: it is logged and the store stays
+// empty, so every /v1/sanitize request 401s (fail-closed for auth) until a
+// later reload succeeds -- matching the archive path's tolerance of a Vault
+// outage at boot. An error is returned only for irrecoverable misconfiguration
+// (unknown auth source, unparseable trusted CIDR) the validator should have
+// caught; main.go fails fast on those.
+func buildIngestAuth(ctx context.Context, cfg config.Config) (*auth.TokenStore, *auth.RateLimiter, *auth.ProxyResolver, error) {
+	src, err := buildTokenSource(ctx, cfg.Ingest.Auth)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	trustedCIDRs, err := parseTrustedCIDRs(cfg.Ingest.Auth.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse ingest.auth.trusted_proxy_cidrs: %w", err)
+	}
+
+	rl := auth.NewRateLimiter(auth.RateLimitConfig{
+		Window:            time.Duration(cfg.Ingest.Auth.PerIPRateLimit.WindowSeconds) * time.Second,
+		PerIPMaxRejected:  cfg.Ingest.Auth.PerIPRateLimit.MaxRejected,
+		LRUCapacity:       cfg.Ingest.Auth.PerIPRateLimit.LRUCapacity,
+		GlobalMaxRejected: cfg.Ingest.Auth.GlobalRateLimit.MaxRejected,
+	})
+	pr := &auth.ProxyResolver{TrustedCIDRs: trustedCIDRs}
+
+	store := auth.NewTokenStore()
+	reloadCfg := auth.ReloadConfig{Source: src}
+	if err := store.Reload(ctx, reloadCfg); err != nil {
+		log.Printf("glovebox sanitize auth: initial token load failed: %v (requests will 401 until a reload succeeds)", err)
+	}
+	go archives.StartTokenReloadGoroutine(ctx, store, reloadCfg,
+		time.Duration(cfg.Ingest.Auth.ReloadIntervalSeconds)*time.Second)
+
+	return store, rl, pr, nil
+}
+
 // parseTrustedCIDRs converts a slice of CIDR strings into the
 // *net.IPNet form auth.ProxyResolver expects. Empty input returns
 // (nil, nil) — meaning never trust X-Forwarded-For. An invalid entry
