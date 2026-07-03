@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	gloveboxmetrics "github.com/leftathome/glovebox/internal/metrics"
 	"github.com/leftathome/glovebox/internal/pipeline"
 	"github.com/leftathome/glovebox/internal/routing"
+	"github.com/leftathome/glovebox/internal/scan"
 	"github.com/leftathome/glovebox/internal/staging"
 	"github.com/leftathome/glovebox/internal/subject"
 	"github.com/leftathome/glovebox/internal/watcher"
@@ -86,17 +86,12 @@ func main() {
 	// emit through the same Prometheus exporter as the rest of glovebox.
 	otel.SetMeterProvider(m.Provider())
 
-	matchers, detectors := buildScanFuncs(rules, registry)
-
-	// Pre-compute boost rules from config (static, don't rebuild per item)
-	boostConfig := make(map[string]float64)
-	for _, rule := range rules.Rules {
-		if rule.Behavior == "weight_booster" {
-			boostConfig[rule.Name] = rule.BoostFactor
-		}
+	sc, err := scan.New(rules, registry)
+	if err != nil {
+		log.Fatalf("build scanner: %v", err)
 	}
 
-	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second)
+	pool := pipeline.NewWorkerPool(cfg.ScanWorkers, time.Duration(cfg.ScanTimeoutSeconds)*time.Second, sc)
 
 	// Bound each delivery so a wedged file op on a networked staging/quarantine
 	// mount cannot stall the lone result consumer and deadlock the pipeline
@@ -104,7 +99,7 @@ func main() {
 	// the delivery_timeouts metric; the consumer moves on.
 	deliver := pipeline.WithTimeout(
 		func(resp pipeline.ScanResponse) error {
-			return deliverResult(resp, cfg, reg, logger, rules.QuarantineThreshold, boostConfig, m)
+			return deliverResult(resp, cfg, reg, logger, rules.QuarantineThreshold, m)
 		},
 		time.Duration(cfg.DeliveryTimeoutSeconds)*time.Second,
 		func(resp pipeline.ScanResponse) {
@@ -212,11 +207,7 @@ func main() {
 			inboxDir := filepath.Join(cfg.AgentsDir, item.Metadata.DestinationAgent, "workspace", "inbox")
 			routing.WritePending(item, inboxDir)
 		}
-		pool.Input() <- pipeline.ScanRequest{
-			Item:      item,
-			Matchers:  matchers,
-			Detectors: detectors,
-		}
+		pool.Input() <- pipeline.ScanRequest{Item: item}
 	})
 
 	// Consume scan results: route them and flush accumulated ordered items
@@ -258,11 +249,7 @@ func main() {
 						continue
 					}
 					select {
-					case pool.Input() <- pipeline.ScanRequest{
-						Item:      item,
-						Matchers:  matchers,
-						Detectors: detectors,
-					}:
+					case pool.Input() <- pipeline.ScanRequest{Item: item}:
 					case <-ctx.Done():
 						return
 					}
@@ -304,67 +291,6 @@ func main() {
 	log.Println("glovebox stopped")
 }
 
-func makeMatcherScanFunc(m engine.Matcher, rule engine.Rule) engine.ScanFunc {
-	return func(content []byte) ([]engine.Signal, error) {
-		results, err := m.Match(content, rule.Patterns)
-		if err != nil || len(results) == 0 {
-			return nil, err
-		}
-		matched := make([]string, len(results))
-		for i, r := range results {
-			matched[i] = fmt.Sprintf("%s at %d", r.Pattern, r.Position)
-		}
-		return []engine.Signal{{
-			Name:    rule.Name,
-			Weight:  rule.Weight,
-			Matched: strings.Join(matched, "; "),
-		}}, nil
-	}
-}
-
-func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]engine.ScanFunc, []engine.ScanFunc) {
-	var matchers []engine.ScanFunc
-	var detectors []engine.ScanFunc
-
-	for _, rule := range rules.Rules {
-		rule := rule
-		switch rule.MatchType {
-		case engine.MatchSubstring:
-			matchers = append(matchers, makeMatcherScanFunc(engine.SubstringMatcher{}, rule))
-
-		case engine.MatchSubstringCaseInsensitive:
-			matchers = append(matchers, makeMatcherScanFunc(engine.CaseInsensitiveMatcher{}, rule))
-
-		case engine.MatchRegex:
-			m, err := engine.NewRegexMatcher(rule.Patterns)
-			if err != nil {
-				log.Fatalf("compile regex for rule %s: %v", rule.Name, err)
-			}
-			matchers = append(matchers, makeMatcherScanFunc(m, rule))
-
-		case engine.MatchCustomDetector:
-			d, ok := registry.Get(rule.Detector)
-			if !ok {
-				log.Fatalf("unknown detector %q for rule %s", rule.Detector, rule.Name)
-			}
-			detectors = append(detectors, func(content []byte) ([]engine.Signal, error) {
-				signals, err := d.Detect(content)
-				if err != nil {
-					return nil, err
-				}
-				// Override signal name and weight with rule config values
-				for i := range signals {
-					signals[i].Name = rule.Name
-					signals[i].Weight = rule.Weight
-				}
-				return signals, nil
-			})
-		}
-	}
-
-	return matchers, detectors
-}
-
 func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 	if resp.Item.Metadata.Ordered {
 		itemID := filepath.Base(resp.Item.DirPath)
@@ -373,7 +299,7 @@ func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 	}
 }
 
-func deliverResult(resp pipeline.ScanResponse, cfg config.Config, reg *subject.SubjectRegistry, logger *audit.Logger, threshold float64, boostConfig map[string]float64, m *gloveboxmetrics.Metrics) error {
+func deliverResult(resp pipeline.ScanResponse, cfg config.Config, reg *subject.SubjectRegistry, logger *audit.Logger, threshold float64, m *gloveboxmetrics.Metrics) error {
 	ctx := context.Background()
 	notifyDir := filepath.Join(cfg.SharedDir, "glovebox-notifications")
 
@@ -438,19 +364,21 @@ func deliverResult(resp pipeline.ScanResponse, cfg config.Config, reg *subject.S
 		return routing.RouteQuarantine(resp.Item, tagScanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "parse_status_tag")
 	}
 
-	// Separate boost signals from scoring signals in a single pass
-	var boosts []engine.BoostRule
-	var scoringSignals []engine.Signal
-	for _, sig := range resp.Signals {
-		if factor, ok := boostConfig[sig.Name]; ok {
-			boosts = append(boosts, engine.BoostRule{Name: sig.Name, BoostFactor: factor})
-		} else {
-			scoringSignals = append(scoringSignals, sig)
+	// The Scanner already produced the audit-complete result (score/verdict from
+	// the scored+boost split, with result.Signals carrying the full fired-signal
+	// set). Use it directly. resp.Result is non-nil on every non-error, non-timeout
+	// path; guard defensively so an unexpected nil falls back to a safe quarantine.
+	if resp.Result == nil {
+		scanResult := engine.ScanResult{
+			Signals:    resp.Signals,
+			TotalScore: 0,
+			Verdict:    engine.VerdictQuarantine,
 		}
+		removePendingForItem(resp, cfg)
+		recordVerdict("quarantine")
+		return routing.RouteQuarantine(resp.Item, scanResult, cfg.QuarantineDir, notifyDir, logger, threshold, resp.Duration, "missing_scan_result")
 	}
-
-	result := engine.ScoreSignals(scoringSignals, boosts, threshold)
-	result.Signals = resp.Signals // Preserve all signals including boosts for audit
+	result := *resp.Result
 
 	// Fail-closed subject-resolution gate (spec 15 sec 5.2-5.3). Runs after the
 	// scan verdict is computed and BEFORE the pass/quarantine routing so the
