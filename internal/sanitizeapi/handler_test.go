@@ -3,6 +3,7 @@ package sanitizeapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -91,5 +92,22 @@ func TestHandler_MissingContent(t *testing.T) {
 	rr := doPost(t, newTestHandler(t), `{}`)
 	if rr.Code != 400 {
 		t.Fatalf("code = %d, want 400", rr.Code)
+	}
+}
+
+// erroringScanner always fails, to exercise the fail-closed 500 path.
+type erroringScanner struct{}
+
+func (erroringScanner) Scan([]byte, string) (engine.ScanResult, error) {
+	return engine.ScanResult{}, errors.New("boom")
+}
+
+func TestHandler_ScanError_FailsClosed(t *testing.T) {
+	mux := http.NewServeMux()
+	h := HandlerFromMux(NewSanitizeHandler(erroringScanner{}), mux)
+	rr := doPost(t, h, `{"content":"anything"}`)
+	// An engine error must never yield a pass; it must fail closed with 500.
+	if rr.Code != 500 {
+		t.Fatalf("code = %d, want 500 (%s)", rr.Code, rr.Body)
 	}
 }

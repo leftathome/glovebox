@@ -5,15 +5,20 @@ import (
 	"net/http"
 
 	"github.com/leftathome/glovebox/internal/engine"
-	"github.com/leftathome/glovebox/internal/scan"
 )
+
+// scanner is the subset of *scan.Scanner the handler needs; an interface so the
+// fail-closed error path can be tested with a fake. *scan.Scanner satisfies it.
+type scanner interface {
+	Scan(content []byte, contentType string) (engine.ScanResult, error)
+}
 
 // SanitizeHandler implements the generated ServerInterface using the shared
 // scanner. Classify-not-rewrite: it returns a verdict, never a cleaned body.
-type SanitizeHandler struct{ scanner *scan.Scanner }
+type SanitizeHandler struct{ scanner scanner }
 
 // NewSanitizeHandler builds the handler over the shared scanner.
-func NewSanitizeHandler(s *scan.Scanner) *SanitizeHandler { return &SanitizeHandler{scanner: s} }
+func NewSanitizeHandler(s scanner) *SanitizeHandler { return &SanitizeHandler{scanner: s} }
 
 // Sanitize handles POST /v1/sanitize (the generated ServerInterface method).
 func (h *SanitizeHandler) Sanitize(w http.ResponseWriter, r *http.Request) {
