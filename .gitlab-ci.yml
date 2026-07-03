@@ -82,6 +82,7 @@ test:
     - "go env GOPATH GOMODCACHE GOCACHE"
   script:
     - "go vet ./..."
+    - "./scripts/check-codegen.sh"
     - "go test ./... -count=1 -race"
   rules:
     # Keep the unit gate off schedule/web pipelines -- those run only the
