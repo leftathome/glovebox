@@ -22,9 +22,12 @@ import (
 	"github.com/leftathome/glovebox/internal/detector"
 	"github.com/leftathome/glovebox/internal/engine"
 	"github.com/leftathome/glovebox/internal/ingest"
+	"github.com/leftathome/glovebox/internal/ingest/archives"
+	"github.com/leftathome/glovebox/internal/ingest/auth"
 	gloveboxmetrics "github.com/leftathome/glovebox/internal/metrics"
 	"github.com/leftathome/glovebox/internal/pipeline"
 	"github.com/leftathome/glovebox/internal/routing"
+	"github.com/leftathome/glovebox/internal/sanitizeapi"
 	"github.com/leftathome/glovebox/internal/scan"
 	"github.com/leftathome/glovebox/internal/staging"
 	"github.com/leftathome/glovebox/internal/subject"
@@ -158,6 +161,28 @@ func main() {
 		// the process run.
 		if err := bootstrapArchives(ctx, cfg, ingestMux); err != nil {
 			log.Fatalf("bootstrap archive listener: %v", err)
+		}
+
+		// Spec sanitize-gate (glovebox-t6fz): mount the synchronous
+		// classify endpoint POST /v1/sanitize on the same ingest mux,
+		// behind bearer-token auth. Gated on Ingest.Auth.Enabled so an
+		// auth-disabled dev deploy does not expose an unauthenticated
+		// gate. sc is the shared scanner built above, so the gate
+		// enforces exactly what the async daemon enforces.
+		if sc != nil && cfg.Ingest.Auth.Enabled {
+			store, rl, pr, err := buildIngestAuth(ctx, cfg)
+			if err != nil {
+				log.Fatalf("sanitize auth: %v", err)
+			}
+			// Typed-nil telemetry: auth.Middleware requires a non-nil
+			// TelemetryHook (it calls RecordAuth unconditionally); a bare
+			// nil interface would panic. *archives.Telemetry's Record*
+			// methods are nil-safe, so a typed nil is a safe no-op sink.
+			mw := auth.Middleware(store, rl, pr, (*archives.Telemetry)(nil))
+			sanMux := http.NewServeMux()
+			sanitizeapi.HandlerFromMux(sanitizeapi.NewSanitizeHandler(sc), sanMux)
+			ingestMux.Handle("/v1/sanitize", mw(sanMux))
+			log.Printf("glovebox sanitize gate mounted on /v1/sanitize (bearer auth)")
 		}
 
 		ingestServer = &http.Server{
