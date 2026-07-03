@@ -60,7 +60,13 @@ func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, e
 		}
 		scored = append(scored, sig)
 	}
-	return engine.ScoreSignals(scored, boosts, s.threshold), nil
+	result := engine.ScoreSignals(scored, boosts, s.threshold)
+	// Preserve ALL fired signals (including weight_booster signals excluded from
+	// the scored sum) on the result, matching main.go deliverResult's audit
+	// behavior. Score and verdict are computed from `scored`+`boosts`; only the
+	// Signals field reflects the full set.
+	result.Signals = signals
+	return result, nil
 }
 
 // Accessors so Task 2 can rewire the async worker/deliverResult onto this one
