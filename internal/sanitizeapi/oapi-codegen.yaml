@@ -1,0 +1,5 @@
+package: sanitizeapi
+generate:
+  models: true
+  std-http-server: true
+output: sanitizeapi.gen.go
