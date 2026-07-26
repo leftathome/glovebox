@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -115,9 +116,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start metrics server
+	// Start metrics server. /healthz is an ACTIVE liveness probe that verifies
+	// the delivery mount is writable (see health.go) so a stale bind-mount EIO
+	// restarts the pod instead of silently stalling delivery; /readyz gates on
+	// startup completion. Co-located with /metrics on cfg.MetricsPort, matching
+	// the connector framework's health surface.
+	ready := &atomic.Bool{}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
+	mux.HandleFunc("/healthz", livenessHandler(cfg.AgentsDir))
+	mux.HandleFunc("/readyz", readinessHandler(ready))
 	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.MetricsPort),
 		Handler: mux,
@@ -285,6 +293,7 @@ func main() {
 
 	log.Printf("glovebox %s started: watching %s, %d workers, timeout %ds",
 		Version, cfg.StagingDir, cfg.ScanWorkers, cfg.ScanTimeoutSeconds)
+	ready.Store(true)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)

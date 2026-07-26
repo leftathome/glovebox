@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+### Fixed
+
+- **Silent delivery stall on a stale delivery mount**: the agents delivery PVC
+  is ReadWriteOnce yet also mounted by the OpenClaw gateway; when the gateway
+  rolls, the volume can detach/reattach and glovebox's existing mount goes
+  stale, so every delivery `mkdir` returns EIO while the process stays up and
+  listening. The old `tcpSocket` liveness probe could not see this -- the
+  socket was fine, only the filesystem was dead -- so deliveries stalled
+  indefinitely (observed ~12 days). The new `/healthz` write-probe turns that
+  invisible failure into a failed liveness probe, so Kubernetes restarts the
+  pod onto a fresh mount and delivery resumes automatically.
+
 ## [0.6.4] - 2026-06-26
 
 ### Fixed
