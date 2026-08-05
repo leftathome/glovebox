@@ -17,17 +17,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actively verifies the delivery mount (`agents_dir`) is writable via a
   create-and-remove probe; `/readyz` reports 503 until startup completes.
 
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
 ### Fixed
 
-- **Silent delivery stall on a stale delivery mount**: the agents delivery PVC
-  is ReadWriteOnce yet also mounted by the OpenClaw gateway; when the gateway
-  rolls, the volume can detach/reattach and glovebox's existing mount goes
-  stale, so every delivery `mkdir` returns EIO while the process stays up and
-  listening. The old `tcpSocket` liveness probe could not see this -- the
-  socket was fine, only the filesystem was dead -- so deliveries stalled
-  indefinitely (observed ~12 days). The new `/healthz` write-probe turns that
-  invisible failure into a failed liveness probe, so Kubernetes restarts the
-  pod onto a fresh mount and delivery resumes automatically.
+- **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
+  agents volume the OpenClaw gateway also mounts; when that volume
+  detaches/reattaches under a rolling peer, glovebox's mount can go stale and
+  every delivery `mkdir` returns EIO while the process stays up and listening.
+  The old `tcpSocket` liveness probe could not see this -- the socket was fine,
+  only the filesystem was dead -- so delivery stalled silently for ~2.5 days
+  (2026-07-27 to 2026-07-30) until an operator noticed. The new `/healthz`
+  write-probe turns that invisible failure into a failed liveness probe, so
+  Kubernetes restarts the pod onto a fresh mount and delivery resumes
+  automatically. (The original trigger was a ReadWriteOnce volume shared with
+  the gateway, since moved to ReadWriteMany; the probe is kept because RWX
+  narrows the window without making a mount immune to going stale.)
 
 ## [0.6.4] - 2026-06-26
 

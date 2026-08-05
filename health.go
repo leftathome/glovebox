@@ -9,15 +9,20 @@ import (
 )
 
 // deliveryWritable probes that dir accepts a create-and-remove. It exists to
-// catch the stale-bind-mount failure mode: glovebox delivers into the shared
-// agents PVC (cfg.AgentsDir). That volume is ReadWriteOnce and also mounted by
-// the OpenClaw gateway; when the gateway rolls, the volume can detach/reattach
-// and glovebox's existing mount goes stale, so every delivery mkdir returns
-// EIO while the process stays up and listening. A tcpSocket liveness probe
-// cannot see this -- the socket is fine, only the filesystem is dead -- so
-// deliveries silently stall until an operator notices. Actively touching the
-// delivery path turns that invisible failure into a failed liveness probe,
-// letting Kubernetes restart the pod onto a fresh mount.
+// catch the stale-bind-mount failure mode: glovebox delivers into a shared
+// agents volume (cfg.AgentsDir) that the OpenClaw gateway also mounts. When
+// that volume detaches/reattaches under a rolling peer, glovebox's existing
+// mount can go stale and every delivery mkdir returns EIO while the process
+// stays up and listening. A tcpSocket liveness probe cannot see this -- the
+// socket is fine, only the filesystem is dead -- so deliveries silently stall
+// until an operator notices. Actively touching the delivery path turns that
+// invisible failure into a failed liveness probe, letting Kubernetes restart
+// the pod onto a fresh mount.
+//
+// The original trigger was a ReadWriteOnce volume shared with the gateway,
+// since moved to ReadWriteMany. This probe is deliberately kept: RWX narrows
+// the window but does not make a mount immune to going stale, and the failure
+// mode is silent either way.
 //
 // The probe file is a dotfile created directly under the agents root (not
 // inside any agent's inbox) and removed immediately, so it never surfaces as a

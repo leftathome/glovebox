@@ -78,9 +78,31 @@ data:
         }
       }
     }
+  {{- /*
+  The three registry files ship as neutral defaults baked into the chart
+  (.Files.Get). They carry deployment-specific identity -- the subject roster
+  and per-source data_subject defaults -- which must NOT live in a public
+  chart (glovebox-0nzk). Without a values override an operator would have to
+  fork the chart to configure their own roster, and a chart upgrade would
+  silently replace a customized registry with the neutral default, turning
+  enforcement off (glovebox-pyb9). Setting the corresponding value supplies
+  the file as structured YAML instead; leaving it unset keeps the baked file.
+  */}}
   rules.json: |
+    {{- if .Values.config.rulesJson }}
+    {{- toPrettyJson .Values.config.rulesJson | nindent 4 }}
+    {{- else }}
     {{- .Files.Get "rules.json" | nindent 4 }}
+    {{- end }}
   subjects.json: |
+    {{- if .Values.config.subjectsJson }}
+    {{- toPrettyJson .Values.config.subjectsJson | nindent 4 }}
+    {{- else }}
     {{- .Files.Get "subjects.json" | nindent 4 }}
+    {{- end }}
   sources.json: |
+    {{- if .Values.config.sourcesJson }}
+    {{- toPrettyJson .Values.config.sourcesJson | nindent 4 }}
+    {{- else }}
     {{- .Files.Get "sources.json" | nindent 4 }}
+    {{- end }}

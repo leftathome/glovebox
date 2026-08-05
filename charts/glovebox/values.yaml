@@ -62,6 +62,36 @@ serviceAccount:
   annotations: {}
 
 config:
+  # Registry overrides. Each corresponds to one of the JSON files the chart
+  # ships (charts/glovebox/{rules,subjects,sources}.json). Those baked files
+  # are deliberately NEUTRAL -- an empty, non-enforcing subject roster and
+  # empty per-source data_subject defaults -- because they would otherwise
+  # publish a specific deployment's household identity (glovebox-0nzk).
+  #
+  # Set these to supply your own registry as structured YAML. Leaving one
+  # unset keeps the baked default. Configure your roster HERE (in your private
+  # values), not by editing the chart: a chart upgrade replaces the baked file,
+  # so a forked roster would be silently dropped and enforcement would fall
+  # back to off (glovebox-pyb9).
+  #
+  # subjectsJson:
+  #   enforce: true
+  #   subjects:
+  #     - entity_id: e_abc123
+  #       display: Operator          # at-rest legibility only; never routed
+  #       principals: []
+  #       default_audience: [subject]
+  # sourcesJson:
+  #   enforce: true
+  #   sources:
+  #     - source_id: recognizer-scanner
+  #       kind: recognizer-scanner
+  #       data_subject_default: e_abc123
+  #       audience_default: [operator]
+  rulesJson: null
+  subjectsJson: null
+  sourcesJson: null
+
   stagingDir: /data/glovebox/staging
   quarantineDir: /data/glovebox/quarantine
   auditDir: /data/glovebox/audit
