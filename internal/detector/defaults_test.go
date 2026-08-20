@@ -19,8 +19,8 @@ func TestDefaultRulesJSON_LoadsSuccessfully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRules: %v", err)
 	}
-	if len(rc.Rules) != 6 {
-		t.Errorf("rules count = %d, want 6", len(rc.Rules))
+	if len(rc.Rules) != 7 {
+		t.Errorf("rules count = %d, want 7", len(rc.Rules))
 	}
 	if rc.QuarantineThreshold != 0.8 {
 		t.Errorf("threshold = %f, want 0.8", rc.QuarantineThreshold)
@@ -37,6 +37,7 @@ func TestDefaultRulesJSON_RuleNames(t *testing.T) {
 		"role_reassignment",
 		"tool_invocation_syntax",
 		"suspicious_encoding",
+		"invisible_smuggling",
 		"prompt_template_structure",
 		"non_english_content",
 	}
@@ -50,7 +51,7 @@ func TestDefaultRulesJSON_RuleNames(t *testing.T) {
 func TestDefaultRegistry_AllDetectorsResolvable(t *testing.T) {
 	registry := NewDefaultRegistry()
 
-	detectorNames := []string{"encoding_anomaly", "template_structure", "language_detection"}
+	detectorNames := []string{"encoding_anomaly", "invisible_smuggling", "template_structure", "language_detection"}
 	for _, name := range detectorNames {
 		d, ok := registry.Get(name)
 		if !ok {
