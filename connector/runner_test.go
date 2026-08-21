@@ -94,6 +94,47 @@ func pickPort(t *testing.T) int {
 	return port
 }
 
+// pickPortPair returns a port p for which both p and p+1 were free at the
+// moment of the call.
+//
+// NewFramework binds the health server on HealthPort and, for a Listener
+// connector, the listener server on HealthPort+1 (framework.go). Reserving
+// only p is not enough: Linux hands out ephemeral ports in roughly
+// ascending order, so p+1 is precisely the port the next bind(":0")
+// anywhere on the machine is most likely to receive -- and `go test ./...`
+// runs many package binaries in parallel, each binding ephemeral ports.
+// The listener then loses the race, fails to bind, and the test times out
+// waiting for a port that will never open.
+func pickPortPair(t *testing.T) int {
+	t.Helper()
+	const attempts = 100
+	for i := 0; i < attempts; i++ {
+		first, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		port := first.Addr().(*net.TCPAddr).Port
+		if port >= 65535 {
+			first.Close()
+			continue
+		}
+		second, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port+1))
+		if err != nil {
+			// p+1 is already taken; give p back and draw again.
+			first.Close()
+			continue
+		}
+		// Both halves of the pair are ours, so nothing else can be holding
+		// them. Release them together, as late as possible, and hand the
+		// pair to the caller.
+		first.Close()
+		second.Close()
+		return port
+	}
+	t.Fatalf("no consecutive free port pair after %d attempts", attempts)
+	return 0
+}
+
 func TestRunPoll_CallsConnector(t *testing.T) {
 	mock := &mockPollConnector{}
 	cp, _ := NewCheckpoint(t.TempDir())
