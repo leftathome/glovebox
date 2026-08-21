@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/leftathome/glovebox/internal/config"
+	"github.com/leftathome/glovebox/internal/ingest/peer"
 	"github.com/leftathome/glovebox/internal/staging"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -30,6 +31,22 @@ type Handler struct {
 	queueDepth atomic.Int64
 	ready      atomic.Bool
 	metrics    *IngestMetrics
+
+	// enforceSourceMatch requires metadata.source to equal the verified
+	// mTLS peer's name. Set from ingest.tls; false while TLS is disabled,
+	// where there is no peer to compare against.
+	enforceSourceMatch bool
+	// transport labels received-item metrics so a migration from
+	// plaintext to mTLS is observable rather than guessed at.
+	transport string
+}
+
+// SetPeerEnforcement turns on binding of metadata.source to the verified
+// mTLS identity and labels this handler's metrics with its transport.
+// Called for the mTLS listener's handler only.
+func (h *Handler) SetPeerEnforcement(enforce bool, transport string) {
+	h.enforceSourceMatch = enforce
+	h.transport = transport
 }
 
 // SetMetrics attaches ingest metrics to the handler. If not called (or called
@@ -369,6 +386,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"message": fmt.Sprintf("invalid metadata JSON: %v", err),
 		})
 		return
+	}
+
+	// Bind the claimed identity to the verified one. Without this the
+	// endpoint would be encrypted but still credulous: any client holding
+	// a valid certificate could stamp another connector's source onto an
+	// item, poisoning provenance and any audience rule derived from it.
+	if h.enforceSourceMatch {
+		callerID, ok := peer.FromContext(r.Context())
+		if !ok {
+			// Enforcement on with no peer means the request did not
+			// arrive over the mTLS listener. Fail closed.
+			h.recordReceived(meta.Source, "rejected")
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"status":  "error",
+				"message": "client certificate required",
+			})
+			return
+		}
+		if !strings.EqualFold(meta.Source, callerID.Name) {
+			h.recordReceived(meta.Source, "rejected")
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"status":  "error",
+				"message": fmt.Sprintf("metadata source %q does not match authenticated identity %q", meta.Source, callerID.Name),
+			})
+			return
+		}
 	}
 
 	if errs := staging.Validate(meta, h.allowlist); len(errs) > 0 {

@@ -95,7 +95,7 @@ func TestBootstrapArchives_Disabled(t *testing.T) {
 			},
 		},
 	}
-	if err := bootstrapArchives(context.Background(), cfg, mux); err != nil {
+	if err := bootstrapArchives(context.Background(), cfg, mux, nil); err != nil {
 		t.Fatalf("bootstrapArchives returned error when disabled: %v", err)
 	}
 	srv := httptest.NewServer(mux)
@@ -115,7 +115,7 @@ func TestBootstrapArchives_BadCIDR(t *testing.T) {
 	cfg := makeArchiveTestConfig(t.TempDir())
 	cfg.Ingest.Auth.TrustedProxyCIDRs = []string{"not-a-cidr"}
 
-	err := bootstrapArchivesWithSource(context.Background(), cfg, mux, auth.NewVaultTokenSource(&fakeVault{tokens: map[string]string{}}, "secret", "glovebox/ingest-tokens"))
+	err := bootstrapArchivesWithSource(context.Background(), cfg, mux, auth.NewVaultTokenSource(&fakeVault{tokens: map[string]string{}}, "secret", "glovebox/ingest-tokens"), nil)
 	if err == nil {
 		t.Fatal("expected CIDR parse error, got nil")
 	}
@@ -148,7 +148,7 @@ func TestBootstrapArchives_AuthGuards(t *testing.T) {
 	cfg := makeArchiveTestConfig(stagingRoot)
 	fv := &fakeVault{tokens: map[string]string{sourceID: tokenHex}}
 
-	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens")); err != nil {
+	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(fv, "secret", "glovebox/ingest-tokens"), nil); err != nil {
 		t.Fatalf("bootstrapArchivesWithSource: %v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestBootstrapArchives_VaultLoadFailureMountsFallback(t *testing.T) {
 	cfg := makeArchiveTestConfig(stagingRoot)
 	failing := &failingVaultClient{err: fmt.Errorf("simulated vault outage")}
 
-	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(failing, "secret", "glovebox/ingest-tokens")); err != nil {
+	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(failing, "secret", "glovebox/ingest-tokens"), nil); err != nil {
 		t.Fatalf("bootstrapArchivesWithSource: %v", err)
 	}
 

@@ -263,13 +263,26 @@ agent allowlist, but does not verify that metadata matches the connector's actua
 identity. This is acceptable for the single-user home agent use case where all
 connectors are trusted first-party code.
 
-**Phase 2:** Add a shared bearer token for defense-in-depth. The token is
+**Amendment (2026-08): mutual TLS.** The Phase 1 limitation above is closed by
+an opt-in mTLS layer rather than the shared bearer token Phase 2 anticipated.
+Client certificates carry a SPIFFE URI SAN
+(`spiffe://<trust-domain>/connector/<name>`), the scanner extracts that
+identity, and `metadata.source` must match the connector the certificate
+names -- so a compromised connector can no longer stamp another connector's
+provenance onto an item. A `disabled` / `permissive` / `required` mode ladder
+migrates deployments without a flag day; under `required` the plaintext
+listener is not opened, so no path remains that skips peer identity. A bearer
+token would have authenticated the *call* while leaving the *claim*
+unverified; a certificate identity ties the two together. See
+`docs/ingest-mtls.md`.
+
+**Phase 2 (superseded by the amendment above):** Add a shared bearer token for defense-in-depth. The token is
 distributed to connectors via Kubernetes secrets. The ingest endpoint validates
 the token and extracts connector identity from it, enabling enforcement that
 `source` and `identity.provider` match the authenticated connector. This also
 provides per-connector rate limiting and replay detection.
 
-**Transport security:** Phase 1 uses plaintext HTTP within the cluster network.
+**Transport security:** Phase 1 used plaintext HTTP within the cluster network; the mTLS amendment above supersedes this for deployments that enable it.
 If a service mesh (Istio, Linkerd) provides transparent mTLS, the endpoint
 benefits automatically. Application-level TLS is not required for Phase 1.
 
