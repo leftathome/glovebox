@@ -25,6 +25,7 @@ import (
 	"github.com/leftathome/glovebox/internal/ingest"
 	"github.com/leftathome/glovebox/internal/ingest/archives"
 	"github.com/leftathome/glovebox/internal/ingest/auth"
+	"github.com/leftathome/glovebox/internal/ingest/peer"
 	gloveboxmetrics "github.com/leftathome/glovebox/internal/metrics"
 	"github.com/leftathome/glovebox/internal/pipeline"
 	"github.com/leftathome/glovebox/internal/routing"
@@ -144,6 +145,7 @@ func main() {
 	// continue to target a single port.
 	var ingestHandler *ingest.Handler
 	var ingestServer *http.Server
+	var ingestTLSServer *http.Server
 	if cfg.Ingest.Enabled {
 		ingestHandler = ingest.NewHandler(cfg.StagingDir, cfg.Ingest, cfg.AgentAllowlist)
 
@@ -195,24 +197,73 @@ func main() {
 			log.Printf("glovebox sanitize gate mounted on /v1/sanitize (bearer auth)")
 		}
 
-		ingestServer = &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.Ingest.Port),
-			Handler: ingestMux,
-			// ReadHeaderTimeout bounds ONLY the header-read phase (slowloris
-			// protection). ReadTimeout/WriteTimeout are left 0 (unbounded) so a
-			// multi-GB archive PATCH -- the listener advertises Tus-Max-Size
-			// 30 GiB -- is not killed by a whole-request deadline (glovebox-dddn:
-			// a 60s ReadTimeout force-closed any upload >60s). Per-route body
-			// bounds remain in place: /v1/ingest via http.MaxBytesReader (size),
-			// /v1/archives PATCH via the handler's patchBodyReader idle timeout.
-			ReadHeaderTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
-		}
-		go func() {
-			log.Printf("ingest server listening on :%d", cfg.Ingest.Port)
-			if err := ingestServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Printf("ingest server error: %v", err)
+		// Mutual TLS listener. Spec 08 section 3.10 left /v1/ingest
+		// unauthenticated behind a NetworkPolicy podSelector -- a label
+		// any workload can claim, not an identity -- so the handler took
+		// metadata.source on faith. Under mTLS the claimed source must
+		// match the connector the client certificate names.
+		//
+		// Modes stage the migration: permissive opens both listeners so
+		// connectors can move one at a time (watch the transport label on
+		// glovebox_items_received_total drain to zero), required opens
+		// only this one.
+		if cfg.Ingest.TLS.Active() {
+			tlsHandler := ingest.NewHandler(cfg.StagingDir, cfg.Ingest, cfg.AgentAllowlist)
+			tlsHandler.SetMetrics(ingestMetrics)
+			if err := tlsHandler.InitQueueDepth(); err != nil {
+				log.Fatalf("init mTLS ingest queue depth: %v", err)
 			}
-		}()
+			tlsHandler.SetReady()
+			tlsHandler.SetPeerEnforcement(cfg.Ingest.TLS.SourceMatchEnforced(), "mtls")
+
+			tlsMux := http.NewServeMux()
+			tlsMux.Handle("/v1/ingest", peer.Middleware(cfg.Ingest.TLS.EffectiveTrustDomain())(tlsHandler))
+
+			srv, err := ingest.StartServerMTLS(tlsMux, ingest.MTLSOptions{
+				Port:         cfg.Ingest.TLS.Port,
+				Timeout:      time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+				CertFile:     cfg.Ingest.TLS.CertFile,
+				KeyFile:      cfg.Ingest.TLS.KeyFile,
+				ClientCAFile: cfg.Ingest.TLS.ClientCAFile,
+			})
+			if err != nil {
+				log.Fatalf("build mTLS ingest listener: %v", err)
+			}
+			ingestTLSServer = srv
+			go func() {
+				log.Printf("ingest mTLS server listening on :%d (mode=%s, source-match=%v)",
+					cfg.Ingest.TLS.Port, cfg.Ingest.TLS.Mode, cfg.Ingest.TLS.SourceMatchEnforced())
+				if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+					log.Printf("ingest mTLS server error: %v", err)
+				}
+			}()
+		}
+
+		if !cfg.Ingest.TLS.PlaintextActive() {
+			// required mode: the unauthenticated listener is simply not
+			// opened, so there is no path left that skips peer identity.
+			log.Printf("plaintext ingest listener not opened (ingest.tls.mode=%s)", cfg.Ingest.TLS.Mode)
+		} else {
+			ingestHandler.SetPeerEnforcement(false, "plaintext")
+			ingestServer = &http.Server{
+				Addr:    fmt.Sprintf(":%d", cfg.Ingest.Port),
+				Handler: ingestMux,
+				// ReadHeaderTimeout bounds ONLY the header-read phase (slowloris
+				// protection). ReadTimeout/WriteTimeout are left 0 (unbounded) so a
+				// multi-GB archive PATCH -- the listener advertises Tus-Max-Size
+				// 30 GiB -- is not killed by a whole-request deadline (glovebox-dddn:
+				// a 60s ReadTimeout force-closed any upload >60s). Per-route body
+				// bounds remain in place: /v1/ingest via http.MaxBytesReader (size),
+				// /v1/archives PATCH via the handler's patchBodyReader idle timeout.
+				ReadHeaderTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+			}
+			go func() {
+				log.Printf("ingest server listening on :%d", cfg.Ingest.Port)
+				if err := ingestServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Printf("ingest server error: %v", err)
+				}
+			}()
+		}
 	}
 
 	// Clean stale pending files from previous run
@@ -321,6 +372,9 @@ func main() {
 	defer shutdownCancel()
 	if ingestServer != nil {
 		ingestServer.Shutdown(shutdownCtx)
+	}
+	if ingestTLSServer != nil {
+		ingestTLSServer.Shutdown(shutdownCtx)
 	}
 	metricsServer.Shutdown(shutdownCtx)
 
