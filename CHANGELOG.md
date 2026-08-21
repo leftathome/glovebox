@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Vault TLS verification is on by default (`ingest.auth.vault.tlsSkipVerify`)**:
+  the chart shipped `tlsSkipVerify: true`, so every default install accepted a
+  MITM'd Vault response *on the path that fetches ingest and archive bearer
+  tokens*. A pod able to spoof or relay the in-cluster Vault address could hand
+  glovebox attacker-chosen tokens — and those tokens are how glovebox decides
+  which callers to trust, so an unauthenticated connection there undermines
+  every check that depends on them. "Pod network only" bounds who can attempt
+  it; it does not make the connection authenticated.
+  The default is now `false`. For a self-signed homelab Vault, set
+  `ingest.auth.vault.caSecret` to the name of a Secret holding the CA bundle
+  under `ca.crt`; the chart mounts it read-only and points `VAULT_CACERT` at
+  it, which keeps the connection authenticated against a CA you chose. Setting
+  `tlsSkipVerify: true` still works but is now an explicit decision rather than
+  the default nobody looked at.
+  **Upgrade note:** an install relying on the old default against a self-signed
+  Vault will fail to fetch tokens until either `caSecret` is set or
+  `tlsSkipVerify: true` is restored explicitly.
+
+
+### Security
+
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
   scanning engine matched ASCII patterns against content that had only been
   NFKC-normalized and stripped of seven zero-width runes, so several classes of
