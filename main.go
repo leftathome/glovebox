@@ -164,13 +164,14 @@ func main() {
 		}
 	}()
 
-	// Start ingest HTTP server if enabled. The mux is shared between
-	// the legacy /v1/ingest connector endpoint (spec 08) and the
-	// spec 13 archive-delivery /v1/archives* surface; both bind to
-	// cfg.Ingest.Port so the chart's startup probe + NetworkPolicy
-	// continue to target a single port.
+	// Start the ingest HTTP plane if enabled. Three route families with
+	// three auth models live here -- /v1/ingest (mTLS peer identity or
+	// nothing), /v1/archives* and /v1/sanitize (bearer tokens) -- and
+	// planPlaintextListeners decides which plaintext listeners carry
+	// which. See ingest_listeners.go for why the bearer surface's
+	// lifecycle is deliberately independent of ingest.tls.mode.
 	var ingestHandler *ingest.Handler
-	var ingestServer *http.Server
+	var plaintextServers []*http.Server
 	var ingestTLSServer *http.Server
 	if cfg.Ingest.Enabled {
 		ingestHandler = ingest.NewHandler(cfg.StagingDir, cfg.Ingest, cfg.AgentAllowlist)
@@ -186,41 +187,47 @@ func main() {
 		}
 		ingestHandler.SetReady()
 
-		ingestMux := http.NewServeMux()
-		ingestMux.Handle("/v1/ingest", ingestHandler)
-
-		// Spec 13 archive-delivery: bind /v1/archives* onto the same mux
-		// before the http.Server starts serving. bootstrapArchives is
-		// nil-tolerant — when Auth.Enabled / Archives.Enabled are off it
-		// returns without mounting anything; when a startup check fails
-		// it mounts a 503 fallback on /v1/archives* and lets the rest of
-		// the process run.
-		// The scanner is threaded in so the recognizer-scan lane can scan
-		// its extracted text before publishing it for the operator agent.
-		if err := bootstrapArchives(ctx, cfg, ingestMux, sc); err != nil {
-			log.Fatalf("bootstrap archive listener: %v", err)
+		// mountIngest attaches the plaintext connector intake. Peer
+		// enforcement is off on this path by definition: there is no
+		// verified peer on a plaintext connection.
+		mountIngest := func(mux *http.ServeMux) {
+			ingestHandler.SetPeerEnforcement(false, "plaintext")
+			mux.Handle("/v1/ingest", ingestHandler)
 		}
 
-		// Spec sanitize-gate (glovebox-t6fz): mount the synchronous
-		// classify endpoint POST /v1/sanitize on the same ingest mux,
-		// behind bearer-token auth. Gated on Ingest.Auth.Enabled so an
-		// auth-disabled dev deploy does not expose an unauthenticated
-		// gate. sc is the shared scanner built above, so the gate
-		// enforces exactly what the async daemon enforces.
-		if sc != nil && cfg.Ingest.Auth.Enabled {
-			store, rl, pr, err := buildIngestAuth(ctx, cfg)
-			if err != nil {
-				log.Fatalf("sanitize auth: %v", err)
+		// mountBearer attaches the two bearer-authenticated families.
+		//
+		// Spec 13 archive-delivery: bootstrapArchives is nil-tolerant --
+		// when Auth.Enabled / Archives.Enabled are off it returns without
+		// mounting anything; when a startup check fails it mounts a 503
+		// fallback on /v1/archives* and lets the rest of the process run.
+		// The scanner is threaded in so the recognizer-scan lane can scan
+		// its extracted text before publishing it for the operator agent.
+		//
+		// Spec sanitize-gate (glovebox-t6fz): POST /v1/sanitize is gated
+		// on Ingest.Auth.Enabled so an auth-disabled dev deploy does not
+		// expose an unauthenticated gate. sc is the shared scanner built
+		// above, so the gate enforces exactly what the async daemon does.
+		mountBearer := func(mux *http.ServeMux) error {
+			if err := bootstrapArchives(ctx, cfg, mux, sc); err != nil {
+				return fmt.Errorf("bootstrap archive listener: %w", err)
 			}
-			// Typed-nil telemetry: auth.Middleware requires a non-nil
-			// TelemetryHook (it calls RecordAuth unconditionally); a bare
-			// nil interface would panic. *archives.Telemetry's Record*
-			// methods are nil-safe, so a typed nil is a safe no-op sink.
-			mw := auth.Middleware(store, rl, pr, (*archives.Telemetry)(nil))
-			sanMux := http.NewServeMux()
-			sanitizeapi.HandlerFromMux(sanitizeapi.NewSanitizeHandler(sc), sanMux)
-			ingestMux.Handle("/v1/sanitize", mw(sanMux))
-			log.Printf("glovebox sanitize gate mounted on /v1/sanitize (bearer auth)")
+			if sc != nil && cfg.Ingest.Auth.Enabled {
+				store, rl, pr, err := buildIngestAuth(ctx, cfg)
+				if err != nil {
+					return fmt.Errorf("sanitize auth: %w", err)
+				}
+				// Typed-nil telemetry: auth.Middleware requires a non-nil
+				// TelemetryHook (it calls RecordAuth unconditionally); a bare
+				// nil interface would panic. *archives.Telemetry's Record*
+				// methods are nil-safe, so a typed nil is a safe no-op sink.
+				mw := auth.Middleware(store, rl, pr, (*archives.Telemetry)(nil))
+				sanMux := http.NewServeMux()
+				sanitizeapi.HandlerFromMux(sanitizeapi.NewSanitizeHandler(sc), sanMux)
+				mux.Handle("/v1/sanitize", mw(sanMux))
+				log.Printf("glovebox sanitize gate mounted on /v1/sanitize (bearer auth)")
+			}
+			return nil
 		}
 
 		// Mutual TLS listener. Spec 08 section 3.10 left /v1/ingest
@@ -266,29 +273,27 @@ func main() {
 		}
 
 		if !cfg.Ingest.TLS.PlaintextActive() {
-			// required mode: the unauthenticated listener is simply not
-			// opened, so there is no path left that skips peer identity.
-			log.Printf("plaintext ingest listener not opened (ingest.tls.mode=%s)", cfg.Ingest.TLS.Mode)
-		} else {
-			ingestHandler.SetPeerEnforcement(false, "plaintext")
-			ingestServer = &http.Server{
-				Addr:    fmt.Sprintf(":%d", cfg.Ingest.Port),
-				Handler: ingestMux,
-				// ReadHeaderTimeout bounds ONLY the header-read phase (slowloris
-				// protection). ReadTimeout/WriteTimeout are left 0 (unbounded) so a
-				// multi-GB archive PATCH -- the listener advertises Tus-Max-Size
-				// 30 GiB -- is not killed by a whole-request deadline (glovebox-dddn:
-				// a 60s ReadTimeout force-closed any upload >60s). Per-route body
-				// bounds remain in place: /v1/ingest via http.MaxBytesReader (size),
-				// /v1/archives PATCH via the handler's patchBodyReader idle timeout.
-				ReadHeaderTimeout: time.Duration(cfg.Ingest.RequestTimeoutSeconds) * time.Second,
+			// required mode: /v1/ingest is not registered on any plaintext
+			// listener, so there is no path left to it that skips peer
+			// identity. The bearer endpoints keep their listener -- they
+			// were never gated on the connector transport.
+			log.Printf("plaintext /v1/ingest not served (ingest.tls.mode=%s)", cfg.Ingest.TLS.Mode)
+		}
+
+		for _, l := range planPlaintextListeners(cfg.Ingest) {
+			mux, err := buildPlaintextMux(l, mountIngest, mountBearer)
+			if err != nil {
+				log.Fatalf("build ingest listener on :%d: %v", l.Port, err)
 			}
-			go func() {
-				log.Printf("ingest server listening on :%d", cfg.Ingest.Port)
-				if err := ingestServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					log.Printf("ingest server error: %v", err)
+			srv := newPlaintextServer(l.Port, mux,
+				time.Duration(cfg.Ingest.RequestTimeoutSeconds)*time.Second)
+			plaintextServers = append(plaintextServers, srv)
+			go func(srv *http.Server, l plaintextListener) {
+				log.Printf("ingest server listening on :%d (%s)", l.Port, l.describe())
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Printf("ingest server on :%d error: %v", l.Port, err)
 				}
-			}()
+			}(srv, l)
 		}
 	}
 
@@ -396,8 +401,8 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	if ingestServer != nil {
-		ingestServer.Shutdown(shutdownCtx)
+	for _, srv := range plaintextServers {
+		srv.Shutdown(shutdownCtx)
 	}
 	if ingestTLSServer != nil {
 		ingestTLSServer.Shutdown(shutdownCtx)

@@ -393,6 +393,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ingest.tls.mode: required` took the archive uploads and the sanitize gate
+  offline**: a regression from the mTLS work (#41). Three route families with
+  three different auth models shared one mux -- `/v1/ingest` (connector
+  intake), `/v1/archives*` (tus.io uploads, bearer tokens) and `/v1/sanitize`
+  (synchronous scan gate, bearer tokens) -- and that mux was served only by
+  the plaintext listener, which `PlaintextActive()` refuses to open under
+  `required`. The mTLS listener mounts `/v1/ingest` alone. So switching the
+  connector transport to mTLS silently blacked out two endpoints that
+  authenticate themselves and have nothing to do with that transport: the
+  recognizer's uploads stopped and every `/v1/sanitize` call got connection
+  refused, with nothing in the logs saying why. The chart made it worse rather
+  than louder -- the `startupProbe` is a `tcpSocket` on the ingest port, so
+  under `required` the pod failed startup and restarted in a loop.
+  - The bearer-authenticated surface now has its own lifecycle
+    (`planPlaintextListeners` in `ingest_listeners.go`): it is served in all
+    three modes, and `/v1/ingest` is registered on a plaintext listener only
+    when the mode allows plaintext ingest. Under `required` the shared
+    listener stays up for the bearer endpoints and answers **404** for
+    `/v1/ingest` -- there is still no unauthenticated path to the connector
+    intake.
+  - The `startupProbe` targets the mTLS port under `required`, which is the
+    listener that mode guarantees is up.
+- **The recognizer namespace's NetworkPolicy handed it unauthenticated
+  `/v1/ingest`** (security review P0-7, second half): the rule granting the
+  recognizer namespace the `/v1/archives` endpoint named a hard-coded
+  TCP/**9091** -- which both ignored a customised `config.ingest.port` and,
+  because `/v1/ingest` shares that port, granted the whole namespace the
+  connector intake as a side effect. A namespace that should be able to upload
+  an archive could stage any item, from any claimed source, to any allowlisted
+  agent.
+  - New `ingest.bearer_port` (chart: `config.ingest.bearerPort`) moves
+    `/v1/archives*` and `/v1/sanitize` onto a listener of their own, leaving
+    `ingest.port` carrying `/v1/ingest` alone. The archive NetworkPolicy,
+    Service port and `containerPort` all follow it, so the recognizer's
+    ingress reaches the archive endpoint and nothing else.
+  - **It defaults to `0`, meaning "share `ingest.port`" -- today's layout,
+    unchanged.** The recognizer namespace and the `/v1/sanitize` callers live
+    outside this chart and are configured against 9091; moving them silently
+    on upgrade would have broken exactly the callers this is meant to protect.
+    Closing the exposure is therefore a coordinated migration: set
+    `config.ingest.bearerPort` (e.g. `9093`) and repoint the recognizer and any
+    sanitize caller at it in the same window. Until an operator does, the
+    grant still reaches `/v1/ingest`, and the template comment says so rather
+    than implying otherwise.
+  - Chart and binary are now checked against each other across the full
+    `ingest.tls.mode` x `ingest.archives.enabled` x split matrix: every
+    `containerPort` and Service port the chart declares is one the process
+    actually binds, and ports nothing binds (the plaintext ingest port under
+    `required`) are no longer declared or admitted by a NetworkPolicy.
+  - Verified: `TestBearerEndpointsServedInEveryTLSMode` and
+    `TestIngestRouteFollowsTLSMode` stand up real listeners per mode and assert
+    which routes answer on which port; against the pre-fix listener logic both
+    fail with `got 0` -- no listener at all -- in `required`. `helm lint` plus
+    12 `helm template` renders confirm the port agreement above. With
+    `bearerPort` unset the chart renders byte-identically to before in
+    `mode: disabled`, including the config checksum, so an existing install
+    sees no restart on upgrade.
+
 - **Stacked pull requests ran no CI at all**: `ci.yml` filtered
   `pull_request: branches: [main]`, which matches on the *base* branch, so a PR
   stacked on another `claude/**` branch started no workflow and showed an empty
