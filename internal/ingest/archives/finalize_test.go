@@ -785,7 +785,7 @@ func TestFinalize_ScannerStampsPolicy(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	_, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}})
 	if err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
@@ -816,7 +816,7 @@ func TestFinalize_ScannerDataSubjectDefaultHonored(t *testing.T) {
 	reg := scannerRegistry(t, "household")
 
 	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}}); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	if staged := readStagedReceipt(t, fx); staged.DataSubject != "household" {
@@ -830,7 +830,7 @@ func TestFinalize_ScannerExplicitDataSubjectWins(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}}); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	staged := readStagedReceipt(t, fx)
@@ -849,7 +849,7 @@ func TestFinalize_ScannerForcesOperatorMarker(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	if _, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg}); err != nil {
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}}); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	if staged := readStagedReceipt(t, fx); len(staged.Audience) != 1 || staged.Audience[0] != "operator" {
@@ -862,7 +862,7 @@ func TestFinalize_SpoofRejected(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	_, err := Finalize(authedCtx("rss"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}})
 	if !errors.Is(err, ErrSourceNotAuthorized) {
 		t.Fatalf("err=%v want ErrSourceNotAuthorized", err)
 	}
@@ -885,7 +885,7 @@ func TestFinalize_ScannerMissingOCR(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	_, err := Finalize(authedCtx("recognizer-scanner"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}})
 	if !errors.Is(err, ErrScanMissingOCR) {
 		t.Fatalf("err=%v want ErrScanMissingOCR", err)
 	}
@@ -901,7 +901,7 @@ func TestFinalize_NonScannerUnaffected(t *testing.T) {
 	reg := scannerRegistry(t, "e_111111")
 
 	receipt, err := Finalize(authedCtx("imap"), fx.state,
-		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg})
+		FinalizeConfig{StagingRoot: fx.stagingRoot, Sources: reg, ExtractScanner: passExtractScanner{}})
 	if err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}

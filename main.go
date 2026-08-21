@@ -167,7 +167,9 @@ func main() {
 		// returns without mounting anything; when a startup check fails
 		// it mounts a 503 fallback on /v1/archives* and lets the rest of
 		// the process run.
-		if err := bootstrapArchives(ctx, cfg, ingestMux); err != nil {
+		// The scanner is threaded in so the recognizer-scan lane can scan
+		// its extracted text before publishing it for the operator agent.
+		if err := bootstrapArchives(ctx, cfg, ingestMux, sc); err != nil {
 			log.Fatalf("bootstrap archive listener: %v", err)
 		}
 

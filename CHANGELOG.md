@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Scan the two channels that routed around the engine**: the engine scanned
+  `content.raw` and nothing else, so two paths delivered attacker-controlled
+  text to an agent without ever passing the detection engine.
+  - **Item metadata.** `routing.RoutePass` copies `metadata.json` verbatim into
+    the agent inbox, and the quarantine notification summarises it for the
+    review agent -- but `subject`, `sender` and `source` were never scanned. An
+    injection written entirely into a Subject line scored **0.00**, passed, and
+    arrived at the agent intact: the whole engine bypassed by putting the
+    payload in a field nobody looked at. `Scanner.ScanWithMetadata` now matches
+    those fields alongside the content, through the same pre-processing, so
+    homoglyph, invisible-character and encoded subjects are caught too.
+    Metadata is *matched*, not *detected* -- the custom detectors are tuned for
+    prose, and a spurious non-English boost on a two-word subject is exactly
+    the false positive that gets a scanner switched off. `Scan` keeps its
+    content-only signature for the `/v1/sanitize` gate.
+  - **Recognizer-scan extracted text.** The scanner lane rendered
+    `tree/ocr.txt` into `content.extracted.md` for the operator agent to index
+    and recall, without scanning it -- OCR text off a physical document an
+    attacker can print, post or mail. It is now scanned before publication: a
+    quarantine verdict **withholds the body** (recording the score, the firing
+    signals, and a pointer to the unmodified `tree/ocr.txt` for human review)
+    rather than reproducing the payload in the document the agent indexes. A
+    finalize with no scanner configured fails closed (`ErrExtractUnscanned`)
+    instead of publishing unscanned text.
+  - Quarantine notifications additionally **inert** `source`/`sender`/`subject`
+    (non-ASCII escaped, newlines collapsed, truncated), the treatment
+    `content.sanitized` already got: the agent reading that file is
+    summarising an item already suspected hostile.
+
+
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
   scanning engine matched ASCII patterns against content that had only been
   NFKC-normalized and stripped of seven zero-width runes, so several classes of
