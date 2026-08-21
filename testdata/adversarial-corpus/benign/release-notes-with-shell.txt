@@ -1,0 +1,9 @@
+Release 2.4.0
+
+Install with:
+
+```shell
+brew install example
+```
+
+Breaking change: the --legacy flag has been removed.

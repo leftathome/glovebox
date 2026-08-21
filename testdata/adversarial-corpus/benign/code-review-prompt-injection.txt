@@ -1,0 +1,1 @@
+Left a couple of comments on the PR. The new detector looks right to me, though I think the regex for the override rule is too narrow -- it only covers the 'previous instructions' phrasing and misses the imperative forms. Could you add a test for the role-reassignment case as well?

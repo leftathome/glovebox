@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Adversarial corpus and a CI detection/false-positive gate**
+  (`testdata/adversarial-corpus`, `scripts/corpus-gate.sh`): the efficacy fixes
+  -- homoglyph folding, invisible/Tags-block stripping, decode-then-scan,
+  whole-document detectors, the metadata channel -- each landed with its own
+  regression test. That proves one bypass is closed; it never measured what
+  fraction of a red-team set the scanner catches, and it never bounded what
+  legitimate mail the scanner destroys getting there. A rule edit could close
+  one hole and open three with every check still green.
+  - **59 checked-in cases**, each a small inert fixture plus an expected verdict
+    in `manifest.json`: 38 malicious across homoglyph (Cyrillic/Greek),
+    invisible smuggling (Tags block, zero-width, soft hyphen, word joiner,
+    Mongolian vowel separator, bidi), encoded (base64 std/raw/url, hex, percent,
+    nested, sub-threshold short runs), mid-document payloads in ~140 KiB items,
+    metadata-channel injections with a benign or empty body, and plain-language
+    overrides; and **21 benign** that must PASS, deliberately including content
+    that looks alarming and is not -- a security advisory quoting an injection,
+    a code review about injection detection, release notes with a shell fence,
+    an inline base64 image, foreign-language newsletters.
+  - Scanned through the production path: rules from `configs/default-rules.json`,
+    the default detector registry, `scan.New`, and `ScanWithMetadata` with the
+    same `[subject, sender, source]` triple the worker pool passes -- so a
+    regression in the *shipped* rules file fails the gate, not just a hand-built
+    ruleset no deployment uses.
+  - **Measured today: 94.74% detection (36/38) and 23.81% false positives
+    (5/21).** Those measured numbers are the committed thresholds
+    (`thresholds.json`), rounded down and up respectively at the fourth decimal:
+    one more missed malicious case (92.11%) or one more quarantined benign case
+    (28.57%) fails the build. They are not aspirational and not loose enough to
+    be unfailable.
+  - **Known gaps, kept in the corpus and counted in the rates.** Missed:
+    `invisible-bidi-controls` (RLO-reversed text scores 0.70 -- the controls are
+    stripped but the text stays reversed, so no matcher sees it; catching it
+    needs a UAX-9 reordered scan view) and `encoded-percent-partial` (scores
+    0.00 -- a URL library escapes only the separators, so `%20` between legible
+    words defeats patterns that require `\s` and is too short to survive the
+    decoder's 8-byte floor). False positives: an inline base64 image and a PGP
+    signature block (1.05 each: encoding anomaly x the non-English booster), a
+    security advisory quoting an injection (1.00 -- the engine has no notion of
+    quotation), release notes with a ```shell fence (0.80, exactly the
+    threshold), and docs saying a sidecar "will act as a proxy" (1.00).
+  - The benign set is deliberately skewed toward hard content, so 23.81% is an
+    upper bound on adversarially-difficult legitimate mail, not an inbox-wide
+    estimate. Padding it with easy passes would improve the number and weaken
+    the gate; the README says so, at length, because the temptation is real.
+  - A case marked `known_gap` inverts its assertion: if a fix lands and the case
+    starts behaving, the runner prints `NO LONGER FAILING` and the test fails
+    until the manifest is updated. A gap cannot close silently any more than it
+    can open silently.
+
 - **Helm wiring for ingest mTLS (`ingest.tls`)**: completes the mutual-TLS work
   from spec 08 §3.10 -- the Go side shipped configurable, but nothing rendered
   the certificates or mounts, so enabling it meant hand-writing manifests.
