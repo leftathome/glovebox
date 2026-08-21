@@ -157,6 +157,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Vault will fail to fetch tokens until either `caSecret` is set or
   `tlsSkipVerify: true` is restored explicitly.
 
+- **Detectors see the whole document again (mid-document evasion)**: every
+  custom detector received only a 64 KiB prefix plus a 64 KiB suffix, so in
+  any item larger than 128 KiB a payload could simply be padded into the
+  middle and `encoding_anomaly`, `template_structure` and
+  `invisible_smuggling` never saw it. Measured on a 200 KiB document with an
+  invisible Tags-block payload in the centre: **score 0.00, no signals at all,
+  delivered** before this change; quarantined after it.
+  Sampling is now a per-detector opt-in (`detector.SampledDetector`) rather
+  than something the engine imposes on all of them. `language_detection` is
+  the only detector that takes it: language is a whole-document property, a
+  sample identifies it as reliably as the full text, and lingua's model
+  evaluation is the expensive part of a scan -- while positioning gains an
+  attacker nothing, since that rule carries weight 0.0 and only multiplies
+  other signals.
+  Spec 04 §6.6 is corrected: it described chunked streaming with
+  pattern-length overlap and memory bounded to `num_workers *
+  chunk_buffer_size`, and neither was implemented. Item size is bounded by
+  `ingest.max_body_bytes` and the per-item scan timeout; the section no longer
+  claims a guarantee the code does not provide.
+
+
 
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
