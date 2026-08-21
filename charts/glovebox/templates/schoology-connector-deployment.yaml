@@ -53,8 +53,19 @@ spec:
               drop:
                 - ALL
           env:
+            {{- if ne .Values.ingest.tls.mode "disabled" }}
+            - name: GLOVEBOX_INGEST_URL
+              value: "https://{{ include "glovebox.fullname" . }}-ingest:{{ .Values.ingest.tls.port }}/v1/ingest"
+            - name: GLOVEBOX_INGEST_CA
+              value: /etc/ingest-tls/ca.crt
+            - name: GLOVEBOX_INGEST_CLIENT_CERT
+              value: /etc/ingest-tls/tls.crt
+            - name: GLOVEBOX_INGEST_CLIENT_KEY
+              value: /etc/ingest-tls/tls.key
+            {{- else }}
             - name: GLOVEBOX_INGEST_URL
               value: "http://{{ include "glovebox.fullname" . }}-ingest:{{ .Values.config.ingest.port }}/v1/ingest"
+            {{- end }}
             - name: GLOVEBOX_STATE_DIR
               value: /state
             - name: GLOVEBOX_CONNECTOR_CONFIG
@@ -109,6 +120,11 @@ spec:
           resources:
             {{- toYaml .Values.schoologyConnector.resources | nindent 12 }}
           volumeMounts:
+            {{- if ne .Values.ingest.tls.mode "disabled" }}
+            - name: ingest-tls
+              mountPath: /etc/ingest-tls
+              readOnly: true
+            {{- end }}
             - name: state
               mountPath: /state
             - name: config
@@ -130,6 +146,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if ne .Values.ingest.tls.mode "disabled" }}
+        - name: ingest-tls
+          secret:
+            secretName: {{ include "glovebox.fullname" . }}-schoology-ingest-client-tls
+        {{- end }}
         # State is checkpoint-only (last-seen IDs); emptyDir is sufficient
         # for v1. A restart re-reads the live Schoology surfaces from the
         # most recent checkpoint Schoology itself exposes, so a lost

@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Helm wiring for ingest mTLS (`ingest.tls`)**: completes the mutual-TLS work
+  from spec 08 §3.10 -- the Go side shipped configurable, but nothing rendered
+  the certificates or mounts, so enabling it meant hand-writing manifests.
+  Setting `ingest.tls.mode` to `permissive` or `required` now renders
+  cert-manager `Certificate` resources for the server and **one per producer**
+  -- every enabled connector, the Schoology connector, and every enabled
+  importer -- each carrying its SPIFFE URI SAN
+  (`spiffe://<trust-domain>/connector/<name>`), plus the keypair mounts, the
+  `https://` ingest URL and client-certificate environment variables, the mTLS
+  port on the Service, the scanner's `containerPort`, and the connector
+  NetworkPolicy.
+  Every producer is wired deliberately rather than just the generic connector
+  loop: under `required` the plaintext listener is never opened, so a producer
+  the chart forgot would stop delivering with nothing but a connection error
+  to show for it. Schoology and the importers have their own templates and
+  would have been exactly that.
+  With `mode: disabled` (the default) the chart renders **byte-identically**
+  to before -- verified by diffing `helm template` against `main`, including
+  the config checksum, so an existing install sees no pod restart on upgrade.
+
+
+### Added
+
 - **Mutual TLS for `/v1/ingest`, with verified peer identity (spec 08 §3.10)**:
   the connector ingest endpoint was unauthenticated, gated only by a
   NetworkPolicy `podSelector`. A label is not an identity -- any workload that

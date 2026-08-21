@@ -50,8 +50,22 @@ spec:
                 - ALL
           env:
             {{- if eq $ingestMode "http" }}
+            {{- if ne $.Values.ingest.tls.mode "disabled" }}
+            - name: GLOVEBOX_INGEST_URL
+              value: "https://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.ingest.tls.port }}/v1/ingest"
+            # The framework switches to a client-certificate transport when
+            # all three are present. A partial set is an error rather than a
+            # silent fall back to plaintext.
+            - name: GLOVEBOX_INGEST_CA
+              value: /etc/ingest-tls/ca.crt
+            - name: GLOVEBOX_INGEST_CLIENT_CERT
+              value: /etc/ingest-tls/tls.crt
+            - name: GLOVEBOX_INGEST_CLIENT_KEY
+              value: /etc/ingest-tls/tls.key
+            {{- else }}
             - name: GLOVEBOX_INGEST_URL
               value: "http://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.config.ingest.port }}/v1/ingest"
+            {{- end }}
             {{- else }}
             - name: GLOVEBOX_STAGING_DIR
               value: /data/glovebox/staging
@@ -103,6 +117,11 @@ spec:
             - name: config
               mountPath: /etc/connector
               readOnly: true
+            {{- if and (eq $ingestMode "http") (ne $.Values.ingest.tls.mode "disabled") }}
+            - name: ingest-tls
+              mountPath: /etc/ingest-tls
+              readOnly: true
+            {{- end }}
       {{- with ($connector.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -127,5 +146,10 @@ spec:
         - name: config
           configMap:
             name: {{ include "glovebox.fullname" $ }}-{{ $name }}-config
+        {{- if and (eq $ingestMode "http") (ne $.Values.ingest.tls.mode "disabled") }}
+        - name: ingest-tls
+          secret:
+            secretName: {{ include "glovebox.fullname" $ }}-{{ $name }}-ingest-client-tls
+        {{- end }}
 {{- end }}
 {{- end }}
