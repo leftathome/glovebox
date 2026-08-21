@@ -55,17 +55,24 @@ func (lp *LinkPolicy) Check(rawURL string) (bool, string) {
 
 	host := parsed.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
-		if isPrivateIP(ip) {
+		if IsBlockedIP(ip) {
 			return false, fmt.Sprintf("private IP %s not allowed in safe mode", host)
 		}
 	} else {
-		// DNS name -- resolve and check
+		// DNS name -- resolve and check. A lookup failure is a denial, not
+		// a pass: treating the error as "no private IPs found" let any
+		// unresolvable-at-check-time host through, and the transport then
+		// resolved it again for real when it dialled.
 		ips, err := net.LookupIP(host)
-		if err == nil {
-			for _, ip := range ips {
-				if isPrivateIP(ip) {
-					return false, fmt.Sprintf("host %s resolves to private IP, not allowed in safe mode", host)
-				}
+		if err != nil {
+			return false, fmt.Sprintf("host %s could not be resolved for safety check", host)
+		}
+		if len(ips) == 0 {
+			return false, fmt.Sprintf("host %s resolved to no addresses", host)
+		}
+		for _, ip := range ips {
+			if IsBlockedIP(ip) {
+				return false, fmt.Sprintf("host %s resolves to private IP, not allowed in safe mode", host)
 			}
 		}
 	}
@@ -102,33 +109,5 @@ func (lp *LinkPolicy) ruleMatches(rule LinkPolicyRule, u *url.URL) bool {
 		return cidr.Contains(ip)
 	}
 
-	return false
-}
-
-var privateNetworks = func() []*net.IPNet {
-	cidrs := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-	}
-	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		_, n, _ := net.ParseCIDR(cidr)
-		nets = append(nets, n)
-	}
-	return nets
-}()
-
-func isPrivateIP(ip net.IP) bool {
-	for _, n := range privateNetworks {
-		if n.Contains(ip) {
-			return true
-		}
-	}
 	return false
 }

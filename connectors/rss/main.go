@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -28,12 +29,30 @@ func main() {
 	}
 
 	httpClient := connector.NewHTTPClient(connector.HTTPClientOptions{})
-	rc := connector.NewRobotsChecker(httpClient)
+	linkPolicy := content.NewLinkPolicy(cfg.LinkPolicy)
+
+	// Links extracted from feed content are attacker-influenced, so they
+	// get the guarded client: connect-time address validation plus a
+	// policy re-check on every redirect hop. In unrestricted mode the
+	// operator has explicitly opted out of address filtering, so the guard
+	// allows private destinations while still capping and re-checking
+	// redirects.
+	linkClient := connector.NewGuardedHTTPClient(connector.GuardedClientOptions{
+		AllowPrivateNetworks: cfg.LinkPolicy.Default == "unrestricted",
+		ValidateURL: func(rawURL string) error {
+			if allowed, reason := linkPolicy.Check(rawURL); !allowed {
+				return errors.New(reason)
+			}
+			return nil
+		},
+	})
+	rc := connector.NewRobotsChecker(linkClient)
 
 	c := &RSSConnector{
 		config:        cfg,
-		linkPolicy:    content.NewLinkPolicy(cfg.LinkPolicy),
+		linkPolicy:    linkPolicy,
 		httpClient:    httpClient,
+		linkClient:    linkClient,
 		robotsChecker: rc,
 	}
 
