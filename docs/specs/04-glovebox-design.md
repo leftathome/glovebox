@@ -148,6 +148,15 @@ Optional fields: `subject`, `ordered` (default: `false`).
 
 Items missing required fields are REJECTED with reason `malformed_metadata`.
 
+**Metadata is scanned, not trusted.** `metadata.json` is delivered verbatim
+into the agent inbox on PASS (Section 7.2) and summarised into the quarantine
+notification the Review Agent reads (Section 7.7), so its fields are as
+attacker-controlled as the content. The heuristic engine matches `subject`,
+`sender` and `source` alongside `content.raw`, using the same pre-processing
+(Section 6.2), so an injection written into a Subject line cannot bypass the
+engine by living in a field nobody scanned. Metadata is matched only -- the
+custom detectors are tuned for prose and would misfire on short fields.
+
 ### 5.3 Content Extraction Requirement
 
 Connectors MUST decode and extract human-readable content from structured formats before writing `content.raw`. For example:
@@ -352,6 +361,12 @@ Each notification file is named `<timestamp>-<hash>.json` and contains:
 ```
 
 This file contains metadata only -- never raw content. The Review Agent reads these files to present quarantine items to the user.
+
+`source`, `sender` and `subject` are inerted before they are written here
+(non-ASCII escaped, newlines collapsed, truncated), by the same reasoning
+that makes `content.sanitized` inert in Section 7.6: the agent reading this
+file is summarising an item already suspected of being hostile, and the
+metadata is no more trustworthy than the content it describes.
 
 ## 8. Pending Item Placeholders
 

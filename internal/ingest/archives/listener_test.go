@@ -389,6 +389,7 @@ func TestStartArchiveListener_ThreadsSourceRegistry(t *testing.T) {
 				t.Fatalf("source.Load: %v", err)
 			}
 			cfg.Sources = reg
+			cfg.ExtractScanner = passExtractScanner{}
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)

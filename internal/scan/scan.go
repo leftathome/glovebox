@@ -34,7 +34,29 @@ func New(rules engine.RuleConfig, registry *detector.Registry) (*Scanner, error)
 	return &Scanner{matchers: matchers, detectors: detectors, boostConfig: boostConfig, threshold: rules.QuarantineThreshold}, nil
 }
 
+// Scan scans an item's content. Callers that also hold attacker-controlled
+// metadata (a Subject line, a Sender) must use ScanWithMetadata instead --
+// see the note there for why metadata is part of the attack surface.
 func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, error) {
+	return s.ScanWithMetadata(content, contentType, nil)
+}
+
+// ScanWithMetadata scans an item's content together with the metadata
+// fields that travel with it.
+//
+// The engine used to scan content.raw alone, but metadata is delivered
+// verbatim into the agent workspace on PASS (routing.RoutePass copies
+// metadata.json into the inbox) and into the quarantine notification the
+// review agent reads. An injection written entirely into a Subject line
+// therefore scored 0.00, passed, and arrived at the agent intact -- the
+// whole engine bypassed by putting the payload in a field nobody scanned.
+//
+// Metadata is matched, not detected: the matchers carry the high-weight
+// instruction rules, while the custom detectors (language, template
+// structure) are tuned for prose and would be noisy on a short subject
+// line -- a spurious non-English boost on a two-word subject is exactly
+// the sort of false positive that gets a scanner switched off.
+func (s *Scanner) ScanWithMetadata(content []byte, contentType string, metadata []string) (engine.ScanResult, error) {
 	pp := engine.Preprocess(content, contentType)
 	signals, err := engine.ScanContent(bytes.NewReader(pp.Normalized), s.matchers, s.detectors)
 	if err != nil {
@@ -75,6 +97,12 @@ func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, e
 		}
 		signals = appendDeduped(signals, extraSignals)
 	}
+	if metaSignals, err := s.scanMetadata(metadata); err != nil {
+		return engine.ScanResult{}, err
+	} else {
+		signals = appendDeduped(signals, metaSignals)
+	}
+
 	// Separate boost signals (weight_booster rules) from scored signals, matching
 	// deliverResult (main.go): a boost signal contributes its multiplier only,
 	// NOT its own weight, to the total. Replicate the separation so a future
@@ -188,4 +216,36 @@ func appendDeduped(dst, src []engine.Signal) []engine.Signal {
 		}
 	}
 	return dst
+}
+
+// scanMetadata runs the matchers over the item's metadata fields. The
+// fields are joined and pushed through the same Preprocess pipeline as
+// content, so a Subject carrying homoglyphs, invisible characters or an
+// encoded payload is caught by the same hardening.
+func (s *Scanner) scanMetadata(fields []string) ([]engine.Signal, error) {
+	var present []string
+	for _, f := range fields {
+		if strings.TrimSpace(f) != "" {
+			present = append(present, f)
+		}
+	}
+	if len(present) == 0 {
+		return nil, nil
+	}
+
+	joined := []byte(strings.Join(present, "\n"))
+	pp := engine.Preprocess(joined, "text/plain")
+
+	var signals []engine.Signal
+	for _, view := range [][]byte{pp.Normalized, pp.Folded, pp.Decoded} {
+		if view == nil {
+			continue
+		}
+		viewSignals, err := engine.ScanContent(bytes.NewReader(view), s.matchers, nil)
+		if err != nil {
+			return nil, fmt.Errorf("scan metadata: %w", err)
+		}
+		signals = appendDeduped(signals, viewSignals)
+	}
+	return signals, nil
 }
