@@ -84,6 +84,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     test. Ordinary ASCII content still costs exactly one pass, since each extra
     buffer is nil unless it would differ.
 
+- **SSRF in connector link-fetching: pin the resolved address and re-check
+  redirects**: `LinkPolicy.Check` resolved a hostname and rejected private
+  addresses, then handed the URL to a stock `http.Client` that resolved it
+  again at dial time and followed redirects with no re-check. Three ways
+  through, all closed here:
+  - **DNS rebinding.** The address that was checked was not the address that
+    was connected to. A host that answers public at check time and private a
+    moment later passed. `connector.NewGuardedHTTPClient` now resolves once
+    and dials the validated IP literal, so no second resolution can
+    substitute an answer. TLS is unaffected -- the certificate is still
+    verified against the hostname from the URL, not the dial address.
+  - **Redirects.** A public URL could `302` straight to
+    `169.254.169.254/latest/meta-data/`, and the body came back as "linked
+    page" content. Every hop is now re-validated against the same policy that
+    admitted the original URL, and the chain is capped (default 5).
+  - **Fail-open on lookup error.** `Check` treated a DNS failure as "found no
+    private IPs" and returned allowed. It now denies. Note for operators: a
+    connector running without working DNS will stop fetching content links
+    rather than fetching them unchecked.
+  The blocked set also grew beyond the original eight CIDRs to cover
+  carrier-grade NAT (`100.64.0.0/10`, which overlay networks route to real
+  hosts), the IETF test/benchmark ranges, NAT64, multicast, unspecified
+  addresses, and IPv4-mapped IPv6 (`::ffff:127.0.0.1`), which previously
+  reached the IPv4 checks only incidentally.
+
+  The guard applies to **content-derived** URLs only. Operator-configured
+  feed and API endpoints keep the plain client, so a self-hosted feed or a
+  GitLab on a private network still works. The RSS connector fails closed if
+  the guarded client is missing rather than falling back to the unguarded
+  one.
+
+
 ### Added
 
 - **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
