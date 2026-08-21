@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ruleset provenance, digest pinning and a reachability check**: the rules
+  file is the single place where every boundary in the service is defined, and
+  it arrives as a mounted ConfigMap -- so whoever can edit it can weaken all of
+  them at once, most simply by raising `quarantine_threshold` past anything the
+  rules can score. The change left no trace: the daemon logged a rule count and
+  carried on.
+  - Startup now records the enforced ruleset to `audit/ruleset.jsonl` -- SHA-256
+    of the file as read, rule count, threshold, and the maximum achievable score
+    -- in the same append-only place as the verdicts, since a verdict is only
+    interpretable against the rules that produced it.
+  - `rules_sha256` optionally pins the expected digest. When set, a file that
+    does not match refuses the start, turning an unreviewed ConfigMap edit into
+    a failed boot rather than a silently permissive scanner. Unpinned remains
+    the default.
+  - A threshold no combination of rules can reach means nothing can ever be
+    quarantined. That is now computed, logged as a warning at startup, and
+    recorded on the audit entry. It is deliberately **not** fatal: refusing to
+    boot on a config that previously started would be a breaking change, and
+    the goal here is to make the condition visible and attributable.
+  - `audit/ruleset.jsonl` joins the backup-critical artifacts in spec 04 §12.1.
+
+
 ### Security
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the

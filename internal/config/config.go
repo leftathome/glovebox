@@ -102,8 +102,17 @@ type Config struct {
 	WatchMode           string   `json:"watch_mode"`
 	PollIntervalSeconds int      `json:"poll_interval_seconds"`
 	RulesFile           string   `json:"rules_file"`
-	ScanWorkers         int      `json:"scan_workers"`
-	ScanTimeoutSeconds  int      `json:"scan_timeout_seconds"`
+	// RulesSHA256 optionally pins the expected digest of RulesFile. When
+	// set, the daemon refuses to start if the file on disk does not match.
+	//
+	// The rules file arrives as a mounted ConfigMap, and every boundary in
+	// the service is defined there: whoever can edit it can weaken all of
+	// them at once. Pinning the digest (from Git, via GitOps) turns an
+	// unreviewed edit into a failed start instead of a silently permissive
+	// scanner. Empty means unpinned, which stays the default.
+	RulesSHA256        string `json:"rules_sha256"`
+	ScanWorkers        int    `json:"scan_workers"`
+	ScanTimeoutSeconds int    `json:"scan_timeout_seconds"`
 	// DeliveryTimeoutSeconds bounds a single result delivery (file move +
 	// audit write). It prevents a wedged file op on a networked staging mount
 	// from stalling the lone result-consumer goroutine and deadlocking the
