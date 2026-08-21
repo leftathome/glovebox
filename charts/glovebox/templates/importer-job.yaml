@@ -31,10 +31,16 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      {{- with (include "glovebox.runtimeClassName" (dict "workload" $importer "root" $)) }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
         fsGroup: 65534
+        {{- with (include "glovebox.seccompProfile" $) }}
+        {{- . | nindent 8 }}
+        {{- end }}
       containers:
         - name: {{ $name }}
           image: "{{ $importer.image.repository }}:{{ $importer.image.tag }}"
