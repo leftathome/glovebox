@@ -28,6 +28,15 @@ data:
       "ingest": {
         "enabled": {{ .Values.config.ingest.enabled }},
         "port": {{ .Values.config.ingest.port | int }},
+        {{- /*
+          Emitted only when the bearer endpoints are split onto their own
+          port, so an install that has not opted in renders a
+          byte-identical ConfigMap (and therefore no checksum-driven pod
+          restart on upgrade).
+        */}}
+        {{- if include "glovebox.bearerPortSplit" . }}
+        "bearer_port": {{ include "glovebox.bearerPort" . }},
+        {{- end }}
         "max_body_bytes": {{ .Values.config.ingest.maxBodyBytes | int }},
         "max_metadata_bytes": {{ .Values.config.ingest.maxMetadataBytes | int }},
         "backpressure_threshold": {{ .Values.config.ingest.backpressureThreshold | int }},

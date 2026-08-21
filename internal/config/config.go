@@ -11,8 +11,24 @@ import (
 )
 
 type IngestConfig struct {
-	Enabled               bool  `json:"enabled"`
-	Port                  int   `json:"port"`
+	Enabled bool `json:"enabled"`
+	// Port carries the plaintext connector intake, POST /v1/ingest.
+	Port int `json:"port"`
+	// BearerPort carries the bearer-authenticated surface --
+	// /v1/archives* (spec 13) and /v1/sanitize (glovebox-t6fz).
+	//
+	// 0 (the default) means "share Port", which is what every install
+	// before this field did: one plaintext listener carrying all three
+	// route families. Setting it to a distinct port opens a second
+	// listener for the bearer endpoints and leaves Port carrying only
+	// /v1/ingest, which is what lets the recognizer namespace be granted
+	// the archive endpoint WITHOUT also being handed unauthenticated
+	// /v1/ingest (security review P0-7).
+	//
+	// Either way the bearer listener's lifecycle is independent of
+	// TLS.Mode: those endpoints authenticate themselves and must not go
+	// dark because the connector transport moved to mTLS.
+	BearerPort            int   `json:"bearer_port"`
 	MaxBodyBytes          int64 `json:"max_body_bytes"`
 	MaxMetadataBytes      int64 `json:"max_metadata_bytes"`
 	BackpressureThreshold int   `json:"backpressure_threshold"`
@@ -27,6 +43,32 @@ type IngestConfig struct {
 	// TLS configures mutual TLS on /v1/ingest. Opt-in and staged: see
 	// IngestTLSConfig.
 	TLS IngestTLSConfig `json:"tls"`
+}
+
+// EffectiveBearerPort resolves the port the bearer-authenticated
+// endpoints (/v1/archives*, /v1/sanitize) listen on. Unset means they
+// share the connector ingest port, which is the pre-existing layout.
+func (c IngestConfig) EffectiveBearerPort() int {
+	if c.BearerPort == 0 {
+		return c.Port
+	}
+	return c.BearerPort
+}
+
+// BearerSplit reports whether the bearer-authenticated endpoints get a
+// listener of their own rather than sharing the /v1/ingest port.
+func (c IngestConfig) BearerSplit() bool {
+	return c.BearerPort != 0 && c.BearerPort != c.Port
+}
+
+// BearerRoutesEnabled reports whether anything is mounted on the bearer
+// surface at all. Both /v1/archives* and /v1/sanitize are gated on
+// ingest.auth.enabled (archives additionally on ingest.archives.enabled,
+// and Validate already refuses archives without auth), so auth is the
+// single switch that decides whether the listener has any reason to
+// exist.
+func (c IngestConfig) BearerRoutesEnabled() bool {
+	return c.Auth.Enabled
 }
 
 // IngestTLSConfig configures mutual TLS for the connector ingest path.
@@ -395,6 +437,9 @@ func (c *Config) Validate() error {
 	if err := c.Ingest.TLS.validate(c.Ingest.Port); err != nil {
 		return err
 	}
+	if err := c.Ingest.validateBearerPort(); err != nil {
+		return err
+	}
 	if c.Ingest.Archives.Enabled {
 		// Archive listener depends on bearer-token auth; refusing here is
 		// friendlier than the listener mounting the 503 fallback at boot.
@@ -404,6 +449,25 @@ func (c *Config) Validate() error {
 		if err := c.Ingest.Archives.validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateBearerPort checks the bearer listener cannot collide with
+// another listener in the same process. It runs AFTER TLS.validate, which
+// is where TLS.Port picks up its Port+1 default.
+func (c IngestConfig) validateBearerPort() error {
+	if c.BearerPort < 0 {
+		return fmt.Errorf("ingest.bearer_port must be > 0 when set, got %d", c.BearerPort)
+	}
+	if !c.BearerRoutesEnabled() {
+		// Nothing is mounted on the bearer surface, so no listener is
+		// opened and no port can collide.
+		return nil
+	}
+	if c.TLS.Active() && c.EffectiveBearerPort() == c.TLS.Port {
+		return fmt.Errorf("ingest.bearer_port %d collides with ingest.tls.port: /v1/archives and /v1/sanitize need a plaintext listener of their own in every tls mode",
+			c.EffectiveBearerPort())
 	}
 	return nil
 }

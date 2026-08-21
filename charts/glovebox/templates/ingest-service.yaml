@@ -9,10 +9,18 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    {{- if include "glovebox.ingestPortServed" . }}
     - port: {{ .Values.config.ingest.port }}
       targetPort: ingest
       protocol: TCP
       name: ingest
+    {{- end }}
+    {{- if include "glovebox.bearerPortServed" . }}
+    - port: {{ include "glovebox.bearerPort" . }}
+      targetPort: ingest-bearer
+      protocol: TCP
+      name: ingest-bearer
+    {{- end }}
     {{- if ne .Values.ingest.tls.mode "disabled" }}
     - port: {{ .Values.ingest.tls.port }}
       targetPort: ingest-tls

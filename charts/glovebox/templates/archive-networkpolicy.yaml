@@ -1,8 +1,17 @@
 {{- if .Values.ingest.archives.enabled }}
-# Grants the recognizer namespace TCP/9091 ingress to the glovebox scanner
-# pods so it can drive the /v1/archives tus.io upload endpoint (spec 13 §8.1).
-# Future archive-delivery clients (workstation mbox importer, friend imports)
-# will need their own ingress rules; not in scope here.
+# Grants the recognizer namespace ingress to the port serving the
+# /v1/archives tus.io upload endpoint (spec 13 §8.1) on the glovebox
+# scanner pods. Future archive-delivery clients (workstation mbox importer,
+# friend imports) will need their own ingress rules; not in scope here.
+#
+# The port is config.ingest.bearerPort when the bearer-authenticated
+# endpoints have been split onto their own listener, and config.ingest.port
+# otherwise. It used to be the literal 9091, which both ignored a changed
+# config.ingest.port and -- because /v1/ingest shares the default port --
+# handed the recognizer namespace unauthenticated connector intake along
+# with the archive endpoint (security review P0-7). Splitting the port is
+# what closes that; until an operator does, this rule still reaches
+# /v1/ingest and the comment should not pretend otherwise.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,5 +37,5 @@ spec:
               name: {{ .Values.ingest.archives.networkPolicy.recognizerNamespaceLabel }}
       ports:
         - protocol: TCP
-          port: 9091
+          port: {{ include "glovebox.bearerPort" . }}
 {{- end }}

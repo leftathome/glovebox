@@ -66,9 +66,16 @@ spec:
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
             {{- if .Values.config.ingest.enabled }}
+            {{- if include "glovebox.ingestPortServed" . }}
             - name: ingest
               containerPort: {{ .Values.config.ingest.port }}
               protocol: TCP
+            {{- end }}
+            {{- if include "glovebox.bearerPortServed" . }}
+            - name: ingest-bearer
+              containerPort: {{ include "glovebox.bearerPort" . }}
+              protocol: TCP
+            {{- end }}
             {{- if ne .Values.ingest.tls.mode "disabled" }}
             - name: ingest-tls
               containerPort: {{ .Values.ingest.tls.port }}
@@ -86,9 +93,20 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 30
           {{- if .Values.config.ingest.enabled }}
+          {{- /*
+            Probe a port the process actually binds. Under
+            ingest.tls.mode=required the plaintext /v1/ingest listener is
+            never opened, so a tcpSocket probe on `ingest` could only ever
+            be answered by a bearer listener that happens to share the
+            port -- and was answered by nothing at all when the bearer
+            endpoints were off, killing the pod after failureThreshold.
+            The mTLS listener is the one that is always up in that mode; a
+            tcpSocket probe completes the TCP handshake and never speaks
+            TLS, so it needs no client certificate.
+          */}}
           startupProbe:
             tcpSocket:
-              port: ingest
+              port: {{ if eq .Values.ingest.tls.mode "required" }}ingest-tls{{ else }}ingest{{ end }}
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 12

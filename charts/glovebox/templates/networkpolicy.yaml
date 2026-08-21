@@ -22,13 +22,26 @@ spec:
             matchLabels:
               app.kubernetes.io/component: connector
       ports:
+        {{- if include "glovebox.ingestPortServed" . }}
         - port: {{ .Values.config.ingest.port }}
           protocol: TCP
+        {{- end }}
+        {{- /*
+          Bearer-authenticated endpoints on their own listener. Connector
+          pods could reach /v1/sanitize when it shared the ingest port, so
+          splitting the port must not silently revoke that.
+        */}}
+        {{- if include "glovebox.bearerPortServed" . }}
+        - port: {{ include "glovebox.bearerPort" . }}
+          protocol: TCP
+        {{- end }}
         {{- if ne .Values.ingest.tls.mode "disabled" }}
         # mTLS listener. Kept alongside the plaintext port rather than
         # replacing it, because permissive mode serves both while
-        # connectors migrate; under required the plaintext listener is
-        # simply never opened, so the rule admits a closed port.
+        # connectors migrate. Under required nothing serves /v1/ingest in
+        # plaintext: the port above is admitted only while the bearer
+        # endpoints still share it, and is not rendered at all once they
+        # move to config.ingest.bearerPort.
         - port: {{ .Values.ingest.tls.port }}
           protocol: TCP
         {{- end }}
