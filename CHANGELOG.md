@@ -337,6 +337,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+- **The install path documented a project two years and 14 connectors out of
+  date**: the README advertised "First-party connectors for IMAP and RSS (Round
+  1)", told readers to build "all 10" from a hand-listed loop, pointed at
+  `docs/connector-guide.md` "(coming soon)" when that guide has existed for
+  some time, and both it and `docs/deployment.md` installed the chart with
+  `--version 0.2.0` when the chart is at 0.7.0. `docs/deployment.md`'s
+  published-image table named 10 of the 28 images actually built, and said the
+  chart "supports all 10 connectors" when it covers 24 plus 3 importers.
+  - The image table is now generated (`scripts/build-targets.sh
+    images-markdown`) between markers, and `build-targets.sh check-docs` fails
+    CI when it drifts from what is built -- the documentation half of the same
+    single-source-of-truth fix.
+  - The README's build-from-source loop now reads the same list rather than
+    naming ten connectors, so it stays correct as connectors are added. The
+    binaries it produces are gitignored, which they were not: following the old
+    README left ten untracked files behind, and following the new one would
+    have left 28.
+  - Key features gained the three capabilities the page had never mentioned:
+    the `/v1/ingest` intake with resumable archive uploads, the `/v1/sanitize`
+    synchronous gate, and pre-scan content enrichment. "Notification
+    placeholders" now says what quarantine actually writes.
+
 - **Release archives shipped 10 of 24 connectors and no importers at all**:
   three hand-written lists decided what this repository builds -- `ci.yml`'s
   binary loop, `ci.yml`'s container matrix and `release.yml`'s archive loop --
