@@ -14,6 +14,8 @@
 #   scripts/build-targets.sh images        # <image-name>TAB<dockerfile>
 #   scripts/build-targets.sh images-json   # the same, as a GH Actions matrix
 #   scripts/build-targets.sh check         # every component is accounted for
+#   scripts/build-targets.sh check-docs    # the doc table matches the build
+#   scripts/build-targets.sh images-markdown  # the published-image doc table
 #
 # Naming follows what the repository already publishes: the root module is
 # `glovebox`, connectors build `<name>-connector` binaries into
@@ -67,6 +69,23 @@ images() {
 	done | sort
 }
 
+# images_markdown renders the table docs/deployment.md publishes, so the
+# documented image list cannot fall behind the built one the way the
+# hand-written table did (it named 10 of 28 components). The component
+# directory doubles as the row label: it is the component's real identity
+# and tells a reader where the source lives, and unlike a prose name
+# ("Google Calendar connector") it cannot be derived wrongly.
+images_markdown() {
+	printf '| Component | Registry path |\n'
+	printf '|-----------|---------------|\n'
+	images | while IFS=$'\t' read -r image dockerfile; do
+		local component=${dockerfile#./}
+		component=${component%/Dockerfile}
+		[ "$component" != "Dockerfile" ] || component="." # the scanner itself
+		printf '| `%s` | `%s/%s` |\n' "$component" "ghcr.io/leftathome" "$image"
+	done
+}
+
 images_json() {
 	images | awk -F'\t' '
 		BEGIN { printf "[" }
@@ -110,13 +129,32 @@ check() {
 	echo "build-targets.sh: $(printf '%s\n' "$binary_targets" | wc -l) binaries, $(printf '%s\n' "$image_targets" | wc -l) images, every component accounted for."
 }
 
+# check_docs holds docs/deployment.md's published-image table to the same
+# standard as the build: the table it replaced had named 10 of 28
+# components, which is the documentation half of the same drift.
+check_docs() {
+	local doc=docs/deployment.md
+	local documented generated
+	documented=$(awk '/<!-- BEGIN generated: published-images -->/{f=1; next} /<!-- END generated: published-images -->/{f=0} f' "$doc")
+	generated=$(images_markdown)
+	if [ "$documented" != "$generated" ]; then
+		echo "ERROR: the published-images table in $doc is stale." >&2
+		echo "Run 'scripts/build-targets.sh images-markdown' and replace the block between the generated markers." >&2
+		diff <(printf '%s\n' "$documented") <(printf '%s\n' "$generated") >&2 || true
+		return 1
+	fi
+	echo "$doc published-images table matches the built image set."
+}
+
 case "${1-}" in
 binaries) binaries ;;
 images) images ;;
 images-json) images_json ;;
+images-markdown) images_markdown ;;
 check) check ;;
+check-docs) check_docs ;;
 *)
-	echo "usage: $0 {binaries|images|images-json|check}" >&2
+	echo "usage: $0 {binaries|images|images-json|images-markdown|check|check-docs}" >&2
 	exit 2
 	;;
 esac

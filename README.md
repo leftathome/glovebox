@@ -45,12 +45,18 @@ only need to implement the fetch logic for their data source.
 - Weighted scoring with configurable quarantine threshold
 - Connector framework library with poll, watch, and listen execution modes
 - Atomic handoff protocol -- connectors write to staging; glovebox picks up
-- First-party connectors for IMAP and RSS (Round 1)
+- 24 first-party connectors and 3 bulk importers, all built from one framework
 - Scaffold generator for creating new connectors from templates
 - OpenTelemetry metrics with Prometheus exporter (`/metrics`)
 - Append-only JSONL audit log for all scan verdicts
-- Quarantine with notification placeholders for human review
+- Quarantine with a JSON notification per item for a human (or a review agent) to triage
 - Parallel scan workers with per-item timeout (quarantine on expiry)
+- `/v1/ingest` HTTP intake for connectors that push rather than share a volume,
+  including resumable archive uploads
+- `/v1/sanitize` synchronous gate for callers that need a verdict inline rather
+  than a delivery (see `docs/sanitize-gate.md`)
+- Content enrichment (PDF, OCR, office documents) before the scan, so a payload
+  inside an attachment is scanned as text rather than passed through as bytes
 
 ## Quickstart
 
@@ -168,14 +174,14 @@ Published to GitHub Container Registry for linux/amd64 and linux/arm64:
 docker pull ghcr.io/leftathome/glovebox:latest
 docker pull ghcr.io/leftathome/glovebox-rss:latest
 docker pull ghcr.io/leftathome/glovebox-imap:latest
-# Also: glovebox-github, glovebox-gitlab, glovebox-jira, glovebox-trello,
-#        glovebox-linkedin, glovebox-meta, glovebox-bluesky, glovebox-x
+# One image per connector and importer; docs/deployment.md section 1 has the
+# full generated list.
 ```
 
 ### Helm chart
 
 ```sh
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.7.0
 ```
 
 See `docs/deployment.md` for full Kubernetes deployment instructions including
@@ -184,12 +190,13 @@ connector configuration via `values.yaml`.
 ### Building from source
 
 ```sh
-# Glovebox scanner
+# Just the scanner
 go build -o glovebox .
 
-# Connectors (all 10)
-for c in rss imap github gitlab jira trello linkedin meta bluesky x; do
-  go build -o "${c}-connector" "./connectors/${c}/"
+# Or every component -- scanner, connectors, importers -- from the same list
+# CI and releases build
+scripts/build-targets.sh binaries | while IFS=$'\t' read -r name target; do
+  go build -o "$name" "$target"
 done
 
 # Docker images
@@ -214,7 +221,7 @@ Dockerfile, and README. Implement the `Connector` interface (a single `Poll`
 method) and the framework handles staging writes, checkpointing, health
 endpoints, and metrics.
 
-See `docs/connector-guide.md` (coming soon) for the full walkthrough.
+See [`docs/connector-guide.md`](docs/connector-guide.md) for the full walkthrough.
 
 ## License
 

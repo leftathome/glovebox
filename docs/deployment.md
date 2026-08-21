@@ -32,26 +32,49 @@ its connectors.
   +-----------+
 ```
 
-Container images are published to GitHub Container Registry:
+Container images are published to GitHub Container Registry, one per
+component. This table is generated -- run `scripts/build-targets.sh
+images-markdown` and paste; CI fails if it drifts from what is built.
 
-| Image | Registry path |
-|-------|---------------|
-| Glovebox | `ghcr.io/leftathome/glovebox` |
-| RSS connector | `ghcr.io/leftathome/glovebox-rss` |
-| IMAP connector | `ghcr.io/leftathome/glovebox-imap` |
-| GitHub connector | `ghcr.io/leftathome/glovebox-github` |
-| GitLab connector | `ghcr.io/leftathome/glovebox-gitlab` |
-| Jira connector | `ghcr.io/leftathome/glovebox-jira` |
-| Trello connector | `ghcr.io/leftathome/glovebox-trello` |
-| LinkedIn connector | `ghcr.io/leftathome/glovebox-linkedin` |
-| Meta connector | `ghcr.io/leftathome/glovebox-meta` |
-| Bluesky connector | `ghcr.io/leftathome/glovebox-bluesky` |
-| X connector | `ghcr.io/leftathome/glovebox-x` |
-| Helm chart | `oci://ghcr.io/leftathome/charts/glovebox` |
+<!-- BEGIN generated: published-images -->
+| Component | Registry path |
+|-----------|---------------|
+| `.` | `ghcr.io/leftathome/glovebox` |
+| `importers/apple` | `ghcr.io/leftathome/glovebox-apple-importer` |
+| `connectors/arxiv` | `ghcr.io/leftathome/glovebox-arxiv` |
+| `connectors/bluesky` | `ghcr.io/leftathome/glovebox-bluesky` |
+| `connectors/gcalendar` | `ghcr.io/leftathome/glovebox-gcalendar` |
+| `connectors/gdrive` | `ghcr.io/leftathome/glovebox-gdrive` |
+| `connectors/github` | `ghcr.io/leftathome/glovebox-github` |
+| `connectors/gitlab` | `ghcr.io/leftathome/glovebox-gitlab` |
+| `connectors/gmail` | `ghcr.io/leftathome/glovebox-gmail` |
+| `connectors/hackernews` | `ghcr.io/leftathome/glovebox-hackernews` |
+| `connectors/imap` | `ghcr.io/leftathome/glovebox-imap` |
+| `connectors/jira` | `ghcr.io/leftathome/glovebox-jira` |
+| `connectors/linkedin` | `ghcr.io/leftathome/glovebox-linkedin` |
+| `importers/mbox` | `ghcr.io/leftathome/glovebox-mbox-importer` |
+| `connectors/meta` | `ghcr.io/leftathome/glovebox-meta` |
+| `connectors/notion` | `ghcr.io/leftathome/glovebox-notion` |
+| `connectors/onedrive` | `ghcr.io/leftathome/glovebox-onedrive` |
+| `connectors/outlook` | `ghcr.io/leftathome/glovebox-outlook` |
+| `connectors/rss` | `ghcr.io/leftathome/glovebox-rss` |
+| `connectors/schoology` | `ghcr.io/leftathome/glovebox-schoology` |
+| `connectors/schoology-auth-refresher` | `ghcr.io/leftathome/glovebox-schoology-auth-refresher` |
+| `connectors/semantic-scholar` | `ghcr.io/leftathome/glovebox-semantic-scholar` |
+| `connectors/steam` | `ghcr.io/leftathome/glovebox-steam` |
+| `connectors/teams` | `ghcr.io/leftathome/glovebox-teams` |
+| `connectors/trello` | `ghcr.io/leftathome/glovebox-trello` |
+| `importers/walhelm` | `ghcr.io/leftathome/glovebox-walhelm-importer` |
+| `connectors/x` | `ghcr.io/leftathome/glovebox-x` |
+| `connectors/youtube` | `ghcr.io/leftathome/glovebox-youtube` |
+<!-- END generated: published-images -->
+
+The Helm chart is published alongside them at
+`oci://ghcr.io/leftathome/charts/glovebox`.
 
 All images are multi-arch (linux/amd64 + linux/arm64) with SBOMs and SLSA
 provenance attestations. Tagged `latest` (from main) plus semver tags
-(`v0.2.0`, `v0.2`) on release. Binaries available from
+(`v0.7.0`, `v0.7`) on release. Binaries available from
 [GitHub Releases](https://github.com/leftathome/glovebox/releases).
 
 ---
@@ -291,19 +314,22 @@ OCI artifact:
 
 ```sh
 # Install with default values (glovebox only, no connectors enabled)
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.7.0
 
 # Install with RSS connector enabled
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.7.0 \
   --set connectors.rss.enabled=true
 
 # Install with custom values file
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.2.0 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.7.0 \
   -f my-values.yaml -n glovebox --create-namespace
 ```
 
-The chart supports all 10 connectors, toggled via `values.yaml`. Each connector
-gets its own Deployment, ConfigMap, Service, and state PVC. See the chart's
+The chart covers all 24 connectors and 3 importers, toggled via `values.yaml`.
+22 connectors live under the generic `connectors:` map; schoology and its auth
+refresher have their own `schoologyConnector:` and `schoologyAuthRefresher:`
+blocks because they need a trigger token and a scheduled browser job. Each
+enabled connector gets its own Deployment, ConfigMap, Service, and state PVC. See the chart's
 `values.yaml` for the full configuration reference.
 
 The following section covers manual Kubernetes deployment for operators who

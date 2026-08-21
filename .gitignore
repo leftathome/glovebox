@@ -21,3 +21,10 @@ docs/specs/03-*.md
 /hackernews
 /trello
 /mbox
+
+# Binaries from the README's "Building from source" loop, which now builds
+# every component (28 of them) rather than a hand-listed ten. Anchored to the
+# repo root for the same reason as the entries above.
+/glovebox
+/*-connector
+/*-importer

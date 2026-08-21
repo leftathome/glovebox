@@ -70,6 +70,12 @@ jobs:
       - name: Check every component is a build target
         run: ./scripts/build-targets.sh check
 
+      # The published-image table in docs/deployment.md is generated from the
+      # same list. Documentation drift is how the table came to name 10 of 28
+      # components in the first place.
+      - name: Check the documented image list is current
+        run: ./scripts/build-targets.sh check-docs
+
       - name: Vet
         run: go vet ./...
 
