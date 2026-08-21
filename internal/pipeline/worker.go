@@ -97,7 +97,15 @@ func (p *WorkerPool) scan(ctx context.Context, req ScanRequest) ScanResponse {
 			return
 		}
 
-		res, err := p.scanner.Scan(rawContent, req.Item.Metadata.ContentType)
+		// Metadata travels with the item into the agent inbox on PASS and
+		// into the quarantine notification, so it is scanned alongside the
+		// content rather than trusted.
+		meta := req.Item.Metadata
+		res, err := p.scanner.ScanWithMetadata(rawContent, meta.ContentType, []string{
+			meta.Subject,
+			meta.Sender,
+			meta.Source,
+		})
 		if err != nil {
 			done <- ScanResponse{Item: req.Item, Err: err, Duration: time.Since(start)}
 			return

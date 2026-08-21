@@ -110,6 +110,10 @@ type HandlerConfig struct {
 	// (fail-closed) to it. Nil disables the lane (and rejects the scanner
 	// media type). Loaded at boot from config.SourcesFile by the listener.
 	Sources *source.Registry
+
+	// ExtractScanner scans the scanner lane's extracted text before it is
+	// published. Threaded into FinalizeConfig; see writeExtractedMarkdown.
+	ExtractScanner ExtractScanner
 }
 
 // QuotaProvider is the seam C3 fills in with the real storage measurer
@@ -922,7 +926,11 @@ func (h *Handler) finalizeAndRespond(w http.ResponseWriter, r *http.Request, st 
 	mediaType := st.Meta.MediaType
 	duration := time.Since(st.CreatedAt)
 
-	_, err := Finalize(ctx, st, FinalizeConfig{StagingRoot: h.cfg.StagingRoot, Sources: h.cfg.Sources})
+	_, err := Finalize(ctx, st, FinalizeConfig{
+		StagingRoot:    h.cfg.StagingRoot,
+		Sources:        h.cfg.Sources,
+		ExtractScanner: h.cfg.ExtractScanner,
+	})
 	if err != nil {
 		status, code := h.recordFinalizeFailure(ctx, st, sourceID, uploadID, mediaType, err)
 		// Decrement in-flight gauge on every terminal failure path.

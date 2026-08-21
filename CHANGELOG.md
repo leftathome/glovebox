@@ -7,7 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Mutual TLS for `/v1/ingest`, with verified peer identity (spec 08 §3.10)**:
+  the connector ingest endpoint was unauthenticated, gated only by a
+  NetworkPolicy `podSelector`. A label is not an identity -- any workload that
+  can set it reaches the port -- so the handler took `metadata.source`,
+  `identity.provider` and `destination_agent` on faith. A compromised
+  connector (they all hold external credentials and parse hostile content)
+  could stamp another connector's provenance onto an item, route it to any
+  allowlisted agent, and have the audit log record the lie. Traffic was also
+  plaintext, which under spec 15 includes health data.
+  - Client certificates carry a SPIFFE URI SAN
+    (`spiffe://glovebox/connector/<name>`); identity comes from the URI SAN
+    rather than the Common Name, which is free text with no uniqueness
+    guarantee. A certificate naming a foreign trust domain is refused even if
+    it chains to the configured CA.
+  - **`metadata.source` must match the authenticated identity.** This is the
+    point of the work -- encryption alone would have left the endpoint
+    credulous. Enforcement defaults **on** whenever mTLS is active. A spoofed
+    source returns 403 and the item is never staged.
+  - **`disabled` / `permissive` / `required`** modes migrate without a flag
+    day: permissive serves both listeners while connectors move one at a time
+    (watch the `transport` label on `glovebox_items_received_total` drain to
+    zero), required opens only the mTLS listener so no path remains that skips
+    peer identity.
+  - Server and connector both **re-read their keypair when it changes on
+    disk**, so cert-manager can rotate 24h certificates without restarting
+    anything; a failed reload keeps the last good keypair rather than dropping
+    every handshake mid-rotation.
+  - Connectors opt in with three environment variables read by the framework,
+    so all 24 inherit it with no per-connector code. A partial configuration is
+    an **error**, not a silent fall back to plaintext -- a fallback would keep
+    the connector working while quietly undoing the control.
+  - TLS 1.3 floor and `RequireAndVerifyClientCert`; everything that talks to
+    this endpoint is a Go client we ship, so there is no legacy peer to
+    accommodate and no downgrade surface worth keeping.
+  - Off by default (`ingest.tls.mode: disabled`); existing deployments are
+    unaffected until they opt in. See `docs/ingest-mtls.md`.
+
+
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
 ### Security
+
+- **Scan the two channels that routed around the engine**: the engine scanned
+  `content.raw` and nothing else, so two paths delivered attacker-controlled
+  text to an agent without ever passing the detection engine.
+  - **Item metadata.** `routing.RoutePass` copies `metadata.json` verbatim into
+    the agent inbox, and the quarantine notification summarises it for the
+    review agent -- but `subject`, `sender` and `source` were never scanned. An
+    injection written entirely into a Subject line scored **0.00**, passed, and
+    arrived at the agent intact: the whole engine bypassed by putting the
+    payload in a field nobody looked at. `Scanner.ScanWithMetadata` now matches
+    those fields alongside the content, through the same pre-processing, so
+    homoglyph, invisible-character and encoded subjects are caught too.
+    Metadata is *matched*, not *detected* -- the custom detectors are tuned for
+    prose, and a spurious non-English boost on a two-word subject is exactly
+    the false positive that gets a scanner switched off. `Scan` keeps its
+    content-only signature for the `/v1/sanitize` gate.
+  - **Recognizer-scan extracted text.** The scanner lane rendered
+    `tree/ocr.txt` into `content.extracted.md` for the operator agent to index
+    and recall, without scanning it -- OCR text off a physical document an
+    attacker can print, post or mail. It is now scanned before publication: a
+    quarantine verdict **withholds the body** (recording the score, the firing
+    signals, and a pointer to the unmodified `tree/ocr.txt` for human review)
+    rather than reproducing the payload in the document the agent indexes. A
+    finalize with no scanner configured fails closed (`ErrExtractUnscanned`)
+    instead of publishing unscanned text.
+  - Quarantine notifications additionally **inert** `source`/`sender`/`subject`
+    (non-ASCII escaped, newlines collapsed, truncated), the treatment
+    `content.sanitized` already got: the agent reading that file is
+    summarising an item already suspected hostile.
 
 - **Vault TLS verification is on by default (`ingest.auth.vault.tlsSkipVerify`)**:
   the chart shipped `tlsSkipVerify: true`, so every default install accepted a
@@ -94,27 +183,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitLab on a private network still works. The RSS connector fails closed if
   the guarded client is missing rather than falling back to the unguarded
   one.
-
-### Added
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
 
 ### Fixed
 

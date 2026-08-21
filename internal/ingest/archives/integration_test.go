@@ -1051,6 +1051,7 @@ func setupScannerIntegServer(t *testing.T) (*integTestServer, string) {
 		TmpExpiry:        72 * time.Hour,
 		PatchIdleTimeout: 5 * time.Minute,
 		Sources:          reg,
+		ExtractScanner:   passExtractScanner{},
 	})
 
 	mux := http.NewServeMux()
