@@ -7,12 +7,13 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege at the top level: the `test` and `security` jobs execute
+# code from pull requests, and they only need to read the repo. The tokens
+# that can publish (packages/id-token/attestations) are granted per job to
+# the ones that actually push images, charts or provenance -- all of which
+# are already gated on `github.event_name == 'push'`.
 permissions:
   contents: read
-  packages: write
-  checks: write
-  id-token: write
-  attestations: write
 
 env:
   REGISTRY: ghcr.io
@@ -22,6 +23,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write # dorny/test-reporter publishes the junit check run
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -79,6 +83,10 @@ jobs:
   build-binaries:
     name: Build binaries (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # actions/attest-build-provenance
+      attestations: write
     needs: test
     strategy:
       matrix:
@@ -146,6 +154,11 @@ jobs:
   build-docker:
     name: Docker (${{ matrix.image }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push images to ghcr
+      id-token: write   # actions/attest-build-provenance
+      attestations: write
     # Several images here use ghcr.io/leftathome/glovebox-enricher-runtime:latest
     # as their runtime base (rebased connectors, mbox-importer, walhelm-importer).
     # Depend on build-enricher-runtime so we build against the freshly published
@@ -301,6 +314,11 @@ jobs:
     # to GHCR if the in-daemon test passed and this is a push event.
     name: Docker (glovebox-enricher-runtime)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push images to ghcr
+      id-token: write   # actions/attest-build-provenance
+      attestations: write
     needs: test
     steps:
       - name: Checkout
@@ -376,6 +394,11 @@ jobs:
     # --use-registry-images to exercise that path end-to-end.
     name: Docker (glovebox-smoke-enrichment)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push images to ghcr
+      id-token: write   # actions/attest-build-provenance
+      attestations: write
     needs: build-enricher-runtime
     steps:
       - name: Checkout
@@ -435,6 +458,9 @@ jobs:
   helm:
     name: Package and push Helm chart
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push the chart to ghcr
     needs: test
     if: github.event_name == 'push'
     steps:
@@ -470,6 +496,8 @@ jobs:
   security:
     name: Security scanning
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [test]
     steps:
       - name: Checkout

@@ -200,6 +200,12 @@ metrics:
     enabled: false    # create ServiceMonitor CRDs (requires prometheus-operator)
     interval: 30s
     labels: {}        # additional labels for ServiceMonitor (e.g., release: prometheus)
+  # When set, the NetworkPolicy restricts /metrics ingress to namespaces
+  # labelled `name: <this value>` (typically the monitoring namespace, e.g.
+  # "monitoring"). Left empty, metrics stay reachable from any pod -- which
+  # is the previous behaviour, kept as the default so an install without
+  # that namespace label does not lose its scraper on upgrade.
+  allowedNamespaceLabel: ""
 
 networkPolicy:
   enabled: true

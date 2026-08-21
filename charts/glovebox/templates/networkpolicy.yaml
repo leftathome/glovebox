@@ -25,10 +25,25 @@ spec:
         - port: {{ .Values.config.ingest.port }}
           protocol: TCP
     {{- end }}
-    # Metrics: unrestricted
+    # Metrics. /metrics exposes per-source and per-verdict counters and
+    # queue depths -- not content, but enough operational shape (which
+    # connectors are active, how often items quarantine) that it is not
+    # something every pod in the cluster needs to read. Restrict it to the
+    # monitoring namespace when one is named; leave it open otherwise so
+    # an install without that label keeps working.
+    {{- if .Values.metrics.allowedNamespaceLabel }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: {{ .Values.metrics.allowedNamespaceLabel }}
+      ports:
+        - port: {{ .Values.metrics.port }}
+          protocol: TCP
+    {{- else }}
     - ports:
         - port: {{ .Values.metrics.port }}
           protocol: TCP
+    {{- end }}
   egress: []
 ---
 apiVersion: networking.k8s.io/v1
