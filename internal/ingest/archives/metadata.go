@@ -196,6 +196,16 @@ func ParseUploadMetadata(header string, uploadLength int64) (*Metadata, error) {
 	if !archiveIDRe.MatchString(m.ArchiveID) {
 		return nil, fmt.Errorf("%w: archive_id", ErrMetadataInvalid)
 	}
+	// The archive_id character class admits "." and "..", which are joined
+	// onto the archive root a few frames later. No path separator is
+	// allowed, so today a dot-only id resolves back to the root and the
+	// pre-existing-target check happens to reject it -- but that makes an
+	// os.Stat the thing standing between a crafted id and the root, which
+	// is not where a traversal check belongs. archive_filename already
+	// rejects "..";  archive_id now refuses an all-dots value outright.
+	if strings.Trim(m.ArchiveID, ".") == "" {
+		return nil, fmt.Errorf("%w: archive_id must not consist only of dots", ErrMetadataInvalid)
+	}
 	if !archiveFilenameRe.MatchString(m.ArchiveFilename) ||
 		strings.Contains(m.ArchiveFilename, "..") ||
 		len(m.ArchiveFilename) > archiveFilenameMaxBytes {
