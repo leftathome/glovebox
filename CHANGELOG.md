@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Mutual TLS for `/v1/ingest`, with verified peer identity (spec 08 §3.10)**:
+  the connector ingest endpoint was unauthenticated, gated only by a
+  NetworkPolicy `podSelector`. A label is not an identity -- any workload that
+  can set it reaches the port -- so the handler took `metadata.source`,
+  `identity.provider` and `destination_agent` on faith. A compromised
+  connector (they all hold external credentials and parse hostile content)
+  could stamp another connector's provenance onto an item, route it to any
+  allowlisted agent, and have the audit log record the lie. Traffic was also
+  plaintext, which under spec 15 includes health data.
+  - Client certificates carry a SPIFFE URI SAN
+    (`spiffe://glovebox/connector/<name>`); identity comes from the URI SAN
+    rather than the Common Name, which is free text with no uniqueness
+    guarantee. A certificate naming a foreign trust domain is refused even if
+    it chains to the configured CA.
+  - **`metadata.source` must match the authenticated identity.** This is the
+    point of the work -- encryption alone would have left the endpoint
+    credulous. Enforcement defaults **on** whenever mTLS is active. A spoofed
+    source returns 403 and the item is never staged.
+  - **`disabled` / `permissive` / `required`** modes migrate without a flag
+    day: permissive serves both listeners while connectors move one at a time
+    (watch the `transport` label on `glovebox_items_received_total` drain to
+    zero), required opens only the mTLS listener so no path remains that skips
+    peer identity.
+  - Server and connector both **re-read their keypair when it changes on
+    disk**, so cert-manager can rotate 24h certificates without restarting
+    anything; a failed reload keeps the last good keypair rather than dropping
+    every handshake mid-rotation.
+  - Connectors opt in with three environment variables read by the framework,
+    so all 24 inherit it with no per-connector code. A partial configuration is
+    an **error**, not a silent fall back to plaintext -- a fallback would keep
+    the connector working while quietly undoing the control.
+  - TLS 1.3 floor and `RequireAndVerifyClientCert`; everything that talks to
+    this endpoint is a Go client we ship, so there is no legacy peer to
+    accommodate and no downgrade surface worth keeping.
+  - Off by default (`ingest.tls.mode: disabled`); existing deployments are
+    unaffected until they opt in. See `docs/ingest-mtls.md`.
+
+
 ### Security
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
