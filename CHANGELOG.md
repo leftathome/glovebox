@@ -98,6 +98,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `content.sanitized` already got: the agent reading that file is
     summarising an item already suspected hostile.
 
+- **Vault TLS verification is on by default (`ingest.auth.vault.tlsSkipVerify`)**:
+  the chart shipped `tlsSkipVerify: true`, so every default install accepted a
+  MITM'd Vault response *on the path that fetches ingest and archive bearer
+  tokens*. A pod able to spoof or relay the in-cluster Vault address could hand
+  glovebox attacker-chosen tokens — and those tokens are how glovebox decides
+  which callers to trust, so an unauthenticated connection there undermines
+  every check that depends on them. "Pod network only" bounds who can attempt
+  it; it does not make the connection authenticated.
+  The default is now `false`. For a self-signed homelab Vault, set
+  `ingest.auth.vault.caSecret` to the name of a Secret holding the CA bundle
+  under `ca.crt`; the chart mounts it read-only and points `VAULT_CACERT` at
+  it, which keeps the connection authenticated against a CA you chose. Setting
+  `tlsSkipVerify: true` still works but is now an explicit decision rather than
+  the default nobody looked at.
+  **Upgrade note:** an install relying on the old default against a self-signed
+  Vault will fail to fetch tokens until either `caSecret` is set or
+  `tlsSkipVerify: true` is restored explicitly.
+
 - **Bound the enricher subprocesses (spec 14)**: the enrichers shell out to
   `pandoc`, `tesseract` and `pdftotext` -- mature parsers, but parsers, running
   on files an attacker chose. Argument injection was already impossible (fixed
@@ -120,6 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This bounds the blast radius rather than sandboxing the parsers; seccomp
   profiles and cgroup limits for the enricher pods remain open follow-up work.
+
 
 
 
@@ -190,6 +209,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one.
 
 ### Fixed
+
+- **Flaky `TestNewFramework_ListenerServerStarts` (CI red on unrelated PRs)**:
+  the test reserved a free port `p` for the framework's health server but
+  assumed `p+1` -- where the framework binds a `Listener` connector's HTTP
+  server -- was free too. Linux hands out ephemeral ports in roughly ascending
+  order, so `p+1` is precisely the port the next `bind(":0")` on the machine is
+  most likely to get, and `go test ./...` runs many package binaries in
+  parallel. When another binary won that port the listener could not bind and
+  the test failed with `port N did not become ready within 2s` -- reproducible
+  at ~4% per run under `-race` (8 failures in 200 iterations), enough to redden
+  CI on changes that touch no connector code. The test now reserves both halves
+  of the pair before use and retries bring-up a few times, since the reservation
+  can only be held until the framework itself binds. 300 iterations under
+  `-race` pass.
 
 - **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
   agents volume the OpenClaw gateway also mounts; when that volume
