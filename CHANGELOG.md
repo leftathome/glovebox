@@ -131,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these values now supplies that registry as structured YAML; leaving it unset
   keeps the baked file, so existing installs render byte-identically.
 
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
 ### Security
 
 - **Scan the two channels that routed around the engine**: the engine scanned
@@ -315,6 +335,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can only be held until the framework itself binds. 300 iterations under
   `-race` pass.
 
+
+
+- **Release archives shipped 10 of 24 connectors and no importers at all**:
+  three hand-written lists decided what this repository builds -- `ci.yml`'s
+  binary loop, `ci.yml`'s container matrix and `release.yml`'s archive loop --
+  and they had drifted apart. The container matrix had grown to all 28
+  components; the binary loop stopped at 10 connectors plus 2 importers; the
+  release loop stopped at 10 connectors and no importer, so every published
+  archive since the connector count passed ten has contradicted the README's
+  promise of "all connector binaries". All three now derive their list from
+  `scripts/build-targets.sh`, which discovers components from the tree
+  (`go list` for entrypoints, a Dockerfile for images) rather than repeating
+  them. A new connector directory is picked up by every consumer at once.
+  - Verified by generating the container matrix and diffing it against the
+    hand-written one it replaces: identical on all 28 `(image, dockerfile)`
+    pairs, so the change adds no image and drops none.
+  - All 28 binary targets were built for each of the five released platforms;
+    the 17 that no release had ever built cross-compile cleanly.
+  - `scripts/build-targets.sh check` runs in CI beside the codegen check, so a
+    discovery bug that returned an empty or partial list fails the build
+    instead of quietly shipping fewer components each release.
+
+
 - **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
   agents volume the OpenClaw gateway also mounts; when that volume
   detaches/reattaches under a rolling peer, glovebox's mount can go stale and
@@ -327,6 +370,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatically. (The original trigger was a ReadWriteOnce volume shared with
   the gateway, since moved to ReadWriteMany; the probe is kept because RWX
   narrows the window without making a mount immune to going stale.)
+
+### Removed
+
+- **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on
+  tag pushes -- a subset `ci.yml` already builds and pushes on the same event,
+  with SBOM and provenance attestations `docker.yml` did not produce. Its one
+  distinct behaviour was moving the `:latest` tag for those 3 images on a tag
+  push; `ci.yml` moves `:latest` for all 28 on the main push a tag is cut from,
+  so `:latest` still lands, and it lands consistently across images instead of
+  for an arbitrary three.
 
 ## [0.6.4] - 2026-06-26
 

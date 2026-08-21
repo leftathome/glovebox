@@ -32,11 +32,15 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # The literal target list this replaces held 10 of 24 connectors and
+      # no importers at all, so every release archive silently contradicted
+      # the README's "all connector binaries". scripts/build-targets.sh is
+      # the same list ci.yml builds and containerises.
       - name: Build release binaries
         run: |
           mkdir -p release
           platforms="linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64"
-          targets=". ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/"
+          scripts/build-targets.sh binaries > "${RUNNER_TEMP}/targets.tsv"
 
           for plat in $platforms; do
             GOOS="${plat%/*}"
@@ -47,12 +51,10 @@ jobs:
             DIR="dist/${GOOS}-${GOARCH}"
             mkdir -p "$DIR"
 
-            for target in $targets; do
-              name=$(basename "$target")
-              if [ "$name" = "." ]; then name="glovebox"; else name="${name}-connector"; fi
+            while IFS=$'\t' read -r name target; do
               echo "Building ${name} for ${GOOS}/${GOARCH}..."
               CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags="-s -w" -o "${DIR}/${name}${EXT}" "$target"
-            done
+            done < "${RUNNER_TEMP}/targets.tsv"
 
             TAG="${{ steps.changelog.outputs.tag }}"
             case "$GOOS" in

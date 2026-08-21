@@ -20,6 +20,32 @@ env:
   IMAGE_PREFIX: ghcr.io/leftathome
 
 jobs:
+  # One place decides what this repository ships. Consumed by build-docker's
+  # matrix below and by release.yml, so a connector cannot be built as an
+  # image but forgotten in the release archive (which is exactly what had
+  # happened: releases carried 10 of 24 connectors and no importers).
+  discover-targets:
+    name: Discover build targets
+    runs-on: ubuntu-latest
+    # Reads the checkout and nothing else. Declared rather than inherited so
+    # this job keeps least privilege whatever the workflow default becomes.
+    permissions:
+      contents: read
+    outputs:
+      images: ${{ steps.targets.outputs.images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: List container images
+        id: targets
+        # Assign first, echo second: a bare `echo "$(...)"` would swallow a
+        # failing script into an empty output and hand build-docker an
+        # unparseable matrix instead of failing here.
+        run: |
+          images=$(scripts/build-targets.sh images-json)
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -38,6 +64,11 @@ jobs:
 
       - name: Check generated code is up to date
         run: ./scripts/check-codegen.sh
+
+      # A discovery bug that returned nothing would leave every build job
+      # green while shipping no binaries and no images. Fail here instead.
+      - name: Check every component is a build target
+        run: ./scripts/build-targets.sh check
 
       - name: Vet
         run: go vet ./...
@@ -113,18 +144,19 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # Build list comes from scripts/build-targets.sh, not from a literal
+      # here: the literal it replaces had fallen 14 connectors and one
+      # importer behind the container matrix.
       - name: Build all binaries
         run: |
-          for target in . ./connectors/rss/ ./connectors/imap/ ./connectors/github/ ./connectors/gitlab/ ./connectors/jira/ ./connectors/trello/ ./connectors/linkedin/ ./connectors/meta/ ./connectors/bluesky/ ./connectors/x/ ./importers/walhelm/ ./importers/apple/; do
-            name=$(basename "$target")
-            case "$target" in
-              .) name="glovebox" ;;
-              ./importers/*) name="${name}-importer" ;;
-              *) name="${name}-connector" ;;
-            esac
+          # Via a file, not a pipe: in `script | while read`, a failure of the
+          # script leaves the loop's exit status intact, so an empty list
+          # would build nothing and still pass.
+          scripts/build-targets.sh binaries > "${RUNNER_TEMP}/targets.tsv"
+          while IFS=$'\t' read -r name target; do
             echo "Building $name..."
             CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "${name}${{ matrix.ext || '' }}" "$target"
-          done
+          done < "${RUNNER_TEMP}/targets.tsv"
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
@@ -165,100 +197,16 @@ jobs:
     # base instead of racing it and pulling a stale :latest. On PRs
     # build-enricher-runtime does not push, so this ordering only affects push
     # events -- which is exactly where the stale-:latest race would occur.
-    needs: [test, build-enricher-runtime]
+    needs: [discover-targets, test, build-enricher-runtime]
     strategy:
       fail-fast: false
+      # Every component with a Dockerfile, discovered by
+      # scripts/build-targets.sh rather than listed here. The hand-written
+      # matrix this replaces had drifted from the release and binary build
+      # lists; deriving all three from one place is what keeps a new
+      # connector from silently shipping no image, no binary, or neither.
       matrix:
-        include:
-          - image: glovebox
-            dockerfile: ./Dockerfile
-            context: .
-          - image: glovebox-rss
-            dockerfile: ./connectors/rss/Dockerfile
-            context: .
-          - image: glovebox-imap
-            dockerfile: ./connectors/imap/Dockerfile
-            context: .
-          - image: glovebox-github
-            dockerfile: ./connectors/github/Dockerfile
-            context: .
-          - image: glovebox-gitlab
-            dockerfile: ./connectors/gitlab/Dockerfile
-            context: .
-          - image: glovebox-jira
-            dockerfile: ./connectors/jira/Dockerfile
-            context: .
-          - image: glovebox-trello
-            dockerfile: ./connectors/trello/Dockerfile
-            context: .
-          - image: glovebox-linkedin
-            dockerfile: ./connectors/linkedin/Dockerfile
-            context: .
-          - image: glovebox-meta
-            dockerfile: ./connectors/meta/Dockerfile
-            context: .
-          - image: glovebox-bluesky
-            dockerfile: ./connectors/bluesky/Dockerfile
-            context: .
-          - image: glovebox-x
-            dockerfile: ./connectors/x/Dockerfile
-            context: .
-          - image: glovebox-walhelm-importer
-            dockerfile: ./importers/walhelm/Dockerfile
-            context: .
-          - image: glovebox-apple-importer
-            dockerfile: ./importers/apple/Dockerfile
-            context: .
-          - image: glovebox-schoology
-            dockerfile: ./connectors/schoology/Dockerfile
-            context: .
-          - image: glovebox-schoology-auth-refresher
-            dockerfile: ./connectors/schoology-auth-refresher/Dockerfile
-            context: .
-          # --- full-coverage additions (lyku.8): every remaining connector +
-          # importer with a Dockerfile now ships a ghcr image on main/tag. The
-          # enricher-runtime-based ones (arxiv, gmail, outlook, semantic-scholar,
-          # mbox-importer) inherit the needs: build-enricher-runtime ordering
-          # above and use their Dockerfile's default ENRICHER_BASE pin.
-          - image: glovebox-arxiv
-            dockerfile: ./connectors/arxiv/Dockerfile
-            context: .
-          - image: glovebox-gcalendar
-            dockerfile: ./connectors/gcalendar/Dockerfile
-            context: .
-          - image: glovebox-gdrive
-            dockerfile: ./connectors/gdrive/Dockerfile
-            context: .
-          - image: glovebox-gmail
-            dockerfile: ./connectors/gmail/Dockerfile
-            context: .
-          - image: glovebox-hackernews
-            dockerfile: ./connectors/hackernews/Dockerfile
-            context: .
-          - image: glovebox-notion
-            dockerfile: ./connectors/notion/Dockerfile
-            context: .
-          - image: glovebox-onedrive
-            dockerfile: ./connectors/onedrive/Dockerfile
-            context: .
-          - image: glovebox-outlook
-            dockerfile: ./connectors/outlook/Dockerfile
-            context: .
-          - image: glovebox-semantic-scholar
-            dockerfile: ./connectors/semantic-scholar/Dockerfile
-            context: .
-          - image: glovebox-steam
-            dockerfile: ./connectors/steam/Dockerfile
-            context: .
-          - image: glovebox-teams
-            dockerfile: ./connectors/teams/Dockerfile
-            context: .
-          - image: glovebox-youtube
-            dockerfile: ./connectors/youtube/Dockerfile
-            context: .
-          - image: glovebox-mbox-importer
-            dockerfile: ./importers/mbox/Dockerfile
-            context: .
+        include: ${{ fromJSON(needs.discover-targets.outputs.images) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
