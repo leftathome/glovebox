@@ -25,7 +25,7 @@ import (
 // validator should already have caught (e.g. an unparseable trusted
 // CIDR). The process must fail-fast on those; the operator fixes the
 // config and restarts.
-func bootstrapArchives(ctx context.Context, cfg config.Config, mux *http.ServeMux) error {
+func bootstrapArchives(ctx context.Context, cfg config.Config, mux *http.ServeMux, extractScanner archives.ExtractScanner) error {
 	if !cfg.Ingest.Auth.Enabled || !cfg.Ingest.Archives.Enabled {
 		return nil
 	}
@@ -33,7 +33,7 @@ func bootstrapArchives(ctx context.Context, cfg config.Config, mux *http.ServeMu
 	if err != nil {
 		return err
 	}
-	return bootstrapArchivesWithSource(ctx, cfg, mux, src)
+	return bootstrapArchivesWithSource(ctx, cfg, mux, src, extractScanner)
 }
 
 // buildTokenSource selects the bearer-token source from config. Vault is
@@ -67,7 +67,7 @@ func buildTokenSource(ctx context.Context, cfg config.IngestAuthConfig) (auth.To
 // fails surfaces through archives.StartArchiveListener as the 503
 // fallback path per spec 10 §4.1 (a VaultTokenSource wrapping a
 // failingVaultClient produces the same outcome a Vault outage would).
-func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *http.ServeMux, src auth.TokenSource) error {
+func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *http.ServeMux, src auth.TokenSource, extractScanner archives.ExtractScanner) error {
 	trustedCIDRs, err := parseTrustedCIDRs(cfg.Ingest.Auth.TrustedProxyCIDRs)
 	if err != nil {
 		return fmt.Errorf("parse ingest.auth.trusted_proxy_cidrs: %w", err)
@@ -123,6 +123,7 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 		CleanupInterval:     time.Duration(cfg.Ingest.Archives.CleanupIntervalSeconds) * time.Second,
 		QuotaInterval:       60 * time.Second,
 		Sources:             sources,
+		ExtractScanner:      extractScanner,
 	}
 
 	if archives.StartArchiveListener(ctx, listenerCfg) == nil {

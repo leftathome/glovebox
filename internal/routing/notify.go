@@ -33,11 +33,16 @@ func WriteQuarantineNotification(quarantineID string, item staging.StagingItem, 
 		signalNames[i] = s.Name
 	}
 
+	// Metadata is inerted before it reaches the review agent. The engine
+	// now also scans these fields (see scan.ScanWithMetadata), but the
+	// notification is read by an agent whose job is to summarise hostile
+	// items, so it gets the same defence-in-depth treatment section 7.6
+	// already applied to content.sanitized.
 	notification := QuarantineNotification{
 		QuarantineID:  quarantineID,
-		Source:        item.Metadata.Source,
-		Sender:        item.Metadata.Sender,
-		Subject:       item.Metadata.Subject,
+		Source:        SanitizeField(item.Metadata.Source),
+		Sender:        SanitizeField(item.Metadata.Sender),
+		Subject:       SanitizeField(item.Metadata.Subject),
 		Timestamp:     item.Metadata.Timestamp.Format(time.RFC3339),
 		ContentLength: contentLength,
 		Signals:       signalNames,

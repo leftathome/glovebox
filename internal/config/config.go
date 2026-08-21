@@ -23,6 +23,96 @@ type IngestConfig struct {
 	// matching boot path in main.go is skipped entirely.
 	Auth     IngestAuthConfig     `json:"auth"`
 	Archives IngestArchivesConfig `json:"archives"`
+
+	// TLS configures mutual TLS on /v1/ingest. Opt-in and staged: see
+	// IngestTLSConfig.
+	TLS IngestTLSConfig `json:"tls"`
+}
+
+// IngestTLSConfig configures mutual TLS for the connector ingest path.
+//
+// Spec 08 section 3.10 left /v1/ingest unauthenticated, gated only by a
+// NetworkPolicy podSelector. A label is not an identity -- any workload
+// that can set it reaches the endpoint -- and the handler took
+// metadata.source, identity.provider and destination_agent on faith, so a
+// compromised connector (they all hold external credentials and parse
+// hostile content) could stamp another connector's provenance onto an item
+// and route it anywhere in the allowlist. Traffic was also plaintext.
+//
+// Mode drives a migration rather than a flag day:
+//
+//	disabled   -- plaintext only (the pre-existing behaviour, still default)
+//	permissive -- plaintext AND mTLS listeners both serve; the
+//	              transport label on glovebox_items_received_total shows
+//	              how much traffic has moved
+//	required   -- mTLS only; the plaintext listener is not opened
+//
+// Under permissive and required, a verified peer identity is bound to the
+// item: metadata.source must match the connector the certificate names.
+type IngestTLSConfig struct {
+	// Mode is "disabled" (default), "permissive" or "required".
+	Mode string `json:"mode"`
+	// Port carries the mTLS listener. Defaults to Ingest.Port+1 so
+	// permissive mode can serve both without a config change.
+	Port int `json:"port"`
+	// CertFile / KeyFile are the server certificate and key. Both are
+	// re-read when they change on disk, so cert-manager rotation needs no
+	// pod restart.
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	// ClientCAFile is the CA bundle client certificates are verified
+	// against. Use a CA dedicated to the ingest plane, not the cluster
+	// edge CA: a certificate issued for any other purpose must not be
+	// able to ingest.
+	ClientCAFile string `json:"client_ca_file"`
+	// TrustDomain is the SPIFFE trust domain expected in client
+	// certificate URI SANs (spiffe://<trust-domain>/connector/<name>).
+	// Defaults to "glovebox".
+	TrustDomain string `json:"trust_domain"`
+	// EnforceSourceMatch requires metadata.source to equal the peer
+	// identity's connector name. Defaults to true whenever mTLS is on;
+	// set false only while migrating a connector whose source label does
+	// not yet match its certificate.
+	EnforceSourceMatch *bool `json:"enforce_source_match"`
+}
+
+// TLS mode constants.
+const (
+	TLSModeDisabled   = "disabled"
+	TLSModePermissive = "permissive"
+	TLSModeRequired   = "required"
+)
+
+// Active reports whether an mTLS listener should be opened.
+func (t IngestTLSConfig) Active() bool {
+	return t.Mode == TLSModePermissive || t.Mode == TLSModeRequired
+}
+
+// PlaintextActive reports whether the plaintext listener should be opened.
+func (t IngestTLSConfig) PlaintextActive() bool {
+	return t.Mode != TLSModeRequired
+}
+
+// SourceMatchEnforced resolves the tri-state EnforceSourceMatch pointer:
+// enforcement defaults ON whenever mTLS is active, because binding the
+// claimed source to the verified peer is the point of the exercise --
+// encryption alone would leave the spoofing gap open.
+func (t IngestTLSConfig) SourceMatchEnforced() bool {
+	if !t.Active() {
+		return false
+	}
+	if t.EnforceSourceMatch == nil {
+		return true
+	}
+	return *t.EnforceSourceMatch
+}
+
+// EffectiveTrustDomain returns the configured trust domain or the default.
+func (t IngestTLSConfig) EffectiveTrustDomain() string {
+	if t.TrustDomain == "" {
+		return "glovebox"
+	}
+	return t.TrustDomain
 }
 
 // IngestAuthConfig configures the spec 10 bearer-token middleware
@@ -293,6 +383,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if err := c.Ingest.TLS.validate(c.Ingest.Port); err != nil {
+		return err
+	}
 	if c.Ingest.Archives.Enabled {
 		// Archive listener depends on bearer-token auth; refusing here is
 		// friendlier than the listener mounting the 503 fallback at boot.
@@ -302,6 +395,36 @@ func (c *Config) Validate() error {
 		if err := c.Ingest.Archives.validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (t *IngestTLSConfig) validate(ingestPort int) error {
+	switch t.Mode {
+	case "", TLSModeDisabled:
+		return nil
+	case TLSModePermissive, TLSModeRequired:
+	default:
+		return fmt.Errorf("ingest.tls.mode must be one of %q, %q, %q; got %q",
+			TLSModeDisabled, TLSModePermissive, TLSModeRequired, t.Mode)
+	}
+	if t.CertFile == "" || t.KeyFile == "" {
+		return fmt.Errorf("ingest.tls.cert_file and key_file are required when ingest.tls.mode is %q", t.Mode)
+	}
+	if t.ClientCAFile == "" {
+		// Without a client CA there is no client verification, which
+		// would leave the endpoint authenticated by nothing while looking
+		// as though it were secured.
+		return fmt.Errorf("ingest.tls.client_ca_file is required when ingest.tls.mode is %q", t.Mode)
+	}
+	if t.Port == 0 {
+		t.Port = ingestPort + 1
+	}
+	if t.Port == ingestPort && t.Mode == TLSModePermissive {
+		return fmt.Errorf("ingest.tls.port must differ from ingest.port in permissive mode (both listeners are opened)")
+	}
+	if t.Port <= 0 {
+		return fmt.Errorf("ingest.tls.port must be > 0, got %d", t.Port)
 	}
 	return nil
 }
