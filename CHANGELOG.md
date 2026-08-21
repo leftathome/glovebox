@@ -32,23 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     same `[subject, sender, source]` triple the worker pool passes -- so a
     regression in the *shipped* rules file fails the gate, not just a hand-built
     ruleset no deployment uses.
-  - **Measured today: 94.74% detection (36/38) and 23.81% false positives
-    (5/21).** Those measured numbers are the committed thresholds
-    (`thresholds.json`), rounded down and up respectively at the fourth decimal:
-    one more missed malicious case (92.11%) or one more quarantined benign case
-    (28.57%) fails the build. They are not aspirational and not loose enough to
-    be unfailable.
-  - **Known gaps, kept in the corpus and counted in the rates.** Missed:
-    `invisible-bidi-controls` (RLO-reversed text scores 0.70 -- the controls are
-    stripped but the text stays reversed, so no matcher sees it; catching it
-    needs a UAX-9 reordered scan view) and `encoded-percent-partial` (scores
-    0.00 -- a URL library escapes only the separators, so `%20` between legible
-    words defeats patterns that require `\s` and is too short to survive the
-    decoder's 8-byte floor). False positives: an inline base64 image and a PGP
-    signature block (1.05 each: encoding anomaly x the non-English booster), a
-    security advisory quoting an injection (1.00 -- the engine has no notion of
-    quotation), release notes with a ```shell fence (0.80, exactly the
-    threshold), and docs saying a sidecar "will act as a proxy" (1.00).
+  - **First measured at 94.74% detection (36/38) and 23.81% false positives
+    (5/21); the two detection misses were fixed in this same release (see
+    Fixed), so the committed thresholds are 100% and 23.81%.** Those measured
+    numbers are the committed thresholds (`thresholds.json`), rounded down and
+    up respectively at the fourth decimal: one missed malicious case (97.37%)
+    or one more quarantined benign case (28.57%) fails the build. They are not
+    aspirational and not loose enough to be unfailable.
+  - **Known gaps, kept in the corpus and counted in the rates.** The two
+    original misses -- `invisible-bidi-controls` (RLO-reversed text scored 0.70:
+    the controls were stripped but the text stayed reversed, so no matcher saw
+    it) and `encoded-percent-partial` (scored 0.00: a URL library escapes only
+    the separators, so `%20` between legible words defeated patterns requiring
+    `\s` and was too short to survive the decoder's 8-byte floor) -- are closed
+    below. The five false positives remain recorded gaps: an inline base64 image
+    and a PGP signature block (1.05 each: encoding anomaly x the non-English
+    booster), a security advisory quoting an injection (1.00 -- the engine has
+    no notion of quotation), release notes with a ```shell fence (0.80, exactly
+    the threshold), and docs saying a sidecar "will act as a proxy" (1.00).
   - The benign set is deliberately skewed toward hard content, so 23.81% is an
     upper bound on adversarially-difficult legitimate mail, not an inbox-wide
     estimate. Padding it with easy passes would improve the number and weaken
@@ -395,6 +396,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This bounds the blast radius rather than sandboxing the parsers; seccomp
   profiles and cgroup limits for the enricher pods remain open follow-up work.
 
+- **Pod-level containment for the enricher workloads (the other half of the
+  above)**: bounding the enricher *runs* left the enricher *pods* as wide open
+  as any other pod in the chart. The eight workloads that fork
+  `pandoc`/`tesseract`/`pdftotext` on attacker-chosen attachments -- the arxiv,
+  gmail, imap, outlook and semantic-scholar connectors and all three importers
+  -- rendered with no seccomp profile at all, so a parser bug reached the full
+  kernel syscall table, and with the same 200m/128Mi as an API-polling
+  connector, sized as if the workload were the same.
+  Identified two independent ways that agree, rather than by guesswork: the
+  Dockerfiles that build `FROM` the enricher-runtime image, and the `main.go`
+  files that blank-import `connector/enrich/{pdf,ocr,office}`. `enrich/html`
+  and `enrich/passthrough` are pure Go and fork nothing, which is why the other
+  19 connectors are not on the list and did not get the larger limits.
+  - **`seccompProfile: RuntimeDefault` on every pod the chart owns**, not just
+    the eight -- the runtime's own filter denies roughly forty syscalls almost
+    nothing needs and an exploit chain usually does, the scanner reads the same
+    hostile content the connectors do, and a per-pod exception list is one more
+    thing to get wrong. It is also what Pod Security Standards `restricted`
+    requires, so its absence was exactly what kept these pods out of a
+    restricted namespace. `seccompProfile.type: ""` renders no profile
+    (byte-identical to before); `Localhost` plus `localhostProfile` loads a
+    profile you staged yourself, and is refused without one rather than
+    rendering a manifest the kubelet will reject.
+  - **CPU and memory limits sized for a parser, not a poller** on the eight:
+    `1` CPU / `1Gi` (from `200m`/`128Mi` on the connectors, `1`/`512Mi` on the
+    importers). Note the direction -- this **raises** the ceiling, for the
+    reason a tighter one would not have survived: 128Mi cannot start pandoc's
+    Haskell runtime or hold a 300dpi page bitmap for tesseract, so the first
+    operator to enable enrichment would have hit `OOMKilled` on a legitimate
+    document and deleted the limits block entirely. 1Gi leaves the process caps
+    from `connector/enrich/limits.go` (64 MiB of output) as the binding
+    constraint instead of the cgroup, and 1 CPU still bounds a parser stuck in
+    a spin loop to one core of the node.
+  - **A `runtimeClassName` escape hatch**, chart-wide and per connector and
+    importer, empty by default. gVisor and Kata are the right answer for this
+    surface and the chart deliberately does **not** pick one: which runtimes a
+    cluster has, on which node pools, is the operator's decision, and a
+    RuntimeClass that does not exist leaves pods Pending forever. The value
+    exists so an operator who has already installed one can point the eight
+    enricher workloads at it without patching rendered manifests.
+
+  **What this is not.** It bounds blast radius; it is not a sandbox. A kernel
+  bug reached through a syscall `RuntimeDefault` permits is still a kernel bug,
+  and a cgroup limit decides how much of the node a compromised parser gets,
+  not whether it runs. gVisor/Kata and upstream-CVE tracking for the
+  enricher-runtime image remain open, and remain the operator's call.
+  Verified with `helm template` diffed against the base branch: with default
+  values the **only** change is `seccompProfile` on the scanner pod (every
+  other workload is disabled by default), and with the enricher workloads
+  enabled the raised limits appear on those eight and on **no** other pod --
+  the rss, github and schoology connectors and the scanner keep the resources
+  they had.
+  **Upgrade note:** the pod template changes, so an upgrade rolls the scanner
+  and any enabled connector once. Nothing can be OOM-killed by this (every
+  limit moves up, none down), but the memory *request* on the five enricher
+  connectors rises 32Mi -> 128Mi, which on a node already near its allocatable
+  ceiling can leave a pod Pending until something is scheduled elsewhere.
+
 
 
 
@@ -467,6 +526,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one.
 
 ### Fixed
+
+- **`+`-as-space form encoding is a live bypass, and is now tracked rather than
+  invisible**: `Ignore+all+previous+instructions` -- the form a browser or any
+  `application/x-www-form-urlencoded` library emits -- scores 0.70 and **passes**.
+  It is the same class as the percent-escape bypass closed above: the words stay
+  legible while every separator defeats a matcher pattern that requires `\s`.
+  It is not fixed here, because decoding `+` globally would corrupt `C++`, `A+`
+  and phone numbers; closing it means decoding `+` only inside a URL query
+  component, which is real work that deserves its own measurement. It is added to
+  the corpus as `encoded-plus-form`, a recorded `known_gap`, so it is counted
+  against the detection rate instead of sitting in a report nobody re-reads.
+  - The detection floor is therefore **97.43%, not 100%**. It was briefly 100%,
+    which was misleading: the corpus read as perfect while a same-class bypass
+    shipped. An honest 97.44% that names the gap is worth more than a 100% that
+    hides one.
+
+
+- **An injection whose separators were escaped, and one written backwards
+  behind a bidi override, both walked past the scanner**: the two detection
+  gaps the adversarial corpus recorded when it landed. Detection on the corpus
+  goes from **94.74% (36/38) to 100% (38/38)** with the false-positive rate
+  **unchanged at 23.81% (5/21)**; `thresholds.json` now commits a
+  `min_detection_rate` of **1.0**, so every malicious case in the corpus is
+  load-bearing and any regression fails the build.
+  - **Escaped separators (`encoded-percent-partial`, scored 0.00 -- not one
+    signal).** `Ignore%20all%20previous%20instructions` is what a URL library
+    actually emits: it escapes the non-alphanumerics and leaves every word in
+    clear text. Nothing looks like an encoded blob, so `ExtractDecoded` -- which
+    cuts *contiguous* encoded runs out of the document -- saw only lone `%20`s
+    and threw each one away as shorter than its 8-byte floor. Meanwhile every
+    matcher pattern wants `\s` between the words and never got one. New
+    `UnescapeInPlace` (`internal/engine/unescape.go`) decodes escapes **where
+    they sit**, keeping the surrounding literal text, and `Preprocess` exposes
+    the result as an `Unescaped` scan-only view. It covers the three families
+    that reach a scanner as text -- percent escapes, HTML character references
+    (named and numeric) and the numeric backslash escapes `\xHH`, `\uHHHH`,
+    `\UHHHHHHHH` -- because all three are used the same way: to spell a
+    separator without writing one. Each is decoded exactly once, so `%2520`
+    stays a literal `%20` rather than a space the view invented.
+  - The single-letter escapes `\t`, `\n` and `\r` are deliberately **not**
+    decoded. They are indistinguishable from a backslash followed by a letter,
+    so decoding them rewrites `C:\Users\pat\report.docx` into a carriage
+    return and mangles every Windows path, LaTeX fragment and regex in
+    legitimate mail -- and it does so by *inserting whitespace*, which is
+    exactly what the matcher patterns are hunting for. The numeric forms need
+    two to eight hex digits behind the marker, cannot occur by accident, and
+    catch the same evasion. That trade is a unit test, not a comment.
+  - **Reversed text behind a bidi override (`invisible-bidi-controls`, scored
+    0.70 -- `suspicious_encoding` alone, just under the 0.80 threshold).**
+    `StripInvisible` removes the RLO and PDF, which stops them interleaving a
+    payload past an ASCII pattern, but deletion leaves the text they *govern*
+    exactly as stored. The injection rendered as "Ignore all previous
+    instructions" to every human who looked at the mail and stayed
+    `.snoitcurtsni ...` for every matcher. New `ReorderBidi`
+    (`internal/engine/bidi.go`) builds the view the renderer builds: it
+    implements the UAX #9 explicit-embedding rules (X-rules for
+    LRE/RLE/LRO/RLO/LRI/RLI/FSI/PDF/PDI, then rule L2's reversal of each
+    maximal run from the highest level down to the lowest odd one), per
+    paragraph, capped at UAX #9's `max_depth` of 125 so nesting cannot be used
+    to make the scanner do unbounded work. `Preprocess` exposes it as a
+    `Reordered` view.
+  - The implicit UAX #9 rules (W*, N*, I*) are **not** implemented, and that is
+    the point: without an explicit control, strong-LTR characters such as ASCII
+    letters can never be reordered, so no injection can hide there. Natural
+    Hebrew and Arabic prose produces no view at all and stays off the
+    false-positive surface entirely. Bracket mirroring (L4) is skipped for the
+    same reason -- it changes glyphs, never word order.
+  - Both views are finished by the same NFKC normalization and homoglyph fold
+    the primary view gets, so the hardening layers **compose** instead of each
+    being its own door: a payload that is reversed *and* homoglyphed, or
+    escaped *and* homoglyphed, is caught by one pass. Re-normalizing is not
+    redundant -- `&nbsp;` decodes to U+00A0, which no matcher's `\s` accepts
+    until NFKC maps it onto an ordinary space. Both views also reach the
+    metadata path (`scanMetadata`), so an escaped or reversed Subject line is
+    caught too.
+  - The byte-identical delivery invariant is untouched: both are scan-only side
+    buffers built from copies, and each is `nil` when it would duplicate
+    `Normalized`, so ordinary ASCII mail still costs exactly the passes it did
+    before.
+  - Verified: `scripts/corpus-gate.sh` at 100% / 23.81%; new unit tests in
+    `internal/engine` covering escape families, separators, escaped letters,
+    every RTL control (RLO, RLE, RLI, FSI, unterminated, nested, stray
+    PDF/PDI), 125-deep nesting, and the composition with homoglyph folding;
+    end-to-end tests through the *shipped* rules in `internal/scan` including a
+    seven-case benign counterweight -- URL tracking parameters, percent signs
+    in a financial summary, Windows paths, HTML entities, Hebrew and Arabic
+    prose -- that must not newly fire. Full suite green under `-race`.
 
 - **`ingest.tls.mode: required` took the archive uploads and the sanitize gate
   offline**: a regression from the mTLS work (#41). Three route families with

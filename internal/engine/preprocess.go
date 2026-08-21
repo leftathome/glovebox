@@ -37,6 +37,22 @@ type PreprocessedContent struct {
 	// payloads, so an encoded injection is scanned rather than merely
 	// flagged.
 	Decoded []byte
+
+	// Unescaped is Normalized with percent escapes, HTML character
+	// references and backslash escapes decoded *in place*. Decoded
+	// handles a payload that is entirely encoded; this handles the far
+	// commoner shape where only the separators are escaped
+	// ("Ignore%20all%20previous"), which leaves every word legible and
+	// every \s in a matcher pattern unsatisfied.
+	Unescaped []byte
+
+	// Reordered is the text as a renderer lays it out, after applying the
+	// UAX #9 explicit-embedding rules that the bidi controls ask for.
+	// Stripping those controls stops them interleaving a payload, but
+	// leaves the text they govern stored backwards, so a reversed
+	// injection inside an RLO override renders forwards to a human and
+	// stays unreadable to every matcher.
+	Reordered []byte
 }
 
 func Preprocess(content []byte, contentType string) PreprocessedContent {
@@ -74,6 +90,23 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 
 	result.Folded = FoldConfusables(result.Normalized)
 
+	// The remaining views are built from the same shape as Normalized and
+	// finished by derivedView, so a payload that combines an escape or a
+	// bidi override with homoglyphs is still matched -- each hardening
+	// composes with the others instead of being a separate door.
+	if unescaped, ok := UnescapeInPlace(result.Normalized); ok {
+		result.Unescaped = derivedView(unescaped)
+	}
+	// Reordering reads the bidi controls, so it runs on the pre-scrub text
+	// and the scrub runs over its output. The view is kept only when the
+	// reordering actually moved something, so content whose controls
+	// changed nothing costs no extra pass.
+	if reordered, ok := ReorderBidi(preScrub); ok {
+		if clean, _ := StripInvisible(reordered); !bytes.Equal(clean, result.Normalized) {
+			result.Reordered = derivedView(clean)
+		}
+	}
+
 	decoded := ExtractDecoded(result.Normalized)
 	if tagPayload != nil {
 		decoded = append(append(tagPayload, '\n'), decoded...)
@@ -81,6 +114,27 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 	result.Decoded = decoded
 
 	return result
+}
+
+// derivedView finishes a scan-only view built by unescaping or
+// reordering: it gets the same NFKC normalization and homoglyph folding
+// the primary view got, so the hardening layers compose instead of each
+// being its own separate door.
+//
+// Normalizing again is not redundant. Decoding hands back characters that
+// were not in the content before: "&nbsp;" is U+00A0, which no matcher's
+// \s accepts until NFKC maps it onto an ordinary space, and a payload
+// spelled with fullwidth or non-breaking separators would otherwise walk
+// straight back out of the view built to catch it.
+//
+// FoldConfusables returns nil for plain ASCII, and a nil view means "skip
+// this pass" to the scanner, so fall back to the unfolded bytes.
+func derivedView(view []byte) []byte {
+	view = norm.NFKC.Bytes(view)
+	if folded := FoldConfusables(view); folded != nil {
+		return folded
+	}
+	return view
 }
 
 func stripHTML(data []byte) []byte {

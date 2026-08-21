@@ -51,10 +51,16 @@ spec:
         spec:
           serviceAccountName: {{ include "glovebox.fullname" . }}-schoology-auth-refresher
           restartPolicy: Never
+          {{- with (include "glovebox.runtimeClassName" (dict "workload" .Values.schoologyAuthRefresher "root" .)) }}
+          runtimeClassName: {{ . | quote }}
+          {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
             fsGroup: 65532
+            {{- with (include "glovebox.seccompProfile" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
           containers:
             - name: refresher
               image: "{{ .Values.schoologyAuthRefresher.image.repository }}:{{ .Values.schoologyAuthRefresher.image.tag | default .Chart.AppVersion }}"
