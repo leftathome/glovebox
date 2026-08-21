@@ -461,6 +461,49 @@ Content hash is SHA-256 of the complete `content.raw` file, hex-encoded.
 
 For REJECT verdicts where metadata is unparseable, `destination` is set to `"unknown"`, and `source`/`sender` fields are set to `"unknown"` as well.
 
+### 10.1.1 ruleset.jsonl (Ruleset Provenance)
+
+A verdict is only interpretable against the rules that produced it: "score
+0.4, passed" says nothing without the threshold that was in force. The rules
+file is also the single place where every boundary is defined, and it arrives
+as a mounted ConfigMap -- so whoever can edit it can weaken every check at
+once, most simply by raising `quarantine_threshold` past anything the rules
+can score.
+
+On startup the glovebox records the ruleset it is enforcing:
+
+```json
+{
+  "timestamp": "RFC3339",
+  "event": "ruleset_loaded",
+  "rules_file": "/etc/glovebox/rules.json",
+  "pinned": true,
+  "warning": "optional -- e.g. threshold unreachable",
+  "rules": {
+    "sha256": "hex digest of the file as read",
+    "rule_count": 7,
+    "quarantine_threshold": 0.8,
+    "max_achievable_score": 5.4,
+    "threshold_reachable": true
+  }
+}
+```
+
+Two related controls:
+
+- **Digest pinning.** Setting `rules_sha256` in the config makes the daemon
+  refuse to start when the file on disk does not match, turning an unreviewed
+  ConfigMap edit into a failed start rather than a silently permissive
+  scanner. Unpinned is the default.
+- **Reachability check.** `max_achievable_score` is every non-booster weight
+  summed and multiplied by the boosters. When the threshold exceeds it, no
+  item can ever be quarantined; that is recorded as a warning on the entry
+  and logged at startup rather than passing unremarked.
+
+A failure to write this entry does not trip degraded mode (Section 10.2):
+nothing has been scanned yet, and refusing to run over bookkeeping would be a
+self-inflicted outage.
+
 ### 10.2 Audit Failure Behavior (Fail-Closed)
 
 If an audit log write fails, the glovebox enters **degraded mode**:
@@ -523,7 +566,7 @@ Directory paths are configurable to support both Kubernetes volume mounts (Phase
 
 The following artifacts produced by this service must be included in the system backup strategy (documented in the parent architecture spec):
 
-- **Audit logs** (`audit/pass.jsonl`, `audit/rejected.jsonl`) — hourly backup
+- **Audit logs** (`audit/pass.jsonl`, `audit/rejected.jsonl`, `audit/ruleset.jsonl`) — hourly backup
 - **Rules configuration** (`rules.json`) — daily backup (also versioned in Git)
 - **Quarantine directory** — daily backup (contains items awaiting review)
 
