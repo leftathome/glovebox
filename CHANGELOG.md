@@ -32,23 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     same `[subject, sender, source]` triple the worker pool passes -- so a
     regression in the *shipped* rules file fails the gate, not just a hand-built
     ruleset no deployment uses.
-  - **Measured today: 94.74% detection (36/38) and 23.81% false positives
-    (5/21).** Those measured numbers are the committed thresholds
-    (`thresholds.json`), rounded down and up respectively at the fourth decimal:
-    one more missed malicious case (92.11%) or one more quarantined benign case
-    (28.57%) fails the build. They are not aspirational and not loose enough to
-    be unfailable.
-  - **Known gaps, kept in the corpus and counted in the rates.** Missed:
-    `invisible-bidi-controls` (RLO-reversed text scores 0.70 -- the controls are
-    stripped but the text stays reversed, so no matcher sees it; catching it
-    needs a UAX-9 reordered scan view) and `encoded-percent-partial` (scores
-    0.00 -- a URL library escapes only the separators, so `%20` between legible
-    words defeats patterns that require `\s` and is too short to survive the
-    decoder's 8-byte floor). False positives: an inline base64 image and a PGP
-    signature block (1.05 each: encoding anomaly x the non-English booster), a
-    security advisory quoting an injection (1.00 -- the engine has no notion of
-    quotation), release notes with a ```shell fence (0.80, exactly the
-    threshold), and docs saying a sidecar "will act as a proxy" (1.00).
+  - **First measured at 94.74% detection (36/38) and 23.81% false positives
+    (5/21); the two detection misses were fixed in this same release (see
+    Fixed), so the committed thresholds are 100% and 23.81%.** Those measured
+    numbers are the committed thresholds (`thresholds.json`), rounded down and
+    up respectively at the fourth decimal: one missed malicious case (97.37%)
+    or one more quarantined benign case (28.57%) fails the build. They are not
+    aspirational and not loose enough to be unfailable.
+  - **Known gaps, kept in the corpus and counted in the rates.** The two
+    original misses -- `invisible-bidi-controls` (RLO-reversed text scored 0.70:
+    the controls were stripped but the text stayed reversed, so no matcher saw
+    it) and `encoded-percent-partial` (scored 0.00: a URL library escapes only
+    the separators, so `%20` between legible words defeated patterns requiring
+    `\s` and was too short to survive the decoder's 8-byte floor) -- are closed
+    below. The five false positives remain recorded gaps: an inline base64 image
+    and a PGP signature block (1.05 each: encoding anomaly x the non-English
+    booster), a security advisory quoting an injection (1.00 -- the engine has
+    no notion of quotation), release notes with a ```shell fence (0.80, exactly
+    the threshold), and docs saying a sidecar "will act as a proxy" (1.00).
   - The benign set is deliberately skewed toward hard content, so 23.81% is an
     upper bound on adversarially-difficult legitimate mail, not an inbox-wide
     estimate. Padding it with easy passes would improve the number and weaken
@@ -392,6 +393,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one.
 
 ### Fixed
+
+- **An injection whose separators were escaped, and one written backwards
+  behind a bidi override, both walked past the scanner**: the two detection
+  gaps the adversarial corpus recorded when it landed. Detection on the corpus
+  goes from **94.74% (36/38) to 100% (38/38)** with the false-positive rate
+  **unchanged at 23.81% (5/21)**; `thresholds.json` now commits a
+  `min_detection_rate` of **1.0**, so every malicious case in the corpus is
+  load-bearing and any regression fails the build.
+  - **Escaped separators (`encoded-percent-partial`, scored 0.00 -- not one
+    signal).** `Ignore%20all%20previous%20instructions` is what a URL library
+    actually emits: it escapes the non-alphanumerics and leaves every word in
+    clear text. Nothing looks like an encoded blob, so `ExtractDecoded` -- which
+    cuts *contiguous* encoded runs out of the document -- saw only lone `%20`s
+    and threw each one away as shorter than its 8-byte floor. Meanwhile every
+    matcher pattern wants `\s` between the words and never got one. New
+    `UnescapeInPlace` (`internal/engine/unescape.go`) decodes escapes **where
+    they sit**, keeping the surrounding literal text, and `Preprocess` exposes
+    the result as an `Unescaped` scan-only view. It covers the three families
+    that reach a scanner as text -- percent escapes, HTML character references
+    (named and numeric) and the numeric backslash escapes `\xHH`, `\uHHHH`,
+    `\UHHHHHHHH` -- because all three are used the same way: to spell a
+    separator without writing one. Each is decoded exactly once, so `%2520`
+    stays a literal `%20` rather than a space the view invented.
+  - The single-letter escapes `\t`, `\n` and `\r` are deliberately **not**
+    decoded. They are indistinguishable from a backslash followed by a letter,
+    so decoding them rewrites `C:\Users\pat\report.docx` into a carriage
+    return and mangles every Windows path, LaTeX fragment and regex in
+    legitimate mail -- and it does so by *inserting whitespace*, which is
+    exactly what the matcher patterns are hunting for. The numeric forms need
+    two to eight hex digits behind the marker, cannot occur by accident, and
+    catch the same evasion. That trade is a unit test, not a comment.
+  - **Reversed text behind a bidi override (`invisible-bidi-controls`, scored
+    0.70 -- `suspicious_encoding` alone, just under the 0.80 threshold).**
+    `StripInvisible` removes the RLO and PDF, which stops them interleaving a
+    payload past an ASCII pattern, but deletion leaves the text they *govern*
+    exactly as stored. The injection rendered as "Ignore all previous
+    instructions" to every human who looked at the mail and stayed
+    `.snoitcurtsni ...` for every matcher. New `ReorderBidi`
+    (`internal/engine/bidi.go`) builds the view the renderer builds: it
+    implements the UAX #9 explicit-embedding rules (X-rules for
+    LRE/RLE/LRO/RLO/LRI/RLI/FSI/PDF/PDI, then rule L2's reversal of each
+    maximal run from the highest level down to the lowest odd one), per
+    paragraph, capped at UAX #9's `max_depth` of 125 so nesting cannot be used
+    to make the scanner do unbounded work. `Preprocess` exposes it as a
+    `Reordered` view.
+  - The implicit UAX #9 rules (W*, N*, I*) are **not** implemented, and that is
+    the point: without an explicit control, strong-LTR characters such as ASCII
+    letters can never be reordered, so no injection can hide there. Natural
+    Hebrew and Arabic prose produces no view at all and stays off the
+    false-positive surface entirely. Bracket mirroring (L4) is skipped for the
+    same reason -- it changes glyphs, never word order.
+  - Both views are finished by the same NFKC normalization and homoglyph fold
+    the primary view gets, so the hardening layers **compose** instead of each
+    being its own door: a payload that is reversed *and* homoglyphed, or
+    escaped *and* homoglyphed, is caught by one pass. Re-normalizing is not
+    redundant -- `&nbsp;` decodes to U+00A0, which no matcher's `\s` accepts
+    until NFKC maps it onto an ordinary space. Both views also reach the
+    metadata path (`scanMetadata`), so an escaped or reversed Subject line is
+    caught too.
+  - The byte-identical delivery invariant is untouched: both are scan-only side
+    buffers built from copies, and each is `nil` when it would duplicate
+    `Normalized`, so ordinary ASCII mail still costs exactly the passes it did
+    before.
+  - Verified: `scripts/corpus-gate.sh` at 100% / 23.81%; new unit tests in
+    `internal/engine` covering escape families, separators, escaped letters,
+    every RTL control (RLO, RLE, RLI, FSI, unterminated, nested, stray
+    PDF/PDI), 125-deep nesting, and the composition with homoglyph folding;
+    end-to-end tests through the *shipped* rules in `internal/scan` including a
+    seven-case benign counterweight -- URL tracking parameters, percent signs
+    in a financial summary, Windows paths, HTML entities, Hebrew and Arabic
+    prose -- that must not newly fire. Full suite green under `-race`.
 
 - **`ingest.tls.mode: required` took the archive uploads and the sanitize gate
   offline**: a regression from the mTLS work (#41). Three route families with
