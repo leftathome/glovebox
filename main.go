@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -61,22 +62,47 @@ func main() {
 		log.Fatalf("load subjects registry: %v", err)
 	}
 
-	rulesFile, err := os.Open(cfg.RulesFile)
-	if err != nil {
-		log.Fatalf("open rules file %s: %v", cfg.RulesFile, err)
-	}
-	rules, err := engine.LoadRules(rulesFile)
-	rulesFile.Close()
+	rules, rulesProv, err := engine.LoadRulesFile(cfg.RulesFile)
 	if err != nil {
 		log.Fatalf("load rules: %v", err)
 	}
-	log.Printf("loaded %d rules, quarantine threshold: %.2f", len(rules.Rules), rules.QuarantineThreshold)
+	// A pinned digest turns an unreviewed edit of the rules ConfigMap into
+	// a failed start rather than a silently weaker scanner.
+	if cfg.RulesSHA256 != "" && !strings.EqualFold(cfg.RulesSHA256, rulesProv.SHA256) {
+		log.Fatalf("rules file digest mismatch: config pins %s, %s is %s",
+			cfg.RulesSHA256, cfg.RulesFile, rulesProv.SHA256)
+	}
+	rulesWarning := ""
+	if !rulesProv.ThresholdReachable {
+		// Nothing this ruleset can score reaches its own threshold, so no
+		// item can ever quarantine. That is either a serious
+		// misconfiguration or the exact shape of a deliberately disabled
+		// scanner; either way it must not pass unremarked.
+		rulesWarning = fmt.Sprintf("quarantine threshold %.2f exceeds the maximum achievable score %.2f: no item can ever be quarantined",
+			rulesProv.QuarantineThreshold, rulesProv.MaxAchievableScore)
+		log.Printf("WARNING: %s", rulesWarning)
+	}
+	log.Printf("loaded %d rules, quarantine threshold: %.2f, sha256: %s, pinned: %v",
+		len(rules.Rules), rules.QuarantineThreshold, rulesProv.SHA256, cfg.RulesSHA256 != "")
 
 	registry := detector.NewDefaultRegistry()
 
 	logger, err := audit.NewLogger(cfg.AuditDir)
 	if err != nil {
 		log.Fatalf("init audit logger: %v", err)
+	}
+	// Record which ruleset this process is enforcing. Verdicts are only
+	// interpretable against the rules that produced them, so the digest
+	// belongs in the append-only log beside them.
+	if err := logger.LogRuleset(audit.RulesetEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Event:     "ruleset_loaded",
+		RulesFile: cfg.RulesFile,
+		Pinned:    cfg.RulesSHA256 != "",
+		Warning:   rulesWarning,
+		Rules:     rulesProv,
+	}); err != nil {
+		log.Printf("WARNING: could not record ruleset provenance: %v", err)
 	}
 	defer logger.Close()
 
