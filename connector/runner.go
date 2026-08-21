@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -255,8 +254,15 @@ func runPollLoop(ctx context.Context, c Connector, interval time.Duration, cp Ch
 // Returns (backend, writer, error) where writer is nil in HTTP mode.
 func selectBackend(name, ingestURL, stagingDir string, logger *slog.Logger) (StagingBackend, *StagingWriter, error) {
 	if ingestURL != "" {
-		backend := NewHTTPStagingBackend(ingestURL, name, &http.Client{Timeout: 30 * time.Second})
-		logger.Info("using HTTP ingest backend", "url", ingestURL)
+		// Presents a client certificate when the mTLS ingest variables
+		// are set; plain client otherwise. Implemented once here so every
+		// connector inherits it without per-connector code.
+		client, err := NewIngestHTTPClient(30 * time.Second)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build ingest client: %w", err)
+		}
+		backend := NewHTTPStagingBackend(ingestURL, name, client)
+		logger.Info("using HTTP ingest backend", "url", ingestURL, "mtls", IngestTLSConfigured())
 		return backend, nil, nil
 	}
 	if stagingDir != "" {

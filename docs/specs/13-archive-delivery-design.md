@@ -6,6 +6,16 @@
 
 ---
 
+> **Amendment (2026-08).** The recognizer-scan lane renders extracted OCR
+> text into `content.extracted.md` for the operator agent to index and
+> recall. That text originates on a physical document an attacker can print,
+> post or mail, so it is now scanned by the same engine before publication:
+> a quarantine verdict withholds the body (the document records the score and
+> the firing signals, and points at the unmodified `tree/ocr.txt`), and a
+> finalize with no scanner configured fails closed rather than publishing
+> unscanned text. This restores spec 04 section 1.1's invariant -- no item
+> reaches an agent workspace without being scanned -- for this lane.
+
 ## 1. Purpose
 
 The recognizer service classifies incoming archive bundles (Google Takeout zips, raw mboxes, future Facebook exports, etc.) into per-media-type subtrees and needs to deliver each subtree to Glovebox for the actual per-message / per-file scanning work. Today the only ingestion surface (`/v1/ingest` per spec 08) caps content at 64 MB per request, sized for connector-scale items (one email, one RSS post). Recognizer's deliveries are archive-scale: a single Gmail Takeout mbox is currently 12 GB on the user's machine, and one classified Photos subtree from an omnibus Takeout zip can be many GB.

@@ -114,6 +114,11 @@ type ArchiveListenerConfig struct {
 	// lane and renders content.extracted.md; the recognizer-scan media
 	// type is gated (fail-closed) to it. May be nil (lane disabled).
 	Sources *source.Registry
+
+	// ExtractScanner is handed to FinalizeConfig so the scanner lane's
+	// extracted text is scanned before publication. Required when
+	// Sources registers a recognizer-scanner source.
+	ExtractScanner ExtractScanner
 }
 
 // StartArchiveListener wires the spec 13 archive-delivery routes onto
@@ -159,6 +164,7 @@ func StartArchiveListener(ctx context.Context, cfg ArchiveListenerConfig) *Quota
 			TusMaxSize:       cfg.TusMaxSize,
 			PatchIdleTimeout: cfg.PatchIdleTimeout,
 			Sources:          cfg.Sources,
+			ExtractScanner:   cfg.ExtractScanner,
 		},
 	)
 	mw := auth.Middleware(cfg.TokenStore, cfg.RateLimiter, cfg.ProxyResolver, cfg.Telemetry)
