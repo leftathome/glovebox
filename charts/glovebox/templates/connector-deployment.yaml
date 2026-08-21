@@ -35,10 +35,16 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      {{- with (include "glovebox.runtimeClassName" (dict "workload" $connector "root" $)) }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
         fsGroup: 65534
+        {{- with (include "glovebox.seccompProfile" $) }}
+        {{- . | nindent 8 }}
+        {{- end }}
       containers:
         - name: {{ $name }}
           image: "{{ $connector.image.repository }}:{{ $connector.image.tag }}"

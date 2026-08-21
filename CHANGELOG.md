@@ -321,6 +321,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This bounds the blast radius rather than sandboxing the parsers; seccomp
   profiles and cgroup limits for the enricher pods remain open follow-up work.
 
+- **Pod-level containment for the enricher workloads (the other half of the
+  above)**: bounding the enricher *runs* left the enricher *pods* as wide open
+  as any other pod in the chart. The eight workloads that fork
+  `pandoc`/`tesseract`/`pdftotext` on attacker-chosen attachments -- the arxiv,
+  gmail, imap, outlook and semantic-scholar connectors and all three importers
+  -- rendered with no seccomp profile at all, so a parser bug reached the full
+  kernel syscall table, and with the same 200m/128Mi as an API-polling
+  connector, sized as if the workload were the same.
+  Identified two independent ways that agree, rather than by guesswork: the
+  Dockerfiles that build `FROM` the enricher-runtime image, and the `main.go`
+  files that blank-import `connector/enrich/{pdf,ocr,office}`. `enrich/html`
+  and `enrich/passthrough` are pure Go and fork nothing, which is why the other
+  19 connectors are not on the list and did not get the larger limits.
+  - **`seccompProfile: RuntimeDefault` on every pod the chart owns**, not just
+    the eight -- the runtime's own filter denies roughly forty syscalls almost
+    nothing needs and an exploit chain usually does, the scanner reads the same
+    hostile content the connectors do, and a per-pod exception list is one more
+    thing to get wrong. It is also what Pod Security Standards `restricted`
+    requires, so its absence was exactly what kept these pods out of a
+    restricted namespace. `seccompProfile.type: ""` renders no profile
+    (byte-identical to before); `Localhost` plus `localhostProfile` loads a
+    profile you staged yourself, and is refused without one rather than
+    rendering a manifest the kubelet will reject.
+  - **CPU and memory limits sized for a parser, not a poller** on the eight:
+    `1` CPU / `1Gi` (from `200m`/`128Mi` on the connectors, `1`/`512Mi` on the
+    importers). Note the direction -- this **raises** the ceiling, for the
+    reason a tighter one would not have survived: 128Mi cannot start pandoc's
+    Haskell runtime or hold a 300dpi page bitmap for tesseract, so the first
+    operator to enable enrichment would have hit `OOMKilled` on a legitimate
+    document and deleted the limits block entirely. 1Gi leaves the process caps
+    from `connector/enrich/limits.go` (64 MiB of output) as the binding
+    constraint instead of the cgroup, and 1 CPU still bounds a parser stuck in
+    a spin loop to one core of the node.
+  - **A `runtimeClassName` escape hatch**, chart-wide and per connector and
+    importer, empty by default. gVisor and Kata are the right answer for this
+    surface and the chart deliberately does **not** pick one: which runtimes a
+    cluster has, on which node pools, is the operator's decision, and a
+    RuntimeClass that does not exist leaves pods Pending forever. The value
+    exists so an operator who has already installed one can point the eight
+    enricher workloads at it without patching rendered manifests.
+
+  **What this is not.** It bounds blast radius; it is not a sandbox. A kernel
+  bug reached through a syscall `RuntimeDefault` permits is still a kernel bug,
+  and a cgroup limit decides how much of the node a compromised parser gets,
+  not whether it runs. gVisor/Kata and upstream-CVE tracking for the
+  enricher-runtime image remain open, and remain the operator's call.
+  Verified with `helm template` diffed against the base branch: with default
+  values the **only** change is `seccompProfile` on the scanner pod (every
+  other workload is disabled by default), and with the enricher workloads
+  enabled the raised limits appear on those eight and on **no** other pod --
+  the rss, github and schoology connectors and the scanner keep the resources
+  they had.
+  **Upgrade note:** the pod template changes, so an upgrade rolls the scanner
+  and any enabled connector once. Nothing can be OOM-killed by this (every
+  limit moves up, none down), but the memory *request* on the five enricher
+  connectors rises 32Mi -> 128Mi, which on a node already near its allocatable
+  ceiling can leave a pod Pending until something is scheduled elsewhere.
+
 
 
 
