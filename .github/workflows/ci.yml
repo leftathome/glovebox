@@ -26,6 +26,10 @@ jobs:
   discover-targets:
     name: Discover build targets
     runs-on: ubuntu-latest
+    # Reads the checkout and nothing else. Declared rather than inherited so
+    # this job keeps least privilege whatever the workflow default becomes.
+    permissions:
+      contents: read
     outputs:
       images: ${{ steps.targets.outputs.images }}
     steps:
