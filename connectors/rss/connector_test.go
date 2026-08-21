@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,6 +70,20 @@ func newTestConnector(t *testing.T, feeds []FeedConfig, fetchLinks bool, linkPol
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		fetchCounter: connector.NewFetchCounter(connector.FetchLimits{}),
 	}
+	// Exercise the same guarded client production uses. Private networks
+	// are permitted here only so httptest servers on loopback are
+	// reachable; the address guard itself is covered in connector/.
+	lp := c.linkPolicy
+	c.linkClient = connector.NewGuardedHTTPClient(connector.GuardedClientOptions{
+		Timeout:              10 * time.Second,
+		AllowPrivateNetworks: true,
+		ValidateURL: func(rawURL string) error {
+			if allowed, reason := lp.Check(rawURL); !allowed {
+				return errors.New(reason)
+			}
+			return nil
+		},
+	})
 
 	return c, stagingDir, stateDir
 }
@@ -693,3 +709,41 @@ func TestRuleTagsInMetadata(t *testing.T) {
 	}
 }
 
+// The guard must be reachable through the RSS link path itself, not merely
+// exist in connector/. A feed entry linking to an internal address must
+// come back empty even though the link policy would admit the URL.
+func TestFetchLinkedContent_GuardBlocksInternalAddress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html><body>internal service response</body></html>"))
+	}))
+	defer srv.Close()
+
+	// Policy admits the URL outright, so the only thing that can stop the
+	// fetch is the connect-time address guard.
+	policy := content.LinkPolicyConfig{Default: "unrestricted"}
+	c, _, _ := newTestConnector(t, nil, true, policy)
+	c.linkClient = connector.NewGuardedHTTPClient(connector.GuardedClientOptions{
+		Timeout: 5 * time.Second,
+	})
+
+	got := c.fetchLinkedContent(context.Background(), srv.URL, slog.Default())
+	if got != "" {
+		t.Errorf("fetchLinkedContent returned %q, want empty (loopback must be refused)", got)
+	}
+}
+
+// A missing guarded client must refuse rather than quietly fall back to the
+// unguarded one.
+func TestFetchLinkedContent_FailsClosedWithoutGuardedClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("should never be fetched"))
+	}))
+	defer srv.Close()
+
+	c, _, _ := newTestConnector(t, nil, true, content.LinkPolicyConfig{Default: "unrestricted"})
+	c.linkClient = nil
+
+	if got := c.fetchLinkedContent(context.Background(), srv.URL, slog.Default()); got != "" {
+		t.Errorf("fetchLinkedContent returned %q, want empty when no guarded client is configured", got)
+	}
+}
