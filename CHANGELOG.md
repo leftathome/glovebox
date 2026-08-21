@@ -105,7 +105,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the guarded client is missing rather than falling back to the unguarded
   one.
 
-
 ### Added
 
 - **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
