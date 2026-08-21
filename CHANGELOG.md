@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Bound the enricher subprocesses (spec 14)**: the enrichers shell out to
+  `pandoc`, `tesseract` and `pdftotext` -- mature parsers, but parsers, running
+  on files an attacker chose. Argument injection was already impossible (fixed
+  argv, content on stdin); what was left unbounded was what those processes do
+  with a hostile file.
+  - **No effective timeout.** Each enricher passed its context to
+    `exec.CommandContext`, which bounds nothing unless the context carries a
+    deadline -- and the production caller (`StagingItem.Commit`) passed
+    `context.Background()`. A wedged child held the connector's commit open
+    indefinitely. `Registry.ApplyAll` now applies a per-enricher timeout
+    (default 120s, `SetTimeout` to override), and `context.WithTimeout`
+    honours an earlier caller deadline so a shorter one still wins.
+  - **Unbounded output.** stdout was accumulated in a plain `bytes.Buffer`, so
+    a crafted document could expand until memory ran out. Output is now capped
+    (default 64 MiB, matching the ingest body limit, since a larger artifact
+    could never be ingested anyway) and stderr transcripts at 64 KiB. Hitting
+    the cap **fails** the enricher rather than truncating: a silently truncated
+    document looks complete while missing whatever came after the cut, which on
+    a hostile file is exactly where the interesting part would be.
+
+  This bounds the blast radius rather than sandboxing the parsers; seccomp
+  profiles and cgroup limits for the enricher pods remain open follow-up work.
+
+
+### Security
+
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
   scanning engine matched ASCII patterns against content that had only been
   NFKC-normalized and stripped of seven zero-width runes, so several classes of

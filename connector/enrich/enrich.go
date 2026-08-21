@@ -14,6 +14,7 @@ package enrich
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/leftathome/glovebox/internal/staging"
 )
@@ -75,6 +76,9 @@ func (e EnricherError) Unwrap() error { return e.Err }
 type Registry struct {
 	mu        sync.RWMutex
 	enrichers []Enricher
+	// perEnricherTimeout bounds a single Enrich call; zero means
+	// DefaultTimeout.
+	perEnricherTimeout time.Duration
 }
 
 // NewRegistry returns a new empty Registry.
@@ -120,7 +124,16 @@ func (r *Registry) ApplyAll(ctx context.Context, sourcePath string, meta staging
 		if !e.Applies(meta, sourcePath) {
 			continue
 		}
-		arts, err := e.Enrich(ctx, sourcePath, meta, outputDir)
+		// Bound each enricher independently. The enrichers pass their ctx
+		// to exec.CommandContext, which does nothing unless the ctx
+		// actually carries a deadline -- and the production caller
+		// (StagingItem.Commit) passes context.Background(), so a wedged
+		// pandoc or tesseract on a crafted file held Commit open forever.
+		// WithTimeout honours an earlier parent deadline, so a caller that
+		// sets a shorter one still wins.
+		runCtx, cancel := context.WithTimeout(ctx, r.timeout())
+		arts, err := e.Enrich(runCtx, sourcePath, meta, outputDir)
+		cancel()
 		if err != nil {
 			errs = append(errs, EnricherError{Producer: e.Name(), Err: err})
 			// Per §4.4: per-enricher errors do NOT abort iteration.
@@ -129,6 +142,23 @@ func (r *Registry) ApplyAll(ctx context.Context, sourcePath string, meta staging
 		artifacts = append(artifacts, arts...)
 	}
 	return artifacts, errs
+}
+
+// SetTimeout overrides the per-enricher timeout. A value <= 0 restores
+// DefaultTimeout.
+func (r *Registry) SetTimeout(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.perEnricherTimeout = d
+}
+
+func (r *Registry) timeout() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.perEnricherTimeout > 0 {
+		return r.perEnricherTimeout
+	}
+	return DefaultTimeout * time.Second
 }
 
 // Default is the process-global registry. Subpackages register their
