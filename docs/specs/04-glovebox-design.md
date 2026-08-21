@@ -211,11 +211,13 @@ The loaded rule configuration is logged at startup for auditability.
 
 Before heuristic rules are evaluated, content is pre-processed to defeat common evasion techniques:
 
-1. **Unicode NFKC normalization** — maps fullwidth characters, compatibility characters, and many visually-similar characters (homoglyphs) to their canonical equivalents. This prevents evasion via Cyrillic "o", fullwidth Latin, etc.
-2. **Zero-width character stripping** — removes U+200B, U+200C, U+200D, U+FEFF, U+2060, U+200E, U+200F and other invisible Unicode before matching.
+1. **Unicode NFKC normalization** — maps fullwidth characters, compatibility characters, ligatures and mathematical alphanumerics to their canonical equivalents. NFKC does **not** fold cross-script homoglyphs: Cyrillic "о" (U+043E) and Latin "o" are distinct characters that NFKC leaves alone. Homoglyph evasion is handled by the confusable folding pass below, not by NFKC.
+2. **Invisible character stripping** — removes the zero-width set (U+200B, U+200C, U+200D, U+FEFF, U+2060, U+200E, U+200F), the soft hyphen (U+00AD), the Mongolian vowel separator, invisible math operators, Hangul fillers, variation selectors, the explicit bidi controls (U+202A–U+202E, U+2066–U+2069), the remaining Unicode `Cf` format characters, and the **Unicode Tags block** (U+E0000–U+E007F). The Tags block is the invisible-ASCII channel: a payload written there renders as nothing but is read back verbatim by a model, so it is additionally *decoded* and fed to the ordinary rules (see below) and flagged by `invisible_smuggling`.
 3. **HTML tag stripping** (for `text/html` content) — strips all HTML tags to produce plain text, decodes HTML entities. Heuristic rules are run against BOTH the raw HTML and the stripped plain text, catching payloads hidden in tag structure and payloads in attributes/comments.
+4. **Confusable folding** — produces a skeleton buffer in which combining marks are dropped and cross-script lookalikes (Cyrillic, Greek, Armenian, Cherokee and Latin-adjacent forms) are folded to the ASCII letter they impersonate. Matchers run against this buffer in addition to the normalized one, so "ignоre all previоus instructiоns" matches `instruction_override`. Folding is kept in a *separate* buffer rather than applied to the normalized one so `language_detection` still observes the content's true script.
+5. **Payload decoding** — base64 (standard and URL alphabets, padded and raw), hex, and percent-encoded runs are decoded into a scan-only buffer, to a bounded size and a bounded nesting depth, and matched by the same rules. A decoding is kept only when it yields plausible text, so hashes, tokens and compressed blobs do not inflate the buffer. This closes the gap where an encoded injection was *flagged* by `suspicious_encoding` (weight 0.7, below the 0.8 threshold) but never read.
 
-Pre-processing produces a normalized content buffer used by matchers. The original content is preserved unchanged for routing (invariant: glovebox never modifies content).
+Pre-processing produces several scan-only buffers used by matchers and detectors. The original content is preserved unchanged for routing (invariant: glovebox never modifies content) — decoding and folding exist so the matchers see what a reader sees, and never alter what is delivered.
 
 ### 6.3 Built-in Rules (Phase 1)
 
@@ -224,7 +226,8 @@ Pre-processing produces a normalized content buffer used by matchers. The origin
 | `instruction_override` | regex | 1.0 | `ignore\s+(\w+\s+)*previous`, `disregard\s+(\w+\s+)*your\s+instructions`, and variants with flexible word boundaries |
 | `role_reassignment` | regex | 1.0 | `you\s+are\s+now`, `act\s+as`, `pretend\s+you\s+are`, and variants |
 | `tool_invocation_syntax` | substring | 0.8 | `<tool>`, `<function_call>`, `exec:`, `bash:`, etc. |
-| `suspicious_encoding` | custom_detector | 0.7 | Base64 blocks in plain text, zero-width chars, excessive unicode escapes |
+| `suspicious_encoding` | custom_detector | 0.7 | Base64 blocks in plain text, zero-width chars, bidi controls, excessive unicode escapes |
+| `invisible_smuggling` | custom_detector | 1.0 | Unicode Tags-block characters (U+E0000–U+E007F). No legitimate use in ingested content, so this quarantines on its own; the signal detail carries the decoded hidden text for the reviewer |
 | `prompt_template_structure` | custom_detector | 0.6 | Content resembling system prompts or instruction blocks |
 | `non_english_content` | custom_detector | 0.0 (booster) | Multiplies other signal weights by 1.5x when detected |
 
