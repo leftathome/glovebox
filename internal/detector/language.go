@@ -9,6 +9,16 @@ import (
 
 const minContentLength = 20
 
+// AllowSampling opts language detection into prefix+suffix sampling.
+//
+// Language is a property of the document as a whole: a 128 KB sample
+// identifies it as well as the full text, and lingua's model evaluation is
+// the expensive part of a scan. Positioning buys an attacker nothing here
+// either -- this rule carries weight 0.0 and only multiplies other
+// signals, so hiding non-English text outside the window forfeits a
+// booster rather than evading a detection.
+func (d *LanguageDetectionDetector) AllowSampling() bool { return true }
+
 type LanguageDetectionDetector struct {
 	detector lingua.LanguageDetector
 }

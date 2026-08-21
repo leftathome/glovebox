@@ -144,7 +144,17 @@ func buildScanFuncs(rules engine.RuleConfig, registry *detector.Registry) ([]eng
 			if !ok {
 				return nil, nil, fmt.Errorf("unknown detector %q for rule %s", rule.Detector, rule.Name)
 			}
+			// Sampling is a per-detector opt-in. A detector that has not
+			// declared itself sample-safe sees the whole document, so a
+			// payload cannot be hidden by padding it past a window.
+			sampled := false
+			if sd, ok := d.(detector.SampledDetector); ok {
+				sampled = sd.AllowSampling()
+			}
 			detectors = append(detectors, func(content []byte) ([]engine.Signal, error) {
+				if sampled {
+					content = engine.SampleContent(content, engine.DefaultSampleSize)
+				}
 				signals, err := d.Detect(content)
 				if err != nil {
 					return nil, err
