@@ -35,6 +35,14 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 	if zwCount > 0 {
 		findings = append(findings, fmt.Sprintf("zero-width characters found: %d", zwCount))
 	}
+	// Explicit bidi controls reorder rendered text without changing the
+	// underlying bytes, so a reviewer and a model can read the same item
+	// differently. Legitimate right-to-left documents do use them, which
+	// is why this is a suspicion signal here rather than its own
+	// quarantine-weight rule.
+	if _, bidiCount := engine.CountInvisible(content); bidiCount > 0 {
+		findings = append(findings, fmt.Sprintf("bidi control characters found: %d", bidiCount))
+	}
 	if unusualUnicodeCount > 10 {
 		findings = append(findings, fmt.Sprintf("excessive unusual unicode: %d characters", unusualUnicodeCount))
 	}

@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
+  scanning engine matched ASCII patterns against content that had only been
+  NFKC-normalized and stripped of seven zero-width runes, so several classes of
+  payload reached agent workspaces unflagged. Verified against the shipped
+  ruleset: 9 of 12 corpus evasions scored below the 0.8 quarantine threshold
+  (most at 0.00) before this change and quarantine after it.
+  - **Homoglyphs** — NFKC does not fold cross-script lookalikes, contrary to the
+    claim in spec 04 §6.2 (now corrected). `ignоre all previоus instructiоns`
+    with Cyrillic `о` matched nothing. A confusable-folding pass now produces a
+    skeleton buffer (combining marks dropped, Cyrillic/Greek/Armenian/Cherokee
+    lookalikes folded to ASCII) that matchers scan in addition to the normalized
+    buffer. It is kept separate so `language_detection` still sees the true
+    script.
+  - **Invisible characters** — only 7 zero-width runes were stripped, leaving the
+    soft hyphen, Mongolian vowel separator, bidi controls, variation selectors,
+    the remaining `Cf` format characters and, most importantly, the **Unicode
+    Tags block** (U+E0000–U+E007F) — an invisible channel that renders as
+    nothing but is read back verbatim by a model. All are now stripped; the
+    Tags payload is additionally decoded into the scan buffer so the ordinary
+    rules match it, and a new `invisible_smuggling` rule (weight 1.0) quarantines
+    it on its own, carrying the decoded hidden text for the reviewer.
+  - **Encoded payloads** — base64/hex/percent-encoded injections were *flagged*
+    by `suspicious_encoding` (weight 0.7, below the 0.8 threshold) but never
+    read, and runs shorter than the detector's `{50,}` regex were not flagged at
+    all. Encoded runs are now decoded into a scan-only buffer (bounded size and
+    nesting depth, kept only when the result is plausible text) and matched by
+    the same rules.
+  - `suspicious_encoding` additionally reports bidi control characters, and
+    detectors now run against the pre-scrub buffer so the "invisible characters
+    found" signal can actually fire — previously the strip ran upstream of the
+    detector, so it never could.
+  - Delivery remains byte-identical: every new buffer is scan-only, asserted by
+    test. Ordinary ASCII content still costs exactly one pass, since each extra
+    buffer is nil unless it would differ.
+
 - **SSRF in connector link-fetching: pin the resolved address and re-check
   redirects**: `LinkPolicy.Check` resolved a hostname and rejected private
   addresses, then handed the URL to a stock `http.Client` that resolved it

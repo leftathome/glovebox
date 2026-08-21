@@ -42,6 +42,13 @@
       "detector": "encoding_anomaly"
     },
     {
+      "name": "invisible_smuggling",
+      "patterns": [],
+      "weight": 1.0,
+      "match_type": "custom_detector",
+      "detector": "invisible_smuggling"
+    },
+    {
       "name": "prompt_template_structure",
       "patterns": [],
       "weight": 0.6,

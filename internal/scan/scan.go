@@ -47,6 +47,34 @@ func (s *Scanner) Scan(content []byte, contentType string) (engine.ScanResult, e
 		}
 		signals = appendDeduped(signals, htmlSignals)
 	}
+	// Additional scan-only views of the same item. Each is nil unless it
+	// would differ from Normalized, so ordinary ASCII content still costs
+	// exactly one pass. Signals are deduped by rule name, so a payload
+	// visible in more than one view is counted once.
+	for _, extra := range []struct {
+		name    string
+		content []byte
+		// Detectors are re-run only where they can see something the
+		// normalized pass cannot; matchers run against every view.
+		detectors []engine.ScanFunc
+	}{
+		// Homoglyph skeleton: catches "ignоre previоus" (Cyrillic о).
+		{name: "folded", content: pp.Folded},
+		// Decoded base64/hex/percent payloads and recovered Tags-block text.
+		{name: "decoded", content: pp.Decoded},
+		// Pre-scrub view: the only one where invisibles are still present,
+		// so the smuggling and encoding detectors can report them.
+		{name: "pre-scrub", content: pp.PreScrub, detectors: s.detectors},
+	} {
+		if extra.content == nil {
+			continue
+		}
+		extraSignals, err := engine.ScanContent(bytes.NewReader(extra.content), s.matchers, extra.detectors)
+		if err != nil {
+			return engine.ScanResult{}, fmt.Errorf("scan %s: %w", extra.name, err)
+		}
+		signals = appendDeduped(signals, extraSignals)
+	}
 	// Separate boost signals (weight_booster rules) from scored signals, matching
 	// deliverResult (main.go): a boost signal contributes its multiplier only,
 	// NOT its own weight, to the total. Replicate the separation so a future
