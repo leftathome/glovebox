@@ -27,16 +27,25 @@ func frameworkTestOpts(t *testing.T, name string, port int, c Connector) Options
 // the deadline passes.
 func waitForPort(t *testing.T, port int, timeout time.Duration) {
 	t.Helper()
+	if !portReady(port, timeout) {
+		t.Fatalf("port %d did not become ready within %v", port, timeout)
+	}
+}
+
+// portReady reports whether the port accepts a TCP connection before the
+// deadline. Callers that can recover from a port never opening use this
+// directly; waitForPort is the fail-the-test wrapper.
+func portReady(port int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
 		if err == nil {
 			conn.Close()
-			return
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("port %d did not become ready within %v", port, timeout)
+	return false
 }
 
 func TestDataSubjectConfigured(t *testing.T) {
@@ -271,7 +280,27 @@ func TestFramework_ShutdownStopsHealthServer(t *testing.T) {
 }
 
 func TestNewFramework_ListenerServerStarts(t *testing.T) {
-	port := pickPort(t)
+	// pickPortPair holds HealthPort+1 only until NewFramework binds it, so
+	// another process on the machine can still win that gap. Losing it is
+	// not a defect in the framework, so retry the bring-up instead of
+	// failing the run; a genuinely broken listener fails every attempt.
+	const attempts = 5
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if listenerServerStartsOnce(t, attempt == attempts) {
+			return
+		}
+		t.Logf("attempt %d: listener port was taken before the framework could bind it, retrying", attempt)
+	}
+}
+
+// listenerServerStartsOnce brings one Listener-backed framework up and
+// exercises its listener. It returns false for the single recoverable
+// failure -- the listener port never opening, i.e. a lost race for the
+// port -- and fails the test outright for anything else. On the final
+// attempt (last) a lost race is fatal too.
+func listenerServerStartsOnce(t *testing.T, last bool) bool {
+	t.Helper()
+	port := pickPortPair(t)
 	handlerHit := make(chan struct{}, 1)
 	mock := &mockListenerConnector{
 		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +320,12 @@ func TestNewFramework_ListenerServerStarts(t *testing.T) {
 	defer fw.Shutdown()
 
 	listenerPort := port + 1
-	waitForPort(t, listenerPort, 2*time.Second)
+	if !portReady(listenerPort, 2*time.Second) {
+		if last {
+			t.Fatalf("listener port %d did not become ready within %v", listenerPort, 2*time.Second)
+		}
+		return false
+	}
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/anything", listenerPort))
 	if err != nil {
@@ -306,4 +340,5 @@ func TestNewFramework_ListenerServerStarts(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("listener handler was not called")
 	}
+	return true
 }

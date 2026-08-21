@@ -37,11 +37,18 @@ spec:
           {{- if or .Values.ingest.auth.enabled .Values.ingest.archives.enabled }}
           env:
             {{- if .Values.ingest.auth.vault.tlsSkipVerify }}
-            # Homelab vault commonly runs self-signed; the vault Go
-            # client (used by auth.LoginK8s + auth.NewProductionVaultClient)
-            # reads VAULT_SKIP_VERIFY from env via vaultapi.DefaultConfig.
+            # Explicitly disabled verification. Prefer vault.caSecret: the
+            # token-retrieval path is how glovebox learns which callers to
+            # trust, so an unauthenticated connection there undermines
+            # every check that depends on those tokens.
             - name: VAULT_SKIP_VERIFY
               value: "true"
+            {{- else if .Values.ingest.auth.vault.caSecret }}
+            # Verify against the operator-supplied CA bundle. The vault Go
+            # client (used by auth.LoginK8s + auth.NewProductionVaultClient)
+            # reads VAULT_CACERT from env via vaultapi.DefaultConfig.
+            - name: VAULT_CACERT
+              value: /etc/vault-ca/ca.crt
             {{- end }}
             {{- if .Values.ingest.archives.enabled }}
             # Pin the Go runtime's soft memory ceiling ~100Mi below the
@@ -103,6 +110,11 @@ spec:
               mountPath: /etc/ingest-tls
               readOnly: true
             {{- end }}
+            {{- if and .Values.ingest.auth.enabled .Values.ingest.auth.vault.caSecret (not .Values.ingest.auth.vault.tlsSkipVerify) }}
+            - name: vault-ca
+              mountPath: /etc/vault-ca
+              readOnly: true
+            {{- end }}
             - name: staging
               mountPath: {{ .Values.config.stagingDir }}
             - name: quarantine
@@ -146,6 +158,14 @@ spec:
         - name: ingest-tls
           secret:
             secretName: {{ include "glovebox.fullname" . }}-ingest-server-tls
+        {{- end }}
+        {{- if and .Values.ingest.auth.enabled .Values.ingest.auth.vault.caSecret (not .Values.ingest.auth.vault.tlsSkipVerify) }}
+        - name: vault-ca
+          secret:
+            secretName: {{ .Values.ingest.auth.vault.caSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt
         {{- end }}
         - name: staging
           persistentVolumeClaim:

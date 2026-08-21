@@ -1265,10 +1265,28 @@ ingest:
       k8sRole: "glovebox-ingest"
       tokensPath: "glovebox/ingest-tokens"
       kvMount: "secret"
-      # Homelab vaults commonly run with a self-signed cert; skip TLS
-      # verification when true. Cluster-pod-network only, no external
-      # exposure. For production-grade: false + mount the Vault CA cert.
-      tlsSkipVerify: true
+      # TLS verification for the connection that fetches ingest/archive
+      # bearer tokens from Vault.
+      #
+      # This defaults to FALSE (verify). It previously shipped as true,
+      # which meant every default install accepted a MITM'd Vault response
+      # on the secret-retrieval path -- a pod able to spoof or relay the
+      # in-cluster Vault address could hand glovebox attacker-chosen
+      # tokens. "Pod network only" bounds who can attempt that; it does not
+      # make the connection authenticated.
+      #
+      # For a self-signed homelab Vault, set caSecret below rather than
+      # turning verification off: that keeps the connection authenticated
+      # against a CA you chose. Setting tlsSkipVerify: true is still
+      # possible, but it is now an explicit decision rather than the
+      # default nobody looked at.
+      tlsSkipVerify: false
+      # Name of a Secret holding the Vault CA bundle under the key `ca.crt`.
+      # When set (and ingest.auth.enabled), it is mounted read-only at
+      # /etc/vault-ca/ca.crt and VAULT_CACERT points at it.
+      # Create it with, e.g.:
+      #   kubectl create secret generic vault-ca --from-file=ca.crt=/path/to/vault-ca.crt
+      caSecret: ""
     reloadIntervalSeconds: 300              # periodic re-pull
     trustedProxyCIDRs:
       - "10.244.0.0/16"                     # placeholder: cluster Traefik pod CIDR
