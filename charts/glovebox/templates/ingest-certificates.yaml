@@ -1,0 +1,121 @@
+{{- if ne .Values.ingest.tls.mode "disabled" }}
+{{- $tls := .Values.ingest.tls }}
+{{- $fullname := include "glovebox.fullname" . }}
+# cert-manager certificates for the mutual-TLS ingest plane (spec 08 §3.10).
+#
+# Identity lives in a URI SAN (spiffe://<trust-domain>/<kind>/<name>) rather
+# than the Common Name: CN is free text with neither structure nor a
+# uniqueness guarantee, while a URI SAN is what the scanner matches on
+# exactly. metadata.source must equal the connector name encoded here, so
+# these certificates are what stop one connector claiming another's
+# provenance.
+#
+# Issue these from an issuer dedicated to the ingest plane. Reusing the
+# cluster edge CA would let any certificate it ever signed ingest.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-ingest-server
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+spec:
+  secretName: {{ $fullname }}-ingest-server-tls
+  duration: {{ $tls.duration }}
+  renewBefore: {{ $tls.renewBefore }}
+  isCA: false
+  usages:
+    - server auth
+  dnsNames:
+    - {{ $fullname }}-ingest
+    - {{ $fullname }}-ingest.{{ .Release.Namespace }}.svc
+    - {{ $fullname }}-ingest.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ $tls.issuerRef.name }}
+    kind: {{ $tls.issuerRef.kind }}
+    group: {{ $tls.issuerRef.group }}
+{{- range $name, $connector := .Values.connectors }}
+{{- if $connector.enabled }}
+{{- if eq ($connector.ingestMode | default "http") "http" }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-{{ $name }}-ingest-client
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: connector
+spec:
+  secretName: {{ $fullname }}-{{ $name }}-ingest-client-tls
+  duration: {{ $tls.duration }}
+  renewBefore: {{ $tls.renewBefore }}
+  isCA: false
+  usages:
+    - client auth
+  # The scanner reads the connector name from this URI and requires
+  # metadata.source to match it.
+  uris:
+    - spiffe://{{ $tls.trustDomain }}/connector/{{ $name }}
+  commonName: {{ $name }}
+  issuerRef:
+    name: {{ $tls.issuerRef.name }}
+    kind: {{ $tls.issuerRef.kind }}
+    group: {{ $tls.issuerRef.group }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.schoologyConnector.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-schoology-ingest-client
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+spec:
+  secretName: {{ $fullname }}-schoology-ingest-client-tls
+  duration: {{ $tls.duration }}
+  renewBefore: {{ $tls.renewBefore }}
+  isCA: false
+  usages:
+    - client auth
+  uris:
+    - spiffe://{{ $tls.trustDomain }}/connector/schoology
+  commonName: schoology
+  issuerRef:
+    name: {{ $tls.issuerRef.name }}
+    kind: {{ $tls.issuerRef.kind }}
+    group: {{ $tls.issuerRef.group }}
+{{- end }}
+{{- range $name, $importer := .Values.importers }}
+{{- if $importer.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-{{ $name }}-ingest-client
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: importer
+spec:
+  secretName: {{ $fullname }}-{{ $name }}-ingest-client-tls
+  duration: {{ $tls.duration }}
+  renewBefore: {{ $tls.renewBefore }}
+  isCA: false
+  usages:
+    - client auth
+  # Importers are a distinct kind. Source-match enforcement compares
+  # metadata.source with the name segment, so an importer whose source
+  # label differs from its release name needs enforce_source_match off
+  # until the two agree.
+  uris:
+    - spiffe://{{ $tls.trustDomain }}/importer/{{ $name }}
+  commonName: {{ $name }}
+  issuerRef:
+    name: {{ $tls.issuerRef.name }}
+    kind: {{ $tls.issuerRef.kind }}
+    group: {{ $tls.issuerRef.group }}
+{{- end }}
+{{- end }}
+{{- end }}

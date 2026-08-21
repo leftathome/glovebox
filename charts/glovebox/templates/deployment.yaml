@@ -69,6 +69,11 @@ spec:
             - name: ingest
               containerPort: {{ .Values.config.ingest.port }}
               protocol: TCP
+            {{- if ne .Values.ingest.tls.mode "disabled" }}
+            - name: ingest-tls
+              containerPort: {{ .Values.ingest.tls.port }}
+              protocol: TCP
+            {{- end }}
             {{- end }}
           # /healthz actively probes that the delivery mount is writable, so a
           # stale bind-mount EIO on the shared agents PVC restarts the pod
@@ -100,6 +105,11 @@ spec:
             - name: config
               mountPath: /etc/glovebox
               readOnly: true
+            {{- if ne .Values.ingest.tls.mode "disabled" }}
+            - name: ingest-tls
+              mountPath: /etc/ingest-tls
+              readOnly: true
+            {{- end }}
             {{- if and .Values.ingest.auth.enabled .Values.ingest.auth.vault.caSecret (not .Values.ingest.auth.vault.tlsSkipVerify) }}
             - name: vault-ca
               mountPath: /etc/vault-ca
@@ -142,6 +152,13 @@ spec:
         - name: config
           configMap:
             name: {{ include "glovebox.fullname" . }}-config
+        {{- if ne .Values.ingest.tls.mode "disabled" }}
+        # cert-manager writes tls.crt/tls.key here and, for a CA issuer,
+        # ca.crt -- which is what client certificates are verified against.
+        - name: ingest-tls
+          secret:
+            secretName: {{ include "glovebox.fullname" . }}-ingest-server-tls
+        {{- end }}
         {{- if and .Values.ingest.auth.enabled .Values.ingest.auth.vault.caSecret (not .Values.ingest.auth.vault.tlsSkipVerify) }}
         - name: vault-ca
           secret:

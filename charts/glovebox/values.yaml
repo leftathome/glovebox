@@ -1303,6 +1303,40 @@ ingest:
     globalRateLimit:
       window: 60s
       maxRejected: 100                      # spec 10 §5.3 backstop
+  # Mutual TLS on /v1/ingest (spec 08 section 3.10). Off by default; see
+  # docs/ingest-mtls.md for the model and the migration ladder.
+  #
+  # The point is identity, not encryption: under mTLS the scanner requires
+  # metadata.source to match the connector its client certificate names, so
+  # a compromised connector can no longer stamp another connector's
+  # provenance onto an item.
+  tls:
+    # disabled | permissive | required.
+    #   permissive serves BOTH listeners so connectors migrate one at a
+    #   time (watch the transport label on glovebox_items_received_total
+    #   drain to zero); required opens only the mTLS listener.
+    mode: disabled
+    # mTLS listener port. Defaults to config.ingest.port + 1 server-side;
+    # set explicitly here because the Service and NetworkPolicy need it.
+    port: 9092
+    trustDomain: glovebox
+    # enforce_source_match defaults ON server-side whenever mTLS is active.
+    # Set false only while migrating a connector whose source label does
+    # not yet match its certificate name.
+    enforceSourceMatch: true
+    # cert-manager issuer that mints the ingest-plane certificates. Use an
+    # issuer dedicated to this plane, NOT the cluster edge CA: a
+    # certificate issued for any other purpose must not be able to ingest.
+    issuerRef:
+      name: glovebox-ingest-ca
+      kind: ClusterIssuer
+      group: cert-manager.io
+    # Short lifetimes are what make a stolen key a small problem. Both
+    # ends re-read their keypair when it changes on disk, so rotation
+    # needs no restart.
+    duration: 24h
+    renewBefore: 8h
+
   archives:
     enabled: false                          # opt-in; off by default
     # Root path under which .tmp-archives/ and archives/ live. A

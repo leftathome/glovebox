@@ -24,6 +24,14 @@ spec:
       ports:
         - port: {{ .Values.config.ingest.port }}
           protocol: TCP
+        {{- if ne .Values.ingest.tls.mode "disabled" }}
+        # mTLS listener. Kept alongside the plaintext port rather than
+        # replacing it, because permissive mode serves both while
+        # connectors migrate; under required the plaintext listener is
+        # simply never opened, so the rule admits a closed port.
+        - port: {{ .Values.ingest.tls.port }}
+          protocol: TCP
+        {{- end }}
     {{- end }}
     # Metrics. /metrics exposes per-source and per-verdict counters and
     # queue depths -- not content, but enough operational shape (which

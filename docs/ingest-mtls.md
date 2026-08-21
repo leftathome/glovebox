@@ -132,10 +132,49 @@ The mode ladder exists so no flag day is needed:
 | `metadata.source` ≠ certificate name | `403` and the item is **not** staged |
 | Enforcement on, request without a peer | `401` |
 
-## Not yet covered
+## Helm chart
 
-- **Helm chart wiring** (cert-manager `Certificate` resources per connector,
-  Secret mounts, NetworkPolicy port change) — follow-up.
+The chart wires all of this from `ingest.tls`:
+
+```yaml
+ingest:
+  tls:
+    mode: permissive          # disabled | permissive | required
+    port: 9092
+    trustDomain: glovebox
+    enforceSourceMatch: true
+    issuerRef:
+      name: glovebox-ingest-ca
+      kind: ClusterIssuer
+    duration: 24h
+    renewBefore: 8h
+```
+
+Setting a mode other than `disabled` renders, per install:
+
+- a cert-manager `Certificate` for the server (DNS SANs for the ingest
+  Service) and **one per producer** — every enabled connector, the Schoology
+  connector, and every enabled importer — each carrying its SPIFFE URI SAN;
+- the server keypair mounted at `/etc/ingest-tls` on the scanner, and each
+  producer's client keypair at the same path in its own pod;
+- `GLOVEBOX_INGEST_URL` switched to `https://…:<tls.port>` plus the three
+  client-certificate environment variables;
+- the mTLS port on the ingest `Service`, the scanner's `containerPort`, and
+  the connector NetworkPolicy.
+
+Every producer is wired, deliberately: under `required` the plaintext
+listener is never opened, so a producer the chart forgot would fail to
+deliver with nothing but a connection error to show for it.
+
+With `mode: disabled` the chart renders **byte-identically** to before, so an
+existing install is untouched until it opts in — including the config
+checksum, so no pod restarts on upgrade.
+
+**Issue from a dedicated issuer.** `issuerRef` should name a CA used only for
+this plane; pointing it at the cluster edge CA would let any certificate that
+CA ever signed ingest.
+
+## Not yet covered
 - **`/v1/archives`** still uses spec 10 bearer tokens. A cert SAN is a
   strictly stronger caller identity, so a later spec can retire the tokens or
   keep them as a second factor for archive-scale sources. Splitting archives

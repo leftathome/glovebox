@@ -41,6 +41,23 @@ data:
           are intentionally NOT projected here -- they decide whether
           sibling templates render but the binary never reads them.
         */ -}}
+        {{- /*
+          Spec 08 §3.10 mTLS. Paths are the in-container mount points from
+          deployment.yaml; the chart owns them so the binary and the mount
+          cannot drift. Emitted only when mTLS is on, so an unchanged
+          install renders byte-identically.
+        */ -}}
+        {{- if ne .Values.ingest.tls.mode "disabled" }}
+        "tls": {
+          "mode": {{ .Values.ingest.tls.mode | quote }},
+          "port": {{ .Values.ingest.tls.port | int }},
+          "cert_file": "/etc/ingest-tls/tls.crt",
+          "key_file": "/etc/ingest-tls/tls.key",
+          "client_ca_file": "/etc/ingest-tls/ca.crt",
+          "trust_domain": {{ .Values.ingest.tls.trustDomain | quote }},
+          "enforce_source_match": {{ .Values.ingest.tls.enforceSourceMatch }}
+        },
+        {{- end -}}
         "auth": {
           "enabled": {{ .Values.ingest.auth.enabled }},
           "vault": {

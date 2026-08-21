@@ -57,8 +57,19 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
+            {{- if ne $.Values.ingest.tls.mode "disabled" }}
+            - name: GLOVEBOX_INGEST_URL
+              value: "https://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.ingest.tls.port }}/v1/ingest"
+            - name: GLOVEBOX_INGEST_CA
+              value: /etc/ingest-tls/ca.crt
+            - name: GLOVEBOX_INGEST_CLIENT_CERT
+              value: /etc/ingest-tls/tls.crt
+            - name: GLOVEBOX_INGEST_CLIENT_KEY
+              value: /etc/ingest-tls/tls.key
+            {{- else }}
             - name: GLOVEBOX_INGEST_URL
               value: "http://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.config.ingest.port }}/v1/ingest"
+            {{- end }}
             - name: GLOVEBOX_STATE_DIR
               value: /state
             - name: GLOVEBOX_IMPORTER_CONFIG
@@ -66,6 +77,11 @@ spec:
           resources:
             {{- toYaml $importer.resources | nindent 12 }}
           volumeMounts:
+            {{- if ne $.Values.ingest.tls.mode "disabled" }}
+            - name: ingest-tls
+              mountPath: /etc/ingest-tls
+              readOnly: true
+            {{- end }}
             - name: input
               mountPath: /data/import
               readOnly: {{ $importer.input.readOnly | default true }}
@@ -90,6 +106,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if ne $.Values.ingest.tls.mode "disabled" }}
+        - name: ingest-tls
+          secret:
+            secretName: {{ include "glovebox.fullname" $ }}-{{ $name }}-ingest-client-tls
+        {{- end }}
         - name: input
           persistentVolumeClaim:
             claimName: {{ $importer.input.existingClaim }}
