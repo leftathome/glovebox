@@ -47,6 +47,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     unaffected until they opt in. See `docs/ingest-mtls.md`.
 
 
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
 ### Security
 
 - **Scan the two channels that routed around the engine**: the engine scanned
@@ -77,6 +117,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (non-ASCII escaped, newlines collapsed, truncated), the treatment
     `content.sanitized` already got: the agent reading that file is
     summarising an item already suspected hostile.
+
+- **Vault TLS verification is on by default (`ingest.auth.vault.tlsSkipVerify`)**:
+  the chart shipped `tlsSkipVerify: true`, so every default install accepted a
+  MITM'd Vault response *on the path that fetches ingest and archive bearer
+  tokens*. A pod able to spoof or relay the in-cluster Vault address could hand
+  glovebox attacker-chosen tokens — and those tokens are how glovebox decides
+  which callers to trust, so an unauthenticated connection there undermines
+  every check that depends on them. "Pod network only" bounds who can attempt
+  it; it does not make the connection authenticated.
+  The default is now `false`. For a self-signed homelab Vault, set
+  `ingest.auth.vault.caSecret` to the name of a Secret holding the CA bundle
+  under `ca.crt`; the chart mounts it read-only and points `VAULT_CACERT` at
+  it, which keeps the connection authenticated against a CA you chose. Setting
+  `tlsSkipVerify: true` still works but is now an explicit decision rather than
+  the default nobody looked at.
+  **Upgrade note:** an install relying on the old default against a self-signed
+  Vault will fail to fetch tokens until either `caSecret` is set or
+  `tlsSkipVerify: true` is restored explicitly.
+
 
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
@@ -145,39 +204,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the guarded client is missing rather than falling back to the unguarded
   one.
 
-
-### Added
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
-
-### Removed
-
-- **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on
-  tag pushes -- a subset `ci.yml` already builds and pushes on the same event,
-  with SBOM and provenance attestations `docker.yml` did not produce. Its one
-  distinct behaviour was moving the `:latest` tag for those 3 images on a tag
-  push; `ci.yml` moves `:latest` for all 28 on the main push a tag is cut from,
-  so `:latest` still lands, and it lands consistently across images instead of
-  for an arbitrary three.
-
 ### Fixed
+
+- **Flaky `TestNewFramework_ListenerServerStarts` (CI red on unrelated PRs)**:
+  the test reserved a free port `p` for the framework's health server but
+  assumed `p+1` -- where the framework binds a `Listener` connector's HTTP
+  server -- was free too. Linux hands out ephemeral ports in roughly ascending
+  order, so `p+1` is precisely the port the next `bind(":0")` on the machine is
+  most likely to get, and `go test ./...` runs many package binaries in
+  parallel. When another binary won that port the listener could not bind and
+  the test failed with `port N did not become ready within 2s` -- reproducible
+  at ~4% per run under `-race` (8 failures in 200 iterations), enough to redden
+  CI on changes that touch no connector code. The test now reserves both halves
+  of the pair before use and retries bring-up a few times, since the reservation
+  can only be held until the framework itself binds. 300 iterations under
+  `-race` pass.
+
+
 
 - **Release archives shipped 10 of 24 connectors and no importers at all**:
   three hand-written lists decided what this repository builds -- `ci.yml`'s
@@ -199,6 +242,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     discovery bug that returned an empty or partial list fails the build
     instead of quietly shipping fewer components each release.
 
+
 - **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
   agents volume the OpenClaw gateway also mounts; when that volume
   detaches/reattaches under a rolling peer, glovebox's mount can go stale and
@@ -211,6 +255,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatically. (The original trigger was a ReadWriteOnce volume shared with
   the gateway, since moved to ReadWriteMany; the probe is kept because RWX
   narrows the window without making a mount immune to going stale.)
+
+### Removed
+
+- **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on
+  tag pushes -- a subset `ci.yml` already builds and pushes on the same event,
+  with SBOM and provenance attestations `docker.yml` did not produce. Its one
+  distinct behaviour was moving the `:latest` tag for those 3 images on a tag
+  push; `ci.yml` moves `:latest` for all 28 on the main push a tag is cut from,
+  so `:latest` still lands, and it lands consistently across images instead of
+  for an arbitrary three.
 
 ## [0.6.4] - 2026-06-26
 
