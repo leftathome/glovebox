@@ -167,6 +167,28 @@ func TestParseUploadMetadata_HappyPath_ImapExport(t *testing.T) {
 
 // ---- archive_id rejection cases ----
 
+// A dot-only archive_id is joined onto the archive root a few frames after
+// parsing. Nothing but a downstream os.Stat used to stand between "." and
+// that root, which is not where a traversal check belongs.
+func TestParseUploadMetadata_RejectsDotOnlyArchiveID(t *testing.T) {
+	for _, id := range []string{".", "..", "...", "...."} {
+		hdr := validHeader(map[string]string{"archive_id": id})
+		if _, err := ParseUploadMetadata(hdr, 1024); err == nil {
+			t.Errorf("archive_id %q was accepted; want rejection", id)
+		}
+	}
+}
+
+// Dots remain legal inside an otherwise ordinary id.
+func TestParseUploadMetadata_AllowsDotsWithinArchiveID(t *testing.T) {
+	for _, id := range []string{"scan.0001", "takeout-2026.03.28", "a.b.c"} {
+		hdr := validHeader(map[string]string{"archive_id": id})
+		if _, err := ParseUploadMetadata(hdr, 1024); err != nil {
+			t.Errorf("archive_id %q was rejected: %v", id, err)
+		}
+	}
+}
+
 func TestParseUploadMetadata_RejectsArchiveIDWithNewline(t *testing.T) {
 	header := validHeader(map[string]string{"archive_id": "abc\nxyz"})
 	_, err := ParseUploadMetadata(header, 1024)
