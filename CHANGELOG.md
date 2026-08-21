@@ -47,6 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     unaffected until they opt in. See `docs/ingest-mtls.md`.
 
 
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
 ### Security
 
 - **Scan the two channels that routed around the engine**: the engine scanned
@@ -144,27 +164,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitLab on a private network still works. The RSS connector fails closed if
   the guarded client is missing rather than falling back to the unguarded
   one.
-
-### Added
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
 
 ### Fixed
 
