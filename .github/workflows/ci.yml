@@ -5,7 +5,14 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    # A stacked pull request targets the branch below it, not main. With a
+    # `[main]`-only filter no workflow runs against it at all, so it sits with
+    # an empty check list that reads as "nothing failed" -- #51 was merged that
+    # way. Matching claude/** as well means every link in a stack is actually
+    # tested. The heavy publish-oriented jobs stay main-only (see the base_ref
+    # guards below), so a stacked PR gets the fast, high-signal checks without
+    # a second 28-image container matrix.
+    branches: [main, "claude/**"]
 
 # Least privilege at the top level: the `test` and `security` jobs execute
 # code from pull requests, and they only need to read the repo. The tokens
@@ -27,6 +34,11 @@ jobs:
   discover-targets:
     name: Discover build targets
     runs-on: ubuntu-latest
+    # Container and binary publishing only matters against main. On a stacked
+    # PR (base claude/**) this would be a second full matrix for a diff the
+    # main-targeted PR at the bottom of the stack already covers, so skip it
+    # and let the fast checks carry the stack.
+    if: github.event_name == 'push' || github.base_ref == 'main'
     # Reads the checkout and nothing else. Declared rather than inherited so
     # this job keeps least privilege whatever the workflow default becomes.
     permissions:
@@ -120,6 +132,11 @@ jobs:
   build-binaries:
     name: Build binaries (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    # Container and binary publishing only matters against main. On a stacked
+    # PR (base claude/**) this would be a second full matrix for a diff the
+    # main-targeted PR at the bottom of the stack already covers, so skip it
+    # and let the fast checks carry the stack.
+    if: github.event_name == 'push' || github.base_ref == 'main'
     permissions:
       contents: read
       id-token: write # actions/attest-build-provenance
@@ -192,6 +209,11 @@ jobs:
   build-docker:
     name: Docker (${{ matrix.image }})
     runs-on: ubuntu-latest
+    # Container and binary publishing only matters against main. On a stacked
+    # PR (base claude/**) this would be a second full matrix for a diff the
+    # main-targeted PR at the bottom of the stack already covers, so skip it
+    # and let the fast checks carry the stack.
+    if: github.event_name == 'push' || github.base_ref == 'main'
     permissions:
       contents: read
       packages: write   # push images to ghcr
@@ -268,6 +290,11 @@ jobs:
     # to GHCR if the in-daemon test passed and this is a push event.
     name: Docker (glovebox-enricher-runtime)
     runs-on: ubuntu-latest
+    # Container and binary publishing only matters against main. On a stacked
+    # PR (base claude/**) this would be a second full matrix for a diff the
+    # main-targeted PR at the bottom of the stack already covers, so skip it
+    # and let the fast checks carry the stack.
+    if: github.event_name == 'push' || github.base_ref == 'main'
     permissions:
       contents: read
       packages: write   # push images to ghcr
@@ -348,6 +375,11 @@ jobs:
     # --use-registry-images to exercise that path end-to-end.
     name: Docker (glovebox-smoke-enrichment)
     runs-on: ubuntu-latest
+    # Container and binary publishing only matters against main. On a stacked
+    # PR (base claude/**) this would be a second full matrix for a diff the
+    # main-targeted PR at the bottom of the stack already covers, so skip it
+    # and let the fast checks carry the stack.
+    if: github.event_name == 'push' || github.base_ref == 'main'
     permissions:
       contents: read
       packages: write   # push images to ghcr

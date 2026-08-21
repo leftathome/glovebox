@@ -30,7 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the config checksum, so an existing install sees no pod restart on upgrade.
 
 
-### Added
 
 - **Mutual TLS for `/v1/ingest`, with verified peer identity (spec 08 §3.10)**:
   the connector ingest endpoint was unauthenticated, gated only by a
@@ -344,6 +343,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one.
 
 ### Fixed
+
+- **Stacked pull requests ran no CI at all**: `ci.yml` filtered
+  `pull_request: branches: [main]`, which matches on the *base* branch, so a PR
+  stacked on another `claude/**` branch started no workflow and showed an empty
+  check list -- indistinguishable at a glance from "all checks passed". #51 was
+  merged in exactly that state. The filter now also matches `claude/**`, so
+  every link in a stack is tested. The publish-oriented jobs (binaries, the
+  28-image container matrix, the enricher-runtime and smoke images) stay
+  main-only via a `github.base_ref == 'main'` guard, so a stacked PR gets the
+  fast, high-signal checks -- tests, vet, codegen, build-target and doc-drift
+  checks, govulncheck and Trivy -- without a second full container matrix.
+
 
 - **Flaky `TestNewFramework_ListenerServerStarts` (CI red on unrelated PRs)**:
   the test reserved a free port `p` for the framework's health server but
