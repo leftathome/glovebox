@@ -39,7 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     uses.
 
 
-### Security
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
   scanning engine matched ASCII patterns against content that had only been
@@ -106,7 +105,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitLab on a private network still works. The RSS connector fails closed if
   the guarded client is missing rather than falling back to the unguarded
   one.
-
 
 ### Added
 
