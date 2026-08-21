@@ -96,6 +96,12 @@ type FinalizeConfig struct {
 	// and consults Sources even when it is nil (a nil registry rejects the
 	// scanner media type). Nil is otherwise fine for non-scanner deliveries.
 	Sources *source.Registry
+
+	// ExtractScanner scans the recognizer-scan lane's extracted text
+	// before it is published as the operator agent's recall document.
+	// Required whenever the scanner lane can fire: finalize fails closed
+	// (ErrExtractUnscanned) rather than publishing unscanned text.
+	ExtractScanner ExtractScanner
 }
 
 // recognizerScanMediaType is the tar media type reserved for recognizer's
@@ -321,7 +327,7 @@ func Finalize(ctx context.Context, st *UploadState, cfg FinalizeConfig) (*Finali
 		// write/publish, so a missing OCR layer aborts the whole finalize
 		// rather than publishing a scan with no recallable text.
 		if isScanner {
-			if err := writeExtractedMarkdown(finalizeDir); err != nil {
+			if err := writeExtractedMarkdown(finalizeDir, cfg.ExtractScanner); err != nil {
 				cleanupTmp(cfg.StagingRoot, st.ID)
 				return nil, fmt.Errorf("extract: %w", err)
 			}
