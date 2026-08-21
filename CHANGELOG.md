@@ -201,6 +201,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Ed25519 signatures on the ruleset (`rules_signing`)**: `rules.json` defines
+  every boundary in the product -- the rules, their weights, and
+  `quarantine_threshold` -- and it ships as a mounted ConfigMap. **Anyone with
+  `configmap` edit rights in the glovebox namespace can turn the scanner off**:
+  set `quarantine_threshold` to `2.0`, above anything the ruleset can score,
+  and nothing is ever quarantined again. Emptying the rule list or zeroing the
+  weights does the same. The daemon would start, log a rule count, and deliver
+  everything to the agents with an audit trail full of `PASS` verdicts that
+  look entirely normal. Provenance (#46) made that visible *after the fact*;
+  digest pinning (`rules_sha256`) prevents it only for a deployment that
+  remembers to re-copy the digest on every legitimate rule change, and the pin
+  lives in the same ConfigMap as the rules.
+  - The rules file may now carry a **detached Ed25519 signature**
+    (`rules.json.sig`) over `"glovebox-ruleset-v1\n" + sha256(rules.json)`.
+    Domain-separated, so a glovebox ruleset signature cannot be replayed as a
+    signature over a bare digest anywhere else. `crypto/ed25519` only -- no new
+    dependency.
+  - **The trust anchor is deliberately not in the rules ConfigMap.** The public
+    key is a *path*, mounted from a separate Secret at
+    `/etc/glovebox-rules-key`, because the chart renders `config.json` and
+    `rules.json` into the same object: an inline key would sit in the very
+    ConfigMap the signature exists to distrust, and an attacker would replace
+    the rules, the signature and the key in one edit. The signature file *may*
+    share the rules ConfigMap -- rewriting it without the private key produces
+    nothing that verifies. The private key never enters this repository, the
+    chart, or CI.
+  - **Fail-closed: a ruleset that does not verify stops the process.** No
+    fallback to the last-known-good rules, no start-and-warn. glovebox is the
+    boundary between untrusted content and the agents that act on it, and
+    between the two failure modes the choice is not close: a stopped scanner is
+    loud and lossless (items wait on the staging PVC, `/readyz` goes red,
+    connectors get connection errors, someone is paged) while a scanner
+    enforcing attacker-written rules is silent, delivers hostile content to an
+    agent that will act on it, and records `PASS` while doing so. The refusal is
+    written to `audit/ruleset.jsonl` as `"event": "ruleset_rejected"`, carrying
+    the digest of the file refused and the reason, *before* the process exits --
+    a rejection that reached only stderr would be one nobody could reconstruct.
+    Digest-pin mismatches now take the same path instead of dying silently.
+  - Every `ruleset.jsonl` entry gains a `signature` object -- mode, verified,
+    key fingerprint, key file, trusted-key count -- so "which rules was this
+    process enforcing, and were they signed" is answerable from that file
+    alone. It is present even under `mode: disabled`: "never checked" and
+    "checked and unverified" must not look alike to whoever reads the log a
+    year from now.
+  - **Off by default and staged**, following `ingest.tls`'s tri-state.
+    `disabled` (the default) opens neither the key file nor the signature file
+    and is byte-for-byte the behaviour of every install today. `permissive`
+    verifies a signature when one is present and tolerates its absence with a
+    warning -- the rollout state, while the key is deployed and the signatures
+    are not -- but still **refuses a signature that fails to verify**, because a
+    bad signature is the attack, not a migration state. `required` demands one.
+    `helm template` with defaults renders identically to before, config
+    checksum included, so an upgrade restarts nothing.
+  - Operator tooling: `cmd/rules-sign` (`keygen`, `sign`, `verify`,
+    `fingerprint`). It is **not** a ship target -- `scripts/build-targets.sh`
+    discovers binaries under `connectors/` and `importers/` only, so it reaches
+    no release archive and no container image, which is the point: the signing
+    key belongs on an operator machine, not in the pod that consumes the rules
+    it signs. `openssl genpkey -algorithm ed25519` works as well; glovebox
+    reads PKIX PEM and raw-base64 key files alike.
+  - Key rolls need no flag day: the key file may hold several keys and a
+    ruleset signed by any of them verifies, so the sequence is trust-both,
+    re-sign, retire. `trusted_keys` in the audit entry is how you notice the
+    retirement never happened.
+  - **To turn it on:** `rules-sign keygen`, `rules-sign sign -rules
+    configs/default-rules.json`, `kubectl create secret generic
+    glovebox-rules-signing-key --from-file=rules.pub=…`, then `helm upgrade
+    --set-file rules.json=… --set-file rules.signature=… --set
+    rules.signing.mode=permissive --set
+    rules.signing.publicKeySecret=glovebox-rules-signing-key`. Confirm
+    `"verified": true` in `audit/ruleset.jsonl`, then move to `required`. Full
+    procedure, including key rotation and what this does *not* defend against
+    (an attacker who can edit the Deployment; rollback to an older validly
+    signed ruleset), in `docs/rule-signing.md`.
+
 - **Scan the two channels that routed around the engine**: the engine scanned
   `content.raw` and nothing else, so two paths delivered attacker-controlled
   text to an agent without ever passing the detection engine.

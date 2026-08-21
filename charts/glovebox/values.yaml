@@ -166,6 +166,68 @@ config:
 # person). audience_default ["operator"] keeps scans out of the openclaw
 # per-person triage resolver.
 
+# Ed25519 signing for the ruleset (docs/rule-signing.md).
+#
+# rules.json is the single place every boundary in the product is defined,
+# and it ships as a ConfigMap: anyone with configmap-edit rights in this
+# namespace can raise quarantine_threshold past anything the rules can
+# score, or empty the rule list, and the scanner will start up and pass
+# everything. Digest pinning (config.rulesSha256, unset by default) catches
+# that only if someone remembers to re-copy the digest on every legitimate
+# change. A signature moves the trust anchor onto a key that lives outside
+# the cluster entirely.
+#
+# Everything here is unset by default and the chart renders byte-identically
+# to before when it is; an install that does not opt in is not affected.
+rules:
+  # The ruleset, verbatim. Set with:
+  #   --set-file rules.json=path/to/rules.json
+  #
+  # Signing requires the operator to control the exact bytes that land in
+  # the ConfigMap, which config.rulesJson (structured YAML re-serialised by
+  # the chart) does not give them. Unset means the usual precedence still
+  # applies: config.rulesJson if set, otherwise the baked chart default.
+  json: ""
+  # The detached signature envelope produced by `rules-sign sign`:
+  #   --set-file rules.signature=path/to/rules.json.sig
+  # Rendered into the same ConfigMap as rules.json under the key
+  # `rules.json.sig`. That co-location is safe: rewriting the signature
+  # without the private key produces nothing that verifies.
+  signature: ""
+  signing:
+    # "disabled" (default) | "permissive" | "required".
+    #
+    #   permissive -- verify when a signature is present, tolerate its
+    #                 absence with a warning, but REFUSE a signature that
+    #                 does not check out. The rollout state: deploy the
+    #                 key, watch audit/ruleset.jsonl, then move on.
+    #   required   -- a valid signature or the pod does not start.
+    #
+    # Verification failure is FAIL-CLOSED in both. A stopped scanner is
+    # loud and loses nothing (items wait in staging, /readyz goes red);
+    # a scanner enforcing attacker-written rules is silent and delivers
+    # hostile content to agents with an audit trail that says PASS.
+    mode: disabled
+    # Name of an EXISTING Secret holding the trusted public key(s). Create
+    # it yourself:
+    #   kubectl create secret generic glovebox-rules-signing-key \
+    #     --from-file=rules.pub=ruleset-signing.pub
+    #
+    # A Secret and not a ConfigMap, even though a public key is not
+    # secret: the whole point is that the trust anchor must not sit in the
+    # same class of object as the rules it authenticates. Namespace RBAC
+    # that hands out configmap edit (which is common) must not thereby
+    # hand out the ability to swap the verification key. Restrict write
+    # access to this Secret by resourceName and the control means
+    # something; leave it in the rules ConfigMap and it means nothing.
+    #
+    # The PRIVATE key belongs on an operator machine or an offline store.
+    # It must never be in this chart, this repository, or CI.
+    publicKeySecret: ""
+    # Key within that Secret. May hold several PEM PUBLIC KEY blocks --
+    # that is how a key roll is performed (see docs/rule-signing.md).
+    publicKeySecretKey: rules.pub
+
 persistence:
   staging:
     size: 1Gi

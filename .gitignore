@@ -28,3 +28,15 @@ docs/specs/03-*.md
 /glovebox
 /*-connector
 /*-importer
+/rules-sign
+
+# Ruleset signing keys (docs/rule-signing.md). The PRIVATE half must never
+# reach this repository: whoever holds it can sign a ruleset that disables
+# every boundary in the product, and the whole design rests on it living
+# outside the cluster and outside CI. `rules-sign keygen` writes 0600 files
+# named like these by default; the patterns are a backstop for the moment
+# somebody runs it in a checkout by mistake, not a substitute for keeping
+# the key somewhere else entirely.
+*.key.pem
+ruleset-signing*
+!ruleset-signing*.pub

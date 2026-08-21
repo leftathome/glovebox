@@ -133,6 +133,14 @@ spec:
               mountPath: /etc/vault-ca
               readOnly: true
             {{- end }}
+            {{- if ne .Values.rules.signing.mode "disabled" }}
+            # The ruleset trust anchor, mounted from its OWN Secret rather
+            # than the rules ConfigMap. Same object would mean an attacker
+            # with configmap-edit swapping the key and the rules together.
+            - name: rules-signing-key
+              mountPath: /etc/glovebox-rules-key
+              readOnly: true
+            {{- end }}
             - name: staging
               mountPath: {{ .Values.config.stagingDir }}
             - name: quarantine
@@ -184,6 +192,17 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        {{- end }}
+        {{- if ne .Values.rules.signing.mode "disabled" }}
+        {{- if not .Values.rules.signing.publicKeySecret }}
+        {{- fail "rules.signing.mode is enabled but rules.signing.publicKeySecret is empty: there would be nothing to verify against and the pod would refuse every ruleset at boot. Create the Secret first (see docs/rule-signing.md)." }}
+        {{- end }}
+        - name: rules-signing-key
+          secret:
+            secretName: {{ .Values.rules.signing.publicKeySecret }}
+            items:
+              - key: {{ .Values.rules.signing.publicKeySecretKey }}
+                path: {{ .Values.rules.signing.publicKeySecretKey }}
         {{- end }}
         - name: staging
           persistentVolumeClaim:
