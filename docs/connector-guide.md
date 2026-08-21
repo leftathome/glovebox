@@ -836,6 +836,39 @@ allowed, reason := policy.Check("https://example.com/page")
 
 Rules are evaluated in order (first match wins), then the default policy
 applies. In `"safe"` mode (the default), only HTTPS to public IPs is allowed.
+An unresolvable hostname is **denied**, not allowed -- the check fails closed.
+
+### Fetching a content-derived URL
+
+`LinkPolicy.Check` alone is not enough to fetch safely. The policy resolves
+the hostname, but a stock `http.Client` resolves it *again* when it dials and
+follows redirects without re-checking, so a rebinding DNS answer or a `302`
+to `169.254.169.254` still reaches an internal service.
+
+Any URL that came out of fetched content -- a link in a feed entry, an
+address in a webhook payload -- must be fetched with the guarded client,
+which resolves once, dials the validated address, and re-checks every
+redirect hop:
+
+```go
+linkClient := connector.NewGuardedHTTPClient(connector.GuardedClientOptions{
+    ValidateURL: func(rawURL string) error {
+        if allowed, reason := policy.Check(rawURL); !allowed {
+            return errors.New(reason)
+        }
+        return nil
+    },
+})
+```
+
+Keep the plain `connector.NewHTTPClient` for **operator-configured**
+endpoints (the feed URL itself, an API base URL). Those may legitimately live
+on a private network -- a self-hosted feed, an internal GitLab -- and the
+guard would refuse them. Set `AllowPrivateNetworks: true` only when the
+destination is operator-chosen, never for a URL taken from content.
+
+If the guarded client is missing, refuse the fetch rather than falling back
+to the plain one: a silent fallback drops the address and redirect checks.
 
 ---
 
