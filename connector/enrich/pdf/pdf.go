@@ -9,7 +9,6 @@
 package pdf
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -77,13 +76,20 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, meta staging.I
 
 	cmd := exec.CommandContext(ctx, pdftotextBinary, "-layout", "-enc", "UTF-8", "-", "-")
 	cmd.Stdin = src
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Bounded: the source is a file an attacker chose, and an unbounded
+	// bytes.Buffer here means a crafted PDF can expand until memory runs
+	// out. stderr is bounded too so a chatty failure cannot do the same.
+	stdout := enrich.NewLimitedWriter(0)
+	stderr := enrich.NewLimitedWriter(enrich.MaxStderrBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	runErr := cmd.Run()
 	if runErr != nil {
-		return nil, classifyRunError(sourcePath, runErr, stderr.String())
+		return nil, classifyRunError(sourcePath, runErr, string(stderr.Bytes()))
+	}
+	if err := stdout.Err("pdf"); err != nil {
+		return nil, err
 	}
 
 	outName := outputFilenameFor(sourcePath)

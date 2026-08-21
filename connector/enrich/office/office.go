@@ -25,7 +25,6 @@
 package office
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -171,11 +170,15 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, meta staging.I
 	}
 	defer src.Close()
 
-	var stdout, stderr bytes.Buffer
+	// Bounded: pandoc runs on a document an attacker chose, and an
+	// unbounded bytes.Buffer means a crafted file can expand until memory
+	// runs out.
+	stdout := enrich.NewLimitedWriter(0)
+	stderr := enrich.NewLimitedWriter(enrich.MaxStderrBytes)
 	cmd := exec.CommandContext(ctx, pandocPath, "-f", format, "-t", "markdown")
 	cmd.Stdin = src
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		// Surface pandoc's stderr in the error: this is the most
 		// useful single piece of information for the CHECK step in a
@@ -190,6 +193,10 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, meta staging.I
 				"  FIX:   if the file is corrupt or password-protected, fix at the source connector; otherwise file an issue.",
 			format, msg, format, filepath.Base(sourcePath),
 		)
+	}
+
+	if err := stdout.Err("office"); err != nil {
+		return nil, err
 	}
 
 	outName := outputFilename(sourcePath)

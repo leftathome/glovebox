@@ -16,7 +16,6 @@
 package ocr
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -109,15 +108,18 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, _ staging.Item
 	cmd := exec.CommandContext(ctx, tesseractBin, "-", "-", "-l", "eng")
 	cmd.Stdin = src
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Bounded: the source is an image an attacker chose, and an unbounded
+	// bytes.Buffer means a crafted input can expand until memory runs out.
+	stdout := enrich.NewLimitedWriter(0)
+	stderrBuf := enrich.NewLimitedWriter(enrich.MaxStderrBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderrBuf
 
 	if err := cmd.Run(); err != nil {
 		// Surface the stderr transcript in the error so the WHAT line
 		// carries the specific tesseract complaint (image too small,
 		// unsupported format, etc.) rather than just an exit code.
-		stderrSnippet := strings.TrimSpace(stderr.String())
+		stderrSnippet := strings.TrimSpace(string(stderrBuf.Bytes()))
 		if stderrSnippet == "" {
 			stderrSnippet = "(no stderr output)"
 		}
@@ -127,6 +129,10 @@ func (e *Enricher) Enrich(ctx context.Context, sourcePath string, _ staging.Item
 			"if corrupt, fix at the source",
 			filepath.Base(sourcePath), err, stderrSnippet,
 			tesseractBin, sourcePath)
+	}
+
+	if err := stdout.Err("ocr"); err != nil {
+		return nil, err
 	}
 
 	outFilename := outputFilename(sourcePath)
