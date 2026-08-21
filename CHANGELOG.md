@@ -169,6 +169,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Flaky `TestNewFramework_ListenerServerStarts` (CI red on unrelated PRs)**:
+  the test reserved a free port `p` for the framework's health server but
+  assumed `p+1` -- where the framework binds a `Listener` connector's HTTP
+  server -- was free too. Linux hands out ephemeral ports in roughly ascending
+  order, so `p+1` is precisely the port the next `bind(":0")` on the machine is
+  most likely to get, and `go test ./...` runs many package binaries in
+  parallel. When another binary won that port the listener could not bind and
+  the test failed with `port N did not become ready within 2s` -- reproducible
+  at ~4% per run under `-race` (8 failures in 200 iterations), enough to redden
+  CI on changes that touch no connector code. The test now reserves both halves
+  of the pair before use and retries bring-up a few times, since the reservation
+  can only be held until the framework itself binds. 300 iterations under
+  `-race` pass.
+
 - **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
   agents volume the OpenClaw gateway also mounts; when that volume
   detaches/reattaches under a rolling peer, glovebox's mount can go stale and
