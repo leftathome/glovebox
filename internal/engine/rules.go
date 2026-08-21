@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +30,12 @@ type Rule struct {
 type RuleConfig struct {
 	Rules               []Rule  `json:"rules"`
 	QuarantineThreshold float64 `json:"quarantine_threshold"`
+}
+
+// LoadRulesBytes parses and validates a ruleset from raw bytes. Prefer
+// LoadRulesFile, which also fingerprints what it loaded.
+func LoadRulesBytes(raw []byte) (RuleConfig, error) {
+	return LoadRules(bytes.NewReader(raw))
 }
 
 func LoadRules(r io.Reader) (RuleConfig, error) {

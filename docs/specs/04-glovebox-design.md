@@ -260,14 +260,14 @@ Custom detectors are Go functions registered by name. Phase 1 detectors:
 
 Custom detector signals include a `matched` field containing a human-readable description of what was found (e.g., `"base64 block at offset 1234, length 512"`, `"detected language: French (confidence: 0.94)"`).
 
-### 6.6 Streaming Scan
+### 6.6 Scan Coverage and Memory
 
-To bound memory usage regardless of content size, the heuristic engine scans content using a streaming approach:
+*Corrected 2026-08 to describe the implementation. The previous text described chunked streaming with pattern-length overlap and memory bounded to `num_workers * chunk_buffer_size`; neither was implemented, and the sampling it specified was an evasion path.*
 
-- Content is read in chunks via a buffered reader with configurable chunk size (default: 256KB)
-- Overlap between chunks (equal to the longest pattern length) ensures matches spanning chunk boundaries are not missed
-- Custom detectors that need global properties (language detection, encoding anomaly) operate on a sampled prefix + suffix (first 64KB + last 64KB)
-- Memory usage is bounded to approximately `num_workers * chunk_buffer_size`, not `num_workers * file_size`
+- **Matchers see the entire content.** Because the content is read whole rather than chunked, there is no chunk boundary for a pattern to straddle -- the overlap the previous text specified solved a problem that does not arise.
+- **Detectors see the entire content by default.** Sampling is now a per-detector opt-in (`detector.SampledDetector`), granted only to a detector whose answer is a property of the whole document. Previously *every* detector received only a 64KB prefix plus a 64KB suffix, so a payload padded into the middle of a document larger than 128KB was invisible to `encoding_anomaly`, `template_structure` and `invisible_smuggling` -- an attacker could position a payload out of view.
+- **`language_detection` is the one sampled detector.** Language is a whole-document property, a 128KB sample identifies it as reliably as the full text, and lingua's model evaluation is the expensive part of a scan. Positioning gains an attacker nothing there: the rule carries weight 0.0 and only multiplies other signals, so hiding non-English text outside the window forfeits a booster rather than evading a detection.
+- **Memory is not bounded by a chunk buffer.** The item is read fully into memory; usage is bounded upstream by the ingest body limit (`ingest.max_body_bytes`) and by the per-item scan timeout (Section 6.7). True streaming remains possible future work; this section no longer claims it.
 
 ### 6.7 Per-Item Processing Timeout
 
@@ -461,6 +461,49 @@ Content hash is SHA-256 of the complete `content.raw` file, hex-encoded.
 
 For REJECT verdicts where metadata is unparseable, `destination` is set to `"unknown"`, and `source`/`sender` fields are set to `"unknown"` as well.
 
+### 10.1.1 ruleset.jsonl (Ruleset Provenance)
+
+A verdict is only interpretable against the rules that produced it: "score
+0.4, passed" says nothing without the threshold that was in force. The rules
+file is also the single place where every boundary is defined, and it arrives
+as a mounted ConfigMap -- so whoever can edit it can weaken every check at
+once, most simply by raising `quarantine_threshold` past anything the rules
+can score.
+
+On startup the glovebox records the ruleset it is enforcing:
+
+```json
+{
+  "timestamp": "RFC3339",
+  "event": "ruleset_loaded",
+  "rules_file": "/etc/glovebox/rules.json",
+  "pinned": true,
+  "warning": "optional -- e.g. threshold unreachable",
+  "rules": {
+    "sha256": "hex digest of the file as read",
+    "rule_count": 7,
+    "quarantine_threshold": 0.8,
+    "max_achievable_score": 5.4,
+    "threshold_reachable": true
+  }
+}
+```
+
+Two related controls:
+
+- **Digest pinning.** Setting `rules_sha256` in the config makes the daemon
+  refuse to start when the file on disk does not match, turning an unreviewed
+  ConfigMap edit into a failed start rather than a silently permissive
+  scanner. Unpinned is the default.
+- **Reachability check.** `max_achievable_score` is every non-booster weight
+  summed and multiplied by the boosters. When the threshold exceeds it, no
+  item can ever be quarantined; that is recorded as a warning on the entry
+  and logged at startup rather than passing unremarked.
+
+A failure to write this entry does not trip degraded mode (Section 10.2):
+nothing has been scanned yet, and refusing to run over bookkeeping would be a
+self-inflicted outage.
+
 ### 10.2 Audit Failure Behavior (Fail-Closed)
 
 If an audit log write fails, the glovebox enters **degraded mode**:
@@ -523,7 +566,7 @@ Directory paths are configurable to support both Kubernetes volume mounts (Phase
 
 The following artifacts produced by this service must be included in the system backup strategy (documented in the parent architecture spec):
 
-- **Audit logs** (`audit/pass.jsonl`, `audit/rejected.jsonl`) — hourly backup
+- **Audit logs** (`audit/pass.jsonl`, `audit/rejected.jsonl`, `audit/ruleset.jsonl`) — hourly backup
 - **Rules configuration** (`rules.json`) — daily backup (also versioned in Git)
 - **Quarantine directory** — daily backup (contains items awaiting review)
 

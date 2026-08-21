@@ -46,6 +46,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Off by default (`ingest.tls.mode: disabled`); existing deployments are
     unaffected until they opt in. See `docs/ingest-mtls.md`.
 
+- **Ruleset provenance, digest pinning and a reachability check**: the rules
+  file is the single place where every boundary in the service is defined, and
+  it arrives as a mounted ConfigMap -- so whoever can edit it can weaken all of
+  them at once, most simply by raising `quarantine_threshold` past anything the
+  rules can score. The change left no trace: the daemon logged a rule count and
+  carried on.
+  - Startup now records the enforced ruleset to `audit/ruleset.jsonl` -- SHA-256
+    of the file as read, rule count, threshold, and the maximum achievable score
+    -- in the same append-only place as the verdicts, since a verdict is only
+    interpretable against the rules that produced it.
+  - `rules_sha256` optionally pins the expected digest. When set, a file that
+    does not match refuses the start, turning an unreviewed ConfigMap edit into
+    a failed boot rather than a silently permissive scanner. Unpinned remains
+    the default.
+  - A threshold no combination of rules can reach means nothing can ever be
+    quarantined. That is now computed, logged as a warning at startup, and
+    recorded on the audit entry. It is deliberately **not** fatal: refusing to
+    boot on a config that previously started would be a breaking change, and
+    the goal here is to make the condition visible and attributable.
+  - `audit/ruleset.jsonl` joins the backup-critical artifacts in spec 04 §12.1.
+
+
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
 
 
 - **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
@@ -116,6 +157,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Vault will fail to fetch tokens until either `caSecret` is set or
   `tlsSkipVerify: true` is restored explicitly.
 
+- **Detectors see the whole document again (mid-document evasion)**: every
+  custom detector received only a 64 KiB prefix plus a 64 KiB suffix, so in
+  any item larger than 128 KiB a payload could simply be padded into the
+  middle and `encoding_anomaly`, `template_structure` and
+  `invisible_smuggling` never saw it. Measured on a 200 KiB document with an
+  invisible Tags-block payload in the centre: **score 0.00, no signals at all,
+  delivered** before this change; quarantined after it.
+  Sampling is now a per-detector opt-in (`detector.SampledDetector`) rather
+  than something the engine imposes on all of them. `language_detection` is
+  the only detector that takes it: language is a whole-document property, a
+  sample identifies it as reliably as the full text, and lingua's model
+  evaluation is the expensive part of a scan -- while positioning gains an
+  attacker nothing, since that rule carries weight 0.0 and only multiplies
+  other signals.
+  Spec 04 §6.6 is corrected: it described chunked streaming with
+  pattern-length overlap and memory bounded to `num_workers *
+  chunk_buffer_size`, and neither was implemented. Item size is bounded by
+  `ingest.max_body_bytes` and the per-item scan timeout; the section no longer
+  claims a guarantee the code does not provide.
+
 - **Bound the enricher subprocesses (spec 14)**: the enrichers shell out to
   `pandoc`, `tesseract` and `pdftotext` -- mature parsers, but parsers, running
   on files an attacker chose. Argument injection was already impossible (fixed
@@ -138,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This bounds the blast radius rather than sandboxing the parsers; seccomp
   profiles and cgroup limits for the enricher pods remain open follow-up work.
+
 
 
 
