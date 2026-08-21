@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,11 +29,18 @@ var entryTimeFormats = []string{
 
 // RSSConnector polls RSS and Atom feeds and stages new entries.
 type RSSConnector struct {
-	config        Config
-	writer        connector.StagingBackend
-	matcher       *connector.RuleMatcher
-	linkPolicy    *content.LinkPolicy
-	httpClient    *http.Client
+	config     Config
+	writer     connector.StagingBackend
+	matcher    *connector.RuleMatcher
+	linkPolicy *content.LinkPolicy
+	httpClient *http.Client
+	// linkClient fetches URLs that came out of feed content, which the
+	// feed author controls. It resolves once and dials the validated
+	// address, and re-checks every redirect hop against linkPolicy, so a
+	// rebinding DNS answer or a redirect cannot reach an internal service.
+	// httpClient stays for operator-configured feed URLs, which may
+	// legitimately live on a private network (a self-hosted feed).
+	linkClient    *http.Client
 	fetchCounter  *connector.FetchCounter
 	robotsChecker *connector.RobotsChecker
 }
@@ -239,7 +247,6 @@ func parseAtom(data []byte) ([]feedEntry, error) {
 	return entries, nil
 }
 
-
 func buildEntryContent(entry feedEntry) string {
 	var sb strings.Builder
 	if entry.Title != "" {
@@ -262,6 +269,14 @@ func buildEntryContent(entry feedEntry) string {
 }
 
 func (c *RSSConnector) fetchLinkedContent(ctx context.Context, rawURL string, logger *slog.Logger) string {
+	// Content-derived links are only ever fetched through the guarded
+	// client. Falling back to the plain one here would silently drop the
+	// address and redirect checks, so a missing client is a refusal.
+	if c.linkClient == nil {
+		logger.Warn("link fetch skipped: no guarded client configured", "url", rawURL)
+		return ""
+	}
+
 	allowed, reason := c.linkPolicy.Check(rawURL)
 	if !allowed {
 		logger.Debug("link fetch denied by policy", "url", rawURL, "reason", reason)
@@ -273,7 +288,7 @@ func (c *RSSConnector) fetchLinkedContent(ctx context.Context, rawURL string, lo
 		return ""
 	}
 
-	body, err := c.fetchURLWithLimit(ctx, rawURL, 1<<20) // 1 MB limit
+	body, err := c.fetchURLWithClient(ctx, c.linkClient, rawURL, 1<<20) // 1 MB limit
 	if err != nil {
 		logger.Debug("link fetch failed", "url", rawURL, "error", err)
 		return ""
@@ -288,11 +303,18 @@ func (c *RSSConnector) fetchURL(ctx context.Context, url string) ([]byte, error)
 }
 
 func (c *RSSConnector) fetchURLWithLimit(ctx context.Context, url string, maxBytes int64) ([]byte, error) {
+	return c.fetchURLWithClient(ctx, c.httpClient, url, maxBytes)
+}
+
+func (c *RSSConnector) fetchURLWithClient(ctx context.Context, client *http.Client, url string, maxBytes int64) ([]byte, error) {
+	if client == nil {
+		return nil, errors.New("no HTTP client configured")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
