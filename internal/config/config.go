@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/leftathome/glovebox/internal/engine"
 	"github.com/leftathome/glovebox/internal/source"
 	"github.com/leftathome/glovebox/internal/subject"
 )
@@ -242,9 +243,12 @@ type Config struct {
 	// them at once. Pinning the digest (from Git, via GitOps) turns an
 	// unreviewed edit into a failed start instead of a silently permissive
 	// scanner. Empty means unpinned, which stays the default.
-	RulesSHA256        string `json:"rules_sha256"`
-	ScanWorkers        int    `json:"scan_workers"`
-	ScanTimeoutSeconds int    `json:"scan_timeout_seconds"`
+	RulesSHA256 string `json:"rules_sha256"`
+	// RulesSigning optionally requires RulesFile to carry a valid
+	// Ed25519 signature. Off by default; see RulesSigningConfig.
+	RulesSigning       RulesSigningConfig `json:"rules_signing"`
+	ScanWorkers        int                `json:"scan_workers"`
+	ScanTimeoutSeconds int                `json:"scan_timeout_seconds"`
 	// DeliveryTimeoutSeconds bounds a single result delivery (file move +
 	// audit write). It prevents a wedged file op on a networked staging mount
 	// from stalling the lone result-consumer goroutine and deadlocking the
@@ -254,6 +258,83 @@ type Config struct {
 	SubjectsFile           string       `json:"subjects_file"`
 	SourcesFile            string       `json:"sources_file"`
 	Ingest                 IngestConfig `json:"ingest"`
+}
+
+// RulesSigningConfig requires the rules file to carry a valid detached
+// Ed25519 signature before the daemon will enforce it.
+//
+// Digest pinning (RulesSHA256) already refuses a ruleset that does not
+// match a digest the deployment carries, but the digest has to be
+// re-copied by hand on every legitimate rule change, so in practice it is
+// set once and then abandoned. A signature moves the trust anchor onto a
+// key held outside the cluster: rules may change as often as their author
+// likes, and an edit made by anyone without that key is still refused.
+//
+// Mode follows IngestTLSConfig's tri-state, for the same reason -- a
+// control that can only be off or fully on has no rollout path:
+//
+//	disabled   -- no verification at all (the default; today's behaviour)
+//	permissive -- verify when a signature is present, tolerate its
+//	              absence with a warning, but REFUSE a signature that
+//	              does not check out
+//	required   -- a valid signature or the daemon does not start
+//
+// Verification failure under permissive or required is FATAL. glovebox is
+// the boundary between untrusted content and the agents that act on it;
+// enforcing rules that may have been written by an attacker is strictly
+// worse than not running, because a stopped scanner is loud (staging
+// backs up, readiness fails, connectors error) while a subverted one is
+// silent and delivers hostile content with an audit trail that says PASS.
+type RulesSigningConfig struct {
+	// Mode is "disabled" (default), "permissive" or "required".
+	Mode string `json:"mode"`
+	// PublicKeyFile holds the trusted Ed25519 public key(s), as PEM
+	// PUBLIC KEY blocks or one base64 raw key per line. More than one
+	// key is how a key roll is performed.
+	//
+	// This is a path rather than an inline key on purpose: the chart
+	// renders rules.json and config.json into the same ConfigMap, so an
+	// inline key would live in the very object the signature exists to
+	// distrust and an attacker would simply replace both. The chart
+	// mounts this from a separate Secret, which has its own RBAC.
+	PublicKeyFile string `json:"public_key_file"`
+	// SignatureFile is the detached signature. Empty means
+	// "<rules_file>.sig". It may safely share the rules ConfigMap:
+	// rewriting it without the private key produces nothing that
+	// verifies.
+	SignatureFile string `json:"signature_file"`
+}
+
+// Active reports whether the ruleset signature is checked at all.
+func (r RulesSigningConfig) Active() bool {
+	return r.Mode == engine.SigModePermissive || r.Mode == engine.SigModeRequired
+}
+
+// Policy converts the config block into the engine's loader policy.
+func (r RulesSigningConfig) Policy() engine.SignaturePolicy {
+	return engine.SignaturePolicy{
+		Mode:          r.Mode,
+		PublicKeyFile: r.PublicKeyFile,
+		SignatureFile: r.SignatureFile,
+	}
+}
+
+func (r RulesSigningConfig) validate() error {
+	switch r.Mode {
+	case "", engine.SigModeDisabled:
+		return nil
+	case engine.SigModePermissive, engine.SigModeRequired:
+	default:
+		return fmt.Errorf("rules_signing.mode must be one of %q, %q, %q; got %q",
+			engine.SigModeDisabled, engine.SigModePermissive, engine.SigModeRequired, r.Mode)
+	}
+	if r.PublicKeyFile == "" {
+		// Without a key there is nothing to verify against, and the
+		// daemon would refuse every ruleset at boot. Say so here,
+		// where the message names the missing setting.
+		return fmt.Errorf("rules_signing.public_key_file is required when rules_signing.mode is %q", r.Mode)
+	}
+	return nil
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -353,6 +434,15 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("GLOVEBOX_RULES_FILE"); v != "" {
 		cfg.RulesFile = v
 	}
+	if v := os.Getenv("GLOVEBOX_RULES_SIGNING_MODE"); v != "" {
+		cfg.RulesSigning.Mode = v
+	}
+	if v := os.Getenv("GLOVEBOX_RULES_PUBLIC_KEY_FILE"); v != "" {
+		cfg.RulesSigning.PublicKeyFile = v
+	}
+	if v := os.Getenv("GLOVEBOX_RULES_SIGNATURE_FILE"); v != "" {
+		cfg.RulesSigning.SignatureFile = v
+	}
 	if v := os.Getenv("GLOVEBOX_SCAN_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ScanWorkers = n
@@ -416,6 +506,12 @@ func (c *Config) Validate() error {
 		if _, err := source.Load(c.SourcesFile); err != nil {
 			return fmt.Errorf("sources registry: %w", err)
 		}
+	}
+	// Before the ingest early-return: rule signing has nothing to do
+	// with the ingest listener, and an install with ingest disabled must
+	// not silently skip validation of it.
+	if err := c.RulesSigning.validate(); err != nil {
+		return err
 	}
 	if !c.Ingest.Enabled {
 		return nil
