@@ -277,6 +277,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (an attacker who can edit the Deployment; rollback to an older validly
     signed ruleset), in `docs/rule-signing.md`.
 
+- **Nobody was watching the enricher runtime's CVE feed, and the pods that fork
+  it could still write to their own image layer** (P1-7, final two clauses):
+  `pdftotext`, `tesseract` and `pandoc` run on bytes an attacker chose inside
+  five connectors (arxiv, gmail, imap, outlook, semantic-scholar) and all three
+  importers. `connector/enrich/limits.go` already bounds one invocation (120 s,
+  64 MiB of stdout) and `seccompProfile: RuntimeDefault` plus CPU/memory limits
+  already bound the process. What remained was the supply chain those binaries
+  come from and the filesystem they land on.
+  - **Trivy now scans the built `glovebox-enricher-runtime` image**, in the
+    `build-enricher-runtime` job rather than in `security`. The existing scan is
+    `scan-type: fs` over the repository -- it reads `go.mod` and the Dockerfiles
+    and never opens an image, so a poppler-utils or pandoc CVE in the Debian
+    base was invisible to CI no matter how green the run looked.
+    `build-enricher-runtime` already builds that image and `load: true`s it into
+    the local daemon for `scripts/test-enricher-runtime.sh`; scanning anywhere
+    else would mean a second build of a ~340 MB image, or pulling a published
+    tag that does not exist yet on a pull request -- scanning the previous image
+    while approving the new one. The steps sit **before** the GHCR login, so a
+    finding stops publication instead of annotating it after the fact.
+  - **It gates on fixed CRITICALs and reports everything else.** The gate is
+    `severity: CRITICAL` with `--ignore-unfixed`: a CRITICAL that Debian has
+    already fixed is serious and closes in one step (rebuild), which is a
+    handful of failures a year that one maintainer can absorb. The report is
+    HIGH+CRITICAL *including* unfixed, `exit-code: 0`, rendered into the job
+    summary on every enricher-runtime build. That split is the whole decision:
+    bookworm carries a standing tail of unfixed HIGHs in libtiff and poppler
+    that Debian has triaged as minor-issue/no-DSA, and a gate that turns red on
+    someone else's schedule for something you cannot fix is a gate that gets
+    deleted within a month -- while a report filed somewhere nobody looks is
+    worth exactly as little. Gate on what is actionable; surface the rest where
+    it is unavoidable.
+    If the gate fires and a rebuild does not clear it, the usual cause is this
+    job's `cache-from: type=gha` serving the old `apt-get install` layer; bust
+    it by touching `Dockerfile.enricher-runtime` or clearing the
+    `glovebox-enricher-runtime` cache scope. The step comment says so.
+  - **`readOnlyRootFilesystem: true` on connector and importer pods**, with a
+    writable `emptyDir` at `/tmp` (`readOnlyRootFilesystem.enabled`, default
+    true; `tmpSizeLimit`, default `1Gi`). The scanner has had a read-only root
+    since it shipped and the pods that actually fork the parsers did not, which
+    is backwards. Now a parser that gets execution cannot leave a dropper on the
+    image layer; what stays writable is `/tmp`, `/state`, and the staging PVC in
+    filesystem ingest mode.
+  - **The blocker turned out to be false, and the mount is still needed for a
+    different reason.** The standing assumption was that tesseract and pandoc
+    need a writable `/tmp`. Measured, not assumed: driven the way
+    `connector/enrich` drives them -- fixed argv, document on stdin, text on
+    stdout -- all three tools make no successful write syscall anywhere on the
+    filesystem and run to completion with the entire root read-only and no
+    `/tmp` at all. What genuinely needs a temp dir is the **Go** side:
+    `connector/http_backend.go` `NewItem` calls `os.MkdirTemp("")` for every
+    item on the default http ingest path, and
+    `importers/apple/media_services.go` unpacks nested zips the same way. So the
+    `emptyDir` stays, `TMPDIR` is pinned to it, and the reason written next to
+    it is now the true one.
+  - `scripts/test-enricher-runtime.sh` gained a fifth check that runs all three
+    tools under `docker run --read-only --tmpfs /tmp` on the real image, so the
+    default cannot rot the way an untested assumption does. `sizeLimit` on the
+    `emptyDir` rather than the unbounded default: a decompression bomb should
+    evict its own pod, not fill the node's disk.
+  - **Not covered.** Trivy sees the enricher-runtime base; the 28 per-connector
+    images built in `build-docker` are still unscanned, as is the smoke-
+    enrichment image. The gate cannot catch a vulnerability with no CVE yet, and
+    `--ignore-unfixed` means a CRITICAL Debian has not fixed will appear in the
+    report and let the build through -- deliberately, since there is nothing to
+    upgrade to. A read-only root does not stop an in-memory exploit, does not
+    contain what a parser can reach through `/state` or the staging PVC, and is
+    not a sandbox: `runtimeClassName` (gVisor/Kata) remains the answer to that
+    and remains empty by default. The schoology-auth-refresher CronJob keeps its
+    writable root, for the reason recorded on its securityContext.
+  - **Upgrade note.** Connector Deployments roll once on upgrade (the pod
+    template changes) -- connectors are checkpointed pollers whose state lives on
+    a PVC, so a restart re-reads from the last checkpoint and costs nothing but
+    a poll cycle. Importer Jobs have an immutable `spec.template`, so a
+    *completed* Job from a previous release must be deleted before upgrading --
+    the same procedure the chart already documents for re-running an import, and
+    already true of any importer change. At chart defaults (no connectors or
+    importers enabled) `helm template` renders **byte-identically** to `main`.
+
+
 - **Scan the two channels that routed around the engine**: the engine scanned
   `content.raw` and nothing else, so two paths delivered attacker-controlled
   text to an agent without ever passing the detection engine.

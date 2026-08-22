@@ -340,8 +340,91 @@ jobs:
           cache-from: type=gha,scope=glovebox-enricher-runtime
           cache-to: type=gha,scope=glovebox-enricher-runtime,mode=max
 
-      - name: Test built image (binaries, nonroot, size)
+      - name: Test built image (binaries, nonroot, size, read-only root)
         run: bash scripts/test-enricher-runtime.sh
+
+      # Upstream-CVE tracking for the enricher runtime (P1-7).
+      #
+      # The `security` job's Trivy run is `scan-type: fs` over the repo. That
+      # sees go.mod and the Dockerfiles; it does NOT see the Debian packages
+      # INSIDE the built image -- poppler-utils, tesseract-ocr, pandoc,
+      # ca-certificates and their transitive libs. Those are precisely the
+      # binaries five connectors and three importers point at attacker-chosen
+      # bytes, and until now nobody was watching their CVE feed.
+      #
+      # Scanned here rather than in `security` because this job already has
+      # the image: it built it and `load: true`'d it into the local daemon two
+      # steps ago. Doing it in `security` would mean either a second full
+      # build of a ~340 MB multi-stage image or pulling a published tag, which
+      # does not exist yet on a pull request -- i.e. it would scan the PREVIOUS
+      # image while approving the new one.
+      #
+      # Placed BEFORE the GHCR login/push steps so a finding stops the image
+      # from being published at all, rather than flagging it after the fact.
+      #
+      # Two steps on purpose, gating and reporting, because a single threshold
+      # cannot serve both:
+      #
+      #   - GATE (below): CRITICAL only, --ignore-unfixed. A CRITICAL with a
+      #     fixed version already in Debian is both serious and actionable in
+      #     one step -- rebuild the image and the fix lands. That is a handful
+      #     of failures a year, which one maintainer can absorb.
+      #   - REPORT (next step): HIGH+CRITICAL including unfixed, exit-code 0,
+      #     rendered into the job summary. This is the bulk -- bookworm carries
+      #     a standing tail of unfixed HIGHs in libs like libtiff and poppler
+      #     that Debian has triaged as minor-issue/no-DSA. Gating on those
+      #     would turn CI red on someone else's schedule, and a gate that goes
+      #     red for reasons you cannot fix is a gate that gets deleted. Making
+      #     it a summary you see on every enricher-runtime build is the version
+      #     that survives.
+      #
+      # If the gate does fire and the fix is already in Debian, the usual cause
+      # of a rebuild NOT clearing it is this job's `cache-from: type=gha` layer
+      # cache serving the old `apt-get update && apt-get install` layer. Bust it
+      # by touching Dockerfile.enricher-runtime (a PANDOC_VERSION bump does it)
+      # or by clearing the `glovebox-enricher-runtime` Actions cache scope.
+      - name: Trivy image scan (gate -- fixed CRITICALs only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'glovebox-enricher-runtime:test'
+          scanners: 'vuln'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Trivy image scan (report -- HIGH+CRITICAL, unfixed included)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'glovebox-enricher-runtime:test'
+          scanners: 'vuln'
+          vuln-type: 'os,library'
+          ignore-unfixed: false
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-enricher-runtime.txt'
+
+      - name: Publish enricher-runtime vulnerability report
+        if: always()
+        run: |
+          {
+            echo '## glovebox-enricher-runtime: HIGH/CRITICAL vulnerabilities'
+            echo
+            echo 'Includes vulnerabilities with no fix available. The build gate'
+            echo 'above only fails on CRITICALs Debian has already fixed.'
+            echo
+            echo '```'
+            if [ -s trivy-enricher-runtime.txt ]; then
+              cat trivy-enricher-runtime.txt
+            else
+              echo '(no HIGH/CRITICAL findings, or the scan did not produce a report)'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
