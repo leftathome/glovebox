@@ -32,23 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     same `[subject, sender, source]` triple the worker pool passes -- so a
     regression in the *shipped* rules file fails the gate, not just a hand-built
     ruleset no deployment uses.
-  - **Measured today: 94.74% detection (36/38) and 23.81% false positives
-    (5/21).** Those measured numbers are the committed thresholds
-    (`thresholds.json`), rounded down and up respectively at the fourth decimal:
-    one more missed malicious case (92.11%) or one more quarantined benign case
-    (28.57%) fails the build. They are not aspirational and not loose enough to
-    be unfailable.
-  - **Known gaps, kept in the corpus and counted in the rates.** Missed:
-    `invisible-bidi-controls` (RLO-reversed text scores 0.70 -- the controls are
-    stripped but the text stays reversed, so no matcher sees it; catching it
-    needs a UAX-9 reordered scan view) and `encoded-percent-partial` (scores
-    0.00 -- a URL library escapes only the separators, so `%20` between legible
-    words defeats patterns that require `\s` and is too short to survive the
-    decoder's 8-byte floor). False positives: an inline base64 image and a PGP
-    signature block (1.05 each: encoding anomaly x the non-English booster), a
-    security advisory quoting an injection (1.00 -- the engine has no notion of
-    quotation), release notes with a ```shell fence (0.80, exactly the
-    threshold), and docs saying a sidecar "will act as a proxy" (1.00).
+  - **First measured at 94.74% detection (36/38) and 23.81% false positives
+    (5/21); the two detection misses were fixed in this same release (see
+    Fixed), so the committed thresholds are 100% and 23.81%.** Those measured
+    numbers are the committed thresholds (`thresholds.json`), rounded down and
+    up respectively at the fourth decimal: one missed malicious case (97.37%)
+    or one more quarantined benign case (28.57%) fails the build. They are not
+    aspirational and not loose enough to be unfailable.
+  - **Known gaps, kept in the corpus and counted in the rates.** The two
+    original misses -- `invisible-bidi-controls` (RLO-reversed text scored 0.70:
+    the controls were stripped but the text stayed reversed, so no matcher saw
+    it) and `encoded-percent-partial` (scored 0.00: a URL library escapes only
+    the separators, so `%20` between legible words defeated patterns requiring
+    `\s` and was too short to survive the decoder's 8-byte floor) -- are closed
+    below. The five false positives remain recorded gaps: an inline base64 image
+    and a PGP signature block (1.05 each: encoding anomaly x the non-English
+    booster), a security advisory quoting an injection (1.00 -- the engine has
+    no notion of quotation), release notes with a ```shell fence (0.80, exactly
+    the threshold), and docs saying a sidecar "will act as a proxy" (1.00).
   - The benign set is deliberately skewed toward hard content, so 23.81% is an
     upper bound on adversarially-difficult legitimate mail, not an inbox-wide
     estimate. Padding it with easy passes would improve the number and weaken
@@ -200,6 +201,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the baked file, so existing installs render byte-identically.
 
 ### Security
+
+- **Ed25519 signatures on the ruleset (`rules_signing`)**: `rules.json` defines
+  every boundary in the product -- the rules, their weights, and
+  `quarantine_threshold` -- and it ships as a mounted ConfigMap. **Anyone with
+  `configmap` edit rights in the glovebox namespace can turn the scanner off**:
+  set `quarantine_threshold` to `2.0`, above anything the ruleset can score,
+  and nothing is ever quarantined again. Emptying the rule list or zeroing the
+  weights does the same. The daemon would start, log a rule count, and deliver
+  everything to the agents with an audit trail full of `PASS` verdicts that
+  look entirely normal. Provenance (#46) made that visible *after the fact*;
+  digest pinning (`rules_sha256`) prevents it only for a deployment that
+  remembers to re-copy the digest on every legitimate rule change, and the pin
+  lives in the same ConfigMap as the rules.
+  - The rules file may now carry a **detached Ed25519 signature**
+    (`rules.json.sig`) over `"glovebox-ruleset-v1\n" + sha256(rules.json)`.
+    Domain-separated, so a glovebox ruleset signature cannot be replayed as a
+    signature over a bare digest anywhere else. `crypto/ed25519` only -- no new
+    dependency.
+  - **The trust anchor is deliberately not in the rules ConfigMap.** The public
+    key is a *path*, mounted from a separate Secret at
+    `/etc/glovebox-rules-key`, because the chart renders `config.json` and
+    `rules.json` into the same object: an inline key would sit in the very
+    ConfigMap the signature exists to distrust, and an attacker would replace
+    the rules, the signature and the key in one edit. The signature file *may*
+    share the rules ConfigMap -- rewriting it without the private key produces
+    nothing that verifies. The private key never enters this repository, the
+    chart, or CI.
+  - **Fail-closed: a ruleset that does not verify stops the process.** No
+    fallback to the last-known-good rules, no start-and-warn. glovebox is the
+    boundary between untrusted content and the agents that act on it, and
+    between the two failure modes the choice is not close: a stopped scanner is
+    loud and lossless (items wait on the staging PVC, `/readyz` goes red,
+    connectors get connection errors, someone is paged) while a scanner
+    enforcing attacker-written rules is silent, delivers hostile content to an
+    agent that will act on it, and records `PASS` while doing so. The refusal is
+    written to `audit/ruleset.jsonl` as `"event": "ruleset_rejected"`, carrying
+    the digest of the file refused and the reason, *before* the process exits --
+    a rejection that reached only stderr would be one nobody could reconstruct.
+    Digest-pin mismatches now take the same path instead of dying silently.
+  - Every `ruleset.jsonl` entry gains a `signature` object -- mode, verified,
+    key fingerprint, key file, trusted-key count -- so "which rules was this
+    process enforcing, and were they signed" is answerable from that file
+    alone. It is present even under `mode: disabled`: "never checked" and
+    "checked and unverified" must not look alike to whoever reads the log a
+    year from now.
+  - **Off by default and staged**, following `ingest.tls`'s tri-state.
+    `disabled` (the default) opens neither the key file nor the signature file
+    and is byte-for-byte the behaviour of every install today. `permissive`
+    verifies a signature when one is present and tolerates its absence with a
+    warning -- the rollout state, while the key is deployed and the signatures
+    are not -- but still **refuses a signature that fails to verify**, because a
+    bad signature is the attack, not a migration state. `required` demands one.
+    `helm template` with defaults renders identically to before, config
+    checksum included, so an upgrade restarts nothing.
+  - Operator tooling: `cmd/rules-sign` (`keygen`, `sign`, `verify`,
+    `fingerprint`). It is **not** a ship target -- `scripts/build-targets.sh`
+    discovers binaries under `connectors/` and `importers/` only, so it reaches
+    no release archive and no container image, which is the point: the signing
+    key belongs on an operator machine, not in the pod that consumes the rules
+    it signs. `openssl genpkey -algorithm ed25519` works as well; glovebox
+    reads PKIX PEM and raw-base64 key files alike.
+  - Key rolls need no flag day: the key file may hold several keys and a
+    ruleset signed by any of them verifies, so the sequence is trust-both,
+    re-sign, retire. `trusted_keys` in the audit entry is how you notice the
+    retirement never happened.
+  - **To turn it on:** `rules-sign keygen`, `rules-sign sign -rules
+    configs/default-rules.json`, `kubectl create secret generic
+    glovebox-rules-signing-key --from-file=rules.pub=…`, then `helm upgrade
+    --set-file rules.json=… --set-file rules.signature=… --set
+    rules.signing.mode=permissive --set
+    rules.signing.publicKeySecret=glovebox-rules-signing-key`. Confirm
+    `"verified": true` in `audit/ruleset.jsonl`, then move to `required`. Full
+    procedure, including key rotation and what this does *not* defend against
+    (an attacker who can edit the Deployment; rollback to an older validly
+    signed ruleset), in `docs/rule-signing.md`.
 
 - **Scan the two channels that routed around the engine**: the engine scanned
   `content.raw` and nothing else, so two paths delivered attacker-controlled
@@ -451,6 +527,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`+`-as-space form encoding is a live bypass, and is now tracked rather than
+  invisible**: `Ignore+all+previous+instructions` -- the form a browser or any
+  `application/x-www-form-urlencoded` library emits -- scores 0.70 and **passes**.
+  It is the same class as the percent-escape bypass closed above: the words stay
+  legible while every separator defeats a matcher pattern that requires `\s`.
+  It is not fixed here, because decoding `+` globally would corrupt `C++`, `A+`
+  and phone numbers; closing it means decoding `+` only inside a URL query
+  component, which is real work that deserves its own measurement. It is added to
+  the corpus as `encoded-plus-form`, a recorded `known_gap`, so it is counted
+  against the detection rate instead of sitting in a report nobody re-reads.
+  - The detection floor is therefore **97.43%, not 100%**. It was briefly 100%,
+    which was misleading: the corpus read as perfect while a same-class bypass
+    shipped. An honest 97.44% that names the gap is worth more than a 100% that
+    hides one.
+
+
+- **An injection whose separators were escaped, and one written backwards
+  behind a bidi override, both walked past the scanner**: the two detection
+  gaps the adversarial corpus recorded when it landed. Detection on the corpus
+  goes from **94.74% (36/38) to 100% (38/38)** with the false-positive rate
+  **unchanged at 23.81% (5/21)**; `thresholds.json` now commits a
+  `min_detection_rate` of **1.0**, so every malicious case in the corpus is
+  load-bearing and any regression fails the build.
+  - **Escaped separators (`encoded-percent-partial`, scored 0.00 -- not one
+    signal).** `Ignore%20all%20previous%20instructions` is what a URL library
+    actually emits: it escapes the non-alphanumerics and leaves every word in
+    clear text. Nothing looks like an encoded blob, so `ExtractDecoded` -- which
+    cuts *contiguous* encoded runs out of the document -- saw only lone `%20`s
+    and threw each one away as shorter than its 8-byte floor. Meanwhile every
+    matcher pattern wants `\s` between the words and never got one. New
+    `UnescapeInPlace` (`internal/engine/unescape.go`) decodes escapes **where
+    they sit**, keeping the surrounding literal text, and `Preprocess` exposes
+    the result as an `Unescaped` scan-only view. It covers the three families
+    that reach a scanner as text -- percent escapes, HTML character references
+    (named and numeric) and the numeric backslash escapes `\xHH`, `\uHHHH`,
+    `\UHHHHHHHH` -- because all three are used the same way: to spell a
+    separator without writing one. Each is decoded exactly once, so `%2520`
+    stays a literal `%20` rather than a space the view invented.
+  - The single-letter escapes `\t`, `\n` and `\r` are deliberately **not**
+    decoded. They are indistinguishable from a backslash followed by a letter,
+    so decoding them rewrites `C:\Users\pat\report.docx` into a carriage
+    return and mangles every Windows path, LaTeX fragment and regex in
+    legitimate mail -- and it does so by *inserting whitespace*, which is
+    exactly what the matcher patterns are hunting for. The numeric forms need
+    two to eight hex digits behind the marker, cannot occur by accident, and
+    catch the same evasion. That trade is a unit test, not a comment.
+  - **Reversed text behind a bidi override (`invisible-bidi-controls`, scored
+    0.70 -- `suspicious_encoding` alone, just under the 0.80 threshold).**
+    `StripInvisible` removes the RLO and PDF, which stops them interleaving a
+    payload past an ASCII pattern, but deletion leaves the text they *govern*
+    exactly as stored. The injection rendered as "Ignore all previous
+    instructions" to every human who looked at the mail and stayed
+    `.snoitcurtsni ...` for every matcher. New `ReorderBidi`
+    (`internal/engine/bidi.go`) builds the view the renderer builds: it
+    implements the UAX #9 explicit-embedding rules (X-rules for
+    LRE/RLE/LRO/RLO/LRI/RLI/FSI/PDF/PDI, then rule L2's reversal of each
+    maximal run from the highest level down to the lowest odd one), per
+    paragraph, capped at UAX #9's `max_depth` of 125 so nesting cannot be used
+    to make the scanner do unbounded work. `Preprocess` exposes it as a
+    `Reordered` view.
+  - The implicit UAX #9 rules (W*, N*, I*) are **not** implemented, and that is
+    the point: without an explicit control, strong-LTR characters such as ASCII
+    letters can never be reordered, so no injection can hide there. Natural
+    Hebrew and Arabic prose produces no view at all and stays off the
+    false-positive surface entirely. Bracket mirroring (L4) is skipped for the
+    same reason -- it changes glyphs, never word order.
+  - Both views are finished by the same NFKC normalization and homoglyph fold
+    the primary view gets, so the hardening layers **compose** instead of each
+    being its own door: a payload that is reversed *and* homoglyphed, or
+    escaped *and* homoglyphed, is caught by one pass. Re-normalizing is not
+    redundant -- `&nbsp;` decodes to U+00A0, which no matcher's `\s` accepts
+    until NFKC maps it onto an ordinary space. Both views also reach the
+    metadata path (`scanMetadata`), so an escaped or reversed Subject line is
+    caught too.
+  - The byte-identical delivery invariant is untouched: both are scan-only side
+    buffers built from copies, and each is `nil` when it would duplicate
+    `Normalized`, so ordinary ASCII mail still costs exactly the passes it did
+    before.
+  - Verified: `scripts/corpus-gate.sh` at 100% / 23.81%; new unit tests in
+    `internal/engine` covering escape families, separators, escaped letters,
+    every RTL control (RLO, RLE, RLI, FSI, unterminated, nested, stray
+    PDF/PDI), 125-deep nesting, and the composition with homoglyph folding;
+    end-to-end tests through the *shipped* rules in `internal/scan` including a
+    seven-case benign counterweight -- URL tracking parameters, percent signs
+    in a financial summary, Windows paths, HTML entities, Hebrew and Arabic
+    prose -- that must not newly fire. Full suite green under `-race`.
+
 - **`ingest.tls.mode: required` took the archive uploads and the sanitize gate
   offline**: a regression from the mTLS work (#41). Three route families with
   three different auth models shared one mux -- `/v1/ingest` (connector
@@ -486,15 +649,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ingest.port` carrying `/v1/ingest` alone. The archive NetworkPolicy,
     Service port and `containerPort` all follow it, so the recognizer's
     ingress reaches the archive endpoint and nothing else.
-  - **It defaults to `0`, meaning "share `ingest.port`" -- today's layout,
-    unchanged.** The recognizer namespace and the `/v1/sanitize` callers live
-    outside this chart and are configured against 9091; moving them silently
-    on upgrade would have broken exactly the callers this is meant to protect.
-    Closing the exposure is therefore a coordinated migration: set
-    `config.ingest.bearerPort` (e.g. `9093`) and repoint the recognizer and any
-    sanitize caller at it in the same window. Until an operator does, the
-    grant still reaches `/v1/ingest`, and the template comment says so rather
-    than implying otherwise.
+  - **BREAKING: it now defaults to `9093`, so the split is on.** An earlier
+    revision of this change defaulted to `0` (share the port) to avoid moving
+    a port under existing callers, which left the exposure open unless an
+    operator opted in -- a vulnerability that ships closed only if someone
+    reads the release notes is not closed. The default now fixes it.
+    - **Action required on upgrade.** Anything configured against 9091 for
+      `/v1/archives*` or `/v1/sanitize` must be repointed at **9093** in the
+      same maintenance window. That is the recognizer namespace
+      (`leftathome/recognizer`) and any sanitize-gate client. **Connectors are
+      unaffected** -- they are templated off `ingest.port` and keep using 9091
+      for `/v1/ingest`.
+    - Connector pods retain access to the bearer port. They could reach
+      `/v1/sanitize` while it shared the ingest port, and splitting the port
+      must not silently revoke that.
+    - Setting `bearerPort: 0` restores the old shared-port layout. It also
+      re-opens the exposure, so it is a migration aid, not a supported
+      configuration.
   - Chart and binary are now checked against each other across the full
     `ingest.tls.mode` x `ingest.archives.enabled` x split matrix: every
     `containerPort` and Service port the chart declares is one the process

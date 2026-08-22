@@ -84,6 +84,12 @@ func (s *Scanner) ScanWithMetadata(content []byte, contentType string, metadata 
 		{name: "folded", content: pp.Folded},
 		// Decoded base64/hex/percent payloads and recovered Tags-block text.
 		{name: "decoded", content: pp.Decoded},
+		// Escapes decoded where they sit: catches "Ignore%20all%20previous",
+		// where the words are plain text and only the separators are encoded.
+		{name: "unescaped", content: pp.Unescaped},
+		// Bidi-reordered view: catches a payload written backwards inside an
+		// RLO override, which renders forwards and stores backwards.
+		{name: "reordered", content: pp.Reordered},
 		// Pre-scrub view: the only one where invisibles are still present,
 		// so the smuggling and encoding detectors can report them.
 		{name: "pre-scrub", content: pp.PreScrub, detectors: s.detectors},
@@ -237,7 +243,7 @@ func (s *Scanner) scanMetadata(fields []string) ([]engine.Signal, error) {
 	pp := engine.Preprocess(joined, "text/plain")
 
 	var signals []engine.Signal
-	for _, view := range [][]byte{pp.Normalized, pp.Folded, pp.Decoded} {
+	for _, view := range [][]byte{pp.Normalized, pp.Folded, pp.Decoded, pp.Unescaped, pp.Reordered} {
 		if view == nil {
 			continue
 		}

@@ -1,0 +1,63 @@
+{
+  "staging_dir": "/data/glovebox/staging",
+  "quarantine_dir": "/data/glovebox/quarantine",
+  "audit_dir": "/data/glovebox/audit",
+  "failed_dir": "/data/glovebox/failed",
+  "agents_dir": "/data/agents",
+  "shared_dir": "/data/shared",
+  "agent_allowlist": ["messaging","media","calendar","itinerary"],
+  "metrics_port": 9090,
+  "watch_mode": "fsnotify",
+  "poll_interval_seconds": 5,
+  "rules_file": "/etc/glovebox/rules.json",
+  "rules_signing": {
+    "mode": "required",
+    "public_key_file": "/etc/glovebox-rules-key/rules.pub"
+  },
+  "scan_workers": 8,
+  "scan_timeout_seconds": 30,
+  "delivery_timeout_seconds": 30,
+  "scan_chunk_size_bytes": 262144,
+  "ingest": {
+    "enabled": true,
+    "port": 9091,
+    "max_body_bytes": 67108864,
+    "max_metadata_bytes": 262144,
+    "backpressure_threshold": 5000,
+    "request_timeout_seconds": 60,"auth": {
+      "enabled": false,
+      "vault": {
+        "addr": "https://vault.vault.svc.cluster.local:8200",
+        "k8s_role": "glovebox-ingest",
+        "kv_mount": "secret",
+        "tokens_path": "glovebox/ingest-tokens"
+      },
+      "reload_interval_seconds": 300,
+      "trusted_proxy_cidrs": ["10.244.0.0/16"],
+      "per_ip_rate_limit": {
+        "window_seconds": 60,
+        "max_rejected": 10,
+        "lru_capacity": 1000
+      },
+      "global_rate_limit": {
+        "window_seconds": 60,
+        "max_rejected": 100
+      }
+    },
+    "archives": {
+      "enabled": false,
+      "staging_root": "/data/archive-storage",
+      "max_upload_size": 32212254720,
+      "per_source_max_concurrent": 4,
+      "global_max_concurrent": 32,
+      "per_source_soft_cap_pct": 40,
+      "global_hard_cap_pct": 95,
+      "global_hard_cap_hysteresis_pct": 85,
+      "patch_idle_timeout_seconds": 300,
+      "cleanup_interval_seconds": 3600,
+      "cleanup_tmp_age_hours": 72,
+      "cleanup_finalize_age_hours": 1,
+      "done_retention_days": 7
+    }
+  }
+}

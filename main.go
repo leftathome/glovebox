@@ -62,28 +62,46 @@ func main() {
 		log.Fatalf("load subjects registry: %v", err)
 	}
 
-	rules, rulesProv, err := engine.LoadRulesFile(cfg.RulesFile)
-	if err != nil {
-		log.Fatalf("load rules: %v", err)
+	// Signature verification, when enabled, is FAIL-CLOSED: a ruleset
+	// that does not verify never reaches the scanner. The rejection is
+	// not raised here, though -- it is carried to just after the audit
+	// logger exists so that a refused boot leaves a record of which
+	// ruleset was refused and why, rather than only a stderr line
+	// whoever is paged may never see.
+	rules, rulesProv, rulesIntegrityErr := engine.LoadRulesFileWithPolicy(cfg.RulesFile, cfg.RulesSigning.Policy())
+	if rulesIntegrityErr != nil && rulesProv.SHA256 == "" {
+		// Unreadable or unparseable file: there is no provenance worth
+		// recording and no audit logger yet either.
+		log.Fatalf("load rules: %v", rulesIntegrityErr)
 	}
 	// A pinned digest turns an unreviewed edit of the rules ConfigMap into
 	// a failed start rather than a silently weaker scanner.
-	if cfg.RulesSHA256 != "" && !strings.EqualFold(cfg.RulesSHA256, rulesProv.SHA256) {
-		log.Fatalf("rules file digest mismatch: config pins %s, %s is %s",
+	if rulesIntegrityErr == nil && cfg.RulesSHA256 != "" && !strings.EqualFold(cfg.RulesSHA256, rulesProv.SHA256) {
+		rulesIntegrityErr = fmt.Errorf("rules file digest mismatch: config pins %s, %s is %s",
 			cfg.RulesSHA256, cfg.RulesFile, rulesProv.SHA256)
+		rules = engine.RuleConfig{}
 	}
 	rulesWarning := ""
+	if sw := rulesProv.Signature.Warning; sw != "" {
+		rulesWarning = sw
+		log.Printf("WARNING: %s", sw)
+	}
 	if !rulesProv.ThresholdReachable {
 		// Nothing this ruleset can score reaches its own threshold, so no
 		// item can ever quarantine. That is either a serious
 		// misconfiguration or the exact shape of a deliberately disabled
 		// scanner; either way it must not pass unremarked.
-		rulesWarning = fmt.Sprintf("quarantine threshold %.2f exceeds the maximum achievable score %.2f: no item can ever be quarantined",
+		reach := fmt.Sprintf("quarantine threshold %.2f exceeds the maximum achievable score %.2f: no item can ever be quarantined",
 			rulesProv.QuarantineThreshold, rulesProv.MaxAchievableScore)
-		log.Printf("WARNING: %s", rulesWarning)
+		log.Printf("WARNING: %s", reach)
+		if rulesWarning != "" {
+			rulesWarning += "; "
+		}
+		rulesWarning += reach
 	}
-	log.Printf("loaded %d rules, quarantine threshold: %.2f, sha256: %s, pinned: %v",
-		len(rules.Rules), rules.QuarantineThreshold, rulesProv.SHA256, cfg.RulesSHA256 != "")
+	log.Printf("loaded %d rules, quarantine threshold: %.2f, sha256: %s, pinned: %v, signature: %s",
+		rulesProv.RuleCount, rulesProv.QuarantineThreshold, rulesProv.SHA256, cfg.RulesSHA256 != "",
+		describeRulesSignature(rulesProv.Signature))
 
 	registry := detector.NewDefaultRegistry()
 
@@ -94,15 +112,34 @@ func main() {
 	// Record which ruleset this process is enforcing. Verdicts are only
 	// interpretable against the rules that produced them, so the digest
 	// belongs in the append-only log beside them.
+	rulesetEvent := "ruleset_loaded"
+	if rulesIntegrityErr != nil {
+		rulesetEvent = "ruleset_rejected"
+		if rulesWarning != "" {
+			rulesWarning += "; "
+		}
+		rulesWarning += rulesIntegrityErr.Error()
+	}
 	if err := logger.LogRuleset(audit.RulesetEntry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Event:     "ruleset_loaded",
+		Event:     rulesetEvent,
 		RulesFile: cfg.RulesFile,
 		Pinned:    cfg.RulesSHA256 != "",
 		Warning:   rulesWarning,
 		Rules:     rulesProv,
 	}); err != nil {
 		log.Printf("WARNING: could not record ruleset provenance: %v", err)
+	}
+	// Fail closed. The ruleset is the only thing standing between
+	// untrusted content and the agents that act on it, so enforcing one
+	// that failed its integrity check is worse than not running at all:
+	// a stopped scanner is loud (items pile up in staging, /readyz goes
+	// red, connectors get connection errors) and loses nothing, while a
+	// subverted one is silent and hands hostile content to an agent with
+	// an audit trail that says PASS.
+	if rulesIntegrityErr != nil {
+		logger.Close()
+		log.Fatalf("refusing to enforce ruleset %s: %v", cfg.RulesFile, rulesIntegrityErr)
 	}
 	defer logger.Close()
 
@@ -417,6 +454,23 @@ func removePendingForItem(resp pipeline.ScanResponse, cfg config.Config) {
 		itemID := filepath.Base(resp.Item.DirPath)
 		inboxDir := filepath.Join(cfg.AgentsDir, resp.Item.Metadata.DestinationAgent, "workspace", "inbox")
 		routing.RemovePending(itemID, inboxDir)
+	}
+}
+
+// describeRulesSignature renders the signature outcome for the startup
+// line. "disabled" and "unverified" are kept distinct on purpose: an
+// operator scanning logs must be able to tell a deployment that never
+// asked for verification from one that asked and did not get it.
+func describeRulesSignature(s engine.RulesSignature) string {
+	switch {
+	case s.Mode == "" || s.Mode == engine.SigModeDisabled:
+		return "disabled"
+	case s.Verified:
+		return fmt.Sprintf("verified (mode=%s, key=%s)", s.Mode, s.KeyFingerprint)
+	case s.Error != "":
+		return fmt.Sprintf("REJECTED (mode=%s)", s.Mode)
+	default:
+		return fmt.Sprintf("UNVERIFIED (mode=%s)", s.Mode)
 	}
 }
 
