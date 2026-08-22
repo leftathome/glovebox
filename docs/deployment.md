@@ -821,7 +821,7 @@ The glovebox scanner reads a JSON config file (default path:
 | `audit_dir` | string | `/data/glovebox/audit` | Append-only directory for JSONL audit log files recording every scan verdict. |
 | `failed_dir` | string | `/data/glovebox/failed` | Items that fail structural validation (missing metadata, malformed content) are moved here. |
 | `agents_dir` | string | `/data/agents` | Root directory containing agent workspace subdirectories. Clean items are delivered to `<agents_dir>/<agent>/workspace/inbox/`. |
-| `shared_dir` | string | `/data/shared` | Shared directory for inter-service communication (notification placeholders, etc.). |
+| `shared_dir` | string | `/data/shared` | Root of the volume glovebox shares with the quarantine review agent. Glovebox creates `<shared_dir>/glovebox-notifications/` at startup and writes one JSON notification there per quarantined item (`<quarantine-id>.json`). Nothing else is written here, and glovebox never reads the directory back. |
 | `agent_allowlist` | []string | `["messaging", "media", "calendar", "itinerary"]` | List of valid agent names. Items routed to an agent not on this list are rejected. |
 | `metrics_port` | int | `9090` | TCP port for the HTTP server that exposes the `/metrics` Prometheus endpoint. |
 | `watch_mode` | string | `"fsnotify"` | How glovebox detects new items in staging. `"fsnotify"` uses inotify (Linux) or kqueue (macOS). Use `"poll"` if staging is on NFS or another filesystem that does not support inotify. |
@@ -1006,7 +1006,7 @@ wiring and key-rotation procedures.
     media/
       workspace/
         inbox/
-  shared/              Inter-service communication
+  shared/              Quarantine notifications for the review agent
     glovebox-notifications/
 ```
 
@@ -1017,7 +1017,7 @@ wiring and key-rotation procedures.
 | `audit/` | Append-only JSONL log of every scan verdict. Each line contains the item ID, source, score, matched rules, final verdict (PASS/QUARANTINE/REJECT), and timestamp. This directory should be append-only at the filesystem level. |
 | `failed/` | Items that failed validation -- missing `content.raw`, malformed `metadata.json`, unauthorized connector, or other structural problems. Inspect these to diagnose connector bugs. |
 | `agents/<name>/workspace/inbox/` | The delivery destination for clean items. Each agent has its own workspace. Glovebox only delivers to agents on the `agent_allowlist`. |
-| `shared/` | Used for notification placeholders and inter-service coordination. |
+| `shared/` | Contains `glovebox-notifications/` and nothing else. Every quarantined item gets one JSON file there, named for its quarantine ID, carrying the source, sender, subject, matched signal names, total score, content length, and quarantine time -- enough for a review agent to triage without opening `quarantine/`. One file per item (Maildir-style) rather than one appended log, so concurrent writers never contend; see spec 04 section 7.7. The string fields are inerted the same way `content.sanitized` is, because the agent reading them is summarising hostile content. Glovebox writes these and never reads them back -- the flow is one-way. |
 
 ---
 

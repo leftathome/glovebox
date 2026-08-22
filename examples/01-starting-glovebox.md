@@ -3,6 +3,14 @@
 *2026-03-31T07:09:34Z by Showboat 0.6.1*
 <!-- showboat-id: c17b44b2-c3ff-4f3d-b3ee-5fd0e4992a80 -->
 
+> **Checked 2026-08-22.** This was recorded against glovebox 0.2.x and has not
+> been re-run (Showboat is not available here), but every fact it depends on was
+> re-read against the code: the `--config` flag is still the only flag `main.go`
+> takes, every key in the config file below still exists in `config.Config` with
+> the same JSON name, and the audit logger still writes `pass.jsonl`. Newer
+> config keys (ingest, rules signing, subject/source registries) are all
+> optional, so this minimal config is still a working one.
+
 This demo shows how to build and run glovebox from source. Glovebox is a content scanning service that watches a staging directory, scans incoming content for prompt injection attacks, and routes clean items to agent workspaces.
 
 First, build the glovebox binary:
