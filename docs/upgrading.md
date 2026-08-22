@@ -127,19 +127,42 @@ wide open for as long as it is set.
 ### 3. `archive/recognizer-scan` finalize can now fail for content reasons
 
 **What changed.** Text extracted from an `archive/recognizer-scan` upload is
-scanned before it is published. If no scanner is configured, finalize fails
-closed with `ErrExtractUnscanned` rather than publishing unscanned text.
+scanned before it is published, and finalize now fails rather than publishing
+text nothing has looked at.
 
-**Why.** The extracted text goes to an operator agent. Publishing it unscanned
-would route around the entire point of the product.
+**Why.** The extracted text goes to an operator agent. It came off a physical
+document someone could have printed, mailed or posted, so it is hostile input.
+Publishing it unscanned would route around the entire point of the product.
 
 **Who this affects.** Producers sending `archive/recognizer-scan`. A finalize
-that used to fail only for transport or validation reasons can now fail because
-of what the content is, or because of how the *server* is configured.
+that used to fail only for reasons a producer can check before sending — a hash
+they computed, a size they declared, a tar they built — can now fail because of
+what the content is.
 
-**Fix.** Producers need retry and alerting around finalize, and should treat a
-content-reason failure as an operator problem rather than something to retry
-into the ground. Operators sending this media type need a scanner configured.
+**The failure you will actually hit is a missing `ocr.txt`.** Recognizer
+pre-extracts the OCR text and ships it at the tar root; a missing or
+whitespace-only `ocr.txt` fails finalize with `ErrScanMissingOCR`. The
+sibling `ErrExtractUnscanned` ("no scanner configured") exists as a
+fail-closed guard but is unreachable in the shipped binary, which refuses to
+start without a scanner (`main.go:157`) — it is there for builds that embed the
+archive listener without one.
+
+**The ergonomics are poor and you should know that up front.** Both collapse to
+the same opaque `500 internal_finalize`, so the response body cannot tell a
+producer which happened. Two consequences:
+
+- **Bound your finalize retries.** A blind retry loop on 5xx will re-upload a
+  multi-GB tarball forever against a tarball that will never have an `ocr.txt`.
+  Treat a repeated `internal_finalize` on the same `archive_id` as a content
+  bug, not backpressure.
+- **Retrying the same `archive_id` is safe.** A failed finalize publishes
+  nothing and cleans up after itself, so a corrected re-POST gets a `201`, not
+  a `409`.
+
+**A 2xx does not mean the text was published.** If the scanner *quarantines* the
+extracted text, finalize still succeeds — but `content.extracted.md` carries a
+stub naming the score and signals instead of the text. The raw text stays at
+`tree/ocr.txt` for a human. Read `content.extracted.md` if you need to know.
 
 ---
 
@@ -154,6 +177,11 @@ the pod never passed its probes.
 
 `appVersion` had not been bumped since the v0.6.1 release; 0.6.2, 0.6.3, 0.6.4
 and 0.7.0 all left it behind.
+
+It is worse than probe failure. 0.6.1 also predates the **0.6.4** `ReadTimeout`
+fix, so that same default install advertised `Tus-Max-Size: 30 GiB` while
+running an image that force-closes any PATCH taking over 60 seconds — the chart
+promised an upload ceiling its own image could not honour.
 
 **Who this affected.** Anyone installing from a git checkout without pinning
 `image.tag`. **Installs from the published OCI chart were fine** — CI stamps
@@ -196,4 +224,4 @@ not help here: it caps the 10 MiB heap, not the page cache.
 | Uploads return connection-refused | Bearer port — [§2](#2-breaking-the-bearer-endpoints-move-to-port-9093). The caller is probably still on 9091. |
 | Pod never becomes ready, no obvious error | Image/chart version skew — [§4](#4-chart-installs-from-the-repository-were-deploying-the-wrong-image). Check the deployed tag against the chart version. |
 | A large upload dies partway with a broken pipe | App older than 0.6.4 — see [version floors](#version-floors-worth-knowing). |
-| Finalize fails on `archive/recognizer-scan` | Scanner not configured — [§3](#3-archiverecognizer-scan-finalize-can-now-fail-for-content-reasons). |
+| Finalize fails on `archive/recognizer-scan` with `500 internal_finalize` | Almost always a missing or whitespace-only `ocr.txt` at the tar root — [§3](#3-archiverecognizer-scan-finalize-can-now-fail-for-content-reasons). Do not retry-loop it. |
