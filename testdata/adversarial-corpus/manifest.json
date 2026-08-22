@@ -777,8 +777,8 @@
       "expect": "quarantine",
       "class": "encoded",
       "note": "application/x-www-form-urlencoded '+'-as-space separators inside a URL query, the form a browser or form library actually emits.",
-      "known_gap": true,
-      "gap_note": "Scores 0.70 (suspicious_encoding alone) and PASSES. Same class as encoded-percent-partial: the words stay legible but every separator is '+', so no matcher pattern requiring \\s fires. UnescapeInPlace deliberately does not decode '+' globally -- that would corrupt C++, A+ and phone numbers -- so closing it needs '+' decoded only inside a URL query component."
+      "known_gap": false,
+      "gap_note": ""
     }
   ]
 }

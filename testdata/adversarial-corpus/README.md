@@ -44,7 +44,7 @@ worker pool passes. A regression in the shipped rules file fails this gate.
 |-----------|-------|-------|-------------------|
 | `malicious/` | `homoglyph` | 5 | Cyrillic and Greek confusables, including a two-character swap and one behind the HTML strip |
 | `malicious/` | `invisible` | 9 | Unicode Tags block (U+E0000–U+E007F), zero-width, soft hyphen, word joiner, Mongolian vowel separator, bidi controls |
-| `malicious/` | `encoded` | 9 | base64 std/raw/url, short sub-threshold runs, hex, percent (full and partial), nested base64, base64 inside HTML |
+| `malicious/` | `encoded` | 10 | base64 std/raw/url, short sub-threshold runs, hex, percent (full and partial), `+`-as-space form encoding, nested base64, base64 inside HTML |
 | `malicious/` | `mid-document` | 4 | ~140 KiB items with the payload at the midpoint, past any first-64K/last-64K sample window |
 | `malicious/` | `metadata` | 6 | Injection in Subject or sender display name, with a benign or empty body |
 | `malicious/` | `plain` | 5 | No obfuscation at all — instruction override, role reassignment, tool syntax, HTML comment |
@@ -73,17 +73,20 @@ behaving, the runner says `NO LONGER FAILING` and the test fails until the flag
 is cleared here — a gap cannot silently close any more than it can silently
 open.
 
-As of 2026-08-21: **no missed malicious cases** and **5 false positives**
+As of 2026-08-22: **no missed malicious cases** and **5 false positives**
 (`base64-image-attachment`, `pgp-signature`,
 `security-advisory-quoting-injection`, `release-notes-with-shell`,
 `docs-act-as-proxy`). See each `gap_note` for why.
 
-The two detection gaps recorded here on the same day —
-`encoded-percent-partial` and `invisible-bidi-controls` — are closed: the
-scanner now unescapes percent/HTML-entity/backslash escapes in place and
-applies the UAX #9 explicit-embedding rules to build a bidi-reordered scan
-view. Detection is 38/38, so `min_detection_rate` is 1.0 and every
-malicious case in this directory is load-bearing.
+All three detection gaps recorded here are closed. `encoded-percent-partial`
+and `invisible-bidi-controls` went first: the scanner unescapes
+percent/HTML-entity/backslash escapes in place and applies the UAX #9
+explicit-embedding rules to build a bidi-reordered scan view.
+`encoded-plus-form` followed: `+` is decoded to a space inside a URL query
+component — and inside a query lifted out of its URL — but nowhere else, so
+`C++`, `A+` and `+1 555 0100` keep theirs. Detection is 39/39, so
+`min_detection_rate` is 1.0 and every malicious case in this directory is
+load-bearing.
 
 ## Adding a case
 

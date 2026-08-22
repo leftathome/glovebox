@@ -87,6 +87,11 @@ func (s *Scanner) ScanWithMetadata(content []byte, contentType string, metadata 
 		// Escapes decoded where they sit: catches "Ignore%20all%20previous",
 		// where the words are plain text and only the separators are encoded.
 		{name: "unescaped", content: pp.Unescaped},
+		// The same decoding over the unstripped HTML, where the
+		// attributes still are: catches a payload written into an
+		// href's query, which the tag strip removes before the
+		// decoding above can see it.
+		{name: "unescaped-html", content: pp.UnescapedHTML},
 		// Bidi-reordered view: catches a payload written backwards inside an
 		// RLO override, which renders forwards and stores backwards.
 		{name: "reordered", content: pp.Reordered},
