@@ -39,12 +39,25 @@ type PreprocessedContent struct {
 	Decoded []byte
 
 	// Unescaped is Normalized with percent escapes, HTML character
-	// references and backslash escapes decoded *in place*. Decoded
-	// handles a payload that is entirely encoded; this handles the far
-	// commoner shape where only the separators are escaped
-	// ("Ignore%20all%20previous"), which leaves every word legible and
-	// every \s in a matcher pattern unsatisfied.
+	// references, backslash escapes and form "+"-as-space decoded *in
+	// place*. Decoded handles a payload that is entirely encoded; this
+	// handles the far commoner shape where only the separators are
+	// escaped ("Ignore%20all%20previous"), which leaves every word
+	// legible and every \s in a matcher pattern unsatisfied.
 	Unescaped []byte
+
+	// UnescapedHTML is the same decoding applied to RawHTML, and is nil
+	// for everything that is not text/html.
+	//
+	// Normalized has had the tags stripped, which takes the attributes
+	// with them -- and an href is where a URL lives in HTML. So an
+	// escaped payload written into <a href="/r?q=Ignore+all+previous">
+	// reached no view at all: gone from Normalized before the decoding
+	// ran, and still escaped in RawHTML, which is matched but never
+	// decoded. Kept separate from Unescaped rather than replacing it,
+	// because stripping is what puts "<b>Ignore</b> all previous" back
+	// together for the matchers.
+	UnescapedHTML []byte
 
 	// Reordered is the text as a renderer lays it out, after applying the
 	// UAX #9 explicit-embedding rules that the bidi controls ask for.
@@ -96,6 +109,11 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 	// composes with the others instead of being a separate door.
 	if unescaped, ok := UnescapeInPlace(result.Normalized); ok {
 		result.Unescaped = derivedView(unescaped)
+	}
+	if result.RawHTML != nil {
+		if unescaped, ok := UnescapeInPlace(result.RawHTML); ok {
+			result.UnescapedHTML = derivedView(unescaped)
+		}
 	}
 	// Reordering reads the bidi controls, so it runs on the pre-scrub text
 	// and the scrub runs over its output. The view is kept only when the
