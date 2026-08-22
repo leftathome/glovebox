@@ -3,6 +3,21 @@
 *2026-03-31T07:17:27Z by Showboat 0.6.1*
 <!-- showboat-id: 986f63b3-df5c-4705-a364-7384c12b5ba7 -->
 
+> **Note added 2026-08-22 -- the scaffold bug this transcript captured has since
+> been fixed.** When this was recorded on 2026-03-31, the generator emitted
+> `package weatheralerts` in `connector.go` and `config.go` while `main.go` was
+> `package main`, so the "compiles immediately" step below did not compile --
+> the recorded output is the Go toolchain refusing two packages in one
+> directory. `generator/templates/connector.go.tmpl` and `config.go.tmpl` now
+> both start with `package main`; scaffolding a connector and running
+> `go build ./connectors/<name>/` against this commit succeeds.
+> The transcript is left as recorded rather than rewritten into a run that never
+> happened; read the Part 1 build step as showing a bug that is now closed, and
+> the `package weatheralerts` line in the `connector.go` output as reading
+> `package main` today. Everything else in Part 1 -- the file list (including
+> the stub `README.md`), the `main.go` wiring, and the `config.json` shape -- is
+> still exactly what the generator emits.
+
 This demo walks through creating a custom connector using the scaffold generator, developing it as a standalone project, and then contributing it back as a pull request.
 
 ## Part 1: Generate the scaffold
@@ -120,7 +135,7 @@ To develop this connector outside the glovebox monorepo, copy the generated dire
 mkdir my-weather-connector && cd my-weather-connector
 cp -r /path/to/glovebox/connectors/weather-alerts/* .
 go mod init github.com/myorg/weather-connector
-go mod edit -require github.com/leftathome/glovebox@v0.2.0
+go get github.com/leftathome/glovebox@latest   # or pin a released tag
 go mod tidy
 go build .
 ```

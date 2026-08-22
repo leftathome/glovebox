@@ -217,9 +217,19 @@ go run ./generator new-connector <name>
 ```
 
 This creates a directory under `connectors/<name>/` with starter code, config,
-Dockerfile, and README. Implement the `Connector` interface (a single `Poll`
-method) and the framework handles staging writes, checkpointing, health
+Dockerfile, and a stub README. Implement the `Connector` interface (a single
+`Poll` method) and the framework handles staging writes, checkpointing, health
 endpoints, and metrics.
+
+The first-party connectors in this repo drop that stub README rather than keep
+it -- their directories carry Go sources, `config.json`, and a `Dockerfile` and
+nothing else. Their operator-facing documentation lives together under
+[`docs/connectors/`](docs/connectors/): one page per connector (auth setup,
+config fields, routing, how to enable it in the chart) behind an index that
+lists every image and credential class. Keeping those pages in one place is what
+makes them navigable and comparable; a README per directory would scatter the
+same material across every connector folder. If you maintain a connector in its
+own repository, the stub README is a reasonable place to start instead.
 
 See [`docs/connector-guide.md`](docs/connector-guide.md) for the full walkthrough.
 
