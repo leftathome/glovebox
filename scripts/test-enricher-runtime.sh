@@ -16,6 +16,10 @@
 #      >=3.5, not Debian apt pandoc).
 #   3. The runtime user is uid 65532 / gid 65532 (nonroot).
 #   4. /bin/sh exists (required for the inline test commands).
+#   5. All three tools still work under `--read-only --tmpfs /tmp`, which is
+#      the container-level shape of the chart's `readOnlyRootFilesystem: true`
+#      + emptyDir-at-/tmp default for connector and importer pods. This is the
+#      test that keeps that default honest.
 #
 # Failure messages follow the WHAT/CHECK/FIX shape so the operator can
 # diagnose without re-reading the script.
@@ -214,6 +218,71 @@ else
     fail "/bin/sh did not echo SHELL_OK (got: ${SH_OUT})" \
          "${DOCKER_RUN} ${IMAGE} sh -c 'echo SHELL_OK'" \
          "verify the base image still ships /bin/sh; debian:bookworm-slim should"
+fi
+
+# --- 5. Tools work under a read-only root filesystem -------------------------
+# The chart runs connector and importer pods with
+# `readOnlyRootFilesystem: true` plus an emptyDir at /tmp (values.yaml
+# `readOnlyRootFilesystem`). That default is only safe if the three enrichers
+# genuinely need nothing writable outside /tmp, so assert it here on the real
+# image instead of trusting the reasoning.
+#
+# `--read-only --tmpfs /tmp` is the container-level equivalent of the pod spec:
+# rootfs read-only, one writable tmpfs at /tmp. Each tool is driven exactly the
+# way connector/enrich/{pdf,ocr,office} drive it -- fixed argv, content on
+# stdin, text on stdout -- because that is the invocation whose behaviour we
+# actually depend on. A tool that grew a temp-file dependency outside /tmp
+# would fail here rather than in a homelab at 2am.
+RO_RUN="docker run --rm --network=none --read-only --tmpfs /tmp:rw,size=64m"
+
+check_readonly_root() {
+    local label="$1" fixture_dir="$2" fixture="$3" cmd="$4" expect="$5"
+    local out
+    if [ -n "${fixture_dir}" ]; then
+        out=$(${RO_RUN} -v "${fixture_dir}:/td:ro" "${IMAGE}" \
+            sh -c "${cmd} < /td/${fixture} 2>&1" 2>/dev/null || true)
+    else
+        out=$(${RO_RUN} "${IMAGE}" sh -c "${cmd} 2>&1" 2>/dev/null || true)
+    fi
+    if echo "${out}" | grep -q "${expect}"; then
+        pass "${label} works with a read-only root filesystem"
+    else
+        fail "${label} failed under --read-only (expected '${expect}'); got: ${out}" \
+             "${RO_RUN} ${IMAGE} sh -c '${cmd}'" \
+             "the tool now needs a writable path outside /tmp -- either mount it in charts/glovebox/templates (connector-deployment.yaml, importer-job.yaml) or set readOnlyRootFilesystem.enabled=false in values.yaml and say why here"
+    fi
+}
+
+PDF_TD="$(cd "${CONTEXT_DIR}/connector/enrich/pdf/testdata" 2>/dev/null && pwd || true)"
+OCR_TD="$(cd "${CONTEXT_DIR}/connector/enrich/ocr/testdata" 2>/dev/null && pwd || true)"
+
+if [ -n "${PDF_TD}" ] && [ -f "${PDF_TD}/text.pdf" ]; then
+    check_readonly_root "pdftotext" "${PDF_TD}" "text.pdf" \
+        "pdftotext -layout -enc UTF-8 - -" "glovebox"
+else
+    fail "pdf fixture not found at connector/enrich/pdf/testdata/text.pdf" \
+         "ls -la ${CONTEXT_DIR}/connector/enrich/pdf/testdata/" \
+         "restore the committed text.pdf fixture"
+fi
+
+if [ -n "${OCR_TD}" ] && [ -f "${OCR_TD}/hello.png" ]; then
+    check_readonly_root "tesseract" "${OCR_TD}" "hello.png" \
+        "tesseract - - -l eng" "HELLO"
+else
+    fail "ocr fixture not found at connector/enrich/ocr/testdata/hello.png" \
+         "ls -la ${CONTEXT_DIR}/connector/enrich/ocr/testdata/" \
+         "restore the committed hello.png fixture"
+fi
+
+if [ -n "${OFFICE_TD}" ] && [ -f "${OFFICE_TD}/sample.xlsx" ]; then
+    # Reads the xlsx from a read-only bind mount and writes markdown to
+    # stdout, matching enrich/office (which pipes the file in on stdin).
+    check_readonly_root "pandoc (xlsx)" "${OFFICE_TD}" "sample.xlsx" \
+        "pandoc -f xlsx -t markdown" "ZEBRA"
+else
+    fail "office xlsx fixture not found for the read-only root check" \
+         "ls -la ${CONTEXT_DIR}/connector/enrich/office/testdata/" \
+         "restore the committed sample.xlsx fixture"
 fi
 
 # --- Summary -----------------------------------------------------------------

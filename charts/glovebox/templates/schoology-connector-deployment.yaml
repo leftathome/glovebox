@@ -1,4 +1,21 @@
 {{- if .Values.schoologyConnector.enabled }}
+{{- /*
+Read-only root filesystem ($roRoot, below).
+
+Schoology is not an enricher workload -- this image does not carry
+pdftotext/tesseract/pandoc -- but it is a connector pod running the same
+framework, and leaving it as the one connector with a writable image layer
+would be an exception nobody remembers making. It gets the same /tmp emptyDir
+for the same reason: connector/http_backend.go NewItem calls os.MkdirTemp("")
+per item, which resolves through TMPDIR.
+
+The schoology-auth-refresher CronJob is a genuine exception and keeps its
+writable root; the reason is on its own securityContext.
+
+Turn off with readOnlyRootFilesystem.enabled=false chart-wide, or
+schoologyConnector.readOnlyRootFilesystem=false here.
+*/}}
+{{- $roRoot := include "glovebox.readOnlyRootFilesystem" (dict "workload" .Values.schoologyConnector "root" .) }}
 # Schoology connector Deployment (spec 12).
 #
 # Runs the glovebox-schoology connector binary. The binary loads its
@@ -58,7 +75,14 @@ spec:
             capabilities:
               drop:
                 - ALL
+            {{- if $roRoot }}
+            readOnlyRootFilesystem: true
+            {{- end }}
           env:
+            {{- if $roRoot }}
+            - name: TMPDIR
+              value: /tmp
+            {{- end }}
             {{- if ne .Values.ingest.tls.mode "disabled" }}
             - name: GLOVEBOX_INGEST_URL
               value: "https://{{ include "glovebox.fullname" . }}-ingest:{{ .Values.ingest.tls.port }}/v1/ingest"
@@ -139,6 +163,10 @@ spec:
             - name: session
               mountPath: /etc/schoology
               readOnly: true
+            {{- if $roRoot }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
       {{- with (.Values.schoologyConnector.nodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -170,4 +198,9 @@ spec:
         - name: session
           secret:
             secretName: {{ include "glovebox.fullname" . }}-schoology-session
+        {{- if $roRoot }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ include "glovebox.tmpSizeLimit" (dict "workload" .Values.schoologyConnector "root" .) }}
+        {{- end }}
 {{- end }}
