@@ -649,15 +649,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ingest.port` carrying `/v1/ingest` alone. The archive NetworkPolicy,
     Service port and `containerPort` all follow it, so the recognizer's
     ingress reaches the archive endpoint and nothing else.
-  - **It defaults to `0`, meaning "share `ingest.port`" -- today's layout,
-    unchanged.** The recognizer namespace and the `/v1/sanitize` callers live
-    outside this chart and are configured against 9091; moving them silently
-    on upgrade would have broken exactly the callers this is meant to protect.
-    Closing the exposure is therefore a coordinated migration: set
-    `config.ingest.bearerPort` (e.g. `9093`) and repoint the recognizer and any
-    sanitize caller at it in the same window. Until an operator does, the
-    grant still reaches `/v1/ingest`, and the template comment says so rather
-    than implying otherwise.
+  - **BREAKING: it now defaults to `9093`, so the split is on.** An earlier
+    revision of this change defaulted to `0` (share the port) to avoid moving
+    a port under existing callers, which left the exposure open unless an
+    operator opted in -- a vulnerability that ships closed only if someone
+    reads the release notes is not closed. The default now fixes it.
+    - **Action required on upgrade.** Anything configured against 9091 for
+      `/v1/archives*` or `/v1/sanitize` must be repointed at **9093** in the
+      same maintenance window. That is the recognizer namespace
+      (`leftathome/recognizer`) and any sanitize-gate client. **Connectors are
+      unaffected** -- they are templated off `ingest.port` and keep using 9091
+      for `/v1/ingest`.
+    - Connector pods retain access to the bearer port. They could reach
+      `/v1/sanitize` while it shared the ingest port, and splitting the port
+      must not silently revoke that.
+    - Setting `bearerPort: 0` restores the old shared-port layout. It also
+      re-opens the exposure, so it is a migration aid, not a supported
+      configuration.
   - Chart and binary are now checked against each other across the full
     `ingest.tls.mode` x `ingest.archives.enabled` x split matrix: every
     `containerPort` and Service port the chart declares is one the process
