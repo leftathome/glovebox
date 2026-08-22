@@ -183,6 +183,7 @@ ingest:
       group: cert-manager.io
     duration: 24h
     renewBefore: 8h
+    producers: []             # names for the `producer` SPIFFE kind
 ```
 
 Setting a mode other than `disabled` renders, per install:
@@ -195,7 +196,9 @@ Setting a mode other than `disabled` renders, per install:
 - `GLOVEBOX_INGEST_URL` switched to `https://…:<tls.port>` plus the three
   client-certificate environment variables;
 - the mTLS port on the ingest `Service`, the scanner's `containerPort`, and
-  the connector NetworkPolicy.
+  the connector NetworkPolicy;
+- one `Certificate` per name in `ingest.tls.producers`, carrying
+  `spiffe://<trustDomain>/producer/<name>` — see below.
 
 Every producer is wired, deliberately: under `required` the plaintext
 listener is never opened, so a producer the chart forgot would fail to
@@ -220,10 +223,43 @@ left in `cert-manager.io` is picked up by nobody. The `Certificate` then sits
 unready with no error to point at, which is why the field is spelled out here
 rather than left to a default.
 
+### Callers the chart does not deploy: `ingest.tls.producers`
+
+Connectors and importers get a certificate automatically, because the chart
+deploys them and so knows they exist. The `producer` kind is for a caller
+that runs somewhere else — the recognizer
+(`spiffe://glovebox/producer/recognizer`) is the documented one. Nothing in
+the values would otherwise tell the chart it is coming, so it is named
+explicitly:
+
+```yaml
+ingest:
+  tls:
+    producers:
+      - recognizer
+```
+
+Each name renders one `Certificate`,
+`<release>-glovebox-<name>-ingest-producer`, from the same issuer, duration
+and `renewBefore` as the connector certificates, with its keypair in
+`<release>-glovebox-<name>-ingest-producer-tls`. The `-ingest-producer`
+suffix keeps it clear of the `-ingest-client` Secrets connectors and
+importers use, so a producer and a connector of the same name are two
+identities with two Secrets, not one contested Secret.
+
+The list is **empty by default**, so an install that sets nothing renders
+exactly as it did before the key existed. Nothing in the chart mounts the
+Secret — the producer runs in its own namespace, so copy or reflect it
+there. Names are validated (non-empty, DNS-1123 label, no duplicates)
+whether or not `mode` is `disabled`, so a typo fails the render at the point
+it is written rather than on the day mTLS is turned on.
+
 ## Not yet covered
 - **`/v1/archives`** still uses spec 10 bearer tokens. A cert SAN is a
   strictly stronger caller identity, so a later spec can retire the tokens or
-  keep them as a second factor for archive-scale sources. The cross-namespace
+  keep them as a second factor for archive-scale sources. When that happens
+  the recognizer's certificate is already a chart concern:
+  `ingest.tls.producers: [recognizer]`. The cross-namespace
   exposure noted above is **closed by default** as of this release:
   `config.ingest.bearerPort` defaults to 9093, so the recognizer's ingress
   rule reaches the archive endpoint and nothing else. This is a breaking
