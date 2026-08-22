@@ -205,6 +205,9 @@ CA ever signed ingest.
 - **`/v1/archives`** still uses spec 10 bearer tokens. A cert SAN is a
   strictly stronger caller identity, so a later spec can retire the tokens or
   keep them as a second factor for archive-scale sources. The cross-namespace
-  exposure noted above is closable today with `ingest.bearer_port`, but only
-  by an operator who can repoint the recognizer at the new port; the default
-  still shares one.
+  exposure noted above is **closed by default** as of this release:
+  `config.ingest.bearerPort` defaults to 9093, so the recognizer's ingress
+  rule reaches the archive endpoint and nothing else. This is a breaking
+  change for any caller pointed at 9091 for `/v1/archives*` or `/v1/sanitize`
+  -- repoint them at 9093. Setting `bearerPort: 0` restores the shared port
+  and re-opens the exposure.
