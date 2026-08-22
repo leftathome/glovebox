@@ -608,8 +608,8 @@
       "expect": "pass",
       "class": "benign-encoded",
       "note": "A real base64 attachment: a large blob that decodes to binary, not text.",
-      "known_gap": true,
-      "gap_note": "Scores 1.05: suspicious_encoding (0.70) multiplied by the non-English language booster (x1.5), because a base64 blob is not English prose. Any inline image or attachment reference in a mail body hits this."
+      "known_gap": false,
+      "gap_note": ""
     },
     {
       "id": "pgp-signature",
@@ -621,8 +621,8 @@
       "expect": "pass",
       "class": "benign-encoded",
       "note": "Armoured signature block: dense base64 that is not a payload.",
-      "known_gap": true,
-      "gap_note": "Scores 1.05, same mechanism as the inline image: encoding anomaly boosted by the language detector. Signed announcements are quarantined today."
+      "known_gap": false,
+      "gap_note": ""
     },
     {
       "id": "security-advisory-quoting-injection",

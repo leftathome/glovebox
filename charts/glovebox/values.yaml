@@ -122,6 +122,42 @@ seccompProfile:
 # syscall-latency cost on the enrichers; measure before applying it globally.
 runtimeClassName: ""
 
+# Read-only container root filesystem for connector and importer pods.
+#
+# The scanner has had `readOnlyRootFilesystem: true` since it shipped
+# (containerSecurityContext above); the connectors and importers -- the pods
+# that actually fork pandoc, tesseract and pdftotext on attacker-chosen bytes
+# -- did not. That is backwards, and this closes it. With a read-only root, a
+# parser that gets execution cannot drop a payload onto the image layer and
+# have it survive; what is left writable is the /tmp emptyDir below, /state,
+# and (in filesystem ingest mode) the staging PVC.
+#
+# The blocker on turning this on was the belief that tesseract and pandoc need
+# a writable /tmp. Measured rather than assumed: driven the way
+# connector/enrich drives them -- fixed argv, document on stdin, text on stdout
+# -- pdftotext, tesseract and pandoc make no successful write syscall anywhere
+# on the filesystem and run to completion with the ENTIRE root read-only and no
+# /tmp at all. What does need a writable temp dir is the Go side:
+# connector/http_backend.go NewItem calls os.MkdirTemp("") for every item on
+# the default http ingest path, and importers/apple/media_services.go unpacks
+# nested zips the same way. So the emptyDir is required, just not for the
+# reason it was written down for. scripts/test-enricher-runtime.sh re-checks
+# the tool half on the real image under `--read-only --tmpfs /tmp` on every
+# enricher-runtime build, so this default cannot silently rot.
+#
+# Set `enabled: false` to get the previous behaviour back, or override per
+# workload -- `connectors.gmail.readOnlyRootFilesystem: false`,
+# `importers.apple.tmpSizeLimit: 4Gi` -- when one workload needs different
+# treatment than the rest.
+readOnlyRootFilesystem:
+  enabled: true
+  # Cap on the writable /tmp emptyDir. An emptyDir with no sizeLimit is
+  # unbounded and eats the node's ephemeral storage, which turns a
+  # decompression bomb in one importer into a node-wide disk-full. 1Gi is
+  # sized for the apple importer unpacking nested zips; a connector holds one
+  # item's temp dir at a time and never comes close. Overridable per workload.
+  tmpSizeLimit: 1Gi
+
 serviceAccount:
   create: true
   name: ""

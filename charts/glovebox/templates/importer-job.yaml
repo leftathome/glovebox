@@ -4,9 +4,24 @@ Per-importer one-shot Job. Importers (apple/mbox/walhelm) read a local archive
 Service, then exit. Re-running an import = re-applying the release (or deleting
 and recreating the Job). Long-running connectors use connector-deployment.yaml;
 importers are batch, hence a Job.
+
+Read-only root filesystem ($roRoot, below): all three importers fork
+pdftotext/tesseract/pandoc on archive contents nobody vetted -- an mbox is a
+decade of other people's attachments -- so these are the pods most worth
+denying a writable image layer. The writable /tmp emptyDir that comes with it
+is needed by the Go side, not the enrichers: importers/apple/media_services.go
+unpacks nested zips into os.MkdirTemp(""), and the shared http ingest backend
+takes a temp dir per item. Both resolve through os.TempDir(), i.e. TMPDIR,
+which is why TMPDIR is pinned rather than left to its /tmp fallback.
+
+Turn off chart-wide with readOnlyRootFilesystem.enabled=false, or per importer
+with importers.<name>.readOnlyRootFilesystem=false. The /tmp cap is
+readOnlyRootFilesystem.tmpSizeLimit, overridable as
+importers.<name>.tmpSizeLimit for an archive that needs more room.
 */}}
 {{- range $name, $importer := .Values.importers }}
 {{- if $importer.enabled }}
+{{- $roRoot := include "glovebox.readOnlyRootFilesystem" (dict "workload" $importer "root" $) }}
 {{- if not $importer.input.existingClaim }}
 {{- fail (printf "importers.%s.enabled is true but importers.%s.input.existingClaim is empty: an importer needs a PVC holding the archive to import" $name $name) }}
 {{- end }}
@@ -50,6 +65,12 @@ spec:
             capabilities:
               drop:
                 - ALL
+            {{- if $roRoot }}
+            # Writable surface is the /tmp emptyDir and /state; the input PVC
+            # is already mounted readOnly. See the note at the top of this
+            # template.
+            readOnlyRootFilesystem: true
+            {{- end }}
           args:
             - "--source"
             - {{ $importer.source | quote }}
@@ -63,6 +84,10 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
+            {{- if $roRoot }}
+            - name: TMPDIR
+              value: /tmp
+            {{- end }}
             {{- if ne $.Values.ingest.tls.mode "disabled" }}
             - name: GLOVEBOX_INGEST_URL
               value: "https://{{ include "glovebox.fullname" $ }}-ingest:{{ $.Values.ingest.tls.port }}/v1/ingest"
@@ -99,6 +124,10 @@ spec:
             - name: config
               mountPath: /etc/importer
               readOnly: true
+            {{- if $roRoot }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
       {{- with ($importer.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -131,5 +160,12 @@ spec:
         - name: config
           configMap:
             name: {{ include "glovebox.fullname" $ }}-importer-{{ $name }}-config
+        {{- if $roRoot }}
+        # sizeLimit, not the unbounded emptyDir default: a decompression bomb
+        # should evict this pod, not fill the node's disk.
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ include "glovebox.tmpSizeLimit" (dict "workload" $importer "root" $) }}
+        {{- end }}
 {{- end }}
 {{- end }}

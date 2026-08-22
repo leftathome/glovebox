@@ -2,6 +2,33 @@
 {{- if $connector.enabled }}
 {{- $ingestMode := $connector.ingestMode | default "http" }}
 {{- $es := $connector.externalSecret | default dict }}
+{{- /*
+Read-only root filesystem ($roRoot, below).
+
+Five of these connectors -- arxiv, gmail, imap, outlook, semantic-scholar --
+fork pdftotext/tesseract/pandoc on bytes an attacker chose. A read-only root
+means code that gets execution inside one cannot leave a dropper behind on the
+image layer; what stays writable is the /tmp emptyDir, /state, and (in
+filesystem ingest mode) the staging PVC.
+
+Spelled out here rather than pulled from .Values.containerSecurityContext:
+that value belongs to the scanner and switching to it would silently apply the
+scanner's other settings to every connector.
+
+The writable /tmp is needed by the Go side, not by the enrichers. Driven the
+way connector/enrich drives them (fixed argv, document on stdin, text on
+stdout) all three tools run to completion with the entire root read-only and
+no /tmp at all; scripts/test-enricher-runtime.sh asserts that on the real
+image. What does need a temp dir is connector/http_backend.go NewItem, which
+calls os.MkdirTemp("") for every item on the default http ingest path. TMPDIR
+is set explicitly so that dependency is visible rather than resting on /tmp
+being os.TempDir()'s fallback -- and so any enricher that consults TMPDIR
+lands on the same emptyDir.
+
+Turn off chart-wide with readOnlyRootFilesystem.enabled=false, or per
+connector with connectors.<name>.readOnlyRootFilesystem=false.
+*/}}
+{{- $roRoot := include "glovebox.readOnlyRootFilesystem" (dict "workload" $connector "root" $) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -54,7 +81,17 @@ spec:
             capabilities:
               drop:
                 - ALL
+            {{- if $roRoot }}
+            # Writable surface is the /tmp emptyDir, /state, and the staging
+            # PVC in filesystem ingest mode. See the note at the top of this
+            # template.
+            readOnlyRootFilesystem: true
+            {{- end }}
           env:
+            {{- if $roRoot }}
+            - name: TMPDIR
+              value: /tmp
+            {{- end }}
             {{- if eq $ingestMode "http" }}
             {{- if ne $.Values.ingest.tls.mode "disabled" }}
             - name: GLOVEBOX_INGEST_URL
@@ -128,6 +165,10 @@ spec:
               mountPath: /etc/ingest-tls
               readOnly: true
             {{- end }}
+            {{- if $roRoot }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
       {{- with ($connector.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -156,6 +197,13 @@ spec:
         - name: ingest-tls
           secret:
             secretName: {{ include "glovebox.fullname" $ }}-{{ $name }}-ingest-client-tls
+        {{- end }}
+        {{- if $roRoot }}
+        # sizeLimit, not the unbounded emptyDir default: a document that
+        # spools without limit should evict its own pod, not fill the node.
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ include "glovebox.tmpSizeLimit" (dict "workload" $connector "root" $) }}
         {{- end }}
 {{- end }}
 {{- end }}
