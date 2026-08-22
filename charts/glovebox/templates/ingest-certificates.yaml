@@ -1,3 +1,44 @@
+{{/*
+ingest.tls.producers -- names for the `producer` SPIFFE kind (issue #66).
+
+Producers are callers that are NOT workloads this chart deploys: the
+recognizer posting to /v1/ingest is the documented one
+(spiffe://glovebox/producer/recognizer). Connectors and importers get a
+certificate because the chart already knows they exist; a producer has to be
+named here, because nothing else in the values tells the chart it is coming.
+So the value is a bare list of names rather than a map of workload settings.
+
+Validated OUTSIDE the tls-mode gate on purpose. A bad entry here is a
+misconfiguration whether or not mTLS happens to be on yet, and a name that
+only blows up on the day someone flips `mode` is the failure this whole
+template exists to prevent. Rendering still only happens under mTLS.
+*/}}
+{{- $producers := .Values.ingest.tls.producers | default (list) }}
+{{- if not (kindIs "slice" $producers) }}
+{{- fail (printf "ingest.tls.producers must be a list of names, got a %s: write it as a YAML sequence of bare names, e.g. producers: [\"recognizer\"]" (kindOf $producers)) }}
+{{- end }}
+{{- $seenProducers := dict }}
+{{- range $i, $producer := $producers }}
+{{- if kindIs "invalid" $producer }}
+{{- fail (printf "ingest.tls.producers[%d] is empty: remove the entry, or give it the producer name that will appear in spiffe://%s/producer/<name>" $i $.Values.ingest.tls.trustDomain) }}
+{{- end }}
+{{- if not (kindIs "string" $producer) }}
+{{- fail (printf "ingest.tls.producers[%d] is a %s, not a name: each entry is the bare second segment of spiffe://<trust-domain>/producer/<name>, e.g. producers: [\"recognizer\"]" $i (kindOf $producer)) }}
+{{- end }}
+{{- if not (trim $producer) }}
+{{- fail (printf "ingest.tls.producers[%d] is empty: remove the entry, or give it the producer name that will appear in spiffe://%s/producer/<name>" $i $.Values.ingest.tls.trustDomain) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $producer) }}
+{{- fail (printf "ingest.tls.producers[%d] is %q, which is not a DNS-1123 label: the name becomes part of a Certificate and Secret name, so use lowercase letters, digits and '-' only, starting and ending alphanumeric (e.g. \"recognizer\")" $i $producer) }}
+{{- end }}
+{{- if gt (len $producer) 63 }}
+{{- fail (printf "ingest.tls.producers[%d] is %d characters: the name becomes part of a Certificate and Secret name, so keep it to 63 characters or fewer" $i (len $producer)) }}
+{{- end }}
+{{- if hasKey $seenProducers $producer }}
+{{- fail (printf "ingest.tls.producers[%d] repeats %q: two entries would render the same Certificate twice and the second would overwrite the first. List each producer once" $i $producer) }}
+{{- end }}
+{{- $_ := set $seenProducers $producer true }}
+{{- end }}
 {{- if ne .Values.ingest.tls.mode "disabled" }}
 {{- $tls := .Values.ingest.tls }}
 {{- $fullname := include "glovebox.fullname" . }}
@@ -117,5 +158,39 @@ spec:
     kind: {{ $tls.issuerRef.kind }}
     group: {{ $tls.issuerRef.group }}
 {{- end }}
+{{- end }}
+{{- range $producer := $producers }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  # `-ingest-producer` rather than the connector/importer `-ingest-client`
+  # suffix so a producer can never collide with a same-named connector over
+  # one Secret: every connector and importer certificate ends in
+  # `-ingest-client`, so no connector name can reach this name space.
+  name: {{ $fullname }}-{{ $producer }}-ingest-producer
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: producer
+spec:
+  secretName: {{ $fullname }}-{{ $producer }}-ingest-producer-tls
+  duration: {{ $tls.duration }}
+  renewBefore: {{ $tls.renewBefore }}
+  isCA: false
+  usages:
+    - client auth
+  # Producers are a distinct kind: callers this chart does not deploy (the
+  # recognizer is the documented one). Nothing mounts this Secret in-cluster
+  # -- copy it to the producer's own namespace, or point a Certificate
+  # reflector at it -- so the chart mints the identity and stops there.
+  # Source-match enforcement compares metadata.source with the name segment,
+  # exactly as it does for connectors.
+  uris:
+    - spiffe://{{ $tls.trustDomain }}/producer/{{ $producer }}
+  commonName: {{ $producer }}
+  issuerRef:
+    name: {{ $tls.issuerRef.name }}
+    kind: {{ $tls.issuerRef.kind }}
+    group: {{ $tls.issuerRef.group }}
 {{- end }}
 {{- end }}
