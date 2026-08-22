@@ -88,6 +88,13 @@ jobs:
       - name: Check the documented image list is current
         run: ./scripts/build-targets.sh check-docs
 
+      # The ruleset ships twice: configs/default-rules.json is what the
+      # corpus gate below measures, charts/glovebox/rules.json is what a
+      # Helm install mounts. A silent divergence would leave CI reporting a
+      # detection rate for a ruleset no deployment runs.
+      - name: Check the chart ruleset matches the canonical one
+        run: ./scripts/check-rules-sync.sh
+
       # Detection rate on the adversarial corpus and false-positive rate on
       # its benign counterweight, both gated against committed thresholds
       # (testdata/adversarial-corpus/thresholds.json). The efficacy fixes

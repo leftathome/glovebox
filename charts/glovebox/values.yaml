@@ -1561,6 +1561,33 @@ ingest:
     # needs no restart.
     duration: 24h
     renewBefore: 8h
+    # Client certificates for the `producer` SPIFFE kind --
+    # spiffe://<trustDomain>/producer/<name>. A bare list of names, empty by
+    # default, so an install that sets nothing renders exactly as before.
+    #
+    # Connectors and importers get a certificate automatically because the
+    # chart deploys them and so knows they exist. A producer is a caller the
+    # chart does NOT deploy -- the recognizer posting to /v1/ingest is the
+    # documented one (docs/ingest-mtls.md) -- so it has to be named here or
+    # its identity cannot be minted from the ingest CA at all.
+    #
+    # Each name renders one cert-manager Certificate,
+    # <release>-glovebox-<name>-ingest-producer, whose Secret
+    # <release>-glovebox-<name>-ingest-producer-tls holds the keypair. The
+    # `-ingest-producer` suffix keeps it clear of the `-ingest-client`
+    # Secrets that connectors and importers use, so a producer and a
+    # connector of the same name never share one Secret. Nothing in this
+    # chart mounts the Secret: the producer runs elsewhere, so copy it (or
+    # reflect it) into the namespace that needs it.
+    #
+    # Names are validated (non-empty, DNS-1123 label, no duplicates) whether
+    # or not `mode` is disabled, so a typo fails the render now rather than
+    # on the day mTLS is turned on. Certificates themselves are only
+    # rendered when `mode` is not disabled.
+    #
+    #   producers:
+    #     - recognizer
+    producers: []
 
   archives:
     enabled: false                          # opt-in; off by default
