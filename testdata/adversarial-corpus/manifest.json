@@ -660,8 +660,8 @@
       "expect": "pass",
       "class": "benign-alarming",
       "note": "A shell code fence in legitimate release notes.",
-      "known_gap": true,
-      "gap_note": "Scores exactly 0.80 on tool_invocation_syntax (the ```shell fence), which equals the quarantine threshold. Ordinary developer mail carrying install instructions is quarantined."
+      "known_gap": false,
+      "gap_note": ""
     },
     {
       "id": "support-reply-about-passwords",
