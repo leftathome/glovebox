@@ -233,7 +233,7 @@ Pre-processing produces several scan-only buffers used by matchers and detectors
 | Rule | Match Type | Weight | Notes |
 |------|-----------|--------|-------|
 | `instruction_override` | regex | 1.0 | `ignore\s+(\w+\s+)*previous`, `disregard\s+(\w+\s+)*your\s+instructions`, and variants with flexible word boundaries |
-| `role_reassignment` | regex | 1.0 | `you\s+are\s+now`, `act\s+as`, `pretend\s+you\s+are`, and variants |
+| `role_reassignment` | regex | 1.0 | `you\s+are\s+now`, `pretend\s+you\s+are`, `act\s+as` with a persona-shaped object, and variants |
 | `tool_invocation_syntax` | substring | 0.8 | `<tool>`, `<function_call>`, `exec:`, `bash:`, etc. |
 | `suspicious_encoding` | custom_detector | 0.7 | Base64 blocks in plain text, zero-width chars, bidi controls, excessive unicode escapes |
 | `invisible_smuggling` | custom_detector | 1.0 | Unicode Tags-block characters (U+E0000–U+E007F). No legitimate use in ingested content, so this quarantines on its own; the signal detail carries the decoded hidden text for the reviewer |

@@ -15,9 +15,13 @@
       "name": "role_reassignment",
       "patterns": [
         "(?i)you\\s+are\\s+now",
-        "(?i)act\\s+as",
         "(?i)pretend\\s+you\\s+are",
-        "(?i)your\\s+new\\s+role"
+        "(?i)your\\s+new\\s+role",
+        "(?i)\\bact(?:s|ing)?\\s+as\\s+(?:(?:an?|the|my|your|our)\\s+)?(?:(?:unrestricted|unfiltered|uncensored|unlocked|jailbroken|unethical|amoral|immoral|rogue|evil|unaligned|unmoderated|unbounded|unlimited|lawless|unsafe)\\b|(?:[a-z][a-z-]*\\s+){0,2}(?:persona|chat\\s*bot|sysadmin|system\\s+administrator|superuser|root\\s+user)\\b)",
+        "(?im)\\bact(?:s|ing)?\\s+as\\s+(?:(?:an?|the|my|your|our)\\s+)?(?:[a-z][a-z-]*\\s+){0,2}(?:a\\.i\\.|ai|llm|gpt-?\\d*|assistant|(?:ai|language)\\s+model|character|hacker)(?:\\s*[.,;:!?)\\]}\"”»]|\\s+(?:and|but|so|then|that|who|which|with|without|from|now|instead|named|called|for|in|to|again)\\b|\\s*$)",
+        "(?i)\\byou\\s+(?:will|shall|must|should|can|may|are\\s+to|need\\s+to|have\\s+to|are\\s+going\\s+to)\\s+(?:now\\s+)?(?:instead\\s+)?act\\s+as\\b",
+        "(?i)(?:from\\s+now\\s+on|from\\s+here\\s+on(?:\\s+out)?|starting\\s+now|for\\s+the\\s+(?:rest|remainder)\\s+of\\s+(?:this|the)\\s+(?:conversation|session|chat|thread))[,:;]?\\s+(?:please\\s+|you\\s+(?:will|must|should)\\s+)?act\\s+as\\b",
+        "(?i:\\bact(?:s|ing)?\\s+as\\s+(?:(?:an?|the|my|your|our)\\s+)?)DAN\\b"
       ],
       "weight": 1.0,
       "match_type": "regex"
