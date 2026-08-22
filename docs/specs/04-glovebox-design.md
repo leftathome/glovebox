@@ -484,21 +484,53 @@ On startup the glovebox records the ruleset it is enforcing:
     "rule_count": 7,
     "quarantine_threshold": 0.8,
     "max_achievable_score": 5.4,
-    "threshold_reachable": true
+    "threshold_reachable": true,
+    "signature": {
+      "mode": "disabled|permissive|required",
+      "verified": true,
+      "key_fingerprint": "first 16 hex of sha256(public key)",
+      "signature_file": "/etc/glovebox/rules.json.sig",
+      "public_key_file": "/etc/glovebox-rules-key/rules.pub",
+      "trusted_keys": 1,
+      "warning": "optional -- permissive start with no signature",
+      "error": "optional -- why the ruleset was refused"
+    }
   }
 }
 ```
 
-Two related controls:
+Three related controls:
 
 - **Digest pinning.** Setting `rules_sha256` in the config makes the daemon
   refuse to start when the file on disk does not match, turning an unreviewed
   ConfigMap edit into a failed start rather than a silently permissive
   scanner. Unpinned is the default.
+- **Signature verification.** `rules_signing.mode` (`disabled`, `permissive`,
+  `required`; disabled by default) requires a detached Ed25519 signature over
+  the rules file, verified against a public key mounted from a *separate*
+  object so ConfigMap-edit rights do not also grant the ability to swap the
+  trust anchor. Verification failure is fatal — see below — and the outcome is
+  recorded in the `signature` object above, which is always present so that
+  "never checked" and "checked and unverified" cannot be confused. Full
+  treatment in `docs/rule-signing.md`.
 - **Reachability check.** `max_achievable_score` is every non-booster weight
   summed and multiplied by the boosters. When the threshold exceeds it, no
   item can ever be quarantined; that is recorded as a warning on the entry
   and logged at startup rather than passing unremarked.
+
+A ruleset the daemon refuses to enforce — a digest mismatch or a failed
+signature — is recorded with `"event": "ruleset_rejected"` *before* the
+process exits. The refusal has to be reconstructable from the audit log; one
+that reached only stderr would leave the log silent about the event that
+matters most.
+
+The signature and digest checks are **fail-closed**: the process does not
+start. The glovebox is the boundary between untrusted content and the agents
+that act on it, so enforcing rules that may have been written by an attacker
+is worse than not running. A stopped scanner is loud and lossless — items wait
+in staging, `/readyz` reports unready, connectors get connection errors — while
+a subverted one is silent and delivers hostile content with an audit trail full
+of `PASS`.
 
 A failure to write this entry does not trip degraded mode (Section 10.2):
 nothing has been scanned yet, and refusing to run over bookkeeping would be a

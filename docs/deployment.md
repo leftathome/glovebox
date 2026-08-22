@@ -961,6 +961,24 @@ default is at `configs/default-rules.json` in the repository.
 `tool_invocation_syntax` (weight 0.8). Total score = 1.8, which exceeds the
 default threshold of 0.8. The item is quarantined.
 
+#### Protecting the rules file
+
+In Kubernetes this file is a ConfigMap, so anyone with `configmap` edit rights
+can raise `quarantine_threshold` above anything the ruleset can score and the
+scanner will pass everything. Three optional controls, in increasing order of
+strength:
+
+| Control | Config | Effect |
+|---|---|---|
+| Provenance | *always on* | The digest of the ruleset in force is recorded in `audit/ruleset.jsonl` at startup. Detects, does not prevent. |
+| Digest pin | `rules_sha256` | The daemon refuses to start unless the file matches the digest. Must be updated by hand on every rule change. |
+| Signature | `rules_signing` | The ruleset must carry a valid Ed25519 signature made by a key held outside the cluster. Rules change freely; unauthorised edits are refused. |
+
+Signature verification is off by default and fail-closed once on: a ruleset
+that does not verify stops the process rather than being enforced. See
+[docs/rule-signing.md](rule-signing.md) for the key generation, signing, chart
+wiring and key-rotation procedures.
+
 ---
 
 ## 6. Directory Layout
