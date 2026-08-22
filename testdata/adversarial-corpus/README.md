@@ -73,17 +73,26 @@ behaving, the runner says `NO LONGER FAILING` and the test fails until the flag
 is cleared here — a gap cannot silently close any more than it can silently
 open.
 
-As of 2026-08-21: **no missed malicious cases** and **5 false positives**
-(`base64-image-attachment`, `pgp-signature`,
-`security-advisory-quoting-injection`, `release-notes-with-shell`,
-`docs-act-as-proxy`). See each `gap_note` for why.
+As of 2026-08-22: **one missed malicious case** (`encoded-plus-form`) and
+**3 false positives** (`security-advisory-quoting-injection`,
+`release-notes-with-shell`, `docs-act-as-proxy`). See each `gap_note` for
+why. All three need the engine to model quotation, reported speech and
+context, which it does not.
 
-The two detection gaps recorded here on the same day —
+`base64-image-attachment` and `pgp-signature` are closed: language
+detection now runs on an item's prose, with ASCII armour, `data:` URIs and
+long token runs excised first, so a base64 blob no longer comes back as
+"Dutch, confidence 1.00" and no longer multiplies `suspicious_encoding`
+(0.70) to a quarantining 1.05. Detection was unchanged by that fix —
+only two malicious cases moved, `encoded-base64-raw` 4.05 → 2.70 and
+`encoded-nested-base64` 2.55 → 1.70, both still far above the 0.80
+threshold.
+
+The two detection gaps recorded on 2026-08-21 —
 `encoded-percent-partial` and `invisible-bidi-controls` — are closed: the
 scanner now unescapes percent/HTML-entity/backslash escapes in place and
 applies the UAX #9 explicit-embedding rules to build a bidi-reordered scan
-view. Detection is 38/38, so `min_detection_rate` is 1.0 and every
-malicious case in this directory is load-bearing.
+view.
 
 ## Adding a case
 

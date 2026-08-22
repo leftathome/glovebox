@@ -9,6 +9,18 @@ import (
 
 const minContentLength = 20
 
+// minProseLength is how much natural language must survive the structured
+// strip before this detector will name a language. It is measured in
+// non-whitespace bytes of the prose residue, not in the length of the
+// original item, because an item can be kilobytes long and contain almost
+// no writing: "Here is the logo inline:" followed by a 2 KiB data: URI is
+// 24 characters of English and an attachment.
+//
+// It is the same 20 as minContentLength on purpose. The bar for "enough
+// text to identify" does not change because some of the text turned out to
+// be an attachment; what changes is which bytes are counted.
+const minProseLength = minContentLength
+
 // AllowSampling opts language detection into prefix+suffix sampling.
 //
 // Language is a property of the document as a whole: a 128 KB sample
@@ -38,12 +50,38 @@ func NewLanguageDetectionDetector() *LanguageDetectionDetector {
 	return &LanguageDetectionDetector{detector: detector}
 }
 
+// Detect names the language of an item's *prose*.
+//
+// The rule this feeds is a x1.5 weight booster, and what justifies it is
+// that the matchers are written in English: an instruction override in
+// French walks past every pattern in the ruleset, so whatever signal does
+// fire on non-English writing is worth more than the same signal on
+// English writing. That argument is about human language. It says nothing
+// about a base64 blob, a PEM block or a PGP signature, which are not
+// writing in any language at all.
+//
+// Asked anyway, lingua does not decline: an inline PNG comes back as Dutch
+// with confidence 1.00 and a raw base64 payload as Swedish with confidence
+// 1.00. The booster then multiplied encoding_anomaly's 0.70 to 1.05 and
+// quarantined every inline image and every PGP-signed message that arrived.
+// So the armour is removed before the question is asked, and if too little
+// writing is left to identify, no language is named and nothing is boosted.
+//
+// This narrows only the booster. Every matcher, the encoding-anomaly
+// detector and the decode-then-scan views still see the whole item,
+// armour included -- a payload hidden inside a PGP block is decoded and
+// matched exactly as before.
 func (d *LanguageDetectionDetector) Detect(content []byte) ([]engine.Signal, error) {
 	if len(content) < minContentLength {
 		return nil, nil
 	}
 
-	text := string(content)
+	prose := engine.StripStructured(content)
+	if engine.NonSpaceLen(prose) < minProseLength {
+		return nil, nil
+	}
+
+	text := string(prose)
 	lang, exists := d.detector.DetectLanguageOf(text)
 	if !exists {
 		return nil, nil

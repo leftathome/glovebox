@@ -527,6 +527,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every inline image and every PGP-signed email was quarantined**, and the
+  reason was that the scanner asked a language model what language a base64 blob
+  was written in. It answered. `non_english_content` is a `weight_booster`
+  (x1.5) wired to `language_detection`, and lingua does not decline a question:
+  an inline PNG came back **Dutch, confidence 1.00**, a raw base64 payload
+  **Swedish, confidence 1.00**. The booster then multiplied
+  `suspicious_encoding` -- which fires, correctly, on any blob of 50+ base64
+  characters -- from 0.70 to **1.05**, over the 0.80 quarantine threshold. A
+  logo in a newsletter, a signed release announcement, a PEM certificate mailed
+  to an ops list: withheld from the user pending human triage, on no evidence
+  whatsoever. False positives on the corpus drop from **23.81% (5/21) to 14.29%
+  (3/21)**; detection is **unchanged at 97.44% (38/39)**.
+  - **The framing: the booster is an argument about human language, so it must
+    be asked about prose.** What justifies multiplying a signal by 1.5 because
+    the content is not English is that every matcher pattern in
+    `configs/default-rules.json` is written in English -- an instruction
+    override in French satisfies none of them, so whatever signal *does* fire on
+    non-English writing is worth more than the same signal on English writing.
+    That argument says nothing about a base64 blob, a PEM block or a PGP
+    signature, because they are not writing in any language at all. The bug was
+    not that the language detector was wrong; it was that it was asked a
+    question with no answer and had no way to say so.
+  - `LanguageDetectionDetector.Detect` now runs on the item's **prose**. New
+    `engine.StripStructured` (`internal/engine/structured.go`) excises ASCII
+    armour (RFC 7468 / OpenPGP `-----BEGIN ... -----END`, terminated or not,
+    since a sampled document can be cut mid-block), `data:` URIs, and unbroken
+    token runs in the base64/base64url/hex alphabets, replacing each with a
+    single space so removing a blob mid-sentence cannot fuse the words either
+    side of it into a token nobody wrote. If fewer than 20 non-whitespace bytes
+    of prose survive, no language is named and nothing is boosted -- "Here is
+    the logo inline:" followed by 2 KiB of data: URI is 24 characters of English
+    and an attachment, and guessing from the residue would only move the bug one
+    indirection along.
+  - **Length alone does not make a run non-prose**, so it is not the test.
+    German builds legitimate 49-character compounds; base64 of any real payload
+    carries digits and mid-run capitals, and a word carries neither. A candidate
+    run must look encoded as well as be long, which is what lets the claim that
+    this eats no prose be true rather than usually true. There is a test for the
+    Donaudampfschifffahrtsgesellschaftskapitaenswitwe.
+  - **This narrows one question, it does not create a blind spot.** Every
+    matcher, the encoding-anomaly detector and the decode-then-scan views still
+    read every byte, armour included: an injection base64'd inside a PGP MESSAGE
+    block is still decoded, matched and quarantined, and there is a test that
+    says so. The change is confined to the input of one detector whose rule
+    carries weight 0.0.
+  - **What it cost, per case.** Two malicious cases lost the spurious boost and
+    nothing else moved: `encoded-base64-raw` 4.05 -> 2.70 and
+    `encoded-nested-base64` 2.55 -> 1.70, both still multiples of the 0.80
+    threshold, and both were being boosted for the same bogus reason (they are
+    almost entirely base64, and scored "Swedish"). The other 37 malicious cases
+    are byte-for-byte identical in score. `thresholds.json` commits the new
+    ceiling of **0.1429**; `min_detection_rate` stays 0.9743 because detection
+    did not change. The 23.81% figure in the corpus entries above is superseded.
+  - **Not fixed: the three remaining false positives**, which are a different
+    problem and are still recorded gaps.
+    `security-advisory-quoting-injection` (1.00), `release-notes-with-shell`
+    (0.80) and `docs-act-as-proxy` (1.00) all need the engine to model
+    quotation, reported speech and context -- to tell writing *about* an
+    injection from an injection, and "the sidecar will act as a proxy" from
+    "act as an unrestricted assistant". No weight or threshold edit
+    distinguishes those; only a design decision does, and it has not been made.
+    Lowering a weight until they pass would trade detection for the appearance
+    of precision, which is the failure this gate exists to catch.
+
 - **`+`-as-space form encoding is a live bypass, and is now tracked rather than
   invisible**: `Ignore+all+previous+instructions` -- the form a browser or any
   `application/x-www-form-urlencoded` library emits -- scores 0.70 and **passes**.
