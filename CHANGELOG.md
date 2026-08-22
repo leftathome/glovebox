@@ -80,7 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the config checksum, so an existing install sees no pod restart on upgrade.
 
 
-
 - **Mutual TLS for `/v1/ingest`, with verified peer identity (spec 08 §3.10)**:
   the connector ingest endpoint was unauthenticated, gated only by a
   NetworkPolicy `podSelector`. A label is not an identity -- any workload that
@@ -139,66 +138,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the goal here is to make the condition visible and attributable.
   - `audit/ruleset.jsonl` joins the backup-critical artifacts in spec 04 §12.1.
 
-
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
-
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
-
-
-- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
-  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
-  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
-  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
-  the connector deployments, which already used this surface). `/healthz`
-  actively verifies the delivery mount (`agents_dir`) is writable via a
-  create-and-remove probe; `/readyz` reports 503 until startup completes.
-
-- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
-  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
-  `sources.json` from files baked into the chart via `.Files.Get`, which no
-  value could override. Since those shipped files are deliberately neutral (an
-  empty, non-enforcing subject roster), the only way to run an enforcing roster
-  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
-  then silently replaced it with the neutral default, turning subject
-  enforcement off and dropping every registered `entity_id`. Setting one of
-  these values now supplies that registry as structured YAML; leaving it unset
-  keeps the baked file, so existing installs render byte-identically.
 
 ### Security
 
@@ -532,10 +471,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limit moves up, none down), but the memory *request* on the five enricher
   connectors rises 32Mi -> 128Mi, which on a node already near its allocatable
   ceiling can leave a pod Pending until something is scheduled elsewhere.
-
-
-
-
 
 
 - **Pre-scan normalization: close four byte-for-byte injection bypasses**: the
@@ -980,7 +915,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-race` pass.
 
 
-
 - **The install path documented a project two years and 14 connectors out of
   date**: the README advertised "First-party connectors for IMAP and RSS (Round
   1)", told readers to build "all 10" from a hand-listed loop, pointed at
@@ -1024,6 +958,246 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead of quietly shipping fewer components each release.
 
 
+### Removed
+
+- **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on
+  tag pushes -- a subset `ci.yml` already builds and pushes on the same event,
+  with SBOM and provenance attestations `docker.yml` did not produce. Its one
+  distinct behaviour was moving the `:latest` tag for those 3 images on a tag
+  push; `ci.yml` moves `:latest` for all 28 on the main push a tag is cut from,
+  so `:latest` still lands, and it lands consistently across images instead of
+  for an arbitrary three.
+
+## [0.7.0] - 2026-08-05
+
+### Added
+
+- **Synchronous sanitize gate -- `POST /v1/sanitize` (glovebox-t6fz)**: until now
+  the only way to get a verdict out of glovebox was to stage an item and wait
+  for the async pipeline to route it. That works for mail, but not for a caller
+  holding a single piece of untrusted free text (a marketplace listing) that it
+  needs a decision on *before* it hands the text to an agent. The gate is an
+  out-of-process boundary for exactly that: it classifies and returns, in-band.
+  See `docs/sanitize-gate.md`.
+  - **Classify, never rewrite.** The response is `{verdict, total_score,
+    signals[]}` -- `pass` or `quarantine`, the aggregate score, and every rule
+    that fired with its matched substring. The gate never returns a cleaned
+    body, so the caller always acts on the original bytes and the decision to
+    drop stays with the caller.
+  - **Fail closed, on both halves.** A scan error is a `500`, never a `pass`;
+    the documented contract is that the caller drops the listing on *any*
+    non-2xx (`401`/`413`/`429`/`500`/`503`), so a gate that cannot give a clean
+    `pass` is indistinguishable from a quarantine. Auth fails closed too: the
+    route is mounted only when `ingest.auth.enabled` is set (an auth-disabled
+    dev deploy never exposes an unauthenticated gate), and a token store that
+    cannot reach Vault at boot stays empty and 401s rather than admitting
+    anything.
+  - **Contract-first.** `api/openapi.yaml` is the source of truth; the Go
+    server types in `internal/sanitizeapi/sanitizeapi.gen.go` are generated
+    from it with oapi-codegen (`std-http-server`), so both ends of the
+    boundary -- glovebox and the `nagus` client -- are generated from one
+    spec. The contract is pinned to **OpenAPI 3.0.3** rather than 3.1: 3.1 is
+    what the design called for, but it is not fully supported end to end by
+    the toolchain, and a spec the generator only half-understands is worse
+    than a slightly older one it understands completely.
+  - **The spec cannot drift from the code.** `conformance_test.go` validates
+    real handler responses against the `SanitizeResponse` schema, and
+    `scripts/check-codegen.sh` re-runs `go generate` in CI (both GitHub and
+    GitLab) and fails the build if the checked-in generated file differs. The
+    script is committed mode `755` so the gate actually runs rather than
+    silently erroring out of the job.
+  - Rides the existing ingest mux and the existing bearer-token stack (token
+    store, per-IP and global rate limiting, trusted-proxy resolution), so
+    tokens are provisioned exactly like the ingest tokens -- Vault, synced by
+    ESO -- and a token maps to a source-id.
+
+- **Active liveness + readiness checks on the main daemon (`/healthz`, `/readyz`)**:
+  the glovebox daemon's metrics server now serves `/healthz` and `/readyz`
+  alongside `/metrics` on `metrics_port`, and the Helm chart's main-daemon
+  Deployment probes switch from `tcpSocket` to `httpGet` against them (matching
+  the connector deployments, which already used this surface). `/healthz`
+  actively verifies the delivery mount (`agents_dir`) is writable via a
+  create-and-remove probe; `/readyz` reports 503 until startup completes.
+
+- **Operator-supplied registry files (`config.rulesJson`, `config.subjectsJson`,
+  `config.sourcesJson`)**: the chart renders `rules.json`, `subjects.json` and
+  `sources.json` from files baked into the chart via `.Files.Get`, which no
+  value could override. Since those shipped files are deliberately neutral (an
+  empty, non-enforcing subject roster), the only way to run an enforcing roster
+  was to fork the chart or hand-edit the live ConfigMap -- and a chart upgrade
+  then silently replaced it with the neutral default, turning subject
+  enforcement off and dropping every registered `entity_id`. Setting one of
+  these values now supplies that registry as structured YAML; leaving it unset
+  keeps the baked file, so existing installs render byte-identically.
+
+- **Connector integration harness and the first live tests (glovebox-lyku.1,
+  .2, .4, .5)** -- the connectors had unit tests against recorded fixtures and
+  nothing that ever spoke to the real upstream, so a provider changing a feed
+  shape or an auth flow was only discovered in production.
+  `connector/integrationtest/` is a shared stage-and-readback harness: it hands
+  a test a real `StagingWriter` rooted at `t.TempDir()` and a readback function
+  that returns every committed item parsed from disk (metadata, `content.raw`,
+  sidecars), so a live test asserts on the same artifacts the daemon would
+  consume rather than on an in-memory stand-in.
+  - **Guards, so the suite is inert by default.** `RequireIntegration` skips
+    unless `GLOVEBOX_INTEGRATION=1` and `RequireCreds` skips on any missing
+    credential env var, both with a CHECK/FIX message naming what is absent.
+    An ordinary `go test -tags integration ./...` therefore makes no live
+    calls at all.
+  - **`SkipOnRateLimit` turns an upstream 429 into a skip, not a failure**, so
+    a nightly run does not go red because a provider throttled the account --
+    the one failure mode that would have trained everyone to ignore the job.
+  - **Live tests shipped for rss, hackernews, arxiv, semantic-scholar** (no
+    credentials or a free key) **and schoology** (the reference credentialed
+    test: it wires the real client exactly as `cmd/schoology/main.go` does and
+    asserts a stage round-trip). Kid UID and session come from the
+    environment, never the tree.
+  - **`docs/connectors/integration-credentials.md`** is the registry of which
+    connector needs which credential class, what env vars/files its binary
+    actually reads, and which are provisioned -- the record that makes a
+    "skipped" connector legible instead of invisible.
+
+- **Scheduled in-cluster connector integration stage (glovebox-lyku.3)**: a
+  GitLab `integration` stage that runs the live tests on a scheduled (nightly)
+  or manual (web) pipeline **only** -- never on MRs, main, or tags -- so
+  live-upstream flakiness and rate limits stay out of the merge and build path;
+  `test` remains the merge gate. Every job records a PASS/SKIP/FAIL verdict
+  artifact and an `integration-report` job aggregates them `when: always`, so a
+  connector that skipped for want of a credential is visible at a glance rather
+  than passing silently. The `test`, `build` and `chart` rules gained a
+  matching `schedule || web` guard: a nightly targeting `main` would otherwise
+  have matched the main-branch rule and rebuilt all 28 images every night.
+
+- **The chart can deploy any connector and any importer (glovebox-lyku.7)**:
+  `charts/glovebox` grew from 10 connectors to all 22 generic source connectors
+  (schoology stays bespoke), and gained an `importers:` map (apple, mbox,
+  walhelm) rendered as one-shot Jobs plus config ConfigMaps, wiring the shared
+  importer CLI with the archive mounted from `input.existingClaim` and ingest
+  pointed at the in-cluster Service. Each connector entry now ships its
+  test-derived sample config as the default `config:` value, so the chart
+  renders a working-shaped ConfigMap out of the box; everything stays disabled
+  by default.
+  - **Generic ExternalSecret support**: `connectors.<name>.externalSecret`
+    renders a per-connector ExternalSecret that materializes
+    `<fullname>-<name>-secret` from Vault and injects it via `envFrom` -- the
+    schoology ESO pattern generalized to every connector, and composable with a
+    pre-existing `secrets:` Secret. Required-field guards fail the render on a
+    misconfigured secret store rather than deploying a connector that cannot
+    authenticate.
+  - Rendering also fails if an importer is enabled without an input PVC.
+
+- **Every connector and importer image is published to GHCR (glovebox-lyku.8)**:
+  the `ci.yml` container matrix went from 15 to 28 images, so the 12 connectors
+  and the mbox importer that had a Dockerfile but no published image now ship
+  `ghcr.io/leftathome/glovebox-<name>` on main and on tags. This matches the
+  28-image GitLab matrix and is what makes the chart's new
+  deploy-any-connector support usable -- a chart that can reference any image
+  is only useful once every image exists.
+
+- **Per-connector documentation (`docs/connectors/`, glovebox-lyku.6)** -- a
+  page for each of the 23 source connectors plus an index and an importers
+  page, all on one template: image, credential class, enricher runtime and
+  live-test status up front, then authentication, the shared `BaseConfig`
+  table plus connector-specific fields, the verbatim
+  `connectors/<name>/config.json` sample, the routing match-key patterns, and
+  how to enable it in the chart. The sample configs are the same ones the
+  integration tests exercise, so the documented config is the tested config.
+
+- **Multi-GB upload memory profile and a profiling harness (glovebox-g499)** --
+  the chart's resource comment blamed the 512Mi OOM on the "Go runtime working
+  set", which is wrong and would have led an operator to size the pod against
+  archive size. Profiling a streamed multi-GiB PATCH shows the Go heap is a
+  flat ~4 MiB regardless of upload size (the path genuinely streams), and ~99%
+  of the footprint is OS page cache from writing the staging file, plateauing
+  at the kernel dirty-page ceiling: a 2 GiB upload peaks ~2.1 GiB, a 12 GiB
+  upload ~3.0 GiB. Peak memory therefore scales with *concurrent uploads*, not
+  archive size, and `GOMEMLIMIT` is useless here because it caps the 10 MiB
+  heap and not the page cache. Recorded in `charts/glovebox/values.yaml` and
+  spec 13 §5.4, with the reusable harness at `scripts/profile-archive-upload.sh`.
+
+- **The `glovebox-smoke-enrichment` image is built, published and exercised
+  (glovebox-afq4.16)**: `scripts/smoke-enrichment.sh` had a
+  `--use-registry-images` mode pointing at an image no CI job ever built, so
+  the mode was wired but untested. CI now builds the image from source and runs
+  every scenario on each push, publishes it multi-arch to GHCR on main/tag, and
+  on a main push re-runs the smoke against the *just-published* image, so the
+  registry path cannot rot unnoticed.
+
+### Changed
+
+- **One rule path for both scanners (glovebox-t6fz)**: the compiled-rule scan
+  path -- preprocessing, matchers, custom detectors, the raw-HTML second pass,
+  boost-rule separation and scoring -- moved out of `main.go` and the pipeline
+  worker into `internal/scan`, and the async daemon now runs through it. This
+  is what makes the sanitize gate trustworthy: the gate holds the *same*
+  `*scan.Scanner` the daemon holds, so a verdict from `/v1/sanitize` is by
+  construction the verdict the daemon would have reached, and a rule change
+  cannot land in one path and not the other. `pipeline.ScanRequest` no longer
+  carries per-item matcher/detector slices; the pool is constructed with the
+  scanner instead.
+
+- **The enricher-runtime base is pinned to an immutable tag
+  (glovebox-afq4.15)**: the six rebased connector and importer Dockerfiles
+  (gmail, imap, outlook, mbox-importer, arxiv, semantic-scholar) defaulted
+  `ARG ENRICHER_BASE` to the moving `:latest`, so a connector build silently
+  picked up whatever base had last been pushed. They now default to a
+  `sha-<short>` tag of the pandoc-3.10 multi-arch base. The bump is deliberately
+  manual and documented at the `FROM` site -- `sha-` tags are not
+  version-sortable, so no bot can do it -- and must be moved across all six
+  Dockerfiles and the GitLab CI template together.
+
+### Fixed
+
+- **The enricher-runtime could not actually read `.xlsx` or `.pptx`
+  (glovebox-afq4.13)**: reading xlsx needs pandoc >= 3.5 and pptx needs >= 3.0,
+  but bookworm's apt pandoc is 2.17 and trixie's is 3.1.11 -- no current Debian
+  stable ships a new enough one. Office attachments on every rebased connector
+  therefore failed enrichment silently, leaving a `content.<name>.error.md`
+  marker where extracted text should have been. The image now installs a
+  pinned upstream pandoc `.deb` verified by version and sha256, **selected per
+  build architecture**: the first fix hardcoded the amd64 package, which
+  dpkg-failed the arm64 layer of the multi-arch build (the homelab has arm64
+  nodes, and the connector images that `FROM` this base are multi-arch).
+  - The runtime test no longer trusts `pandoc --list-input-formats`, which
+    proved environment-dependent on GitHub's runners -- one run omitted xlsx
+    while listing pptx, a later run returned an empty list -- even though both
+    formats converted fine. Both are now verified **functionally**: xlsx by
+    converting the committed `sample.xlsx` fixture and asserting a known cell
+    appears, pptx by a self-contained md -> pptx -> md round-trip.
+  - `TestEnrich_XlsxTabular` had been skipping on *every* pandoc: it generated
+    its own fixture with `pandoc -t xlsx`, but pandoc has no xlsx writer. It
+    now uses a committed minimal OOXML fixture and gates only on xlsx input
+    support, so the office enricher's xlsx path is genuinely covered.
+
+- **HTTP-backend items were staged completely unenriched (glovebox-afq4.12)**:
+  `commitHTTP` read `content.raw` and POSTed metadata plus content with no
+  enrichment call, and the ingest handler wrote both out directly without
+  enriching either -- so a filesystem-backend item arrived with `Enrichments[]`
+  populated and an HTTP-backend item arrived with nothing, an asymmetry
+  downstream (OpenClaw triage) had no way to detect. Enrichment now runs
+  connector-side on both paths: the multipart wire format gained repeatable
+  `sidecar` parts (one per produced artifact or error marker) alongside the
+  existing metadata and content parts, and the ingest handler persists them
+  into the item directory. The staged item directory is now identical whichever
+  backend produced it.
+  - Sidecar filenames are attacker-influenced, so they are validated against
+    the **raw** `Content-Disposition` filename rather than `part.FileName()`
+    (which pre-strips paths via `filepath.Base` and would silently *rename* a
+    traversal attempt instead of rejecting it). Anything that is not a bare
+    in-directory filename, and any duplicate, is a `400`.
+
+- **Attachments were dispatched to the wrong enricher (glovebox-afq4.17)**:
+  `Enricher.Applies()` keyed off the item-level `meta.ContentType`, which
+  describes only the primary body. A multipart email carrying an HTML body, a
+  PDF and an image has a single `text/html` content type, so every attachment
+  inherited it -- the HTML enricher fired on binary attachments and the PDF,
+  OCR and Office enrichers never fired at all, making spec 14 §7.3's multipart
+  scenario unimplementable. `enrich.SniffContentType` now resolves a
+  per-attachment type from the original extension (recovered from the
+  `attachment-<n>-` prefix) with a magic-byte fallback, returning `""` when
+  unknown so passthrough's text sniff still applies; the primary `content.raw`
+  keeps the item-level type.
+
 - **Silent delivery stall on a stale delivery mount**: glovebox delivers into an
   agents volume the OpenClaw gateway also mounts; when that volume
   detaches/reattaches under a rolling peer, glovebox's mount can go stale and
@@ -1037,15 +1211,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gateway, since moved to ReadWriteMany; the probe is kept because RWX
   narrows the window without making a mount immune to going stale.)
 
-### Removed
+- **`.gitignore` was hiding tracked source directories**: the bare entries
+  `hackernews` and `trello` (added for root-built connector binaries) match a
+  *path component*, not a root-anchored path, so every file added under
+  `connectors/hackernews/` and `connectors/trello/` was silently ignored --
+  discovered when a new integration test appeared to vanish. The entries are
+  now anchored (`/hackernews`, `/trello`), and `/mbox` was added the same way
+  so the root-built importer binary does not shadow `importers/mbox`.
 
-- **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on
-  tag pushes -- a subset `ci.yml` already builds and pushes on the same event,
-  with SBOM and provenance attestations `docker.yml` did not produce. Its one
-  distinct behaviour was moving the `:latest` tag for those 3 images on a tag
-  push; `ci.yml` moves `:latest` for all 28 on the main push a tag is cut from,
-  so `:latest` still lands, and it lands consistently across images instead of
-  for an arbitrary three.
+- **The enrichment smoke job failed *after* passing (glovebox-afq4.16)**: the
+  harness container writes staging files as its nonroot uid (65532), which the
+  non-root GitHub Actions runner cannot `rm`, so the cleanup trap exited
+  non-zero and reddened a job that had just reported `PASS=7 FAIL=0`. (It
+  passed locally only because rootful podman owns the files.) Cleanup now
+  clears the container-written tree via a throwaway `--user 0` container before
+  the host `rm`.
+
+### Notes
+
+- **Upgrade the daemon before the connectors.** A 0.7.0 connector with
+  enrichers configured against the HTTP staging backend sends `sidecar`
+  multipart parts, and a pre-0.7.0 ingest handler rejects any part it does not
+  recognise with a `400`. The reverse order is safe: a 0.7.0 daemon accepts
+  zero sidecar parts from an older connector.
+- **Chart 0.7.0 requires app 0.7.0.** The main-daemon probes are now `httpGet`
+  against `/healthz` and `/readyz`, which no earlier image serves, so pointing
+  the 0.7.0 chart at an older `image.tag` produces a pod that never passes its
+  probes. The chart shipped with `appVersion: "0.6.1"`, last set at the v0.6.1
+  release and never bumped since, and `image.tag` defaults to
+  `.Chart.AppVersion` -- so installing the chart straight from the repository
+  deployed the 0.6.1 image against 0.7.0 probes. Installing the tag-stamped
+  OCI artifact was unaffected: CI stamps both version and appVersion from the
+  tag.
+- **Connector `config` defaults are no longer empty.** Each connector entry in
+  `values.yaml` now carries a sample config where it previously carried
+  `config: {}`. Helm deep-merges maps, so an override that sets only some keys
+  leaves the sample's other keys in place -- an operator supplying only
+  `connectors.rss.config.feeds` still renders the sample's `rules`. Supply the
+  whole `config` block for any connector you enable.
+- The sanitize gate exists for the `nagus` acquisition/watch subsystem, whose
+  glovebox-side slice (untrusted free-text listing sources vs. the structured
+  reference APIs nagus fetches itself, and the handoff contract between them)
+  is recorded in `docs/specs/nagus-connector-integration.md`. The canonical
+  design lives in the nagus repository.
 
 ## [0.6.4] - 2026-06-26
 

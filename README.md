@@ -187,6 +187,11 @@ helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.7.0
 See `docs/deployment.md` for full Kubernetes deployment instructions including
 connector configuration via `values.yaml`.
 
+**Upgrading an existing install?** Read `docs/upgrading.md` first. It is the
+short list of changes that break a running deployment if nobody looks at them
+— currently a Vault TLS default, a port move for the archive and sanitize
+endpoints, and the version floors — rather than the full `CHANGELOG.md`.
+
 ### Building from source
 
 ```sh
