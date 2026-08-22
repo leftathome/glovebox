@@ -3,6 +3,14 @@
 *2026-03-31T07:16:21Z by Showboat 0.6.1*
 <!-- showboat-id: 23ba4eb9-cff8-4afc-9ca4-eb67f22b4f97 -->
 
+> **Checked 2026-08-22.** Recorded against glovebox 0.2.x and not re-run, but
+> the interfaces it exercises are unchanged: the RSS connector still reads
+> `rules` / `feeds` / `fetch_links` / `link_policy` with these field names, still
+> takes `GLOVEBOX_CONNECTOR_CONFIG`, `GLOVEBOX_STAGING_DIR`, and
+> `GLOVEBOX_STATE_DIR`, and still checkpoints to `state.json` under the state dir
+> with one `last:<feed-name>` key per feed. The live feed contents will of course
+> differ from the ones captured here.
+
 This demo shows how to run glovebox with the RSS connector scanning a real RSS feed. The connector polls the feed, stages entries, and glovebox scans them for prompt injections before delivering to an agent workspace.
 
 Build both binaries:

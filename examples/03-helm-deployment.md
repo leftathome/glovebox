@@ -3,6 +3,35 @@
 *2026-03-31T07:16:58Z by Showboat 0.6.1*
 <!-- showboat-id: b35a8988-e932-41a1-bd75-3129ce3ad5c6 -->
 
+> **Note added 2026-08-22 -- this transcript was recorded against glovebox 0.2.x
+> and its rendered output is now out of date.** Showboat is not available to
+> re-record it, and patching the captured output by hand would produce a
+> transcript of a run that never happened, so the recording is left exactly as
+> it was and the drift is listed here instead:
+>
+> - **The `0.2.0` image tags in the values file below are dead.** At the time of
+>   writing the chart is at version 0.7.0 / appVersion 0.6.1. For the scanner
+>   image, prefer leaving `image.tag: ""` -- the chart falls back to
+>   `.Chart.AppVersion`, so the image always matches the chart you installed.
+>   Connector images have no such fallback (`connector-deployment.yaml` renders
+>   `image.tag` verbatim); `values.yaml` defaults them to `latest`, and you
+>   should pin them to a released tag in production.
+> - **`charts/glovebox/templates/` has grown from the 11 files listed below to
+>   25.** All 11 are still there, but archive delivery (spec 13), the ingest API
+>   (spec 08), mbox importers (spec 09), ExternalSecret support, and the
+>   Schoology auth refresher each added templates since. Run the `ls` yourself
+>   for the current set.
+> - **Treat the two rendered outputs (the `kind:`/`name:` listing and the
+>   resource counts) as a 0.2.x snapshot, not a current expectation.** They were
+>   not re-verified for this note -- `helm` is not installed where it was
+>   written -- and the newer subsystems above each add resources when enabled.
+>   Re-run the two `helm template` commands to see what your values actually
+>   render.
+>
+> The values file itself remains a valid starting point: every key it sets still
+> exists, and the RSS connector's config schema (`rules` / `feeds` /
+> `fetch_links` / `link_policy`) is unchanged.
+
 This demo shows how to use the Helm chart to deploy glovebox with the RSS connector configured to poll two different feeds. We use `helm template` to render the manifests without requiring a live cluster.
 
 First, inspect the chart structure:
