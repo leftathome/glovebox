@@ -63,3 +63,100 @@ ServiceAccount name.
 {{- include "glovebox.fullname" . }}
 {{- end }}
 {{- end }}
+
+{{/*
+Port the bearer-authenticated endpoints (/v1/archives*, /v1/sanitize) are
+served on. config.ingest.bearerPort unset or 0 means they share the
+connector ingest port, which is what every install before this key did.
+Setting it to a distinct port splits them onto a listener of their own.
+*/}}
+{{- define "glovebox.bearerPort" -}}
+{{- if and .Values.config.ingest.bearerPort (ne (.Values.config.ingest.bearerPort | int) 0) -}}
+{{- .Values.config.ingest.bearerPort | int -}}
+{{- else -}}
+{{- .Values.config.ingest.port | int -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether the bearer endpoints have a listener of their own. Renders a
+non-empty string when they do and "" when they share the ingest port, so
+callers can use it directly in an `if`.
+*/}}
+{{- define "glovebox.bearerPortSplit" -}}
+{{- if ne (include "glovebox.bearerPort" .) (.Values.config.ingest.port | int | toString) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether anything is served on config.ingest.port. It carries /v1/ingest in
+every tls mode except `required`, where the connector intake exists only on
+the mTLS listener; in that mode the port is still bound when the bearer
+endpoints share it, and bound by nothing at all when they are split onto
+their own port or switched off. Declaring a containerPort or a Service port
+that nothing binds is how a Service ends up quietly routing to a closed
+port, so the templates gate on this.
+*/}}
+{{- define "glovebox.ingestPortServed" -}}
+{{- if ne .Values.ingest.tls.mode "required" -}}
+true
+{{- else if and .Values.ingest.auth.enabled (not (include "glovebox.bearerPortSplit" .)) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether a separate bearer listener is actually opened. Both /v1/archives*
+and /v1/sanitize are gated on ingest.auth.enabled server-side, so a split
+port with auth off binds nothing and must not be declared.
+*/}}
+{{- define "glovebox.bearerPortServed" -}}
+{{- if and (include "glovebox.bearerPortSplit" .) .Values.ingest.auth.enabled -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Pod-level seccomp profile, as a fragment to splice into a pod securityContext.
+
+It comes from one top-level value so every pod the chart owns gets the same
+answer. The enricher-capable pods are the reason it exists -- they fork
+pandoc/tesseract/pdftotext on attacker-chosen bytes, so the kernel ABI those
+parsers can reach is the remote-code-execution surface -- but a syscall filter
+is cheap enough that carving out exceptions for the other pods would cost more
+review attention than it saves.
+
+Rendering nothing when `seccompProfile.type` is empty is the escape hatch: an
+operator whose runtime default profile breaks a workload sets it to "" and gets
+the previous behaviour back, instead of forking the chart.
+*/}}
+{{- define "glovebox.seccompProfile" -}}
+{{- $p := .Values.seccompProfile | default dict -}}
+{{- if $p.type -}}
+seccompProfile:
+  type: {{ $p.type }}
+{{- if eq $p.type "Localhost" }}
+  localhostProfile: {{ required "seccompProfile.localhostProfile is required when seccompProfile.type is Localhost: the kubelet loads the profile from a path relative to its own seccomp root, and there is no sensible default for it" $p.localhostProfile | quote }}
+{{- end }}
+{{- end -}}
+{{- end }}
+
+{{/*
+RuntimeClass for a pod, as a fragment: `.workload` is the per-workload map
+(a connector or importer entry), `.root` the chart root context.
+
+Empty by default and rendered only when set, because choosing a runtime is the
+operator's decision, not the chart's: gVisor and Kata are per-cluster
+installations with their own node pools and their own failure modes, so a
+chart that assumed one would break every cluster that does not have it. The
+value exists so an operator who HAS installed one can point the enricher
+workloads at it without patching manifests -- which is the only part of that
+decision the chart can usefully own.
+
+Returns the bare name (empty when unset) so callers can wrap it in `with` and
+render nothing at all rather than a blank line.
+*/}}
+{{- define "glovebox.runtimeClassName" -}}
+{{- (.workload).runtimeClassName | default .root.Values.runtimeClassName -}}
+{{- end }}

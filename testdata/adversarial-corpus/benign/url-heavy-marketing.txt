@@ -1,0 +1,5 @@
+Your weekly picks:
+
+https://example.com/a?utm_source=news&utm_campaign=weekly%20picks
+https://example.com/b?ref=8f3kdla&utm_medium=email
+https://example.com/unsubscribe?id=abcdef0123456789abcdef0123456789

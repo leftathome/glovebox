@@ -1,0 +1,1 @@
+The sidecar will act as a caching proxy for the upstream API. It is now the only component allowed to talk to the internet, so egress rules live in one place.

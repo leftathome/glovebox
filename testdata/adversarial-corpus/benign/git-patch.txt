@@ -1,0 +1,8 @@
+From 4f2a1c9 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] widen the override regex
+
+--- a/internal/engine/matcher.go
++++ b/internal/engine/matcher.go
+@@ -12,7 +12,7 @@
+-	pattern := `previous`
++	pattern := `previous|prior`

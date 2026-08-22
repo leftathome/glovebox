@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Adversarial corpus and a CI detection/false-positive gate**
+  (`testdata/adversarial-corpus`, `scripts/corpus-gate.sh`): the efficacy fixes
+  -- homoglyph folding, invisible/Tags-block stripping, decode-then-scan,
+  whole-document detectors, the metadata channel -- each landed with its own
+  regression test. That proves one bypass is closed; it never measured what
+  fraction of a red-team set the scanner catches, and it never bounded what
+  legitimate mail the scanner destroys getting there. A rule edit could close
+  one hole and open three with every check still green.
+  - **59 checked-in cases**, each a small inert fixture plus an expected verdict
+    in `manifest.json`: 38 malicious across homoglyph (Cyrillic/Greek),
+    invisible smuggling (Tags block, zero-width, soft hyphen, word joiner,
+    Mongolian vowel separator, bidi), encoded (base64 std/raw/url, hex, percent,
+    nested, sub-threshold short runs), mid-document payloads in ~140 KiB items,
+    metadata-channel injections with a benign or empty body, and plain-language
+    overrides; and **21 benign** that must PASS, deliberately including content
+    that looks alarming and is not -- a security advisory quoting an injection,
+    a code review about injection detection, release notes with a shell fence,
+    an inline base64 image, foreign-language newsletters.
+  - Scanned through the production path: rules from `configs/default-rules.json`,
+    the default detector registry, `scan.New`, and `ScanWithMetadata` with the
+    same `[subject, sender, source]` triple the worker pool passes -- so a
+    regression in the *shipped* rules file fails the gate, not just a hand-built
+    ruleset no deployment uses.
+  - **Measured today: 94.74% detection (36/38) and 23.81% false positives
+    (5/21).** Those measured numbers are the committed thresholds
+    (`thresholds.json`), rounded down and up respectively at the fourth decimal:
+    one more missed malicious case (92.11%) or one more quarantined benign case
+    (28.57%) fails the build. They are not aspirational and not loose enough to
+    be unfailable.
+  - **Known gaps, kept in the corpus and counted in the rates.** Missed:
+    `invisible-bidi-controls` (RLO-reversed text scores 0.70 -- the controls are
+    stripped but the text stays reversed, so no matcher sees it; catching it
+    needs a UAX-9 reordered scan view) and `encoded-percent-partial` (scores
+    0.00 -- a URL library escapes only the separators, so `%20` between legible
+    words defeats patterns that require `\s` and is too short to survive the
+    decoder's 8-byte floor). False positives: an inline base64 image and a PGP
+    signature block (1.05 each: encoding anomaly x the non-English booster), a
+    security advisory quoting an injection (1.00 -- the engine has no notion of
+    quotation), release notes with a ```shell fence (0.80, exactly the
+    threshold), and docs saying a sidecar "will act as a proxy" (1.00).
+  - The benign set is deliberately skewed toward hard content, so 23.81% is an
+    upper bound on adversarially-difficult legitimate mail, not an inbox-wide
+    estimate. Padding it with easy passes would improve the number and weaken
+    the gate; the README says so, at length, because the temptation is real.
+  - A case marked `known_gap` inverts its assertion: if a fix lands and the case
+    starts behaving, the runner prints `NO LONGER FAILING` and the test fails
+    until the manifest is updated. A gap cannot close silently any more than it
+    can open silently.
+
 - **Helm wiring for ingest mTLS (`ingest.tls`)**: completes the mutual-TLS work
   from spec 08 §3.10 -- the Go side shipped configurable, but nothing rendered
   the certificates or mounts, so enabling it meant hand-writing manifests.
@@ -271,6 +320,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This bounds the blast radius rather than sandboxing the parsers; seccomp
   profiles and cgroup limits for the enricher pods remain open follow-up work.
 
+- **Pod-level containment for the enricher workloads (the other half of the
+  above)**: bounding the enricher *runs* left the enricher *pods* as wide open
+  as any other pod in the chart. The eight workloads that fork
+  `pandoc`/`tesseract`/`pdftotext` on attacker-chosen attachments -- the arxiv,
+  gmail, imap, outlook and semantic-scholar connectors and all three importers
+  -- rendered with no seccomp profile at all, so a parser bug reached the full
+  kernel syscall table, and with the same 200m/128Mi as an API-polling
+  connector, sized as if the workload were the same.
+  Identified two independent ways that agree, rather than by guesswork: the
+  Dockerfiles that build `FROM` the enricher-runtime image, and the `main.go`
+  files that blank-import `connector/enrich/{pdf,ocr,office}`. `enrich/html`
+  and `enrich/passthrough` are pure Go and fork nothing, which is why the other
+  19 connectors are not on the list and did not get the larger limits.
+  - **`seccompProfile: RuntimeDefault` on every pod the chart owns**, not just
+    the eight -- the runtime's own filter denies roughly forty syscalls almost
+    nothing needs and an exploit chain usually does, the scanner reads the same
+    hostile content the connectors do, and a per-pod exception list is one more
+    thing to get wrong. It is also what Pod Security Standards `restricted`
+    requires, so its absence was exactly what kept these pods out of a
+    restricted namespace. `seccompProfile.type: ""` renders no profile
+    (byte-identical to before); `Localhost` plus `localhostProfile` loads a
+    profile you staged yourself, and is refused without one rather than
+    rendering a manifest the kubelet will reject.
+  - **CPU and memory limits sized for a parser, not a poller** on the eight:
+    `1` CPU / `1Gi` (from `200m`/`128Mi` on the connectors, `1`/`512Mi` on the
+    importers). Note the direction -- this **raises** the ceiling, for the
+    reason a tighter one would not have survived: 128Mi cannot start pandoc's
+    Haskell runtime or hold a 300dpi page bitmap for tesseract, so the first
+    operator to enable enrichment would have hit `OOMKilled` on a legitimate
+    document and deleted the limits block entirely. 1Gi leaves the process caps
+    from `connector/enrich/limits.go` (64 MiB of output) as the binding
+    constraint instead of the cgroup, and 1 CPU still bounds a parser stuck in
+    a spin loop to one core of the node.
+  - **A `runtimeClassName` escape hatch**, chart-wide and per connector and
+    importer, empty by default. gVisor and Kata are the right answer for this
+    surface and the chart deliberately does **not** pick one: which runtimes a
+    cluster has, on which node pools, is the operator's decision, and a
+    RuntimeClass that does not exist leaves pods Pending forever. The value
+    exists so an operator who has already installed one can point the eight
+    enricher workloads at it without patching rendered manifests.
+
+  **What this is not.** It bounds blast radius; it is not a sandbox. A kernel
+  bug reached through a syscall `RuntimeDefault` permits is still a kernel bug,
+  and a cgroup limit decides how much of the node a compromised parser gets,
+  not whether it runs. gVisor/Kata and upstream-CVE tracking for the
+  enricher-runtime image remain open, and remain the operator's call.
+  Verified with `helm template` diffed against the base branch: with default
+  values the **only** change is `seccompProfile` on the scanner pod (every
+  other workload is disabled by default), and with the enricher workloads
+  enabled the raised limits appear on those eight and on **no** other pod --
+  the rss, github and schoology connectors and the scanner keep the resources
+  they had.
+  **Upgrade note:** the pod template changes, so an upgrade rolls the scanner
+  and any enabled connector once. Nothing can be OOM-killed by this (every
+  limit moves up, none down), but the memory *request* on the five enricher
+  connectors rises 32Mi -> 128Mi, which on a node already near its allocatable
+  ceiling can leave a pod Pending until something is scheduled elsewhere.
+
 
 
 
@@ -343,6 +450,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one.
 
 ### Fixed
+
+- **`ingest.tls.mode: required` took the archive uploads and the sanitize gate
+  offline**: a regression from the mTLS work (#41). Three route families with
+  three different auth models shared one mux -- `/v1/ingest` (connector
+  intake), `/v1/archives*` (tus.io uploads, bearer tokens) and `/v1/sanitize`
+  (synchronous scan gate, bearer tokens) -- and that mux was served only by
+  the plaintext listener, which `PlaintextActive()` refuses to open under
+  `required`. The mTLS listener mounts `/v1/ingest` alone. So switching the
+  connector transport to mTLS silently blacked out two endpoints that
+  authenticate themselves and have nothing to do with that transport: the
+  recognizer's uploads stopped and every `/v1/sanitize` call got connection
+  refused, with nothing in the logs saying why. The chart made it worse rather
+  than louder -- the `startupProbe` is a `tcpSocket` on the ingest port, so
+  under `required` the pod failed startup and restarted in a loop.
+  - The bearer-authenticated surface now has its own lifecycle
+    (`planPlaintextListeners` in `ingest_listeners.go`): it is served in all
+    three modes, and `/v1/ingest` is registered on a plaintext listener only
+    when the mode allows plaintext ingest. Under `required` the shared
+    listener stays up for the bearer endpoints and answers **404** for
+    `/v1/ingest` -- there is still no unauthenticated path to the connector
+    intake.
+  - The `startupProbe` targets the mTLS port under `required`, which is the
+    listener that mode guarantees is up.
+- **The recognizer namespace's NetworkPolicy handed it unauthenticated
+  `/v1/ingest`** (security review P0-7, second half): the rule granting the
+  recognizer namespace the `/v1/archives` endpoint named a hard-coded
+  TCP/**9091** -- which both ignored a customised `config.ingest.port` and,
+  because `/v1/ingest` shares that port, granted the whole namespace the
+  connector intake as a side effect. A namespace that should be able to upload
+  an archive could stage any item, from any claimed source, to any allowlisted
+  agent.
+  - New `ingest.bearer_port` (chart: `config.ingest.bearerPort`) moves
+    `/v1/archives*` and `/v1/sanitize` onto a listener of their own, leaving
+    `ingest.port` carrying `/v1/ingest` alone. The archive NetworkPolicy,
+    Service port and `containerPort` all follow it, so the recognizer's
+    ingress reaches the archive endpoint and nothing else.
+  - **It defaults to `0`, meaning "share `ingest.port`" -- today's layout,
+    unchanged.** The recognizer namespace and the `/v1/sanitize` callers live
+    outside this chart and are configured against 9091; moving them silently
+    on upgrade would have broken exactly the callers this is meant to protect.
+    Closing the exposure is therefore a coordinated migration: set
+    `config.ingest.bearerPort` (e.g. `9093`) and repoint the recognizer and any
+    sanitize caller at it in the same window. Until an operator does, the
+    grant still reaches `/v1/ingest`, and the template comment says so rather
+    than implying otherwise.
+  - Chart and binary are now checked against each other across the full
+    `ingest.tls.mode` x `ingest.archives.enabled` x split matrix: every
+    `containerPort` and Service port the chart declares is one the process
+    actually binds, and ports nothing binds (the plaintext ingest port under
+    `required`) are no longer declared or admitted by a NetworkPolicy.
+  - Verified: `TestBearerEndpointsServedInEveryTLSMode` and
+    `TestIngestRouteFollowsTLSMode` stand up real listeners per mode and assert
+    which routes answer on which port; against the pre-fix listener logic both
+    fail with `got 0` -- no listener at all -- in `required`. `helm lint` plus
+    12 `helm template` renders confirm the port agreement above. With
+    `bearerPort` unset the chart renders byte-identically to before in
+    `mode: disabled`, including the config checksum, so an existing install
+    sees no restart on upgrade.
 
 - **Stacked pull requests ran no CI at all**: `ci.yml` filtered
   `pull_request: branches: [main]`, which matches on the *base* branch, so a PR

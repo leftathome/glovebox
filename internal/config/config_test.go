@@ -967,3 +967,114 @@ func TestSourcesEnvOverrides(t *testing.T) {
 		t.Errorf("Validate: unexpected error: %v", err)
 	}
 }
+
+// TestIngestBearerPort covers the port the bearer-authenticated endpoints
+// (/v1/archives*, /v1/sanitize) listen on. Unset means "share the ingest
+// port", which is what every install predating the field does; a distinct
+// value opens a listener of its own so the recognizer namespace can be
+// granted the archive endpoint without also being handed /v1/ingest.
+func TestIngestBearerPort(t *testing.T) {
+	t.Run("defaults to sharing the ingest port", func(t *testing.T) {
+		cfg := IngestConfig{Port: 9091}
+		if got := cfg.EffectiveBearerPort(); got != 9091 {
+			t.Errorf("EffectiveBearerPort() = %d, want 9091", got)
+		}
+		if cfg.BearerSplit() {
+			t.Error("BearerSplit() = true with bearer_port unset, want false")
+		}
+	})
+
+	t.Run("a distinct port is a split", func(t *testing.T) {
+		cfg := IngestConfig{Port: 9091, BearerPort: 9093}
+		if got := cfg.EffectiveBearerPort(); got != 9093 {
+			t.Errorf("EffectiveBearerPort() = %d, want 9093", got)
+		}
+		if !cfg.BearerSplit() {
+			t.Error("BearerSplit() = false with a distinct bearer_port, want true")
+		}
+	})
+
+	t.Run("the ingest port spelled out is not a split", func(t *testing.T) {
+		cfg := IngestConfig{Port: 9091, BearerPort: 9091}
+		if cfg.BearerSplit() {
+			t.Error("BearerSplit() = true when bearer_port equals port, want false")
+		}
+	})
+}
+
+func TestIngestBearerPortValidation(t *testing.T) {
+	mtls := func(c *Config) {
+		c.Ingest.TLS = IngestTLSConfig{
+			Mode:         TLSModeRequired,
+			CertFile:     "/etc/ingest-tls/tls.crt",
+			KeyFile:      "/etc/ingest-tls/tls.key",
+			ClientCAFile: "/etc/ingest-tls/ca.crt",
+		}
+	}
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:    "unset is valid",
+			modify:  func(c *Config) {},
+			wantErr: false,
+		},
+		{
+			name:    "negative is rejected",
+			modify:  func(c *Config) { c.Ingest.BearerPort = -1 },
+			wantErr: true,
+		},
+		{
+			name: "collision with the mTLS port is rejected",
+			modify: func(c *Config) {
+				mtls(c)
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Vault.Addr = "https://vault.example"
+				c.Ingest.Auth.Vault.K8sRole = "glovebox"
+				// TLS.Port defaults to Ingest.Port+1 during validation.
+				c.Ingest.BearerPort = c.Ingest.Port + 1
+			},
+			wantErr: true,
+		},
+		{
+			name: "a collision nothing is mounted on is not an error",
+			modify: func(c *Config) {
+				mtls(c)
+				// auth off: no bearer routes, so no bearer listener.
+				c.Ingest.BearerPort = c.Ingest.Port + 1
+			},
+			wantErr: false,
+		},
+		{
+			name: "sharing the ingest port under required mTLS is valid",
+			modify: func(c *Config) {
+				mtls(c)
+				c.Ingest.Auth.Enabled = true
+				c.Ingest.Auth.Vault.Addr = "https://vault.example"
+				c.Ingest.Auth.Vault.K8sRole = "glovebox"
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			os.WriteFile(path, []byte(`{}`), 0644)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("unexpected error loading config: %v", err)
+			}
+			tt.modify(&cfg)
+			err = cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}

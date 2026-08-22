@@ -1,0 +1,8 @@
+# The adversarial corpus fixtures are byte-exact by design: the homoglyphs,
+# zero-width characters, bidi controls and encodings in them ARE the test.
+# -text disables every form of line-ending normalisation and working-tree
+# conversion, so what is committed is what the scanner sees on every
+# platform. Marking them diff=nodiff would hide the content in review, so
+# they stay diffable -- only the conversion is switched off.
+testdata/adversarial-corpus/malicious/** -text
+testdata/adversarial-corpus/benign/** -text

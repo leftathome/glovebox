@@ -88,6 +88,16 @@ jobs:
       - name: Check the documented image list is current
         run: ./scripts/build-targets.sh check-docs
 
+      # Detection rate on the adversarial corpus and false-positive rate on
+      # its benign counterweight, both gated against committed thresholds
+      # (testdata/adversarial-corpus/thresholds.json). The efficacy fixes
+      # each shipped with a regression test proving one bypass closed;
+      # nothing measured the scanner as a whole, so a rule edit could close
+      # one hole and open three with every check still green. The step
+      # prints both numbers so the CI log carries the measurement.
+      - name: Adversarial corpus detection/false-positive gate
+        run: ./scripts/corpus-gate.sh
+
       - name: Vet
         run: go vet ./...
 

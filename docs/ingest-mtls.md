@@ -15,15 +15,42 @@ bounds *reachability*, not *who is calling*. Three consequences:
    connector — and every connector holds external credentials and parses
    hostile content — could stamp another connector's source onto an item and
    route it to any allowlisted agent. The audit log then recorded the lie.
-2. **Port sharing.** `/v1/archives` and `/v1/ingest` share port 9091, so the
-   spec-13 NetworkPolicy that grants the recognizer *namespace* access to the
-   archive endpoint also grants it unauthenticated ingest.
+2. **Port sharing.** `/v1/archives` and `/v1/ingest` share port 9091 by
+   default, so the spec-13 NetworkPolicy that grants the recognizer
+   *namespace* access to the archive endpoint also grants it unauthenticated
+   ingest. mTLS does not fix this one — see [Which listener serves
+   what](#which-listener-serves-what).
 3. **Plaintext transport.** Item content — email bodies, and under spec 15
    health data — crossed the pod network unencrypted.
 
-mTLS addresses all three, but the first is the reason to do it: encryption
-alone would leave the endpoint credulous. **The point is binding the claim to
-a verified identity**, not the encryption.
+mTLS addresses the first and third, and the first is the reason to do it:
+encryption alone would leave the endpoint credulous. **The point is binding
+the claim to a verified identity**, not the encryption.
+
+## Which listener serves what
+
+Three route families with three different auth models live on this plane:
+
+| Route | Authenticated by | Listener |
+|-------|------------------|----------|
+| `POST /v1/ingest` | mTLS peer identity, or nothing under `mode: disabled` | `ingest.port` (plaintext) and/or `ingest.tls.port` |
+| `/v1/archives*` | spec 10 bearer token | `ingest.bearer_port` |
+| `POST /v1/sanitize` | spec 10 bearer token | `ingest.bearer_port` |
+
+`ingest.bearer_port` defaults to `0`, meaning **share `ingest.port`** — the
+layout every install has had. The two bearer endpoints are served in every
+`mode`, including `required`: they authenticate themselves and have nothing
+to do with the connector transport. Under `required` the plaintext listener
+still exists for them, but `/v1/ingest` is not registered on it, so the only
+route to the connector intake remains the mTLS listener.
+
+Setting `ingest.bearer_port` to a distinct port (chart:
+`config.ingest.bearerPort`) opens a second listener for the bearer endpoints
+and leaves `ingest.port` carrying `/v1/ingest` alone. That is what closes
+consequence 2 above: the recognizer namespace is then granted the bearer port
+and cannot reach the connector intake at all. It is a **coordinated change** —
+the recognizer and any `/v1/sanitize` caller are configured against
+`ingest.port` today and must be repointed in the same window.
 
 ## Why application-level mTLS rather than a service mesh
 
@@ -177,5 +204,7 @@ CA ever signed ingest.
 ## Not yet covered
 - **`/v1/archives`** still uses spec 10 bearer tokens. A cert SAN is a
   strictly stronger caller identity, so a later spec can retire the tokens or
-  keep them as a second factor for archive-scale sources. Splitting archives
-  onto its own port would also close the cross-namespace exposure noted above.
+  keep them as a second factor for archive-scale sources. The cross-namespace
+  exposure noted above is closable today with `ingest.bearer_port`, but only
+  by an operator who can repoint the recognizer at the new port; the default
+  still shares one.

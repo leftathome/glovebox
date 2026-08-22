@@ -56,6 +56,72 @@ containerSecurityContext:
       - ALL
   readOnlyRootFilesystem: true
 
+# ---------------------------------------------------------------------------
+# Enricher containment
+#
+# Eight workloads run the binary enrichers: the arxiv, gmail, imap, outlook and
+# semantic-scholar connectors, and all three importers (apple, mbox, walhelm).
+# They are identifiable two independent ways that agree -- their Dockerfiles
+# build FROM the enricher-runtime image, and their main.go blank-imports
+# connector/enrich/{pdf,ocr,office}. Those three packages fork `pdftotext`,
+# `tesseract` and `pandoc`; enrich/html and enrich/passthrough are pure Go and
+# fork nothing, which is why the other 19 connectors are not on the list.
+#
+# Those forked parsers read bytes an attacker chose (an emailed attachment, a
+# fetched PDF), so they are this system's main remote-code-execution surface.
+# connector/enrich/limits.go already bounds each RUN -- a 120s timeout, 64 MiB
+# of stdout, 64 KiB of stderr. The two settings below and the resource limits
+# on those eight workloads bound the PROCESS: what the parser may ask the
+# kernel for, and how much of the node it may consume before the kernel stops
+# it. Read them as blast-radius limits, not as a sandbox; a kernel bug reached
+# through an allowed syscall is still a kernel bug.
+#
+# Those eight carry `resources` of 1 CPU / 1Gi instead of the 200m/128Mi the
+# API-only connectors use. Note the direction: this is LARGER, for the opposite
+# of the obvious reason. 128Mi cannot start pandoc's Haskell runtime and cannot
+# hold a 300dpi page bitmap for tesseract, so the first operator to enable
+# enrichment would have hit OOMKilled on a legitimate document and deleted the
+# limits block outright -- and a limit that survives contact with real files is
+# worth more than a tighter one that gets removed. 1Gi leaves the process caps
+# in connector/enrich/limits.go (64 MiB of output) as the binding constraint
+# rather than the cgroup; 1 CPU still bounds a parser stuck in a spin loop to
+# one core of the node. Lower them if you know your document mix -- but measure
+# with a real OCR job first, and expect enrichment failures, not a tidier pod,
+# if you go back under ~256Mi.
+# ---------------------------------------------------------------------------
+
+# Seccomp profile for every pod this chart owns.
+#
+# RuntimeDefault is the container runtime's own filter (containerd's and
+# Docker's default profile), which denies roughly forty syscalls almost no
+# application needs and an exploit chain usually does -- keyctl, ptrace,
+# userfaultfd, the kernel-module and BPF calls. It is also what Pod Security
+# Standards "restricted" requires, so leaving it unset is precisely what keeps
+# these pods out of a restricted namespace.
+# Applied chart-wide rather than only to the enricher pods: the scanner reads
+# the same hostile content that the connectors do, the profile costs nothing,
+# and a per-pod exception list is one more thing to get wrong.
+# Set `type: ""` to render no profile at all (previous behaviour). Set
+# `type: Localhost` plus `localhostProfile: <path>` to load a profile you have
+# staged under the kubelet's seccomp root -- an audit-mode or a
+# tesseract-specific profile, for instance.
+seccompProfile:
+  type: RuntimeDefault
+  localhostProfile: ""
+
+# Sandboxed runtime (gVisor's `gvisor`/`runsc`, Kata's `kata-containers`) for
+# every pod, overridable per connector and per importer.
+#
+# Empty on purpose and it should stay empty unless you have installed one:
+# a RuntimeClass that does not exist on the cluster leaves pods Pending
+# forever, and which runtimes exist, on which node pools, is a cluster-level
+# decision this chart cannot see. It is exposed because if you HAVE installed
+# gVisor, the eight enricher workloads are the ones worth spending it on --
+# they are where an untrusted parser meets the host kernel -- and pointing
+# them at it should not require patching rendered manifests. Expect a real
+# syscall-latency cost on the enrichers; measure before applying it globally.
+runtimeClassName: ""
+
 serviceAccount:
   create: true
   name: ""
@@ -121,7 +187,23 @@ config:
     - itinerary
   ingest:
     enabled: true
+    # Connector intake, POST /v1/ingest.
     port: 9091
+    # Port for the bearer-authenticated endpoints -- /v1/archives* (spec 13)
+    # and /v1/sanitize. 0 means "share `port`", which is what this chart has
+    # always done and is kept as the default so an upgrade moves nothing.
+    #
+    # Sharing means the NetworkPolicy that grants the recognizer namespace
+    # the archive endpoint necessarily also grants it unauthenticated
+    # /v1/ingest (security review P0-7): one port, three route families,
+    # three different auth models. Setting this to a distinct port (e.g.
+    # 9093) splits them, after which the recognizer's ingress rule reaches
+    # the archive endpoint only.
+    #
+    # This is a coordinated change: the recognizer namespace and any
+    # /v1/sanitize caller are configured against `port` today and must be
+    # repointed at the new port in the same window. See CHANGELOG.
+    bearerPort: 0
     maxBodyBytes: 67108864
     maxMetadataBytes: 262144
     # 5000 (was 100): observed 2026-05-23 the prior default tripped after
@@ -284,13 +366,21 @@ connectors:
         kind: ClusterSecretStore
         name: ""
       data: {}
+    # Enricher-capable connector: forks pandoc/tesseract/pdftotext on
+    # attacker-chosen attachments, so this cgroup is the ceiling on what a
+    # hostile document can spend. Larger than the 200m/128Mi the API-only
+    # connectors use, and larger on purpose -- see "Enricher containment"
+    # at the top of this file for why a tighter limit was the wrong answer.
     resources:
       requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
+        cpu: 100m
         memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Per-connector override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     state:
       size: 1Gi
       storageClass: ""
@@ -655,13 +745,21 @@ connectors:
         kind: ClusterSecretStore
         name: ""
       data: {}
+    # Enricher-capable connector: forks pandoc/tesseract/pdftotext on
+    # attacker-chosen attachments, so this cgroup is the ceiling on what a
+    # hostile document can spend. Larger than the 200m/128Mi the API-only
+    # connectors use, and larger on purpose -- see "Enricher containment"
+    # at the top of this file for why a tighter limit was the wrong answer.
     resources:
       requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
+        cpu: 100m
         memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Per-connector override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     state:
       size: 1Gi
       storageClass: ""
@@ -773,13 +871,21 @@ connectors:
         kind: ClusterSecretStore
         name: ""
       data: {}
+    # Enricher-capable connector: forks pandoc/tesseract/pdftotext on
+    # attacker-chosen attachments, so this cgroup is the ceiling on what a
+    # hostile document can spend. Larger than the 200m/128Mi the API-only
+    # connectors use, and larger on purpose -- see "Enricher containment"
+    # at the top of this file for why a tighter limit was the wrong answer.
     resources:
       requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
+        cpu: 100m
         memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Per-connector override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     state:
       size: 1Gi
       storageClass: ""
@@ -943,13 +1049,21 @@ connectors:
         kind: ClusterSecretStore
         name: ""
       data: {}
+    # Enricher-capable connector: forks pandoc/tesseract/pdftotext on
+    # attacker-chosen attachments, so this cgroup is the ceiling on what a
+    # hostile document can spend. Larger than the 200m/128Mi the API-only
+    # connectors use, and larger on purpose -- see "Enricher containment"
+    # at the top of this file for why a tighter limit was the wrong answer.
     resources:
       requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
+        cpu: 100m
         memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Per-connector override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     state:
       size: 1Gi
       storageClass: ""
@@ -980,13 +1094,21 @@ connectors:
         kind: ClusterSecretStore
         name: ""
       data: {}
+    # Enricher-capable connector: forks pandoc/tesseract/pdftotext on
+    # attacker-chosen attachments, so this cgroup is the ceiling on what a
+    # hostile document can spend. Larger than the 200m/128Mi the API-only
+    # connectors use, and larger on purpose -- see "Enricher containment"
+    # at the top of this file for why a tighter limit was the wrong answer.
     resources:
       requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
+        cpu: 100m
         memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Per-connector override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     state:
       size: 1Gi
       storageClass: ""
@@ -1389,13 +1511,21 @@ importers:
     state:
       existingClaim: ""     # optional; emptyDir when unset
     backoffLimit: 3
+    # Enricher-capable importer: same reasoning as the enricher connectors
+    # (see "Enricher containment" at the top of this file). An importer
+    # chews a whole mail archive in one pass, so it hits the enrichers far
+    # harder than a polling connector does; 512Mi did not fit pandoc's
+    # Haskell runtime plus a page bitmap plus the 64 MiB output cap.
     resources:
       requests:
         cpu: 100m
         memory: 128Mi
       limits:
         cpu: "1"
-        memory: 512Mi
+        memory: 1Gi
+    # Per-importer override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     nodeSelector: {}
     affinity: {}
     tolerations: []
@@ -1418,13 +1548,21 @@ importers:
     state:
       existingClaim: ""
     backoffLimit: 3
+    # Enricher-capable importer: same reasoning as the enricher connectors
+    # (see "Enricher containment" at the top of this file). An importer
+    # chews a whole mail archive in one pass, so it hits the enrichers far
+    # harder than a polling connector does; 512Mi did not fit pandoc's
+    # Haskell runtime plus a page bitmap plus the 64 MiB output cap.
     resources:
       requests:
         cpu: 100m
         memory: 128Mi
       limits:
         cpu: "1"
-        memory: 512Mi
+        memory: 1Gi
+    # Per-importer override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     nodeSelector: {}
     affinity: {}
     tolerations: []
@@ -1446,13 +1584,21 @@ importers:
     state:
       existingClaim: ""
     backoffLimit: 3
+    # Enricher-capable importer: same reasoning as the enricher connectors
+    # (see "Enricher containment" at the top of this file). An importer
+    # chews a whole mail archive in one pass, so it hits the enrichers far
+    # harder than a polling connector does; 512Mi did not fit pandoc's
+    # Haskell runtime plus a page bitmap plus the 64 MiB output cap.
     resources:
       requests:
         cpu: 100m
         memory: 128Mi
       limits:
         cpu: "1"
-        memory: 512Mi
+        memory: 1Gi
+    # Per-importer override of the chart-wide runtimeClassName. Empty means
+    # inherit; set it to a sandboxed runtime you have actually installed.
+    runtimeClassName: ""
     nodeSelector: {}
     affinity: {}
     tolerations: []
