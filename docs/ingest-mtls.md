@@ -91,9 +91,9 @@ a certificate issued for any other purpose must not be able to ingest.
     "tls": {
       "mode": "permissive",
       "port": 9092,
-      "cert_file": "/etc/glovebox/tls/tls.crt",
-      "key_file": "/etc/glovebox/tls/tls.key",
-      "client_ca_file": "/etc/glovebox/tls/ca.crt",
+      "cert_file": "/etc/ingest-tls/tls.crt",
+      "key_file": "/etc/ingest-tls/tls.key",
+      "client_ca_file": "/etc/ingest-tls/ca.crt",
       "trust_domain": "glovebox"
     }
   }
@@ -109,6 +109,13 @@ a certificate issued for any other purpose must not be able to ingest.
 | `trust_domain` | expected SPIFFE trust domain (default `glovebox`) |
 | `enforce_source_match` | defaults to **true** whenever mTLS is active |
 
+The paths above are the chart's mount points: the certificate Secret lands on
+`/etc/ingest-tls` in every pod that talks to this plane (server and producers
+alike), which is a *different* volume from `/etc/glovebox`, where the config
+ConfigMap is mounted read-only. A hand-written manifest may mount the Secret
+anywhere it likes as long as the config and the mount agree — but staying on
+`/etc/ingest-tls` keeps it copy-pasteable against what the chart deploys.
+
 `enforce_source_match` defaults on deliberately. Turning mTLS on and leaving
 the endpoint trusting whatever `source` the caller claims would be the
 encrypted version of the original problem. Set it false only while migrating a
@@ -118,9 +125,9 @@ Connectors are configured with three environment variables, read by the
 framework, so no per-connector code changes:
 
 ```
-GLOVEBOX_INGEST_CA=/etc/glovebox/tls/ca.crt
-GLOVEBOX_INGEST_CLIENT_CERT=/etc/glovebox/tls/tls.crt
-GLOVEBOX_INGEST_CLIENT_KEY=/etc/glovebox/tls/tls.key
+GLOVEBOX_INGEST_CA=/etc/ingest-tls/ca.crt
+GLOVEBOX_INGEST_CLIENT_CERT=/etc/ingest-tls/tls.crt
+GLOVEBOX_INGEST_CLIENT_KEY=/etc/ingest-tls/tls.key
 ```
 
 Setting only some of them is an error rather than a silent fall back to
@@ -173,6 +180,7 @@ ingest:
     issuerRef:
       name: glovebox-ingest-ca
       kind: ClusterIssuer
+      group: cert-manager.io
     duration: 24h
     renewBefore: 8h
 ```
@@ -200,6 +208,17 @@ checksum, so no pod restarts on upgrade.
 **Issue from a dedicated issuer.** `issuerRef` should name a CA used only for
 this plane; pointing it at the cluster edge CA would let any certificate that
 CA ever signed ingest.
+
+`group` is the API group of the issuer's *kind*, and the chart copies all three
+`issuerRef` fields onto every `Certificate` it renders. Built-in `Issuer` and
+`ClusterIssuer` objects live in `cert-manager.io` — the value shipped in
+`values.yaml`, and also what cert-manager assumes when the field is empty — so
+it is easy to omit and never notice. It matters the moment the issuer is an
+external one (step-issuer, aws-privateca-issuer, and other out-of-tree kinds):
+those are served by their own controller under their own group, and a request
+left in `cert-manager.io` is picked up by nobody. The `Certificate` then sits
+unready with no error to point at, which is why the field is spelled out here
+rather than left to a default.
 
 ## Not yet covered
 - **`/v1/archives`** still uses spec 10 bearer tokens. A cert SAN is a
