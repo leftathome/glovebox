@@ -160,3 +160,46 @@ render nothing at all rather than a blank line.
 {{- define "glovebox.runtimeClassName" -}}
 {{- (.workload).runtimeClassName | default .root.Values.runtimeClassName -}}
 {{- end }}
+
+{{/*
+Whether one workload gets a read-only container root filesystem.
+`.workload` is the per-workload map (a connector or importer entry), `.root`
+the chart root context.
+
+Returns the string "true" or nothing at all, so callers gate on it with a bare
+`if` -- `{{- if (include "glovebox.readOnlyRootFilesystem" ...) }}`. All three
+pieces this setting needs (the securityContext field, the /tmp mount, and the
+emptyDir behind it) read the same helper, because a pod that got the read-only
+root but not the writable /tmp is the failure this is most likely to ship.
+
+A per-workload key wins over the chart-wide default when present, and `hasKey`
+rather than `default` is the test on purpose: a per-workload `false` has to
+survive, and `false | default true` is `true`.
+*/}}
+{{- define "glovebox.readOnlyRootFilesystem" -}}
+{{- $w := .workload | default dict -}}
+{{- $enabled := (.root.Values.readOnlyRootFilesystem | default dict).enabled -}}
+{{- if hasKey $w "readOnlyRootFilesystem" -}}
+{{- $enabled = $w.readOnlyRootFilesystem -}}
+{{- end -}}
+{{- if $enabled }}true{{ end -}}
+{{- end }}
+
+{{/*
+Size cap for the writable /tmp emptyDir that accompanies a read-only root.
+Same `.workload` / `.root` shape as the helper above.
+
+An emptyDir with no sizeLimit is unbounded and backed by the node's ephemeral
+storage, so a crafted document that made an enricher spool gigabytes would fill
+the node's disk instead of failing its own pod. sizeLimit turns that into an
+eviction of the one pod responsible.
+
+Per-workload override exists because the two kinds of workload want different
+numbers: a connector holds one item's temp dir at a time, while the apple
+importer unpacks whole nested zips there. The chart-wide default is sized for
+the importer, since the cost of being generous is a cap that never binds and
+the cost of being tight is a failed import.
+*/}}
+{{- define "glovebox.tmpSizeLimit" -}}
+{{- (.workload).tmpSizeLimit | default (.root.Values.readOnlyRootFilesystem | default dict).tmpSizeLimit | default "1Gi" -}}
+{{- end }}
