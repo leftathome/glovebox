@@ -28,10 +28,21 @@
         "<tool>",
         "<function_call>",
         "exec:",
-        "bash:",
-        "```shell"
+        "bash:"
       ],
       "weight": 0.8,
+      "match_type": "substring"
+    },
+    {
+      "name": "shell_code_fence",
+      "patterns": [
+        "```shell",
+        "```bash",
+        "```sh",
+        "```zsh",
+        "```console"
+      ],
+      "weight": 0.0,
       "match_type": "substring"
     },
     {
