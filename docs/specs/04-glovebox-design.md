@@ -233,8 +233,9 @@ Pre-processing produces several scan-only buffers used by matchers and detectors
 | Rule | Match Type | Weight | Notes |
 |------|-----------|--------|-------|
 | `instruction_override` | regex | 1.0 | `ignore\s+(\w+\s+)*previous`, `disregard\s+(\w+\s+)*your\s+instructions`, and variants with flexible word boundaries |
-| `role_reassignment` | regex | 1.0 | `you\s+are\s+now`, `act\s+as`, `pretend\s+you\s+are`, and variants |
-| `tool_invocation_syntax` | substring | 0.8 | `<tool>`, `<function_call>`, `exec:`, `bash:`, etc. |
+| `role_reassignment` | regex | 1.0 | `you\s+are\s+now`, `pretend\s+you\s+are`, `act\s+as` with a persona-shaped object, plus a line-initial imperative net that fires on any persona at all |
+| `tool_invocation_syntax` | substring | 0.8 | `<tool>`, `<function_call>`, `exec:`, `bash:` — agent-directed syntax, self-sufficient at the default threshold |
+| `shell_code_fence` | substring | 0.0 | Markdown shell fences (` ```shell `, ` ```bash `, …). Documentation syntax written by a human for a human, not addressed to an agent; recorded for the reviewer but never scored, because any weight ≥ 0.2 would let a fenced install snippet push `prompt_template_structure` (0.6) or `suspicious_encoding` (0.7) over the line |
 | `suspicious_encoding` | custom_detector | 0.7 | Base64 blocks in plain text, zero-width chars, bidi controls, excessive unicode escapes |
 | `invisible_smuggling` | custom_detector | 1.0 | Unicode Tags-block characters (U+E0000–U+E007F). No legitimate use in ingested content, so this quarantines on its own; the signal detail carries the decoded hidden text for the reviewer |
 | `prompt_template_structure` | custom_detector | 0.6 | Content resembling system prompts or instruction blocks |

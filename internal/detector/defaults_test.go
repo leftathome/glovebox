@@ -19,8 +19,8 @@ func TestDefaultRulesJSON_LoadsSuccessfully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRules: %v", err)
 	}
-	if len(rc.Rules) != 7 {
-		t.Errorf("rules count = %d, want 7", len(rc.Rules))
+	if len(rc.Rules) != 8 {
+		t.Errorf("rules count = %d, want 8", len(rc.Rules))
 	}
 	if rc.QuarantineThreshold != 0.8 {
 		t.Errorf("threshold = %f, want 0.8", rc.QuarantineThreshold)
@@ -36,6 +36,7 @@ func TestDefaultRulesJSON_RuleNames(t *testing.T) {
 		"instruction_override",
 		"role_reassignment",
 		"tool_invocation_syntax",
+		"shell_code_fence",
 		"suspicious_encoding",
 		"invisible_smuggling",
 		"prompt_template_structure",
