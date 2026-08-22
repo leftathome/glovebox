@@ -21,6 +21,21 @@ data:
       "rules_file": "/etc/glovebox/rules.json",
       "subjects_file": "/etc/glovebox/subjects.json",
       "sources_file": "/etc/glovebox/sources.json",
+      {{- /*
+        Ruleset signature verification. Emitted only when opted in, so an
+        install that has not configured signing renders a byte-identical
+        ConfigMap and takes no checksum-driven pod restart on upgrade.
+        The public key path is the in-container mount point from
+        deployment.yaml; the chart owns both so the binary and the mount
+        cannot drift. signature_file is left to the binary's default of
+        "<rules_file>.sig", which is the key this template writes below.
+      */}}
+      {{- if ne .Values.rules.signing.mode "disabled" }}
+      "rules_signing": {
+        "mode": {{ .Values.rules.signing.mode | quote }},
+        "public_key_file": {{ printf "/etc/glovebox-rules-key/%s" .Values.rules.signing.publicKeySecretKey | quote }}
+      },
+      {{- end }}
       "scan_workers": {{ .Values.config.scanWorkers }},
       "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
       "delivery_timeout_seconds": {{ .Values.config.deliveryTimeoutSeconds }},
@@ -114,12 +129,35 @@ data:
   enforcement off (glovebox-pyb9). Setting the corresponding value supplies
   the file as structured YAML instead; leaving it unset keeps the baked file.
   */}}
+  {{- /*
+    A signature covers exact bytes, so a signed deployment must supply the
+    ruleset verbatim (rules.json, via --set-file) rather than as structured
+    YAML the chart re-serialises: toPrettyJson would reorder and reformat
+    it and the signature would not verify. Refusing the combination here
+    beats a CrashLoopBackOff whose only clue is a digest mismatch.
+  */}}
+  {{- if and .Values.rules.signature .Values.config.rulesJson (not .Values.rules.json) }}
+  {{- fail "rules.signature is set alongside config.rulesJson: a signature covers exact bytes, and config.rulesJson is re-serialised by the chart. Supply the ruleset verbatim instead: --set-file rules.json=<the file you signed>" }}
+  {{- end }}
   rules.json: |
-    {{- if .Values.config.rulesJson }}
+    {{- if .Values.rules.json }}
+    {{- .Values.rules.json | nindent 4 }}
+    {{- else if .Values.config.rulesJson }}
     {{- toPrettyJson .Values.config.rulesJson | nindent 4 }}
     {{- else }}
     {{- .Files.Get "rules.json" | nindent 4 }}
     {{- end }}
+  {{- /*
+    Detached signature, beside the rules it covers. Safe in the same
+    ConfigMap: an attacker who rewrites both still cannot produce a
+    signature that verifies without the private key, which is deliberately
+    not anything the cluster holds. Emitted only when set, so an install
+    without signing renders exactly as before.
+  */}}
+  {{- if .Values.rules.signature }}
+  rules.json.sig: |
+    {{- .Values.rules.signature | nindent 4 }}
+  {{- end }}
   subjects.json: |
     {{- if .Values.config.subjectsJson }}
     {{- toPrettyJson .Values.config.subjectsJson | nindent 4 }}
