@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-24
+
 ### Added
 
 - **Adversarial corpus and a CI detection/false-positive gate**
@@ -1789,7 +1791,8 @@ framework.
 - Apache License 2.0
 - Documentation: README, deployment guide, connector author guide, AGENTS.md
 
-[Unreleased]: https://github.com/leftathome/glovebox/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/leftathome/glovebox/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/leftathome/glovebox/compare/v0.7.0...v0.8.0
 [0.2.1]: https://github.com/leftathome/glovebox/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/leftathome/glovebox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/leftathome/glovebox/releases/tag/v0.1.0
