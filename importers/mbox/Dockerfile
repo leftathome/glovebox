@@ -4,7 +4,7 @@
 # UndefinedArgInFrom (enricher Dockerfile ARG-scope fix).
 ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:sha-c4ee4a9
 
-FROM docker.io/golang:1.26 AS build
+FROM docker.io/golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

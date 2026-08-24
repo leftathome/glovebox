@@ -31,7 +31,7 @@ set -euo pipefail
 #       image changed. Defaults to running the connector checks.
 #   CONTAINER_TEST_CONNECTOR_BUILD_TIMEOUT=<seconds>
 #       Per-connector docker-build timeout. Defaults to 600s (10 min);
-#       a cold first build that pulls golang:1.26 + the enricher-runtime
+#       a cold first build that pulls golang:1.27 + the enricher-runtime
 #       base can approach this on a slow link.
 #
 # Usage: ./container_test.sh
