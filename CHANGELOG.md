@@ -960,6 +960,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead of quietly shipping fewer components each release.
 
 
+### Changed
+
+- **Dependencies brought current, in one pass rather than thirteen.** Dependabot
+  had opened thirteen PRs; this lands the twelve that were still relevant as a
+  single change so the tree is only validated once, and so the pieces that have
+  to move together actually do.
+  - **OpenTelemetry is a family, not five packages.** `otel`, `otel/trace`,
+    `otel/metric`, `otel/sdk`, `otel/sdk/metric` (1.44.0 -> 1.45.0) and
+    `otel/exporters/prometheus` (0.66.0 -> 0.67.0) are version-locked against
+    one another. Merging those PRs one at a time would have left the tree
+    uncompilable in between, which is the argument for doing this as one commit.
+  - `prometheus/client_golang` 1.23.2 -> 1.24.1, `getkin/kin-openapi` 0.144.0 ->
+    0.147.0, `fsnotify` 1.9.0 -> 1.10.1. Indirects followed via `go mod tidy`:
+    `prometheus/common` 0.67.5 -> 0.70.1, `prometheus/procfs` 0.20.1 -> 0.21.1,
+    `go-logr/logr` 1.4.3 -> 1.4.4.
+  - **The Go base image moved on all 31 Dockerfiles, not the 3 Dependabot
+    watches.** `.github/dependabot.yml` registers exactly three docker
+    directories (`/`, `/connectors/rss`, `/connectors/imap`), so its three
+    golang 1.26 -> 1.27 PRs would have bumped three images and left twenty-eight
+    on 1.26 -- a split toolchain across the published fleet with nothing to
+    signal it. Every Dockerfile moves together here, along with the two
+    `.gitlab-ci.yml` job images and the `Dockerfile.tmpl` the connector
+    generator emits. The dependabot config is worth widening separately; this
+    commit only fixes the state, not the reporting gap that produced it.
+  - `actions/setup-go` 6 -> 7 across all five workflow uses, and the workflows'
+    `go-version` pin 1.26 -> 1.27 to match the images. Dependabot does not track
+    that pin, so taking its action bump alone would have left CI testing on one
+    toolchain while the images shipped another.
+  - **Not taken: `golang.org/x/net` 0.55.0 -> 0.56.0.** The module is already at
+    **0.58.0**; that PR predates two later bumps and proposes a downgrade.
+
 ### Removed
 
 - **The `docker.yml` workflow**, which rebuilt and pushed 3 of the 28 images on

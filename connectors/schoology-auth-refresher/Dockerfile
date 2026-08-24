@@ -7,7 +7,7 @@
 # longer bundles Chromium. It drives a remote, cluster-local Browserless
 # browser via auth.WithBrowserURL (BROWSERLESS_URL/BROWSERLESS_TOKEN), so
 # the runtime image only needs the pure-Go (CGO_ENABLED=0) binary.
-FROM docker.io/golang:1.26 AS build
+FROM docker.io/golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

@@ -421,7 +421,7 @@ Creates `connectors/rss/` with:
 | `connector.go` | Stub implementing `connector.Connector` with empty `Poll` method |
 | `config.go` | Config struct with routes + connector-specific fields |
 | `config.json` | Example config with wildcard route |
-| `Dockerfile` | Multi-stage build (golang:1.26 -> distroless), same pattern as glovebox |
+| `Dockerfile` | Multi-stage build (golang:1.27 -> distroless), same pattern as glovebox |
 | `README.md` | Usage, config reference, env var placeholders |
 
 ### 12.3 Generated Skeleton

@@ -3,7 +3,7 @@
 # the first FROM) resolves blank there, which newer BuildKit rejects with
 # UndefinedArgInFrom (enricher Dockerfile ARG-scope fix).
 ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
-FROM docker.io/golang:1.26 AS build
+FROM docker.io/golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /importer ./impor
 #
 # Tag rationale: :latest matches the moving tag the CI workflow publishes on
 # main (see .github/workflows/ci.yml build-enricher-runtime job) and follows
-# the prevailing convention in this repo (golang:1.26, debian:bookworm-slim,
+# the prevailing convention in this repo (golang:1.27, debian:bookworm-slim,
 # distroless/static-debian12:nonroot are all moving tags). Pin to an
 # immutable sha-<short> or semver tag once the enricher-runtime base image
 # stabilizes. The published base image already runs as nonroot uid/gid 65532
