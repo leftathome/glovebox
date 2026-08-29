@@ -10,7 +10,7 @@ at 02:00 with uploads failing.
 
 ---
 
-## Upgrading to the next release (from 0.7.0)
+## Upgrading to 0.8.0 (from 0.7.0)
 
 This release carries the security work from the 2026-08 review. Three changes
 alter behaviour an existing install depends on, and one fixes a chart defect

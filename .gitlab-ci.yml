@@ -76,7 +76,7 @@ cache:
 # ---------------------------------------------------------------------------
 test:
   stage: test
-  image: golang:1.26
+  image: golang:1.27
   before_script:
     - "go version"
     - "go env GOPATH GOMODCACHE GOCACHE"
@@ -117,7 +117,7 @@ test:
 # ---------------------------------------------------------------------------
 .integration:
   stage: integration
-  image: golang:1.26
+  image: golang:1.27
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
