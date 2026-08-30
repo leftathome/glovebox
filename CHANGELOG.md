@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenTelemetry bumped to v1.46.0 / exporters-prometheus v0.68.0.** Supersedes
+  Dependabot PRs #86, #84, #83, #81 and #79. The five OpenTelemetry modules
+  (`otel`, `otel/metric`, `otel/trace`, `otel/sdk`, `otel/sdk/metric`) and the
+  Prometheus exporter are released as a version-locked family, so they move in a
+  single commit -- merging the Dependabot PRs one at a time leaves the tree
+  uncompilable in between. `go mod tidy` also pulled the transitive
+  `google.golang.org/protobuf` 1.36.11 -> 1.36.12 and `go.yaml.in/yaml/v3`
+  3.0.4 -> 3.0.5. No source changes: the OpenTelemetry API surface glovebox uses
+  is unchanged across this bump.
+
+  Dependabot PR #22 (fsnotify 1.9.0 -> 1.10.1) is already satisfied on `main` --
+  the dependency sweep in the 0.8.0 release took fsnotify to v1.10.1 -- so it
+  should be closed rather than merged.
+
 ## [0.8.0] - 2026-08-24
 
 ### Added
