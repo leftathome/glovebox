@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Release notes now lead with the breaking changes**
+  (`scripts/release-notes.sh`, replacing the inline awk in `release.yml`).
+  The release body has always been the CHANGELOG's `## [X.Y.Z]` section copied
+  verbatim, which is the right source but imposes no ordering of its own. The
+  v0.8.0 body went out at ~68,000 characters with the word BREAKING appearing
+  exactly once, 87% of the way down, and no link to `docs/upgrading.md`
+  anywhere. The bearer-port move that breaks every archive caller was in there.
+  - A version section may now carry an authored `### Upgrade notes`
+    subsection. When present it is hoisted above `### Added` under a
+    "Read before upgrading" heading, followed by a tag-pinned link to
+    `docs/upgrading.md` and a rule; the rest of the section follows unchanged
+    with the subsection removed so it does not appear twice. On the v0.8.0
+    body this moves the first "BREAKING" from character 58,902 to 115.
+  - **The hoist is authored, not extracted.** Grepping the section for
+    BREAKING lines and lifting them was the cheaper design and does not work:
+    the v0.8.0 marker reads "**BREAKING: it now defaults to `9093`**", where
+    "it" is `ingest.bearer_port` from the parent bullet. Out of its nesting
+    the sentence loses its subject. A human writes the summary; the script
+    only decides where it goes.
+  - **`release-notes.sh check` runs in CI on every PR**, failing any version
+    section that carries a BREAKING marker without `### Upgrade notes`. Run
+    against `main` as it stood at v0.8.0 it fails on exactly that section --
+    the omission surfaces while the changelog entry is being written rather
+    than at `git push --tags`, when the release is already going out.
+  - `release-notes.sh selftest` drives the guard against throwaway fixtures
+    (12 cases, also run in CI): hoisting, non-duplication, the tagged link,
+    both failure paths, and the oversize case. Disabling the guard turns it
+    red.
+  - Two failure modes the old awk had silently: a tag whose version has no
+    CHANGELOG section published an **empty release body**, and a body over
+    GitHub's 125,000-character limit would have failed the release outright.
+    The first is now a hard error before any artefact is built; the second
+    truncates with a link to the full changelog, keeping the header.
+- Backfilled `### Upgrade notes` into the `[0.8.0]` section, matching the
+  preamble added to the published v0.8.0 release page. The file and the
+  release page now say the same thing, and it is what a re-run of the release
+  workflow for that tag would emit.
+
 - **OpenTelemetry bumped to v1.46.0 / exporters-prometheus v0.68.0.** Supersedes
   Dependabot PRs #86, #84, #83, #81 and #79. The five OpenTelemetry modules
   (`otel`, `otel/metric`, `otel/trace`, `otel/sdk`, `otel/sdk/metric`) and the
@@ -24,6 +62,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should be closed rather than merged.
 
 ## [0.8.0] - 2026-08-24
+
+### Upgrade notes
+
+Four changes in this release alter behaviour an existing install depends on.
+
+- **BREAKING -- the bearer endpoints move to port 9093.**
+  `config.ingest.bearerPort` now defaults to `9093`. `/v1/archives*` and
+  `/v1/sanitize` move onto a listener of their own; `/v1/ingest` keeps 9091.
+  Anything pointed at **9091** for archives or sanitize must be repointed at
+  **9093** in the same maintenance window -- that is the recognizer namespace
+  and any sanitize-gate client. **Connectors are unaffected.** `bearerPort: 0`
+  restores the old shared-port layout as a short-lived migration aid; it also
+  re-opens the exposure this change closes.
+- **Vault TLS verification is now on by default.**
+  `ingest.auth.vault.tlsSkipVerify` flipped `true` -> `false`. If your Vault
+  presents a private-CA certificate, set `ingest.auth.vault.caSecret` *before*
+  upgrading. Skip it and the pod still starts, uploads return **503**, and the
+  reason is one line in the startup log:
+  `glovebox vault k8s login failed: <x509 error>`.
+- **`archive/recognizer-scan` finalize can now fail for content reasons.**
+  Extracted text is scanned before publication. In practice you will hit a
+  missing or whitespace-only `ocr.txt` at the tar root, which fails finalize
+  with an opaque `500 internal_finalize`. Bound your finalize retries -- a
+  blind 5xx retry loop will re-upload a multi-GB tarball forever. Retrying the
+  same `archive_id` after correcting it is safe.
+- **Chart installs from a git checkout were deploying the wrong image.**
+  `appVersion` had been stuck at `0.6.1` since that release, so
+  `helm install ./charts/glovebox` deployed a 0.6.1 image against 0.7.0 probes.
+  Fixed here; installs from the published OCI chart were never affected. If you
+  worked around it by pinning `image.tag`, you can drop the pin.
 
 ### Added
 
