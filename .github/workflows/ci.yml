@@ -95,6 +95,18 @@ jobs:
       - name: Check the chart ruleset matches the canonical one
         run: ./scripts/check-rules-sync.sh
 
+      # The release body is built from the CHANGELOG's version section at tag
+      # time. A section that marks a change BREAKING without an authored
+      # `### Upgrade notes` subsection produces a release page where the
+      # breaking change is buried -- v0.8.0 shipped with BREAKING appearing
+      # once, 87% of the way down 68k characters. Catching it here means the
+      # omission surfaces while the changelog entry is being written, not at
+      # `git push --tags` when the release is already going out.
+      - name: Check release notes are well-formed
+        run: |
+          ./scripts/release-notes.sh selftest
+          ./scripts/release-notes.sh check
+
       # Detection rate on the adversarial corpus and false-positive rate on
       # its benign counterweight, both gated against committed thresholds
       # (testdata/adversarial-corpus/thresholds.json). The efficacy fixes

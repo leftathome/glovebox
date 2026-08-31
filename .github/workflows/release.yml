@@ -23,14 +23,19 @@ jobs:
           go-version: "1.27"
           cache: true
 
-      - name: Extract changelog for this version
+      # scripts/release-notes.sh, not an inline awk: it hoists the section's
+      # authored `### Upgrade notes` above `### Added` and links the operator
+      # checklist, so a breaking change is the first thing on the release page
+      # rather than one line 87% of the way down a 68k-character body. It also
+      # refuses to publish an empty body for a version with no changelog
+      # section, which the old awk did silently.
+      - name: Build release notes
         id: changelog
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md > release-notes.md
+          scripts/release-notes.sh "${TAG}" > release-notes.md
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       # The literal target list this replaces held 10 of 24 connectors and
       # no importers at all, so every release archive silently contradicted
