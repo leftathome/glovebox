@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`PLAN-linkedin-connector.md`** from the repository root. Every box in it is
+  checked and all six files it planned are on `main`; the shipped connector is
+  documented at `docs/connectors/linkedin.md`. Its two siblings,
+  `PLAN-onedrive-connector.md` and `PLAN-teams-connector.md`, were deleted in
+  the P2-1 docs sweep rather than archived under `docs/` -- nothing was added to
+  `docs/` in that commit -- so this follows the same disposition. The plan
+  outlived the work by one release.
+
 ### Changed
 
 - **Release notes now lead with the breaking changes**
