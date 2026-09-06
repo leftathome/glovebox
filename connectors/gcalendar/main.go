@@ -67,6 +67,7 @@ func main() {
 
 	connector.Run(connector.Options{
 		Name:       "gcalendar",
+		Tier:       connector.TierPersonal,
 		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
 		StateDir:   stateDir,
 		ConfigFile: configFile,

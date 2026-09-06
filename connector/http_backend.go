@@ -29,6 +29,9 @@ type HTTPStagingBackend struct {
 	configIdentity           *ConfigIdentity
 	configDataSubjectDefault string
 	configAudienceDefault    []string
+	// tier is the connector's channel-tier declaration, stamped onto every
+	// item this backend produces. Set once by NewFramework via SetTier.
+	tier Tier
 	// enrichRegistry is the enrichment registry run by commitHTTP. Nil
 	// means "use enrich.Default". Tests inject a fresh registry to avoid
 	// leaking state through enrich.Default. See glovebox-afq4.12.
@@ -85,6 +88,12 @@ func (h *HTTPStagingBackend) SetConfigAudience(a []string) {
 	h.configAudienceDefault = append([]string(nil), a...)
 }
 
+// SetTier sets the connector's channel-tier declaration (connector/tier.go).
+// Called once by NewFramework from Options.Tier.
+func (h *HTTPStagingBackend) SetTier(t Tier) {
+	h.tier = t
+}
+
 // SetEnrichRegistry overrides the enrichment registry run by commitHTTP.
 // When unset (or nil), commitHTTP uses the process-global enrich.Default
 // registry. Mirrors StagingWriter.SetEnrichRegistry so HTTP-backend items
@@ -102,6 +111,7 @@ func (h *HTTPStagingBackend) NewItem(opts ItemOptions) (*StagingItem, error) {
 		configIdentity:           h.configIdentity,
 		configDataSubjectDefault: h.configDataSubjectDefault,
 		configAudienceDefault:    h.configAudienceDefault,
+		tier:                     h.tier,
 		enrichRegistry:           h.enrichRegistry,
 	}
 

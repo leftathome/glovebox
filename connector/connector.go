@@ -37,7 +37,15 @@ type ConnectorContext struct {
 type SetupFunc func(cc ConnectorContext) error
 
 type Options struct {
-	Name         string
+	Name string
+
+	// Tier declares what kind of channel this connector is: TierFeed or
+	// TierPersonal. REQUIRED -- NewFramework refuses to start without a valid
+	// declaration, so a connector cannot silently inherit the wrong routing.
+	// See connector/tier.go for why this lives here rather than in a central
+	// list downstream (openclaw-iw1s).
+	Tier Tier
+
 	StagingDir   string // required for filesystem mode; unused when GLOVEBOX_INGEST_URL is set
 	StateDir     string
 	ConfigFile   string

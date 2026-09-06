@@ -30,6 +30,22 @@ type ItemMetadata struct {
 	DataSubject      string            `json:"data_subject,omitempty"`
 	Audience         []string          `json:"audience,omitempty"`
 
+	// Tier is the producing connector's declaration of what kind of channel
+	// this item came from: "feed" (high-volume; openclaw triage diverts it to
+	// caro) or "personal" (durable; routed into per-agent ambient recall).
+	// Set from connector.Options.Tier at Commit time. See connector/tier.go
+	// for the rationale and openclaw image/cmd/triage/tier.go for the consumer.
+	//
+	// Typed as a plain string rather than connector.Tier because connector
+	// imports this package, not the other way round.
+	//
+	// omitempty is deliberate and load-bearing: items staged by a producer
+	// that predates this field carry no `tier`, and triage distinguishes
+	// absent (fall back to its frozen legacy source allowlist) from set. That
+	// distinction is what lets the glovebox and openclaw rollouts ship in
+	// either order without a flag day.
+	Tier string `json:"tier,omitempty"`
+
 	// Enrichments is the list of sidecar artifacts produced (or attempted
 	// and failed) by the enrichment pipeline. Populated by
 	// StagingItem.Commit(). Empty (nil) for items committed before this

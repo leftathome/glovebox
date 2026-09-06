@@ -127,6 +127,7 @@ func run(args []string) int {
 
 	fw, err := connector.NewFramework(connector.Options{
 		Name:       "walhelm-importer",
+		Tier:       connector.TierPersonal,
 		StagingDir: *stagingDir,
 		StateDir:   *stateDir,
 		ConfigFile: *configFile,

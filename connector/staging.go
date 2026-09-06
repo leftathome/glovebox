@@ -41,6 +41,9 @@ type StagingWriter struct {
 	configIdentity           *ConfigIdentity
 	configDataSubjectDefault string
 	configAudienceDefault    []string
+	// tier is the connector's channel-tier declaration, stamped onto every
+	// item this writer produces. Set once by NewFramework via SetTier.
+	tier Tier
 	// enrichRegistry is the enrichment registry consulted by
 	// StagingItem.Commit(). Nil means "use enrich.Default" (the
 	// process-global registry); tests inject a fresh registry to avoid
@@ -84,6 +87,12 @@ func (w *StagingWriter) SetConfigAudience(a []string) {
 	w.configAudienceDefault = append([]string(nil), a...)
 }
 
+// SetTier sets the connector's channel-tier declaration (connector/tier.go).
+// Called once by NewFramework from Options.Tier.
+func (w *StagingWriter) SetTier(t Tier) {
+	w.tier = t
+}
+
 // SetEnrichRegistry overrides the enrichment registry used by items
 // produced by this writer. When unset (or set to nil), Commit() uses
 // the process-global enrich.Default registry. Tests inject a fresh
@@ -99,6 +108,7 @@ type StagingItem struct {
 	configIdentity           *ConfigIdentity
 	configDataSubjectDefault string
 	configAudienceDefault    []string
+	tier                     Tier
 	enrichRegistry           *enrich.Registry
 	commitFunc               func() error
 }
@@ -116,6 +126,7 @@ func (w *StagingWriter) NewItem(opts ItemOptions) (*StagingItem, error) {
 		configIdentity:           w.configIdentity,
 		configDataSubjectDefault: w.configDataSubjectDefault,
 		configAudienceDefault:    w.configAudienceDefault,
+		tier:                     w.tier,
 		enrichRegistry:           w.enrichRegistry,
 	}, nil
 }
@@ -170,6 +181,12 @@ func (si *StagingItem) buildMetadata() (staging.ItemMetadata, error) {
 			Tenant:     mergedIdentity.Tenant,
 		}
 	}
+
+	// The tier is a connector-level declaration, so unlike data_subject and
+	// audience it has no per-item or per-rule override to merge: an operator
+	// must not be able to re-tier one item and move it across the
+	// recall/caro boundary from config.
+	meta.Tier = string(si.tier)
 
 	meta.DataSubject = mergeDataSubject(si.configDataSubjectDefault, si.opts.RuleDataSubject, si.opts.DataSubject)
 	meta.Audience = mergeAudience(si.configAudienceDefault, si.opts.RuleAudience, si.opts.Audience)

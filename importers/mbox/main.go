@@ -145,6 +145,7 @@ func runCtx(ctx context.Context, args []string) int {
 
 	fw, err := connector.NewFramework(connector.Options{
 		Name:       "mbox-importer",
+		Tier:       connector.TierPersonal,
 		StagingDir: *stagingDir,
 		StateDir:   *stateDir,
 		ConfigFile: *configFile,
