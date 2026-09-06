@@ -105,6 +105,24 @@ Four changes in this release alter behaviour an existing install depends on.
 
 ### Added
 
+- **Required channel-tier declaration on every connector
+  (`connector.Options.Tier`)**: each connector and importer now declares
+  `connector.TierFeed` or `connector.TierPersonal`, which is stamped onto every
+  staged item as `tier` in `metadata.json`. openclaw's triage consumes it to
+  decide whether an item is diverted to the caro feed store or written into the
+  audiences tree that feeds per-agent ambient recall. Previously triage kept its
+  own hardcoded list of feed-class sources (literally `{"rss": true}`) in
+  another repository, so every connector written after that list fell through
+  it, landed in the audiences tree and polluted per-agent recall -- measured
+  2026-07-31 at 89% of the main agent's memory index and effectively 100% of one
+  person-agent's. The declaration is mandatory and fail-fast: `NewFramework`
+  refuses to start a connector with an unset or unrecognised tier, and a test
+  fails CI if any `main.go` builds a `connector.Options` without one. The field
+  is omitted from `metadata.json` when undeclared, which is what lets the
+  glovebox and openclaw rollouts ship in either order without a flag day.
+  Documented in `docs/connector-guide.md` section 3.7. See openclaw
+  `openclaw-iw1s`.
+
 - **Adversarial corpus and a CI detection/false-positive gate**
   (`testdata/adversarial-corpus`, `scripts/corpus-gate.sh`): the efficacy fixes
   -- homoglyph folding, invisible/Tags-block stripping, decode-then-scan,

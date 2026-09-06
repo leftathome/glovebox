@@ -44,6 +44,7 @@ func main() {
 
 	connector.Run(connector.Options{
 		Name:       "gitlab",
+		Tier:       connector.TierFeed,
 		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,

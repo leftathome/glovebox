@@ -213,6 +213,7 @@ func main() {
 
     connector.Run(connector.Options{
         Name:       "my-source",
+        Tier:       connector.TierFeed, // or connector.TierPersonal -- see 3.7
         StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
         StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
         ConfigFile: configFile,
@@ -543,6 +544,53 @@ returns a transient error, `/readyz` remains 503 until a poll succeeds.
 Listener's HTTP handler on `HealthPort + 1` (default 8081). This is a separate
 server from the health/metrics endpoints.
 
+### 3.7 Channel Tier (required)
+
+Every connector must declare a **tier** in `connector.Options`. This is not
+optional and it is not defaulted: `NewFramework` refuses to start a connector
+whose `Tier` is unset or unrecognised, and CI fails if any `main.go` builds a
+`connector.Options` without one.
+
+```go
+connector.Run(connector.Options{
+    Name: "my-source",
+    Tier: connector.TierFeed, // or connector.TierPersonal
+    // ...
+})
+```
+
+| Tier | Use for | What happens downstream |
+|---|---|---|
+| `TierFeed` | High-volume public or semi-public streams whose items are individually disposable: news, releases, papers, social timelines | openclaw's triage diverts the item to **caro**, a separate feed store. Agents reach it deliberately via the `search_items` MCP tool. |
+| `TierPersonal` | Durable, person-relevant content: correspondence, calendars, documents, coursework | Routed into `audiences/<group>/inbox/` and indexed into per-agent **ambient recall**, where an agent can surface it without being asked. |
+
+**How to choose.** The tier describes the *channel*, not the item. Ask "does
+every item from this source deserve to sit in an agent's memory index forever?"
+If the source produces hundreds of items a day and most will never be read
+again, it is `TierFeed`. If a typical item is something a person would expect
+their agent to remember, it is `TierPersonal`.
+
+**Why this is mandatory.** openclaw's triage used to keep its own hardcoded list
+of feed-class sources -- literally `{"rss": true}`. Any connector written after
+that list fell through it, landed in the audiences tree, and polluted every
+person-agent's recall index. Measured on 2026-07-31, feed content was 89% of the
+main agent's index and effectively 100% of one person-agent's, so genuine
+conversational memory could no longer be found. The list failed because it lived
+in a different repository from the connector, where no connector author had any
+reason to look. Declaring the tier here puts the decision next to the code that
+knows the answer, and makes forgetting it a startup error instead of a silent
+regression discovered months later. See `connector/tier.go` and openclaw
+`openclaw-iw1s`.
+
+**The wire format.** The declaration travels as `tier` in each item's
+`metadata.json`. It is omitted entirely when undeclared, which is how openclaw
+distinguishes "producer predates this field" (fall back to its legacy source
+list) from "producer declared a tier". Do not emit an empty string.
+
+**Changing a connector's tier** is a code change and a redeploy, deliberately.
+It moves content across the recall boundary, so it is not something an operator
+should be able to do from config.
+
 ---
 
 ## 4. API Reference
@@ -581,6 +629,7 @@ type Checkpoint interface {
 // Options configures the connector runner.
 type Options struct {
     Name         string        // connector name (used in logs, metrics, staging paths)
+    Tier         Tier          // REQUIRED: TierFeed or TierPersonal (see 3.7)
     StagingDir   string        // path to glovebox staging directory
     StateDir     string        // path to connector state directory
     ConfigFile   string        // path to JSON config file

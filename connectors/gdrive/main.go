@@ -62,6 +62,7 @@ func main() {
 
 	connector.Run(connector.Options{
 		Name:       "gdrive",
+		Tier:       connector.TierPersonal,
 		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
 		StateDir:   stateDir,
 		ConfigFile: configFile,

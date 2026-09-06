@@ -46,6 +46,7 @@ func main() {
 
 	connector.Run(connector.Options{
 		Name:       "imap",
+		Tier:       connector.TierPersonal,
 		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: cfgFile,
