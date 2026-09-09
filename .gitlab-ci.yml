@@ -76,7 +76,24 @@ cache:
 # ---------------------------------------------------------------------------
 test:
   stage: test
-  image: golang:1.27
+  # Pinned to a concrete patch tag rather than the floating `golang:1.27`.
+  #
+  # The cluster pulls docker.io through Zot, and Zot cannot commit the floating
+  # tag's manifest: it fetches it from Docker Hub, fails with "invalid manifest
+  # content" (sync/destination.go copyManifest), then falls through to the other
+  # configured upstreams -- ghcr.io, registry.k8s.io, quay.io -- none of which
+  # carry library/golang, and finally answers containerd 404 after ~8 minutes.
+  # The job dies as `runner_system_failure` at prepare-environment with no test
+  # output, which reads as a broken runner rather than a registry problem.
+  #
+  # Measured against Zot on 2026-09-09: 1.27.1-bookworm HEAD 200; 1.27,
+  # 1.27.0-bookworm and 1.26 all time out. No node holds any 1.27 image, so
+  # Spegel has no peer to serve one either.
+  #
+  # This keeps the toolchain at 1.27, matching the GitHub mirror, rather than
+  # reverting the Go bump to work around a registry fault. Revert to the
+  # floating tag once gitops-br8e is fixed.
+  image: golang:1.27.1-bookworm
   before_script:
     - "go version"
     - "go env GOPATH GOMODCACHE GOCACHE"
@@ -117,7 +134,24 @@ test:
 # ---------------------------------------------------------------------------
 .integration:
   stage: integration
-  image: golang:1.27
+  # Pinned to a concrete patch tag rather than the floating `golang:1.27`.
+  #
+  # The cluster pulls docker.io through Zot, and Zot cannot commit the floating
+  # tag's manifest: it fetches it from Docker Hub, fails with "invalid manifest
+  # content" (sync/destination.go copyManifest), then falls through to the other
+  # configured upstreams -- ghcr.io, registry.k8s.io, quay.io -- none of which
+  # carry library/golang, and finally answers containerd 404 after ~8 minutes.
+  # The job dies as `runner_system_failure` at prepare-environment with no test
+  # output, which reads as a broken runner rather than a registry problem.
+  #
+  # Measured against Zot on 2026-09-09: 1.27.1-bookworm HEAD 200; 1.27,
+  # 1.27.0-bookworm and 1.26 all time out. No node holds any 1.27 image, so
+  # Spegel has no peer to serve one either.
+  #
+  # This keeps the toolchain at 1.27, matching the GitHub mirror, rather than
+  # reverting the Go bump to work around a registry fault. Revert to the
+  # floating tag once gitops-br8e is fixed.
+  image: golang:1.27.1-bookworm
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
