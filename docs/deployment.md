@@ -64,6 +64,7 @@ images-markdown` and paste; CI fails if it drifts from what is built.
 | `connectors/steam` | `ghcr.io/leftathome/glovebox-steam` |
 | `connectors/teams` | `ghcr.io/leftathome/glovebox-teams` |
 | `connectors/trello` | `ghcr.io/leftathome/glovebox-trello` |
+| `connectors/unifi` | `ghcr.io/leftathome/glovebox-unifi` |
 | `importers/walhelm` | `ghcr.io/leftathome/glovebox-walhelm-importer` |
 | `connectors/x` | `ghcr.io/leftathome/glovebox-x` |
 | `connectors/youtube` | `ghcr.io/leftathome/glovebox-youtube` |

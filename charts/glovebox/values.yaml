@@ -1335,6 +1335,78 @@ connectors:
     affinity: {}
     tolerations: []
 
+  # UniFi (UDM Network + Protect events).
+  #
+  # Poll backfills from the controller API on start; the listener receives
+  # webhook pushes thereafter, so listener.enabled adds the HealthPort+1 port
+  # to the Deployment and the Service.
+  #
+  # Media does not transit glovebox: Protect clips, audio and stills stay at
+  # rest on the controller and the staged event carries a reference. See
+  # docs/connectors/unifi.md.
+  unifi:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-unifi
+      tag: latest
+      pullPolicy: IfNotPresent
+    listener:
+      enabled: true
+    config:
+      controller_url: "https://192.168.1.1"
+      site: default
+      api_key_env: UNIFI_API_KEY
+      # A UDM presents a self-signed certificate for its LAN address. Prefer
+      # ca_cert_file where you can; this is the honest fallback.
+      insecure_skip_verify: true
+      webhook_secret_env: UNIFI_WEBHOOK_SECRET
+      webhook_auth_mode: hmac
+      webhook_signature_header: X-Unifi-Signature
+      network:
+        enabled: true
+        events_path: "/proxy/network/api/s/%s/stat/event"
+        backfill_limit: 200
+      protect:
+        enabled: false
+        events_path: "/proxy/protect/api/events"
+        backfill_limit: 200
+      # Destinations must appear in scanner.agentAllowlist above, or the
+      # scanner drops the item after scanning it.
+      rules:
+        - match: "event:EVT_AP_RogueAp"
+          destination: messaging
+          tags:
+            priority: review
+        - match: "network"
+          destination: messaging
+        - match: "protect"
+          destination: messaging
+    env: {}
+    # Reuse the existing read-only UniFi API key; do not mint a write
+    # credential. The connector only ever issues GETs.
+    secrets: ""
+    externalSecret:
+      enabled: false
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
 # Schoology browser-session refresher (spec 06 §12). Disabled by
 # default; opt-in by setting schoologyAuthRefresher.enabled=true. When
 # enabled, the chart renders a CronJob, a dedicated ServiceAccount, and

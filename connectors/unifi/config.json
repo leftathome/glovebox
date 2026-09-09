@@ -1,0 +1,24 @@
+{
+  "controller_url": "https://192.168.1.1",
+  "site": "default",
+  "api_key_env": "UNIFI_API_KEY",
+  "insecure_skip_verify": true,
+  "webhook_secret_env": "UNIFI_WEBHOOK_SECRET",
+  "webhook_auth_mode": "hmac",
+  "webhook_signature_header": "X-Unifi-Signature",
+  "network": {
+    "enabled": true,
+    "events_path": "/proxy/network/api/s/%s/stat/event",
+    "backfill_limit": 200
+  },
+  "protect": {
+    "enabled": false,
+    "events_path": "/proxy/protect/api/events",
+    "backfill_limit": 200
+  },
+  "rules": [
+    {"match": "event:EVT_AP_RogueAp", "destination": "messaging", "tags": {"priority": "review"}},
+    {"match": "network", "destination": "messaging"},
+    {"match": "protect", "destination": "messaging"}
+  ]
+}

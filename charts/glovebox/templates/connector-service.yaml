@@ -16,6 +16,12 @@ spec:
       targetPort: health
       protocol: TCP
       name: health
+    {{- if (get $connector "listener" | default dict).enabled }}
+    - port: 8081
+      targetPort: listener
+      protocol: TCP
+      name: listener
+    {{- end }}
   selector:
     app.kubernetes.io/name: {{ include "glovebox.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}

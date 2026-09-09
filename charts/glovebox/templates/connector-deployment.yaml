@@ -136,6 +136,17 @@ spec:
             - name: health
               containerPort: 8080
               protocol: TCP
+            {{- if (get $connector "listener" | default dict).enabled }}
+            {{- /*
+            Connectors implementing connector.Listener serve webhook pushes on
+            HealthPort+1, a separate server from health/metrics. Opt-in per
+            connector: a poll-only connector that advertised this port would
+            publish a Service target that answers nothing.
+            */}}
+            - name: listener
+              containerPort: 8081
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
