@@ -20,6 +20,12 @@ type StagingBackend interface {
 	// SetConfigAudience sets the config-level audience default used as the
 	// final fallback in the merge chain (spec 11 §5).
 	SetConfigAudience(a []string)
+
+	// SetTier sets the connector's channel-tier declaration, stamped onto
+	// every item this backend produces. Called once by NewFramework from
+	// Options.Tier; connectors do not call it themselves. See
+	// connector/tier.go.
+	SetTier(t Tier)
 }
 
 // Compile-time check: *StagingWriter satisfies StagingBackend.

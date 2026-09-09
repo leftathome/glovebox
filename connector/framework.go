@@ -99,7 +99,21 @@ func NewFramework(opts Options) (*Framework, error) {
 	}
 
 	logger := slog.Default().With("connector", opts.Name)
-	logger.Info("starting connector")
+
+	// A connector MUST declare its channel tier. This is checked before
+	// anything else is set up, and it is fatal rather than a warning, because
+	// the failure it prevents is silent: an undeclared connector's items fall
+	// through openclaw triage's legacy allowlist into audiences/ and pollute
+	// every person-agent's recall index, and nobody notices until someone
+	// measures the index months later (openclaw-iw1s). A startup error is the
+	// cheapest possible moment to find out. See connector/tier.go.
+	if !opts.Tier.Valid() {
+		return nil, PermanentError(fmt.Errorf(
+			"connector %q must declare a valid Options.Tier (%q or %q), got %q",
+			opts.Name, TierFeed, TierPersonal, string(opts.Tier)))
+	}
+
+	logger.Info("starting connector", "tier", string(opts.Tier))
 
 	var baseCfg BaseConfig
 	if opts.ConfigFile != "" {
@@ -147,6 +161,7 @@ func NewFramework(opts Options) (*Framework, error) {
 	}
 	backend.SetConfigDataSubject(baseCfg.DataSubjectDefault)
 	backend.SetConfigAudience(baseCfg.AudienceDefault)
+	backend.SetTier(opts.Tier)
 	if !dataSubjectConfigured(baseCfg) {
 		logger.Warn("no data_subject configured (data_subject_default empty and no rule sets data_subject); " +
 			"staged items will default to the household audience group, shared with the whole household")

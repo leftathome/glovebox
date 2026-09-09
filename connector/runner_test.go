@@ -70,7 +70,11 @@ func testOptions(t *testing.T, c Connector) Options {
 	os.WriteFile(cfgPath, []byte(`{"rules":[{"match":"*","destination":"messaging"}],"fetch_limits":{"per_source":5,"per_poll":100}}`), 0644)
 
 	return Options{
-		Name:         "test",
+		Name: "test",
+		// NewFramework requires a valid tier declaration. The value is
+		// arbitrary for tests that are not about tiering; the tests that ARE
+		// about it set it explicitly.
+		Tier:         TierFeed,
 		StagingDir:   stagingDir,
 		StateDir:     stateDir,
 		ConfigFile:   cfgPath,

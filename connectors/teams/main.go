@@ -58,6 +58,7 @@ func main() {
 
 	connector.Run(connector.Options{
 		Name:       "teams",
+		Tier:       connector.TierPersonal,
 		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
 		StateDir:   stateDir,
 		ConfigFile: cfgFile,

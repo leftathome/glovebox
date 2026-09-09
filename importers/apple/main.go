@@ -126,6 +126,7 @@ func run(args []string) int {
 
 	fw, err := connector.NewFramework(connector.Options{
 		Name:       "apple-importer",
+		Tier:       connector.TierPersonal,
 		StagingDir: *stagingDir,
 		StateDir:   *stateDir,
 		ConfigFile: *configFile,
