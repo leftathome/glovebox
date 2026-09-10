@@ -1362,23 +1362,31 @@ connectors:
       webhook_secret_env: UNIFI_WEBHOOK_SECRET
       webhook_auth_mode: hmac
       webhook_signature_header: X-Unifi-Signature
+      # Network events are NOT reachable with an API key on this firmware:
+      # stat/event and stat/alarm are absent, and the events websocket
+      # upgrades then closes without a session credential. Enabling this
+      # surface is a permanent startup error (glovebox-pn2j).
       network:
-        enabled: true
+        enabled: false
         events_path: "/proxy/network/api/s/%s/stat/event"
         backfill_limit: 200
+      # Protect events arrive over a WebSocket subscription authenticated with
+      # the same read-only API key.
       protect:
-        enabled: false
-        events_path: "/proxy/protect/api/events"
+        enabled: true
+        events_path: "/proxy/protect/integration/v1/subscribe/events"
         backfill_limit: 200
       # Destinations must appear in scanner.agentAllowlist above, or the
       # scanner drops the item after scanning it.
       rules:
-        - match: "event:EVT_AP_RogueAp"
+        - match: "event:smartDetectZone"
           destination: messaging
           tags:
             priority: review
-        - match: "network"
+        - match: "event:ring"
           destination: messaging
+          tags:
+            priority: review
         - match: "protect"
           destination: messaging
     env: {}

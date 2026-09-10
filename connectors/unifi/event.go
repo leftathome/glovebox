@@ -138,38 +138,85 @@ func normalizeEvent(raw []byte, untrusted []string) (normalized, error) {
 }
 
 // stripMedia replaces inlined media payloads with a placeholder, leaving
-// short references in place. It reports which fields it changed.
+// references and structure in place. It reports which fields it changed.
+//
+// Only JSON *strings* longer than mediaRefMaxLen are treated as payloads. An
+// object or an array under a media-named key is structure, not bytes: Protect
+// carries detection geometry and per-detection metadata in exactly that shape,
+// and a bounding box is the sort of thing this connector exists to deliver.
+// Replacing it wholesale because its key happened to be "image" destroyed the
+// most useful part of the event (glovebox-ext6).
+//
+// The walk recurses so that a blob nested inside metadata is still caught,
+// while every level of structure around it survives.
 func stripMedia(fields map[string]json.RawMessage) (map[string]json.RawMessage, []string) {
 	var removed []string
 	out := make(map[string]json.RawMessage, len(fields))
-
 	for k, v := range fields {
-		if !mediaFields[k] {
-			out[k] = v
-			continue
-		}
+		out[k] = stripValue(k, v, &removed)
+	}
+	sort.Strings(removed)
+	return out, dedupe(removed)
+}
 
-		// A short JSON string is a handle or a URL: that is the reference
-		// we want to keep. Anything else -- a long string, an object, an
-		// array -- is treated as a payload.
-		var s string
-		if err := json.Unmarshal(v, &s); err == nil && len(s) <= mediaRefMaxLen {
-			out[k] = v
-			continue
+// stripValue applies the payload rule to one value, recursing through
+// containers. key is the name the value was reached under, which is what
+// decides whether a long string is a media payload or ordinary long text.
+func stripValue(key string, v json.RawMessage, removed *[]string) json.RawMessage {
+	// A string under a media-named key: payload if long, reference if short.
+	var str string
+	if err := json.Unmarshal(v, &str); err == nil {
+		if mediaFields[key] && len(str) > mediaRefMaxLen {
+			repl, err := json.Marshal(placeholder(key, len(v)))
+			if err != nil {
+				return v
+			}
+			*removed = append(*removed, key)
+			return repl
 		}
-
-		repl, err := json.Marshal(placeholder(k, len(v)))
-		if err != nil {
-			// Marshalling a string cannot realistically fail; if it does,
-			// drop the field rather than pass the payload through.
-			continue
-		}
-		out[k] = repl
-		removed = append(removed, k)
+		return v
 	}
 
-	sort.Strings(removed)
-	return out, removed
+	// An object: recurse, keeping every key.
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(v, &obj); err == nil {
+		for k, vv := range obj {
+			obj[k] = stripValue(k, vv, removed)
+		}
+		if out, err := json.Marshal(obj); err == nil {
+			return out
+		}
+		return v
+	}
+
+	// An array: recurse, elements inheriting the parent key so that
+	// "thumbnails": ["<blob>", ...] is still recognised.
+	var arr []json.RawMessage
+	if err := json.Unmarshal(v, &arr); err == nil {
+		for i, vv := range arr {
+			arr[i] = stripValue(key, vv, removed)
+		}
+		if out, err := json.Marshal(arr); err == nil {
+			return out
+		}
+		return v
+	}
+
+	// Numbers, booleans, null: never payloads.
+	return v
+}
+
+func dedupe(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	out := in[:1]
+	for _, s := range in[1:] {
+		if s != out[len(out)-1] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // populatedUntrusted reports which of the named untrusted fields are present

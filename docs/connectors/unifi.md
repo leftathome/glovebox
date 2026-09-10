@@ -1,173 +1,199 @@
 # unifi connector
 
-Delivers UniFi Dream Machine events -- Network and Protect -- into glovebox so
-they reach agents through the scanning pipeline rather than by a direct path to
-the openclaw gateway.
+Delivers UniFi Protect events into glovebox so they reach agents through the
+scanning pipeline rather than by a direct path to the openclaw gateway.
 
-The connector implements both `Connector` and `Listener`: `Poll` backfills from
-the controller API on start and on the poll interval, and the listener receives
-webhook pushes in between. It runs as a Deployment.
+Everything below was verified against a UDM Pro Max running Protect 7.3.47 on
+2026-09-10, against the published spec at
+`https://developer.ui.com/protect/v7.3.47/openapi.json`, and against live event
+traffic.
+
+## Transport: a WebSocket subscription, not a poll
+
+**There is no pollable events endpoint.** Verified on the hardware:
+
+| endpoint | result |
+|---|---|
+| `GET /proxy/protect/integration/v1/events` | 404 `Entity 'endpoint' not found` |
+| `GET /proxy/protect/integration/v1/cameras/{id}/events` | 404 |
+| `GET /proxy/network/integration/v1/sites/{id}/events` | 404 `No endpoint GET ...` |
+| `GET|POST /proxy/network/api/s/{site}/stat/event` | 404 `api.err.NotFound` |
+| `GET|POST /proxy/network/api/s/{site}/stat/alarm` | 404 |
+| `GET /proxy/protect/api/events` (classic) | 401 -- classic API refuses an API key |
+
+`/stat/sta` answers 200 on the same site path with the same key, so this is not
+a wrong-site or wrong-credential problem. The endpoints are simply absent.
+
+What exists is `GET /v1/subscribe/events`, which the spec describes as "A
+WebSocket subscription that broadcasts Protect events". The connector implements
+`connector.Watcher` against it.
+
+**The upgrade must be made over HTTP/1.1.** The UDM serves HTTP/2, a WebSocket
+upgrade cannot be performed over HTTP/2, and the controller reports the failed
+attempt as a **404** -- which reads exactly like a missing endpoint and is how
+this was originally misdiagnosed.
+
+Authentication is the same read-only `X-API-KEY` used for the REST calls. No
+session credential, no username and password: "eyes not hands" is intact.
+
+## The Network surface does not work, and says so
+
+`network.enabled: true` is a **permanent startup error**. On this firmware the
+classic event endpoints are gone, and the events WebSocket at
+`/proxy/network/wss/s/<site>/events` upgrades at nginx (101) and is then closed
+immediately by the application unless the caller holds a session cookie --
+verified three times, zero frames received. Delivering Network events would mean
+minting a username/password credential, which is a different blast radius and a
+decision to take deliberately rather than to discover at runtime.
+
+It fails loudly rather than staging nothing, so an operator learns why instead
+of watching an empty directory.
+
+## What an event actually contains
+
+Across all 38 event types in the spec the maximum field set is:
+
+```
+id, modelKey, type, start, end (nullable), device,
+  plus EITHER smartDetectTypes OR metadata
+```
+
+Real frames, captured live:
+
+```json
+{"type":"add","item":{"id":"c0b8c646","modelKey":"event","type":"smartDetectZone",
+  "start":1789001974452,"device":"699fe724","smartDetectTypes":["person"]}}
+{"type":"update","item":{"id":"c0b8c646","type":"smartDetectZone",
+  "start":1789001974452,"device":"699fe724","smartDetectTypes":["face","person"],"modelKey":"event"}}
+{"type":"add","item":{"id":"23e10ecd","modelKey":"event","type":"motion",
+  "start":1789002063195,"device":"6736859600ff"}}
+```
+
+Detection vocabularies:
+
+- **video** -- `person`, `vehicle`, `package`, `licensePlate`, `face`, `animal`
+- **audio** -- `alrmSmoke`, `alrmCmonx`, `alrmSiren`, `alrmBabyCry`, `alrmSpeak`,
+  `alrmBark`, `alrmBurglar`, `alrmCarHorn`, `alrmGlassBreak`
+
+Event families include `ringEvent` (doorbell), `cameraMotionEvent`,
+`cameraSmartDetectZone/Line/Loiter/AudioEvent`, the `sensor*` and `alarmHub*`
+sets, `nfcCardScannedEvent` and `fingerprintIdentifiedEvent`.
+
+**No bounding box, no thumbnail, no score, no media handle appears in any event
+type.** An event tells you what was detected, on which device, and when. To get
+pixels you call `GET /v1/cameras/{id}/snapshot` yourself. Media-by-reference is
+therefore what the API already does, not a policy this connector adds.
+
+## One event, several frames
+
+Protect refines a detection while it is still happening. The capture above shows
+one person producing an `add` with `["person"]` and then updates with
+`["face","person"]`, all under one `item.id`, with `end` absent until the event
+closes.
+
+Staging every frame would deliver three items for one event, the first claiming
+a person when a face was identified moments later. So frames are merged on
+`item.id` and the event is staged **once, when it ends**.
+
+An event whose `end` never arrives -- a dropped subscription, or a Protect
+event left open -- is staged after `maxOpenAge` (5 minutes) and tagged
+`unifi.incomplete=true`. Late and labelled beats silently dropped.
 
 ## Channel tier
 
-This connector declares **`TierFeed`**, and that is the load-bearing decision.
+Declares **`TierFeed`**, and that is the load-bearing decision.
 
-UniFi event volume is far above RSS, and RSS alone was measured at 89% of the
-main agent's memory index and effectively 100% of one person-agent's before
-diversion existed. `TierFeed` is what makes openclaw's triage divert these items
-to caro's feed store instead of writing them into `audiences/<group>/inbox/`,
-where they would enter every person-agent's ambient recall. Agents reach UniFi
-events deliberately, through the `search_items` MCP tool.
+UniFi event volume is far above RSS, and RSS alone measured 89% of the main
+agent's memory index and effectively 100% of one person-agent's before diversion
+existed. `TierFeed` makes openclaw's triage divert these to caro's feed store
+instead of `audiences/<group>/inbox/`, where they would enter every
+person-agent's ambient recall. Agents reach them deliberately via `search_items`.
 
-Changing this is a code change and a redeploy, on purpose. See
-`connector/tier.go` and the connector guide section 3.7.
+Changing it is a code change and a redeploy, on purpose. See `connector/tier.go`
+and connector-guide section 3.7.
 
-## Threat model: the UDM is a trusted reporter of untrusted observations
+## Threat model
 
-The controller is authenticated and its TLS is verified (or its certificate is
-pinned as a CA bundle). None of that says anything about the *contents* of an
-event.
+The UDM is a trusted reporter of untrusted observations. The Protect event
+schema is narrow and mostly enums, but `metadata` on the sensor, alarm-hub, NFC
+and fingerprint families is free-form, and `licensePlate` and `detectedName` are
+read off objects and people the observer does not control.
 
-These fields are settable by third parties:
+Every field reaches `content.raw`, because that is what the scanner reads. Items
+are tagged `unifi.untrusted_fields` naming which attacker-settable channels were
+populated. The subject is built from the surface name and a
+character-constrained event kind only -- attacker text in a subject would still
+be scanned, but the subject is what a human sees first in a quarantine review
+and should not repeat an attacker's sentence back as though glovebox wrote it.
 
-| field | who can set it |
-|---|---|
-| `hostname` | any DHCP client; devices name themselves |
-| `name` | client/device alias |
-| `essid` / `ssid` | **anyone within radio range** -- a neighbouring or rogue AP broadcasts whatever SSID it likes, with no access to your network at all |
-| `msg` | interpolates the above into a sentence |
-| `licensePlate` | read off a physical plate the camera does not control |
-| `detectedName` | face-recognition label |
-
-So a structurally valid, authenticated, TLS-verified UniFi event can carry
-attacker-authored text. That is exactly why these events go through the scanner
-instead of straight to an agent.
-
-Every field reaches `content.raw`, because `content.raw` is what the scanner
-reads. Nothing is filtered on the way in. The connector additionally tags each
-item with `unifi.untrusted_fields`, naming which hostile channels were populated,
-so a reviewer looking at a quarantined item knows which field to read first.
-
-The item `subject` is built from the surface name and a character-constrained
-event kind only. Attacker text in the subject would still be scanned, but the
-subject is what a human sees first in a quarantine review and it should not
-repeat an attacker's sentence back as though glovebox had written it.
-
-## Media does not transit glovebox
-
-Protect clips, audio and stills stay at rest on the controller. The staged event
-carries a *reference* -- a short id or URL -- and an agent that needs the footage
-reaches for it deliberately.
-
-Three reasons:
-
-1. The scan engine is text pattern matching. An h.264 clip passes through it as
-   opaque bytes that no rule can match, and it would emerge with a clean verdict
-   having been checked by nothing. A green verdict on unscannable bytes is worse
-   than no verdict, because downstream it is indistinguishable from a real one.
-2. There is no wire format for it. The ingest path's `mediaAllowList` is six
-   `archive/*` types; anything else is `400 unknown_media_type`.
-3. Spec 14 §2.2 defers speech-to-text and vision captions, so no enricher would
-   turn a clip into scannable text today.
-
-If an event arrives with media inlined anyway, the connector replaces the
-payload with a placeholder naming what was removed and records the field in the
-`unifi.stripped_media` tag. Short references are left alone.
-
-**Stills are a live follow-up, not a settled no.** A snapshot *is* scannable --
-the OCR enricher would extract text into `content.extracted.md`, which is then
-scanned for real. That also makes it an injection vector (someone in camera view
-holding a sign). It needs its own threat budget and is tracked separately.
+Inlined media payloads are replaced with a placeholder naming what was removed
+and recorded in `unifi.stripped_media`. Only long **strings** are treated as
+payloads: an object or array is structure, and destroying a bounding box because
+its key was `image` was a real bug (`glovebox-ext6`).
 
 ## Authentication
 
 **Controller (required).** A read-only UniFi API key, sent as `X-API-KEY`. Reuse
 the existing key at `external-dns/external-dns-unifi-secret`; do not mint a write
-credential. The connector only ever issues GETs -- "eyes not hands" names the
-UniFi controller explicitly, and modifying UniFi rules is forbidden.
+credential. Set `api_key_env` (default `UNIFI_API_KEY`).
 
-Set `api_key_env` to the environment variable holding it (default
-`UNIFI_API_KEY`).
+**TLS.** A UDM presents a self-signed certificate for its LAN address:
 
-**TLS.** A UDM presents a self-signed certificate for its LAN address, so you
-have three explicit options:
+- `ca_cert_file` -- a PEM bundle containing the controller's certificate. Preferred.
+- system trust -- leave both unset.
+- `insecure_skip_verify: true` -- verification off; the API key is then the only
+  thing authenticating the controller. The sample config's default, because it is
+  the common home case.
 
-- `ca_cert_file`: a PEM bundle containing the controller's certificate. Preferred.
-- system trust: leave both unset.
-- `insecure_skip_verify: true`: verification off, the API key is then the only
-  thing authenticating the controller. Honest, and the sample config's default
-  because it is the common home case.
+Mutually exclusive; the connector refuses to start with both.
 
-`ca_cert_file` and `insecure_skip_verify` are mutually exclusive and the
-connector refuses to start with both.
-
-**Webhook (required for the listener).** The listener is **fail-closed**: with no
-secret configured it refuses every request with 503. A connector's staging
-directory is a write channel into agent context, and an unauthenticated endpoint
-on it would let anyone who can reach the pod put content in front of an agent.
-
-Two modes, because UniFi's own behaviour differs by surface and firmware:
-
-- `hmac` (default): a SHA-256 HMAC over the request body, in
-  `webhook_signature_header` (default `X-Unifi-Signature`).
-- `bearer`: a shared secret compared in constant time, default header
-  `Authorization`, `Bearer ` prefix tolerated. Protect's alarm-manager webhooks
-  have historically posted plain JSON with no signature, which leaves a shared
-  secret as the only available control.
+**Webhook (optional).** The listener is fail-closed: with no secret configured it
+refuses every request with 503, because staging is a write channel into agent
+context. Modes are `hmac` (SHA-256 over the body) and `bearer` (constant-time
+shared secret).
 
 ## Configuration
 
 | field | default | meaning |
 |---|---|---|
-| `controller_url` | -- | required; must start with `http://` or `https://` |
-| `site` | `default` | UniFi Network site id |
+| `controller_url` | -- | required; `http://` or `https://` |
+| `site` | `default` | classic-API site id (the integration API uses a UUID) |
 | `api_key_env` | `UNIFI_API_KEY` | env var holding the read-only key |
 | `ca_cert_file` | -- | PEM bundle for the controller certificate |
 | `insecure_skip_verify` | `false` | disable TLS verification |
 | `webhook_secret_env` | -- | env var holding the webhook secret |
 | `webhook_auth_mode` | `hmac` | `hmac` or `bearer` |
-| `webhook_signature_header` | `X-Unifi-Signature` | header carrying signature/secret |
-| `network.enabled` | `false` | enable the Network surface |
-| `network.events_path` | `/proxy/network/api/s/%s/stat/event` | printf template; exactly one `%s` for the site |
-| `network.backfill_limit` | `200` | max events one catch-up poll will stage |
-| `protect.enabled` | `false` | enable the Protect surface |
-| `protect.events_path` | `/proxy/protect/api/events` | |
-| `protect.backfill_limit` | `200` | |
-
-At least one surface must be enabled or the connector refuses to start.
-
-Endpoint paths are configuration rather than constants because the UDM exposes
-several generations of API surface behind the same reverse proxy, and which one
-a given firmware serves is a property of the box. An operator on a firmware that
-moved a route corrects it in a ConfigMap instead of waiting for a release.
+| `protect.enabled` | `false` | enable the Protect subscription |
+| `protect.events_path` | `/proxy/protect/integration/v1/subscribe/events` | subscription path |
+| `network.enabled` | `false` | **unsupported**; enabling it is a startup error |
 
 ## Routing
 
-Rules are looked up most specific first:
+Rules are looked up most specific first: `event:<kind>` (e.g.
+`event:smartDetectZone`, `event:ring`, `event:motion`), then `<surface>`
+(`protect`), then `*`. Nothing is staged when no rule matches.
 
-1. `event:<kind>` -- the firmware event enum, e.g. `event:EVT_AP_RogueAp` or
-   `event:smartDetectZone`
-2. `<surface>` -- `network` or `protect`
-3. `*`
-
-Nothing is staged when no rule matches: routing is the operator's decision and an
-unrouted item has nowhere to go.
-
-Destinations must appear in `scanner.agentAllowlist`, or the scanner drops the
+Destinations must appear in `scanner.agentAllowlist` or the scanner drops the
 item after scanning it.
-
-Each item carries these tags:
 
 | tag | value |
 |---|---|
-| `unifi.surface` | `network` or `protect` |
+| `unifi.surface` | `protect` |
 | `unifi.kind` | the constrained event kind |
-| `unifi.via` | `poll` or `webhook` |
-| `unifi.untrusted_fields` | populated attacker-settable fields, comma separated |
+| `unifi.via` | `subscribe` or `webhook` |
+| `unifi.frames` | how many frames were merged into this item |
+| `unifi.incomplete` | `true` when staged without an `end` |
+| `unifi.untrusted_fields` | populated attacker-settable fields |
 | `unifi.stripped_media` | media fields whose payload was removed |
 
-Content type is `application/vnd.unifi.event+json`, narrow so the ruleset can
-target this payload shape rather than every `application/json` item.
+Content type is `application/vnd.unifi.event+json`.
+
+## Readiness
+
+`Poll` does not fetch events -- there is nothing to fetch. It calls
+`GET /v1/meta/info`, which confirms the controller is reachable and the
+credential still works, and that is what turns `/readyz` green. A rejected key is
+a permanent error.
 
 ## Enabling in the Helm chart
 
@@ -176,34 +202,15 @@ connectors:
   unifi:
     enabled: true
     listener:
-      enabled: true      # adds the HealthPort+1 webhook port to Deployment + Service
-    secrets: unifi-connector-secrets   # must provide UNIFI_API_KEY and UNIFI_WEBHOOK_SECRET
+      enabled: true      # only needed if you also use webhook delivery
+    secrets: unifi-connector-secrets   # provides UNIFI_API_KEY
     config:
       controller_url: "https://192.168.1.1"
-      network:
-        enabled: true
       protect:
         enabled: true
+      network:
+        enabled: false
 ```
-
-`listener.enabled` is opt-in per connector: a poll-only connector that advertised
-the port would publish a Service target that answers nothing.
-
-Point the UDM's webhook at `http://<release>-unifi.<namespace>.svc:8081/network`
-or `/protect`. A push to a surface that is not enabled returns 404.
-
-## Verification status
-
-Unit and component tests run against mock controllers and cover the tier
-declaration, the untrusted-field path, media stripping, checkpointing and every
-webhook authentication branch.
-
-**Not yet verified against hardware.** The exact event-payload shapes, the
-webhook signature header UniFi actually sends, and the endpoint paths on this
-firmware have not been confirmed against the real UDM Pro Max. Both response
-shapes (`{"data": [...]}` and a bare array) are accepted, and paths and header
-names are configuration, specifically so that a mismatch is a values edit rather
-than a code change. Confirming these on hardware is the remaining step.
 
 ## Related, not duplicate
 

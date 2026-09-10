@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **UniFi connector now uses the transport that exists.** The shipped Poll paths
+  answered 404 and 401 against real hardware: there is no pollable events
+  endpoint on Protect 7.3.47, nor on this firmware's Network surface. Events
+  arrive over `GET /v1/subscribe/events`, a WebSocket subscription documented in
+  Ubiquiti's own spec, authenticated with the same read-only API key. The
+  connector now implements `connector.Watcher` against it.
+
+  The original misdiagnosis is worth recording: the UDM serves HTTP/2, a
+  WebSocket upgrade cannot be made over HTTP/2, and the controller reports the
+  failed attempt as a 404 -- indistinguishable from a missing endpoint. Forcing
+  HTTP/1.1 returns `101 Switching Protocols`.
+
+- **One event no longer stages several items.** Protect refines a detection while
+  it happens: a single person produced an `add` with `["person"]` followed by
+  updates with `["face","person"]`, all under one `item.id`, with `end` absent
+  until the event closed. Frames are merged on id and staged once, on `end`. An
+  event whose `end` never arrives is staged after five minutes and tagged
+  `unifi.incomplete`.
+
+- **Structured detection data is no longer destroyed.** `stripMedia` replaced any
+  non-string value under a media-named key, so `"image": {"box": [...]}` -- a
+  bounding box -- became a placeholder. Only long strings are payloads now;
+  objects and arrays are structure and are walked, not flattened.
+
+- **The Network surface fails loudly instead of silently.** Its event endpoints
+  are absent on this firmware and its events WebSocket closes immediately without
+  a session credential, so enabling it is a permanent startup error naming the
+  fix rather than an empty staging directory.
+
+
 ### Added
 
 - **UniFi connector** (`connectors/unifi`): UDM Network and Protect events reach

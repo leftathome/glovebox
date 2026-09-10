@@ -91,8 +91,12 @@ type ProtectConfig struct {
 const (
 	defaultSite              = "default"
 	defaultNetworkEventsPath = "/proxy/network/api/s/%s/stat/event"
-	defaultProtectEventsPath = "/proxy/protect/api/events"
-	defaultBackfillLimit     = 200
+	defaultProtectEventsPath = "/proxy/protect/integration/v1/subscribe/events"
+
+	// protectInfoPath is the cheapest authenticated GET the controller offers;
+	// Poll uses it as a liveness and credential check.
+	protectInfoPath      = "/proxy/protect/integration/v1/meta/info"
+	defaultBackfillLimit = 200
 
 	authModeHMAC   = "hmac"
 	authModeBearer = "bearer"
