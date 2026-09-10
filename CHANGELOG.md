@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **UniFi connector** (`connectors/unifi`): UDM Network and Protect events reach
+  agents through the scanning pipeline instead of a direct path to the openclaw
+  gateway. Poll backfills from the controller API on start; a fail-closed webhook
+  listener receives pushes thereafter. Both surfaces are one connector because
+  they share a controller, a read-only credential, a staging backend and a tier.
+
+  It declares `TierFeed`, which is the point: UniFi event volume is far above
+  RSS, and RSS alone measured 89% of the main agent's memory index before
+  diversion existed, so these items divert to caro rather than landing in the
+  audiences tree that feeds every person-agent's ambient recall.
+
+  The UDM is treated as a trusted reporter of untrusted observations. DHCP
+  hostnames, device aliases and neighbouring/rogue-AP SSIDs are all
+  third-party-settable -- an SSID needs only radio range, not network access --
+  so every field reaches `content.raw` for scanning and each item is tagged with
+  which hostile channels were populated.
+
+  Media does not transit glovebox. Protect clips, audio and stills stay at rest
+  on the controller and the event carries a reference; an inlined payload is
+  replaced with a placeholder naming what was removed. The scan engine is text
+  matching, so a clip would emerge with a clean verdict having been checked by
+  nothing.
+
+- **Opt-in listener port for any connector** in the chart. Connectors
+  implementing `connector.Listener` serve webhook pushes on `HealthPort+1`;
+  setting `connectors.<name>.listener.enabled` adds that port to the Deployment
+  and Service. Off by default, so a poll-only connector does not advertise a
+  Service target that answers nothing.
+
 ### Removed
 
 - **`PLAN-linkedin-connector.md`** from the repository root. Every box in it is

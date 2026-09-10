@@ -52,6 +52,7 @@ Public connectors (`none` credential class) need neither.
 | linkedin | test-account | [linkedin.md](linkedin.md) |
 | steam | test-account | [steam.md](steam.md) |
 | youtube | test-account | [youtube.md](youtube.md) |
+| unifi | real-readonly | [unifi.md](unifi.md) |
 
 23 source connectors. Credential classes and secret shapes are defined
 authoritatively in [integration-credentials.md](integration-credentials.md).

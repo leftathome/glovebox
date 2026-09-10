@@ -1,0 +1,13 @@
+FROM docker.io/golang:1.27 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG LDFLAGS="-s -w"
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /connector ./connectors/unifi/
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /connector /connector
+COPY connectors/unifi/config.json /etc/connector/config.json
+USER nonroot:nonroot
+ENTRYPOINT ["/connector"]
