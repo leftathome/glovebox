@@ -7,18 +7,18 @@
   "webhook_auth_mode": "hmac",
   "webhook_signature_header": "X-Unifi-Signature",
   "network": {
-    "enabled": true,
+    "enabled": false,
     "events_path": "/proxy/network/api/s/%s/stat/event",
     "backfill_limit": 200
   },
   "protect": {
-    "enabled": false,
-    "events_path": "/proxy/protect/api/events",
+    "enabled": true,
+    "events_path": "/proxy/protect/integration/v1/subscribe/events",
     "backfill_limit": 200
   },
   "rules": [
-    {"match": "event:EVT_AP_RogueAp", "destination": "messaging", "tags": {"priority": "review"}},
-    {"match": "network", "destination": "messaging"},
+    {"match": "event:smartDetectZone", "destination": "messaging", "tags": {"priority": "review"}},
+    {"match": "event:ring", "destination": "messaging", "tags": {"priority": "review"}},
     {"match": "protect", "destination": "messaging"}
   ]
 }

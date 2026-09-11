@@ -29,6 +29,8 @@ type UniFiConnector struct {
 	httpClient    *http.Client
 	apiKey        string
 	webhookSecret []byte
+
+	protect *protectWatcher
 }
 
 // surface describes one event source on the controller. The two surfaces
@@ -65,33 +67,76 @@ func (c *UniFiConnector) protectSurface() surface {
 	}
 }
 
-// Poll backfills from the controller API. It runs on start to catch up on
-// whatever arrived while the connector was down, and on the poll interval
-// thereafter as a safety net for webhook pushes that were never delivered.
-func (c *UniFiConnector) Poll(ctx context.Context, checkpoint connector.Checkpoint) error {
-	logger := slog.Default()
+// Watch subscribes to Protect's event stream and blocks. It implements
+// connector.Watcher, which is the interface that matches the transport: events
+// are pushed over a WebSocket, and there is nothing to poll for them.
+func (c *UniFiConnector) Watch(ctx context.Context, checkpoint connector.Checkpoint) error {
+	if !c.config.Protect.Enabled {
+		// Nothing to subscribe to. Block until shutdown rather than
+		// returning, which the framework would treat as a failed watch and
+		// retry in a tight-ish loop.
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if c.protect == nil {
+		c.protect = newProtectWatcher(c)
+	}
+	return c.protect.Watch(ctx, checkpoint)
+}
 
-	var surfaces []surface
-	if c.config.Network.Enabled {
-		surfaces = append(surfaces, c.networkSurface())
-	}
-	if c.config.Protect.Enabled {
-		surfaces = append(surfaces, c.protectSurface())
-	}
-	if len(surfaces) == 0 {
+// Poll is the framework's required re-sync path. For this connector it is a
+// liveness check, not an event fetch.
+//
+// There is no pollable events endpoint on Protect 7.3.47 and none on the
+// Network surface of this firmware. Verified against the hardware: the
+// integration APIs answer "No endpoint GET .../events", the classic
+// /proxy/network/api/s/<site>/stat/event and /stat/alarm answer 404 to both GET
+// and POST while /stat/sta on the same path answers 200, and the classic
+// Protect API rejects an API key outright. Events arrive over the subscription
+// in Watch (glovebox-pn2j).
+//
+// So Poll confirms the controller is reachable and the credential still works,
+// which is what drives readiness: /readyz turns 200 after the first successful
+// poll.
+func (c *UniFiConnector) Poll(ctx context.Context, _ connector.Checkpoint) error {
+	if !c.config.Network.Enabled && !c.config.Protect.Enabled {
 		return connector.PermanentError(fmt.Errorf("neither the network nor the protect surface is enabled; this connector would do nothing"))
 	}
 
-	// One surface failing does not stop the other. A Protect outage should
-	// not stop network events from arriving.
-	for _, s := range surfaces {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err := c.pollSurface(ctx, s, checkpoint, logger); err != nil {
-			logger.Warn("surface poll failed", "surface", s.name, "error", err)
-		}
+	if c.config.Network.Enabled {
+		// Kept as a loud failure rather than a silent no-op: an operator who
+		// turns this on should learn why it cannot work, not watch an empty
+		// staging directory.
+		return connector.PermanentError(fmt.Errorf(
+			"the network surface has no event transport reachable with an API key: " +
+				"stat/event and stat/alarm are absent on this firmware, and the events " +
+				"websocket at /proxy/network/wss/s/<site>/events upgrades but closes " +
+				"immediately without a session credential. Set network.enabled=false " +
+				"(see docs/connectors/unifi.md, glovebox-pn2j)"))
 	}
+
+	if err := c.checkReachable(ctx); err != nil {
+		return fmt.Errorf("protect controller check: %w", err)
+	}
+	return nil
+}
+
+// checkReachable issues the cheapest authenticated call the controller offers.
+func (c *UniFiConnector) checkReachable(ctx context.Context) error {
+	body, err := c.fetchAPI(ctx, c.config.ControllerURL+protectInfoPath)
+	if err != nil {
+		return err
+	}
+	var info struct {
+		ApplicationVersion string `json:"applicationVersion"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return fmt.Errorf("parse %s: %w", protectInfoPath, err)
+	}
+	if info.ApplicationVersion == "" {
+		return fmt.Errorf("%s returned no applicationVersion", protectInfoPath)
+	}
+	slog.Default().Debug("protect reachable", "version", info.ApplicationVersion)
 	return nil
 }
 
@@ -159,6 +204,14 @@ func (c *UniFiConnector) pollSurface(ctx context.Context, s surface, checkpoint 
 // logged and skipped rather than failing the whole poll. One malformed event
 // among a page of good ones should not stop the good ones arriving.
 func (c *UniFiConnector) stageEvent(raw json.RawMessage, s surface, via string, logger *slog.Logger) error {
+	return c.stageRaw(raw, s, via, nil, logger)
+}
+
+// stageRaw normalises and stages one event, merging any extra tags the caller
+// supplies. Both the poll path and the Protect subscription land here so that
+// tier, content type and the untrusted-field inventory are decided in one
+// place.
+func (c *UniFiConnector) stageRaw(raw json.RawMessage, s surface, via string, extra map[string]string, logger *slog.Logger) error {
 	norm, err := normalizeEvent(raw, s.untrusted)
 	if err != nil {
 		logger.Warn("skipping event", "surface", s.name, "error", err)
@@ -190,6 +243,9 @@ func (c *UniFiConnector) stageEvent(raw json.RawMessage, s surface, via string, 
 	}
 	if len(norm.StrippedMedia) > 0 {
 		tags["unifi.stripped_media"] = strings.Join(norm.StrippedMedia, ",")
+	}
+	for k, v := range extra {
+		tags[k] = v
 	}
 
 	item, err := c.writer.NewItem(connector.ItemOptions{

@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -94,19 +92,18 @@ func allowAll() []connector.Rule {
 // The whole point of the bead: a UniFi item must carry tier "feed" so
 // openclaw's triage diverts it to caro instead of writing it into the
 // audiences tree that feeds every person-agent's ambient recall.
-func TestPoll_StagedItemDeclaresFeedTier(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"_id":"e1","key":"EVT_LU_Connected","hostname":"laptop"}]}`))
-	}))
-	defer srv.Close()
-
+//
+// Delivered through the subscription, which is the only transport that exists
+// (glovebox-pn2j).
+func TestSubscribe_StagedItemDeclaresFeedTier(t *testing.T) {
 	c, stagingDir := newTestConnector(t, Config{
-		ControllerURL: srv.URL,
-		Network:       NetworkConfig{Enabled: true},
+		ControllerURL: "https://unifi.example",
+		Protect:       ProtectConfig{Enabled: true},
 	}, allowAll())
+	w := newProtectWatcher(c)
 
-	if err := c.Poll(context.Background(), memCheckpoint(t)); err != nil {
-		t.Fatalf("Poll: %v", err)
+	if err := w.handleFrame([]byte(frameEnd), nil, quietLogger()); err != nil {
+		t.Fatalf("handleFrame: %v", err)
 	}
 
 	items := readStaged(t, stagingDir)
@@ -120,116 +117,67 @@ func TestPoll_StagedItemDeclaresFeedTier(t *testing.T) {
 	if items[0].Meta.ContentType != "application/vnd.unifi.event+json" {
 		t.Errorf("content_type = %q, want the narrow unifi event type", items[0].Meta.ContentType)
 	}
-}
-
-// An SSID broadcast by a rogue AP is settable by anyone in radio range. It has
-// to reach content.raw, because content.raw is what the scanner reads.
-func TestPoll_RogueAPSSIDIsStagedForScanning(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ev := map[string]any{"_id": "e1", "key": "EVT_AP_RogueAp", "essid": injection}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{ev}})
-	}))
-	defer srv.Close()
-
-	c, stagingDir := newTestConnector(t, Config{
-		ControllerURL: srv.URL,
-		Network:       NetworkConfig{Enabled: true},
-	}, allowAll())
-
-	if err := c.Poll(context.Background(), memCheckpoint(t)); err != nil {
-		t.Fatalf("Poll: %v", err)
-	}
-
-	items := readStaged(t, stagingDir)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 staged item, got %d", len(items))
-	}
-	if !strings.Contains(string(items[0].Content), injection) {
-		t.Errorf("rogue-AP SSID text never reached content.raw, so the scanner cannot see it.\ncontent = %s", items[0].Content)
-	}
-	if got := items[0].Meta.Tags["unifi.untrusted_fields"]; !strings.Contains(got, "essid") {
-		t.Errorf("untrusted field inventory should name essid, got %q", got)
-	}
-	// The subject is what a reviewer reads first; it must not repeat the
-	// attacker's sentence back as though glovebox wrote it.
-	if strings.Contains(items[0].Meta.Subject, injection) {
-		t.Errorf("subject carried attacker text: %q", items[0].Meta.Subject)
-	}
-}
-
-// Protect returns a bare array rather than a {"data": ...} wrapper.
-func TestPoll_ProtectBareArrayIsAccepted(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[{"id":"p1","type":"smartDetectZone","licensePlate":"AB-123"}]`))
-	}))
-	defer srv.Close()
-
-	c, stagingDir := newTestConnector(t, Config{
-		ControllerURL: srv.URL,
-		Protect:       ProtectConfig{Enabled: true},
-	}, allowAll())
-
-	if err := c.Poll(context.Background(), memCheckpoint(t)); err != nil {
-		t.Fatalf("Poll: %v", err)
-	}
-
-	items := readStaged(t, stagingDir)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 staged item, got %d", len(items))
-	}
 	if items[0].Meta.Tags["unifi.surface"] != "protect" {
 		t.Errorf("surface tag = %q, want protect", items[0].Meta.Tags["unifi.surface"])
 	}
 }
 
-// A second poll over the same page must not restage what the checkpoint
-// already covers, or every poll interval republishes the whole page.
-func TestPoll_CheckpointPreventsRestaging(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"_id":"e1","key":"EVT_LU_Connected"},{"_id":"e2","key":"EVT_LU_Disconnected"}]}`))
-	}))
-	defer srv.Close()
-
+// Routing is the operator's decision; an unrouted item has nowhere to go.
+func TestSubscribe_NoMatchingRuleStagesNothing(t *testing.T) {
 	c, stagingDir := newTestConnector(t, Config{
-		ControllerURL: srv.URL,
-		Network:       NetworkConfig{Enabled: true},
-	}, allowAll())
-
-	cp := memCheckpoint(t)
-	if err := c.Poll(context.Background(), cp); err != nil {
-		t.Fatalf("first Poll: %v", err)
-	}
-	if err := c.Poll(context.Background(), cp); err != nil {
-		t.Fatalf("second Poll: %v", err)
-	}
-
-	if got := len(readStaged(t, stagingDir)); got != 2 {
-		t.Errorf("expected 2 items after two polls over the same page, got %d", got)
-	}
-}
-
-// With no rule matching, nothing is staged. Routing is the operator's
-// decision and an unrouted item has nowhere to go.
-func TestPoll_NoMatchingRuleStagesNothing(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"_id":"e1","key":"EVT_LU_Connected"}]}`))
-	}))
-	defer srv.Close()
-
-	c, stagingDir := newTestConnector(t, Config{
-		ControllerURL: srv.URL,
-		Network:       NetworkConfig{Enabled: true},
+		ControllerURL: "https://unifi.example",
+		Protect:       ProtectConfig{Enabled: true},
 	}, []connector.Rule{{Match: "event:something-else", Destination: "messaging"}})
+	w := newProtectWatcher(c)
 
-	if err := c.Poll(context.Background(), memCheckpoint(t)); err != nil {
-		t.Fatalf("Poll: %v", err)
+	if err := w.handleFrame([]byte(frameEnd), nil, quietLogger()); err != nil {
+		t.Fatalf("handleFrame: %v", err)
 	}
 	if got := len(readStaged(t, stagingDir)); got != 0 {
 		t.Errorf("expected nothing staged without a matching rule, got %d", got)
 	}
 }
 
-// A rejected API key will be rejected on every retry, so it is permanent.
+// Poll is a liveness check now. Against a controller that answers meta/info it
+// succeeds, which is what turns /readyz green.
+func TestPoll_ProtectReachabilityCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/proxy/protect/integration/v1/meta/info" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"applicationVersion":"7.3.47"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := newTestConnector(t, Config{
+		ControllerURL: srv.URL,
+		Protect:       ProtectConfig{Enabled: true},
+	}, allowAll())
+
+	if err := c.Poll(context.Background(), memCheckpoint(t)); err != nil {
+		t.Fatalf("Poll against a reachable controller: %v", err)
+	}
+}
+
+// A controller that does not answer must not report ready.
+func TestPoll_UnreachableControllerFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, _ := newTestConnector(t, Config{
+		ControllerURL: srv.URL,
+		Protect:       ProtectConfig{Enabled: true},
+	}, allowAll())
+
+	if err := c.Poll(context.Background(), memCheckpoint(t)); err == nil {
+		t.Fatal("expected an error from an unreachable controller")
+	}
+}
+
+// A rejected API key will be rejected on every retry.
 func TestPoll_RejectedKeyIsPermanent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -238,11 +186,10 @@ func TestPoll_RejectedKeyIsPermanent(t *testing.T) {
 
 	c, _ := newTestConnector(t, Config{
 		ControllerURL: srv.URL,
-		Network:       NetworkConfig{Enabled: true},
+		Protect:       ProtectConfig{Enabled: true},
 	}, allowAll())
 
-	// Poll tolerates a single surface failing, so call the surface directly.
-	err := c.pollSurface(context.Background(), c.networkSurface(), memCheckpoint(t), slogDiscard())
+	err := c.Poll(context.Background(), memCheckpoint(t))
 	if err == nil {
 		t.Fatal("expected an error for a rejected key")
 	}
@@ -251,6 +198,23 @@ func TestPoll_RejectedKeyIsPermanent(t *testing.T) {
 	}
 }
 
-func slogDiscard() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+// Enabling the network surface is a configuration mistake on this firmware, and
+// it fails loudly rather than leaving an operator staring at an empty staging
+// directory.
+func TestPoll_NetworkSurfaceIsAnHonestPermanentError(t *testing.T) {
+	c, _ := newTestConnector(t, Config{
+		ControllerURL: "https://unifi.example",
+		Network:       NetworkConfig{Enabled: true},
+	}, allowAll())
+
+	err := c.Poll(context.Background(), memCheckpoint(t))
+	if err == nil {
+		t.Fatal("expected enabling the network surface to fail")
+	}
+	if !connector.IsPermanent(err) {
+		t.Errorf("should be permanent, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "network.enabled=false") {
+		t.Errorf("the error should tell the operator what to do, got %v", err)
+	}
 }
