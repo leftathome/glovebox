@@ -17,8 +17,26 @@
     "backfill_limit": 200
   },
   "rules": [
-    {"match": "event:smartDetectZone", "destination": "messaging", "tags": {"priority": "review"}},
-    {"match": "event:ring", "destination": "messaging", "tags": {"priority": "review"}},
-    {"match": "protect", "destination": "messaging"}
+    {
+      "match": "event:smartDetectZone",
+      "destination": "messaging",
+      "tags": {
+        "priority": "review"
+      }
+    },
+    {
+      "match": "event:ring",
+      "destination": "messaging",
+      "tags": {
+        "priority": "review"
+      }
+    },
+    {
+      "match": "protect",
+      "destination": "messaging"
+    }
+  ],
+  "audience_default": [
+    "operator"
   ]
 }

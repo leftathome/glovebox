@@ -260,7 +260,14 @@ func (c *UniFiConnector) stageRaw(raw json.RawMessage, s surface, via string, ex
 		ContentType: "application/vnd.unifi.event+json",
 		Tags:        tags,
 		RuleTags:    result.Tags,
-		Identity:    &connector.Identity{Provider: "unifi", AuthMethod: "api-key"},
+		// Rule-level audience and data_subject reach metadata.json only through
+		// these fields (connector/staging.go mergeAudience). Omitting them, as
+		// this connector originally did, silently discards any `audience` set on
+		// a rule and leaves the item to the config default -- or, with no
+		// default, to household by omission (spec 11 section 3.6).
+		RuleAudience:    result.Audience,
+		RuleDataSubject: result.DataSubject,
+		Identity:        &connector.Identity{Provider: "unifi", AuthMethod: "api-key"},
 	})
 	if err != nil {
 		return fmt.Errorf("new staging item: %w", err)

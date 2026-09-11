@@ -1376,6 +1376,19 @@ connectors:
         enabled: true
         events_path: "/proxy/protect/integration/v1/subscribe/events"
         backfill_limit: 200
+      # Camera events reveal who is where and when, and may carry a
+      # face-recognition label. Without a default, spec 11 section 3.6 makes
+      # every one of them household-visible by omission -- readable by every
+      # resident's agent.
+      #
+      # NOT `guardians`: that is the whole class of responsible adults, which
+      # in a household with a live dispute includes the person someone may
+      # need protection from. `operator` is a standalone lane marker --
+      # openclaw's per-person triage skips it, leaving secondary triage to
+      # `main` -- so camera telemetry does not fan out to every resident's
+      # agent (internal/staging/audience.go).
+      audience_default:
+        - operator
       # Destinations must appear in scanner.agentAllowlist above, or the
       # scanner drops the item after scanning it.
       rules:

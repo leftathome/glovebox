@@ -188,6 +188,32 @@ item after scanning it.
 
 Content type is `application/vnd.unifi.event+json`.
 
+## Audience
+
+The connector ships `audience_default: ["operator"]`, and that line is doing
+real work.
+
+A camera event says who was where and when, and may carry a face-recognition
+label. Spec 11 §3.6 says an item declaring no audience MUST be treated as
+`["household"]` -- readable by every resident's agent. Shipping without a
+default is therefore a disclosure by omission, not a missing nicety.
+
+**Why not `guardians`.** It is the whole class of responsible adults. In a
+household with a live dispute that class includes the person someone may need
+protection from, so it is the wrong default for anything describing people's
+movements. `operator` is a standalone lane marker: openclaw's per-person triage
+skips items carrying it, leaving secondary triage to `main`, so camera
+telemetry does not fan out to every resident's agent. It also needs no
+`data_subject`, which no item this connector stages currently has
+(`internal/staging/audience.go`).
+
+Widen it deliberately if your household wants these events seen more broadly.
+Do not widen it by deleting the line -- deleting it selects `household`.
+
+**Per-rule audience** works too: set `audience` on a rule and it overrides the
+default for items that rule matches.
+
+
 ## Readiness
 
 `Poll` does not fetch events -- there is nothing to fetch. It calls
