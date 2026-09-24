@@ -394,6 +394,28 @@ metrics:
 
 networkPolicy:
   enabled: true
+  # Namespaces (by name -- matched on the kubernetes.io/metadata.name label the
+  # API server sets, so no hand labelling) admitted to the bearer port
+  # (config.ingest.bearerPort, else config.ingest.port): every out-of-namespace
+  # caller of /v1/sanitize and /v1/archives*. Both endpoints share the port and
+  # a NetworkPolicy cannot tell paths apart; the per-source bearer token is
+  # what scopes each caller. E.g. [recognizer, nagus].
+  bearerCallerNamespaces: []
+  # Scanner egress. The scanner writes only to local volumes; its network
+  # needs are cluster DNS and, with ingest.auth.enabled, Vault (bearer tokens).
+  dns:
+    enabled: true
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  vault:
+    # Namespace and pod port of the Vault in ingest.auth.vault.addr. Set
+    # namespace to "" when Vault is outside the cluster and allow it through
+    # extraEgress instead.
+    namespace: vault
+    port: 8200
+  # Additional scanner egress rules, verbatim (NetworkPolicyEgressRule list).
+  extraEgress: []
 
 connectors:
   # Generic source connectors. Each is disabled by default; set
@@ -1703,10 +1725,11 @@ ingest:
     retention:
       doneArchiveDays: 7
     networkPolicy:
-      # REPLACE with your recognizer namespace's `name:` label value (the
-      # operator-set namespace label, NOT the kubelet-managed
-      # kubernetes.io/metadata.name auto-label). The chart's NetworkPolicy
-      # matches on `name: <this-value>` per spec 13 §8.1.
+      # DEPRECATED: list the recognizer namespace in
+      # networkPolicy.bearerCallerNamespaces instead and set this to "".
+      # Still honoured: a non-empty value renders the -archive-ingress policy,
+      # admitting namespaces labelled `name: <this-value>` (an operator-set
+      # label, NOT the kubernetes.io/metadata.name auto-label) per spec 13 §8.1.
       recognizerNamespaceLabel: "openclaw-recognizer"
 
 # File-driven importers (apple, mbox, walhelm). Unlike connectors (long-running

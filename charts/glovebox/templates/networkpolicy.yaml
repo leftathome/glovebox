@@ -46,6 +46,25 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
+    {{- with .Values.networkPolicy.bearerCallerNamespaces }}
+    # Bearer-authenticated callers from other namespaces (/v1/sanitize,
+    # /v1/archives*), selected by the namespace's own name through the
+    # API-server-managed kubernetes.io/metadata.name label, which cannot drift
+    # the way a hand-applied label can. ONE rule for both endpoints: they share
+    # the bearer port and a NetworkPolicy cannot tell URL paths apart -- the
+    # per-source bearer token is what separates an archive client from a
+    # sanitize caller.
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- toYaml . | nindent 18 }}
+      ports:
+        - port: {{ include "glovebox.bearerPort" $ }}
+          protocol: TCP
+    {{- end }}
     # Metrics. /metrics exposes per-source and per-verdict counters and
     # queue depths -- not content, but enough operational shape (which
     # connectors are active, how often items quarantine) that it is not
@@ -65,7 +84,41 @@ spec:
         - port: {{ .Values.metrics.port }}
           protocol: TCP
     {{- end }}
-  egress: []
+  # Egress was a flat deny-all, which the scanner cannot actually run under
+  # once policy is enforced: bearer auth fetches its tokens from Vault (and
+  # resolves the Vault address through cluster DNS). Flannel never enforced
+  # it, so nothing noticed. Everything else the scanner does is local disk.
+  egress:
+    {{- with .Values.networkPolicy.dns }}
+    {{- if .enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          {{- with .podLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- if and .Values.ingest.auth.enabled .Values.networkPolicy.vault.namespace }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.vault.namespace }}
+      ports:
+        - port: {{ .Values.networkPolicy.vault.port }}
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
