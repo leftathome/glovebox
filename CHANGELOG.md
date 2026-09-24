@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Chart NetworkPolicies match what the scanner actually does** (glovebox-5m79).
+  Both defects were invisible on a CNI that does not enforce policy and would
+  have surfaced together, as timeouts, at an enforcing-CNI cutover.
+  - The scanner's egress was `[]` -- deny-all -- but bearer auth fetches its
+    tokens from Vault, through cluster DNS. Egress now admits DNS
+    (`networkPolicy.dns`, kube-system/kube-dns by default) and, with
+    `ingest.auth.enabled`, Vault (`networkPolicy.vault.namespace`/`port`,
+    default `vault`/`8200`), plus `networkPolicy.extraEgress` verbatim.
+  - Only the recognizer namespace (by a hand-applied `name:` label) could reach
+    the bearer port. `/v1/sanitize` callers in any other namespace -- the
+    designed use of the sanitize gate -- could not. New
+    `networkPolicy.bearerCallerNamespaces` admits namespaces by NAME
+    (`kubernetes.io/metadata.name`, set by the API server, so no labelling and
+    no drift) to the bearer port. One rule covers archives and sanitize: they
+    share the port and a NetworkPolicy cannot tell paths apart; the per-source
+    bearer token separates the callers.
+  - `ingest.archives.networkPolicy.recognizerNamespaceLabel` is deprecated but
+    still honoured; setting it to `""` now skips the `-archive-ingress` policy
+    instead of rendering an empty label selector.
+  - `scripts/test-chart-networkpolicy.sh` pins the rendered shape.
+
 - **UniFi connector now uses the transport that exists.** The shipped Poll paths
   answered 404 and 401 against real hardware: there is no pollable events
   endpoint on Protect 7.3.47, nor on this firmware's Network surface. Events

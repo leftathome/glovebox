@@ -1,4 +1,8 @@
-{{- if .Values.ingest.archives.enabled }}
+{{- if and .Values.ingest.archives.enabled .Values.ingest.archives.networkPolicy.recognizerNamespaceLabel }}
+# DEPRECATED in favour of networkPolicy.bearerCallerNamespaces, which selects
+# namespaces by name and covers every bearer caller (archives AND sanitize)
+# in one rule. Set recognizerNamespaceLabel to "" to stop rendering this.
+#
 # Grants the recognizer namespace ingress to the port serving the
 # /v1/archives tus.io upload endpoint (spec 13 §8.1) on the glovebox
 # scanner pods. Future archive-delivery clients (workstation mbox importer,
