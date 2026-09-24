@@ -10,6 +10,27 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.0 (from 0.8.0)
+
+No breaking changes. One thing to check if your CNI enforces NetworkPolicy
+(Cilium, Calico; Flannel does not):
+
+- [ ] **Bearer callers outside the glovebox namespace** -- every client of
+      `/v1/sanitize` or `/v1/archives*` -- are now admitted by namespace name:
+      list them in `networkPolicy.bearerCallerNamespaces` (e.g.
+      `[recognizer, nagus]`). Before this release only a namespace carrying the
+      hand-applied label in
+      `ingest.archives.networkPolicy.recognizerNamespaceLabel` was admitted, so
+      a sanitize caller anywhere else was silently blocked. That label still
+      works but is deprecated; set it to `""` once the namespace is in the list.
+
+The scanner's egress also changes from deny-all to DNS plus, with
+`ingest.auth.enabled`, Vault (`networkPolicy.vault`, default `vault`/`8200`).
+If your Vault is outside the cluster, set `networkPolicy.vault.namespace: ""`
+and allow it through `networkPolicy.extraEgress`.
+
+---
+
 ## Upgrading to 0.8.0 (from 0.7.0)
 
 This release carries the security work from the 2026-08 review. Three changes
