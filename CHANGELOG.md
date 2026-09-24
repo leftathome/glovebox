@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-23
+
+### Upgrade notes
+
+Nothing in this release breaks an existing install. (The word "BREAKING"
+appears below only in the entry describing the release-notes tooling.)
+
+If your CNI enforces NetworkPolicy, review the chart's policies: the scanner's
+egress is no longer deny-all (it now admits cluster DNS and, with
+`ingest.auth.enabled`, Vault), and any caller of `/v1/sanitize` or
+`/v1/archives*` outside the glovebox namespace must be listed in the new
+`networkPolicy.bearerCallerNamespaces` to reach the bearer port. The
+recognizer's `ingest.archives.networkPolicy.recognizerNamespaceLabel` still
+works but is deprecated; move it to that list and set the label to `""`. See
+`docs/upgrading.md`.
+
 ### Fixed
 
 - **Chart NetworkPolicies match what the scanner actually does** (glovebox-5m79).
