@@ -9,7 +9,7 @@ import (
 // An invisible written as an HTML character reference is not an invisible
 // until something decodes it. Preprocess used to strip invisibles BEFORE
 // stripHTML (which decodes entities) and never in the unescaped views, so
-// "ig&#8203;nore" decoded to "ig​nore" in every view a matcher saw
+// "ig&#8203;nore" decoded to "ig<U+200B>nore" in every view a matcher saw
 // and instruction_override never fired.
 func TestEntityEncodedInvisibles_AreStrippedBeforeMatching(t *testing.T) {
 	sc := newShippedScanner(t)

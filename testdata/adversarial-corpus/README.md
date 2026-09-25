@@ -44,7 +44,7 @@ worker pool passes. A regression in the shipped rules file fails this gate.
 |-----------|-------|-------|-------------------|
 | `malicious/` | `homoglyph` | 5 | Cyrillic and Greek confusables, including a two-character swap and one behind the HTML strip |
 | `malicious/` | `invisible` | 12 | Unicode Tags block (U+E0000–U+E007F), zero-width, soft hyphen, word joiner, Mongolian vowel separator, bidi controls, and invisibles written as HTML character references (`&#8203;`, `&shy;`, `&zwj;`, `&zwnj;`) in text/html and text/plain |
-| `malicious/` | `encoded` | 10 | base64 std/raw/url, short sub-threshold runs, hex, percent (full and partial), `+`-as-space form encoding, nested base64, base64 inside HTML |
+| `malicious/` | `encoded` | 11 | base64 std/raw/url, short sub-threshold runs, hex, percent (full and partial), `+`-as-space form encoding, nested base64, base64 inside HTML, base64 of a zero-width-split payload |
 | `malicious/` | `mid-document` | 4 | ~140 KiB items with the payload at the midpoint, past any first-64K/last-64K sample window |
 | `malicious/` | `metadata` | 6 | Injection in Subject or sender display name, with a benign or empty body |
 | `malicious/` | `plain` | 5 | No obfuscation at all — instruction override, role reassignment, tool syntax, HTML comment |

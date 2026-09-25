@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalisation. Three new malicious corpus cases (`invisible-html-entity-zwsp`,
   `invisible-html-entity-mixed`, `invisible-entity-plain`) fail on 0.9.0
   and are quarantined now.
+- **Invisibles inside an encoded payload were never stripped** (glovebox-wlg2).
+  The decode-then-scan view (`ExtractDecoded`) was built from the scrubbed
+  text but its own output was neither normalised nor scrubbed, so a payload
+  split with zero-width spaces and then base64- or hex-encoded surfaced as
+  `ig<U+200B>nore ...` in the only view that could read it: 0.70 and **pass**
+  in the body, 0.00 and **pass** in a Subject line. Each decoded run is now
+  NFKC-normalised and scrubbed before it is kept and before it is decoded
+  again, so nested layers are covered too. New corpus case
+  `encoded-base64-zero-width` (fails on 0.9.0, quarantined now).
 - **The zero-width set is now Unicode's Default_Ignorable_Code_Point, derived
   rather than hand-kept** (glovebox-wlg2, QUARK-06 audit). `ZeroWidthRunes`
   listed seven characters (U+200B-U+200F, U+2060, U+FEFF), so
@@ -60,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     content it adds 0.7 (flagged, not quarantined, unless a second signal is
     present); in Arabic prose the x1.5 booster makes that 1.05 and
     quarantines -- the behaviour U+200E/U+200F, ZWNJ and a BOM already had
-    (tracked as glovebox-5ukb). Adversarial corpus: 47/47 detection, 1/22
+    (tracked as glovebox-5ukb). Adversarial corpus: 48/48 detection, 1/22
     false positives, including a new benign German HTML newsletter with
     `&shy;` hyphenation hints, which passes.
 

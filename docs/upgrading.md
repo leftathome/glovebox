@@ -17,7 +17,8 @@ No configuration changes. Two scanner changes can move verdicts:
 - [ ] **More quarantines of injections hidden with character references.**
       `ig&#8203;nore all previous instructions` (or `&shy;`, `&zwj;`,
       `&zwnj;`) in an HTML body, or as literal references in plain text, used
-      to pass; it is now matched and quarantined. That is the fix, not a false
+      to pass, as did a zero-width-split payload inside base64 or hex; both
+      are now matched and quarantined. That is the fix, not a false
       positive.
 - [ ] **A few more `suspicious_encoding` (0.7) signals.** The detector now
       counts every default-ignorable character except variation selectors,
