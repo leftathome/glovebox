@@ -10,6 +10,30 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to the next release (unreleased)
+
+No configuration changes. Expect **more `suspicious_encoding` signals, and some
+more quarantines of non-English prose**:
+
+- [ ] The zero-width count behind `suspicious_encoding` (weight 0.7) is now
+      Unicode's Default_Ignorable_Code_Point minus the variation selectors,
+      not seven hand-picked characters. The newly counted characters people
+      will actually see in real mail and feeds are the **soft hyphen**
+      (U+00AD, what HTML `&shy;` becomes -- common in German and Dutch
+      newsletters) and the **Arabic letter mark** (U+061C).
+- [ ] English content: 0.7 alone stays below the 0.8 threshold, so these items
+      are flagged, not quarantined -- unless another signal is already present.
+- [ ] Non-English prose: the language booster (x1.5) takes a lone 0.7 to 1.05,
+      so a single soft hyphen in a German newsletter now **quarantines**. This
+      is the behaviour right-to-left marks, ZWNJ and a BOM already had; it is
+      tracked as a false-positive class in glovebox-5ukb. If a trusted
+      foreign-language feed starts landing in quarantine, that is the cause.
+      The lever, if you need one before that is resolved, is the
+      `suspicious_encoding` weight in your rules file -- measure against the
+      adversarial corpus before changing it.
+
+---
+
 ## Upgrading to 0.9.0 (from 0.8.0)
 
 No breaking changes. One thing to check if your CNI enforces NetworkPolicy

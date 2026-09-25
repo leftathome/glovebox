@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The zero-width set is now Unicode's Default_Ignorable_Code_Point, derived
+  rather than hand-kept** (glovebox-wlg2, QUARK-06 audit). `ZeroWidthRunes` listed seven
+  characters (U+200B-U+200F, U+2060, U+FEFF), so `suspicious_encoding` never
+  counted the soft hyphen (U+00AD), the Arabic letter mark (U+061C), the
+  invisible math operators (U+2061-U+2064), the deprecated format controls
+  (U+206A-U+206F), the Hangul fillers, the combining grapheme joiner, the
+  Mongolian vowel separator or the Khmer inherent vowels -- and the list was
+  about to be adopted by quark as an identity-key canonicaliser, which would
+  have inherited every gap. It is replaced by `engine.ZeroWidth` /
+  `IsZeroWidth`: Default_Ignorable_Code_Point minus the variation selectors,
+  built at init from Go's unicode tables with the `DerivedCoreProperties.txt`
+  formula (Other_Default_Ignorable_Code_Point + Cf + Variation_Selector -
+  White_Space - FFF9..FFFB - 13430..13440 - Prepended_Concatenation_Mark), so
+  it tracks the toolchain's Unicode version (17.0.0 today) instead of drifting.
+  Tests pin it exactly against the published UCD 17.0 table (4174 code
+  points), pin every character the audit named, and tie `IsBidiControl` to
+  the `Bidi_Control` property. Variation selectors are deliberately left out
+  of the count (U+FE0F follows ordinary emoji; ideographic variation sequences
+  spell CJK names) but are still stripped before matching.
+  - `IsInvisible` (the pre-match strip) is now DICP plus `Cf`. It already
+    covered the named characters; it newly strips U+034F, U+17B4-U+17B5,
+    U+180B-U+180D/U+180F and the reserved default-ignorables (U+2065,
+    U+FFF0-U+FFF8, U+E0080-U+E00FF, U+E01F0-U+E0FFF). Scan-only views; the
+    delivered item is unchanged.
+  - Bidi embeddings/overrides/isolates keep their own `bidi control
+    characters found` finding and are no longer also counted as unusual
+    unicode.
+  - **Expect more `suspicious_encoding` (0.7) signals.** Alone it stays below
+    the 0.8 threshold, but with the non-English prose booster (x1.5 = 1.05) a
+    single soft hyphen or Arabic letter mark in German, Dutch or Arabic prose
+    now quarantines -- the behaviour RLM, ZWNJ and the BOM already had. The
+    adversarial corpus is unchanged (44/44 detection, 1/21 false positives):
+    no benign case carries a newly counted character. The foreign-prose false
+    positive class is tracked as glovebox-5ukb. See `docs/upgrading.md`.
+
 ## [0.9.0] - 2026-09-23
 
 ### Upgrade notes
