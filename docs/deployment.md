@@ -75,7 +75,7 @@ The Helm chart is published alongside them at
 
 All images are multi-arch (linux/amd64 + linux/arm64) with SBOMs and SLSA
 provenance attestations. Tagged `latest` (from main) plus semver tags
-(`v0.9.0`, `v0.9`) on release. Binaries available from
+(`v0.9.1`, `v0.9`) on release. Binaries available from
 [GitHub Releases](https://github.com/leftathome/glovebox/releases).
 
 ---
@@ -315,14 +315,14 @@ OCI artifact:
 
 ```sh
 # Install with default values (glovebox only, no connectors enabled)
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.0
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.1
 
 # Install with RSS connector enabled
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.0 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.1 \
   --set connectors.rss.enabled=true
 
 # Install with custom values file
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.0 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.9.1 \
   -f my-values.yaml -n glovebox --create-namespace
 ```
 
