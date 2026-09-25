@@ -60,12 +60,22 @@ func IsBidiControl(r rune) bool {
 // Go does not export the derived property itself, only its inputs. The
 // tests pin the result against the published table and against the
 // specific characters that motivated the audit.
+//
+// This is the set an identifier canonicaliser should drop or reject in
+// full; ZeroWidth and IsSuspiciousInvisible are narrower, detector-only
+// views of it.
 var DefaultIgnorable = buildDefaultIgnorable()
 
-// ZeroWidth is the set counted by the encoding anomaly detector as
-// "zero-width characters", and the set a consumer that wants to canonicalise
-// an identifier should drop: every Default_Ignorable_Code_Point EXCEPT the
-// variation selectors.
+// ZeroWidth is every Default_Ignorable_Code_Point EXCEPT the variation
+// selectors: the characters that are invisible in their own right rather
+// than modifiers of the glyph before them. It is the base of the set the
+// encoding anomaly detector counts (see IsSuspiciousInvisible).
+//
+// It is NOT the set to drop when canonicalising an identifier. A
+// canonicaliser must drop (or reject) all of DefaultIgnorable, variation
+// selectors included, as NFKC_Casefold does -- otherwise "Seagate" and
+// "Seagate" followed by U+FE0F become two distinct keys. The variation
+// selector carve-out below exists only to keep detector noise down.
 //
 // It covers the zero-width space/joiners, BOM and word joiner, the soft
 // hyphen, the bidi marks (LRM, RLM, ALM), the explicit bidi embeddings,
@@ -77,13 +87,13 @@ var DefaultIgnorable = buildDefaultIgnorable()
 // code points Unicode pre-assigns as default-ignorable.
 //
 // Variation selectors (U+180B-U+180D, U+180F, U+FE00-U+FE0F,
-// U+E0100-U+E01EF) are deliberately excluded. U+FE0F follows a large share
-// of all emoji in real text, U+FE0E/U+FE00-U+FE0D select standardized glyph
-// variants, and the ideographic variation sequences are how Japanese
-// personal and place names are spelled correctly. Counting them would make
-// the detector fire on ordinary chat and on correctly written CJK names.
-// They are still stripped before matching (IsInvisible), where removing a
-// glyph selector cannot change what a pattern means.
+// U+E0100-U+E01EF) are excluded. U+FE0F follows a large share of all emoji
+// in real text, U+FE0E/U+FE00-U+FE0D select standardized glyph variants,
+// and the ideographic variation sequences are how Japanese personal and
+// place names are spelled correctly. Counting them would make the detector
+// fire on ordinary chat and on correctly written CJK names. They are still
+// stripped before matching (IsInvisible), where removing a glyph selector
+// cannot change what a pattern means.
 var ZeroWidth = buildZeroWidth()
 
 // IsDefaultIgnorable reports whether r has Default_Ignorable_Code_Point.
@@ -91,6 +101,23 @@ func IsDefaultIgnorable(r rune) bool { return unicode.Is(DefaultIgnorable, r) }
 
 // IsZeroWidth reports whether r is in ZeroWidth.
 func IsZeroWidth(r rune) bool { return unicode.Is(ZeroWidth, r) }
+
+// IsSuspiciousInvisible reports whether r should count towards the
+// encoding anomaly detector's "zero-width characters" finding: ZeroWidth
+// minus two characters that are handled better elsewhere.
+//
+//   - U+00AD SOFT HYPHEN renders as a hyphen at a line break, CMSs insert
+//     it into long words (German and Dutch especially), and HTML "&shy;"
+//     decodes to it. Counting it added 0.7 to every such item -- enough,
+//     with the x1.5 non-English booster or any second signal, to
+//     quarantine ordinary newsletters. It is still stripped before
+//     matching, which is what defeats its use to split a payload.
+//   - The Tags block (U+E0000-U+E007F) has its own detector,
+//     invisible_smuggling, at quarantine weight; counting it here as well
+//     only duplicated the finding.
+func IsSuspiciousInvisible(r rune) bool {
+	return r != 0x00AD && !IsTagChar(r) && unicode.Is(ZeroWidth, r)
+}
 
 // IsInvisible reports whether r renders as nothing (or as pure formatting)
 // and should therefore be removed before matching.

@@ -43,14 +43,14 @@ worker pool passes. A regression in the shipped rules file fails this gate.
 | Directory | Class | Cases | What it exercises |
 |-----------|-------|-------|-------------------|
 | `malicious/` | `homoglyph` | 5 | Cyrillic and Greek confusables, including a two-character swap and one behind the HTML strip |
-| `malicious/` | `invisible` | 9 | Unicode Tags block (U+E0000–U+E007F), zero-width, soft hyphen, word joiner, Mongolian vowel separator, bidi controls |
+| `malicious/` | `invisible` | 12 | Unicode Tags block (U+E0000–U+E007F), zero-width, soft hyphen, word joiner, Mongolian vowel separator, bidi controls, and invisibles written as HTML character references (`&#8203;`, `&shy;`, `&zwj;`, `&zwnj;`) in text/html and text/plain |
 | `malicious/` | `encoded` | 10 | base64 std/raw/url, short sub-threshold runs, hex, percent (full and partial), `+`-as-space form encoding, nested base64, base64 inside HTML |
 | `malicious/` | `mid-document` | 4 | ~140 KiB items with the payload at the midpoint, past any first-64K/last-64K sample window |
 | `malicious/` | `metadata` | 6 | Injection in Subject or sender display name, with a benign or empty body |
 | `malicious/` | `plain` | 5 | No obfuscation at all — instruction override, role reassignment, tool syntax, HTML comment |
 | `malicious/` | `laundered` | 5 | An untouched payload wrapped in quotes, a code fence or a blockquote, written into advisory prose, or followed by forged advisory boilerplate — the shapes a *fix* for the advisory false positive would let through |
 | `benign/` | `benign-ordinary` | 8 | Everyday mail, HTML newsletters, a git patch, a 140 KiB legitimate report |
-| `benign/` | `benign-foreign` | 4 | French, German, Spanish, Japanese — the language detector is a ×1.5 booster |
+| `benign/` | `benign-foreign` | 5 | French, German (plain, and HTML with `&shy;` hyphenation hints), Spanish, Japanese — the language detector is a ×1.5 booster |
 | `benign/` | `benign-encoded` | 3 | An inline base64 image, a PGP signature block, URL tracking parameters |
 | `benign/` | `benign-alarming` | 5 | Content that *looks* like an attack and is not: a security advisory quoting an injection, a code review about injection detection, release notes with a shell fence, a support reply about passwords, docs using "act as" in its ordinary sense |
 | `benign/` | `benign-invisible-lookalike` | 1 | An emoji ZWJ sequence — legitimate zero-width use |

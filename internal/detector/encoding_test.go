@@ -81,7 +81,6 @@ func TestEncodingAnomaly_AuditedZeroWidthClasses(t *testing.T) {
 		name string
 		r    rune
 	}{
-		{"soft hyphen", 0x00AD},
 		{"arabic letter mark", 0x061C},
 		{"function application", 0x2061},
 		{"invisible times", 0x2062},
@@ -137,5 +136,30 @@ func TestEncodingAnomaly_EmojiVariationSelectorNotFlagged(t *testing.T) {
 	}
 	if len(signals) != 0 {
 		t.Errorf("signals = %+v, want none for emoji presentation selectors", signals)
+	}
+}
+
+// The soft hyphen and the Tags block are default-ignorable but are not
+// counted: the soft hyphen is ordinary CMS output (and what "&shy;"
+// decodes to), and the Tags block has invisible_smuggling. Both are still
+// stripped before matching.
+func TestEncodingAnomaly_SoftHyphenAndTagsNotCounted(t *testing.T) {
+	d := EncodingAnomalyDetector{}
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"soft hyphen", "Quartals\u00adbericht und Preis\u00adliste"},
+		{"tags block", "hello \U000E0068\U000E0069"},
+	} {
+		signals, err := d.Detect([]byte(tc.content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range signals {
+			if strings.Contains(s.Matched, "zero-width") {
+				t.Errorf("%s: counted as zero-width: %q", tc.name, s.Matched)
+			}
+		}
 	}
 }

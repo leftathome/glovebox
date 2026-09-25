@@ -9,40 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Invisibles written as character references were never stripped**
+  (glovebox-wlg2). `Preprocess` scrubbed invisibles *before* `stripHTML`,
+  which is what decodes entities, and the unescaped views (`derivedView`) were
+  never scrubbed at all. So `ig&#8203;nore all previous instructions` -- or
+  the same split with `&shy;`, `&zwj;`, `&zwnj;`, `&#x2060;` -- reached every
+  matcher as `ig<U+200B>nore` and matched nothing: 0.70 (suspicious_encoding
+  alone) and **pass** in text/html, 0.00 and **pass** in text/plain, where
+  only the unescaped view decodes the reference. The HTML view is now scrubbed
+  again after decoding, and every derived view is scrubbed after
+  normalisation. Three new malicious corpus cases (`invisible-html-entity-zwsp`,
+  `invisible-html-entity-mixed`, `invisible-entity-plain`) fail on 0.9.0
+  and are quarantined now.
 - **The zero-width set is now Unicode's Default_Ignorable_Code_Point, derived
-  rather than hand-kept** (glovebox-wlg2, QUARK-06 audit). `ZeroWidthRunes` listed seven
-  characters (U+200B-U+200F, U+2060, U+FEFF), so `suspicious_encoding` never
-  counted the soft hyphen (U+00AD), the Arabic letter mark (U+061C), the
+  rather than hand-kept** (glovebox-wlg2, QUARK-06 audit). `ZeroWidthRunes`
+  listed seven characters (U+200B-U+200F, U+2060, U+FEFF), so
+  `suspicious_encoding` never counted the Arabic letter mark (U+061C), the
   invisible math operators (U+2061-U+2064), the deprecated format controls
   (U+206A-U+206F), the Hangul fillers, the combining grapheme joiner, the
-  Mongolian vowel separator or the Khmer inherent vowels -- and the list was
-  about to be adopted by quark as an identity-key canonicaliser, which would
-  have inherited every gap. It is replaced by `engine.ZeroWidth` /
-  `IsZeroWidth`: Default_Ignorable_Code_Point minus the variation selectors,
-  built at init from Go's unicode tables with the `DerivedCoreProperties.txt`
-  formula (Other_Default_Ignorable_Code_Point + Cf + Variation_Selector -
-  White_Space - FFF9..FFFB - 13430..13440 - Prepended_Concatenation_Mark), so
-  it tracks the toolchain's Unicode version (17.0.0 today) instead of drifting.
-  Tests pin it exactly against the published UCD 17.0 table (4174 code
-  points), pin every character the audit named, and tie `IsBidiControl` to
-  the `Bidi_Control` property. Variation selectors are deliberately left out
-  of the count (U+FE0F follows ordinary emoji; ideographic variation sequences
-  spell CJK names) but are still stripped before matching.
-  - `IsInvisible` (the pre-match strip) is now DICP plus `Cf`. It already
-    covered the named characters; it newly strips U+034F, U+17B4-U+17B5,
-    U+180B-U+180D/U+180F and the reserved default-ignorables (U+2065,
-    U+FFF0-U+FFF8, U+E0080-U+E00FF, U+E01F0-U+E0FFF). Scan-only views; the
-    delivered item is unchanged.
-  - Bidi embeddings/overrides/isolates keep their own `bidi control
-    characters found` finding and are no longer also counted as unusual
-    unicode.
-  - **Expect more `suspicious_encoding` (0.7) signals.** Alone it stays below
-    the 0.8 threshold, but with the non-English prose booster (x1.5 = 1.05) a
-    single soft hyphen or Arabic letter mark in German, Dutch or Arabic prose
-    now quarantines -- the behaviour RLM, ZWNJ and the BOM already had. The
-    adversarial corpus is unchanged (44/44 detection, 1/21 false positives):
-    no benign case carries a newly counted character. The foreign-prose false
-    positive class is tracked as glovebox-5ukb. See `docs/upgrading.md`.
+  Mongolian vowel separator or the Khmer inherent vowels -- and quark was
+  about to copy the list for identity keys, inheriting every gap. It is
+  replaced by `engine.DefaultIgnorable`, built at init from Go's unicode
+  tables with the `DerivedCoreProperties.txt` formula
+  (Other_Default_Ignorable_Code_Point + Cf + Variation_Selector - White_Space
+  - FFF9..FFFB - 13430..13440 - Prepended_Concatenation_Mark), so it tracks
+  the toolchain's Unicode version (17.0.0) instead of drifting. A test pins it
+  exactly against the published UCD 17.0 table (4174 code points) and fails
+  outright on any other Unicode version, so a refresh cannot be missed; other
+  tests pin every character the audit named and tie `IsBidiControl` to the
+  `Bidi_Control` property.
+  - Identifier canonicalisation should drop all of `DefaultIgnorable`,
+    variation selectors included. The narrower sets below are detector-only.
+  - `IsInvisible` (the pre-match strip) is now DefaultIgnorable plus `Cf`. It
+    already covered the audited characters; it newly strips U+034F,
+    U+17B4-U+17B5, U+180B-U+180D/U+180F and the reserved default-ignorables
+    (U+2065, U+FFF0-U+FFF8, U+E0080-U+E00FF, U+E01F0-U+E0FFF). Scan-only
+    views; the delivered item is unchanged.
+  - `encoding_anomaly` counts `IsSuspiciousInvisible`: DefaultIgnorable minus
+    the variation selectors (U+FE0F follows ordinary emoji; ideographic
+    variation sequences spell CJK names), minus the **soft hyphen** (CMSs
+    insert it and `&shy;` decodes to it; it is stripped, which is what defeats
+    it, and scoring it would quarantine German and Dutch newsletters through
+    the x1.5 language booster), and minus the Tags block (already
+    `invisible_smuggling`). Bidi embeddings/overrides/isolates keep their own
+    `bidi control characters found` finding and are no longer also counted as
+    unusual unicode.
+  - **Scoring effect is small.** The newly counted characters are rare in
+    real mail. The one a reader is likely to meet is the Arabic letter mark,
+    which bidi-aware editors insert around numbers in Arabic text: in English
+    content it adds 0.7 (flagged, not quarantined, unless a second signal is
+    present); in Arabic prose the x1.5 booster makes that 1.05 and
+    quarantines -- the behaviour U+200E/U+200F, ZWNJ and a BOM already had
+    (tracked as glovebox-5ukb). Adversarial corpus: 47/47 detection, 1/22
+    false positives, including a new benign German HTML newsletter with
+    `&shy;` hyphenation hints, which passes.
 
 ## [0.9.0] - 2026-09-23
 

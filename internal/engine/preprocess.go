@@ -89,7 +89,13 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 	if strings.HasPrefix(contentType, "text/html") {
 		// stripHTML reads via bytes.NewReader without mutating, so sharing the slice is safe
 		result.RawHTML = scrubbed
-		result.Normalized = stripHTML(scrubbed)
+		// stripHTML decodes character references, so "&#8203;", "&shy;"
+		// and "&zwj;" only become invisibles here -- after the scrub
+		// above. Scrub again, or "ig&#8203;nore" reaches every matcher
+		// as "ig\u200bnore" and matches nothing.
+		var htmlRemoved bool
+		result.Normalized, htmlRemoved = StripInvisible(stripHTML(scrubbed))
+		removed = removed || htmlRemoved
 		// Keep PreScrub in the same shape as Normalized so the detector
 		// pass over it differs by invisibles alone. Handing detectors raw
 		// HTML here instead would change what template_structure and
@@ -145,10 +151,17 @@ func Preprocess(content []byte, contentType string) PreprocessedContent {
 // spelled with fullwidth or non-breaking separators would otherwise walk
 // straight back out of the view built to catch it.
 //
+// Invisibles are stripped again for the same reason: a decoded reference
+// or escape can produce one.
+//
 // FoldConfusables returns nil for plain ASCII, and a nil view means "skip
 // this pass" to the scanner, so fall back to the unfolded bytes.
 func derivedView(view []byte) []byte {
 	view = norm.NFKC.Bytes(view)
+	// Unescaping hands back characters the primary scrub never saw:
+	// "&#8203;", "%E2%80%8B" and "\u200b" all decode to a zero-width
+	// space, so strip invisibles again or they split the payload here.
+	view, _ = StripInvisible(view)
 	if folded := FoldConfusables(view); folded != nil {
 		return folded
 	}
