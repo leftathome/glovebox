@@ -844,6 +844,71 @@
       "note": "An untouched payload with a two-line advisory signature block appended ('Security advisory: CVE-2026-0000'). 22 bytes of boilerplate. Exists so that a defensive-context-marker discount cannot be added without this going red; the attacker can always out-boilerplate the defender, because boilerplate is free.",
       "known_gap": false,
       "gap_note": ""
+    },
+    {
+      "id": "invisible-html-entity-zwsp",
+      "file": "malicious/invisible-html-entity-zwsp.html",
+      "content_type": "text/html",
+      "subject": "Hello",
+      "sender": "notices@example.invalid",
+      "source": "imap",
+      "expect": "quarantine",
+      "class": "invisible",
+      "note": "Zero-width spaces written as &#8203; character references. They become invisibles only when stripHTML decodes them, which used to happen after the invisible scrub -- so the payload stayed split in every view (score 0.70, pass).",
+      "known_gap": false,
+      "gap_note": ""
+    },
+    {
+      "id": "invisible-html-entity-mixed",
+      "file": "malicious/invisible-html-entity-mixed.html",
+      "content_type": "text/html",
+      "subject": "Weekly digest",
+      "sender": "digest@example.invalid",
+      "source": "imap",
+      "expect": "quarantine",
+      "class": "invisible",
+      "note": "&shy;, &zwj;, &zwnj; and &#x2060; splitting the payload: the same decode-after-scrub gap, through named references (scored 0.70 -- suspicious_encoding alone -- and passed before the fix).",
+      "known_gap": false,
+      "gap_note": ""
+    },
+    {
+      "id": "invisible-entity-plain",
+      "file": "malicious/invisible-entity-plain.txt",
+      "content_type": "text/plain",
+      "subject": "Hello",
+      "sender": "notices@example.invalid",
+      "source": "imap",
+      "expect": "quarantine",
+      "class": "invisible",
+      "note": "&#8203; references in text/plain. Only the unescaped view decodes them, and that view was never scrubbed of invisibles (scored 0.00 before the fix).",
+      "known_gap": false,
+      "gap_note": ""
+    },
+    {
+      "id": "german-newsletter-shy",
+      "file": "benign/german-newsletter-shy.html",
+      "content_type": "text/html",
+      "subject": "Quartalsbericht",
+      "sender": "k.bauer@example.de",
+      "source": "imap",
+      "expect": "pass",
+      "class": "benign-foreign",
+      "note": "German HTML newsletter with &shy; hyphenation hints, as CMSs emit them. The soft hyphen is stripped before matching but not scored; counting it put a lone 0.7 under the x1.5 language booster and quarantined this.",
+      "known_gap": false,
+      "gap_note": ""
+    },
+    {
+      "id": "encoded-base64-zero-width",
+      "file": "malicious/encoded-base64-zero-width.txt",
+      "content_type": "text/plain",
+      "subject": "Note",
+      "sender": "notices@example.invalid",
+      "source": "imap",
+      "expect": "quarantine",
+      "class": "encoded",
+      "note": "A payload split with zero-width spaces and THEN base64-encoded. The invisibles appear only after decoding, and the decoded view was never scrubbed, so the payload stayed split there (scored 0.70, suspicious_encoding alone, and passed before the fix).",
+      "known_gap": false,
+      "gap_note": ""
     }
   ]
 }

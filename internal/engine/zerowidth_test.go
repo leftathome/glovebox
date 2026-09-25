@@ -50,14 +50,20 @@ func inUCD17(r rune) bool {
 }
 
 // TestDefaultIgnorable_MatchesUCD pins the derivation against the published
-// table. Every Unicode 17.0 default-ignorable must stay default-ignorable
-// under any later toolchain (DICP only grows in practice); while Go ships
-// 17.0.0 the match must be exact, code point for code point.
+// table, code point for code point.
+//
+// It FAILS on any other Unicode version rather than skipping: go.mod allows
+// an older toolchain than CI runs, and a silent skip is how a table refresh
+// gets missed. When Go moves to a new Unicode version, re-copy the
+// Default_Ignorable_Code_Point section of that version's
+// DerivedCoreProperties.txt into ucdDefaultIgnorable17 (and rename it),
+// review what changed, and update the version and count below.
 func TestDefaultIgnorable_MatchesUCD(t *testing.T) {
-	exact := unicode.Version == "17.0.0"
-	if !exact {
-		t.Logf("Go ships Unicode %s; checking the 17.0.0 table as a subset only. "+
-			"Refresh ucdDefaultIgnorable17 from that version's DerivedCoreProperties.txt.", unicode.Version)
+	const pinnedVersion, pinnedCount = "17.0.0", 4174
+	if unicode.Version != pinnedVersion {
+		t.Fatalf("Go ships Unicode %s but the reference table is %s: refresh it from "+
+			"https://www.unicode.org/Public/%s/ucd/DerivedCoreProperties.txt and review the diff",
+			unicode.Version, pinnedVersion, unicode.Version)
 	}
 	count := 0
 	for r := rune(0); r <= unicode.MaxRune; r++ {
@@ -66,15 +72,37 @@ func TestDefaultIgnorable_MatchesUCD(t *testing.T) {
 		if got {
 			count++
 		}
-		if want && !got {
-			t.Errorf("U+%04X is Default_Ignorable_Code_Point in UCD 17.0 but not in DefaultIgnorable", r)
-		}
-		if exact && got && !want {
-			t.Errorf("U+%04X is in DefaultIgnorable but not Default_Ignorable_Code_Point in UCD 17.0", r)
+		if got != want {
+			t.Errorf("U+%04X: DefaultIgnorable = %v, UCD %s Default_Ignorable_Code_Point = %v", r, got, pinnedVersion, want)
 		}
 	}
-	if exact && count != 4174 {
-		t.Errorf("DefaultIgnorable has %d code points, UCD 17.0 lists 4174", count)
+	if count != pinnedCount {
+		t.Errorf("DefaultIgnorable has %d code points, UCD %s lists %d", count, pinnedVersion, pinnedCount)
+	}
+}
+
+// TestIsSuspiciousInvisible pins the detector-only carve-outs: the soft
+// hyphen and the Tags block are default-ignorable and stripped, but not
+// counted by encoding_anomaly.
+func TestIsSuspiciousInvisible(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		want := IsZeroWidth(r) && r != 0x00AD && !IsTagChar(r)
+		if IsSuspiciousInvisible(r) != want {
+			t.Fatalf("IsSuspiciousInvisible(U+%04X) = %v, want %v", r, IsSuspiciousInvisible(r), want)
+		}
+	}
+	for _, r := range []rune{0x00AD, 0xE0001, 0xE0061} {
+		if IsSuspiciousInvisible(r) {
+			t.Errorf("IsSuspiciousInvisible(U+%04X) = true, want false", r)
+		}
+		if !IsInvisible(r) {
+			t.Errorf("IsInvisible(U+%04X) = false; it must still be stripped", r)
+		}
+	}
+	for _, r := range []rune{0x061C, 0x200B, 0x200F, 0x2062, 0x3164} {
+		if !IsSuspiciousInvisible(r) {
+			t.Errorf("IsSuspiciousInvisible(U+%04X) = false, want true", r)
+		}
 	}
 }
 

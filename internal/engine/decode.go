@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Bounds on decode work. maxDecodedBytes caps the synthetic buffer so a
@@ -64,6 +66,16 @@ func extractInto(out *bytes.Buffer, content []byte, depth int) {
 	}
 
 	for _, decoded := range decodeCandidates(content) {
+		// A decoded run gets the same normalisation and invisible scrub
+		// the primary view got. The scrub in Preprocess runs before
+		// decoding, so "ig<U+200B>nore ..." encoded as base64 or hex
+		// would otherwise surface here with the zero-width space intact
+		// and match nothing. Scrubbing before the recursion also covers
+		// every nested layer.
+		decoded, _ = StripInvisible(norm.NFKC.Bytes(decoded))
+		if len(decoded) == 0 {
+			continue
+		}
 		// Truncate against the remaining budget rather than merely
 		// checking it: a single blob can decode to far more than the cap,
 		// and this runs on attacker-supplied input.

@@ -31,7 +31,7 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 		if engine.IsBidiControl(r) {
 			continue
 		}
-		if engine.IsZeroWidth(r) {
+		if engine.IsSuspiciousInvisible(r) {
 			zwCount++
 		} else if r > 0x7E && !unicode.IsLetter(r) && !unicode.IsPunct(r) && !unicode.IsSpace(r) {
 			unusualUnicodeCount++

@@ -12,25 +12,23 @@ at 02:00 with uploads failing.
 
 ## Upgrading to the next release (unreleased)
 
-No configuration changes. Expect **more `suspicious_encoding` signals, and some
-more quarantines of non-English prose**:
+No configuration changes. Two scanner changes can move verdicts:
 
-- [ ] The zero-width count behind `suspicious_encoding` (weight 0.7) is now
-      Unicode's Default_Ignorable_Code_Point minus the variation selectors,
-      not seven hand-picked characters. The newly counted characters people
-      will actually see in real mail and feeds are the **soft hyphen**
-      (U+00AD, what HTML `&shy;` becomes -- common in German and Dutch
-      newsletters) and the **Arabic letter mark** (U+061C).
-- [ ] English content: 0.7 alone stays below the 0.8 threshold, so these items
-      are flagged, not quarantined -- unless another signal is already present.
-- [ ] Non-English prose: the language booster (x1.5) takes a lone 0.7 to 1.05,
-      so a single soft hyphen in a German newsletter now **quarantines**. This
-      is the behaviour right-to-left marks, ZWNJ and a BOM already had; it is
-      tracked as a false-positive class in glovebox-5ukb. If a trusted
-      foreign-language feed starts landing in quarantine, that is the cause.
-      The lever, if you need one before that is resolved, is the
-      `suspicious_encoding` weight in your rules file -- measure against the
-      adversarial corpus before changing it.
+- [ ] **More quarantines of injections hidden with character references.**
+      `ig&#8203;nore all previous instructions` (or `&shy;`, `&zwj;`,
+      `&zwnj;`) in an HTML body, or as literal references in plain text, used
+      to pass, as did a zero-width-split payload inside base64 or hex; both
+      are now matched and quarantined. That is the fix, not a false
+      positive.
+- [ ] **A few more `suspicious_encoding` (0.7) signals.** The detector now
+      counts every default-ignorable character except variation selectors,
+      the soft hyphen and the Tags block. The one likely to appear in real
+      mail is the Arabic letter mark (U+061C): English content carrying one is
+      flagged but still passes; Arabic prose carrying one is boosted x1.5 to
+      1.05 and quarantined, as Arabic and Hebrew prose with U+200E/U+200F
+      already was (glovebox-5ukb). Soft hyphens -- including HTML `&shy;` in
+      German and Dutch newsletters -- are stripped and not scored, so they do
+      not change verdicts.
 
 ---
 
