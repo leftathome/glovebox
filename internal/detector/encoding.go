@@ -25,7 +25,13 @@ func (d EncodingAnomalyDetector) Detect(content []byte) ([]engine.Signal, error)
 	zwCount := 0
 	unusualUnicodeCount := 0
 	for _, r := range string(content) {
-		if _, ok := engine.ZeroWidthSet[r]; ok {
+		// Bidi embeddings/overrides/isolates are default-ignorable too, but
+		// they get their own finding below; counting them twice would only
+		// muddy the detail line.
+		if engine.IsBidiControl(r) {
+			continue
+		}
+		if engine.IsZeroWidth(r) {
 			zwCount++
 		} else if r > 0x7E && !unicode.IsLetter(r) && !unicode.IsPunct(r) && !unicode.IsSpace(r) {
 			unusualUnicodeCount++

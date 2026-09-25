@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -25,6 +26,13 @@ func IsTagChar(r rune) bool { return r >= tagRangeLo && r <= tagRangeHi }
 // control. These reorder rendered text without changing the underlying
 // bytes ("Trojan Source"), so what a reviewer sees can differ from what a
 // model consumes.
+//
+// This is Unicode's Bidi_Control property minus the three implicit marks
+// (U+061C ALM, U+200E LRM, U+200F RLM): the marks change the direction of
+// neutral characters around them but cannot reorder a run of Latin text,
+// so they are counted with the zero-width set instead. The tests pin this
+// relationship to unicode.Bidi_Control so a new Unicode control cannot be
+// added upstream without this list noticing.
 func IsBidiControl(r rune) bool {
 	switch r {
 	case 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // LRE RLE PDF LRO RLO
@@ -34,62 +42,165 @@ func IsBidiControl(r rune) bool {
 	return false
 }
 
-// ZeroWidthRunes is the canonical list of zero-width Unicode characters
-// stripped during pre-processing and flagged by the encoding anomaly
-// detector. Retained as the narrow, named set used by the detector's
-// zero-width count; IsInvisible covers the broader stripping surface.
-var ZeroWidthRunes = []rune{
-	0x200B, // zero-width space
-	0x200C, // zero-width non-joiner
-	0x200D, // zero-width joiner
-	0xFEFF, // byte order mark / zero-width no-break space
-	0x2060, // word joiner
-	0x200E, // left-to-right mark
-	0x200F, // right-to-left mark
-}
+// DefaultIgnorable is Unicode's Default_Ignorable_Code_Point property:
+// the code points a renderer is told to display as nothing when it has no
+// specific support for them. It is DERIVED at init from Go's own unicode
+// tables using the formula published in DerivedCoreProperties.txt, rather
+// than hand-listed, so it tracks the Unicode version the toolchain ships
+// and cannot drift behind it:
+//
+//	Other_Default_Ignorable_Code_Point
+//	+ Cf (Format characters)
+//	+ Variation_Selector
+//	- White_Space
+//	- FFF9..FFFB (interlinear annotation format characters)
+//	- 13430..13440 (Egyptian hieroglyph format characters)
+//	- Prepended_Concatenation_Mark (format characters that render visibly)
+//
+// Go does not export the derived property itself, only its inputs. The
+// tests pin the result against the published table and against the
+// specific characters that motivated the audit.
+var DefaultIgnorable = buildDefaultIgnorable()
 
-var ZeroWidthSet = func() map[rune]struct{} {
-	m := make(map[rune]struct{}, len(ZeroWidthRunes))
-	for _, r := range ZeroWidthRunes {
-		m[r] = struct{}{}
-	}
-	return m
-}()
+// ZeroWidth is the set counted by the encoding anomaly detector as
+// "zero-width characters", and the set a consumer that wants to canonicalise
+// an identifier should drop: every Default_Ignorable_Code_Point EXCEPT the
+// variation selectors.
+//
+// It covers the zero-width space/joiners, BOM and word joiner, the soft
+// hyphen, the bidi marks (LRM, RLM, ALM), the explicit bidi embeddings,
+// overrides and isolates (U+202A-U+202E, U+2066-U+2069 -- Trojan Source),
+// the invisible math operators (U+2061-U+2064), the deprecated format
+// controls (U+206A-U+206F), the Hangul fillers, the combining grapheme
+// joiner, the Mongolian vowel separator, the Khmer inherent vowels, the
+// shorthand and musical format controls, the Tags block, and the reserved
+// code points Unicode pre-assigns as default-ignorable.
+//
+// Variation selectors (U+180B-U+180D, U+180F, U+FE00-U+FE0F,
+// U+E0100-U+E01EF) are deliberately excluded. U+FE0F follows a large share
+// of all emoji in real text, U+FE0E/U+FE00-U+FE0D select standardized glyph
+// variants, and the ideographic variation sequences are how Japanese
+// personal and place names are spelled correctly. Counting them would make
+// the detector fire on ordinary chat and on correctly written CJK names.
+// They are still stripped before matching (IsInvisible), where removing a
+// glyph selector cannot change what a pattern means.
+var ZeroWidth = buildZeroWidth()
+
+// IsDefaultIgnorable reports whether r has Default_Ignorable_Code_Point.
+func IsDefaultIgnorable(r rune) bool { return unicode.Is(DefaultIgnorable, r) }
+
+// IsZeroWidth reports whether r is in ZeroWidth.
+func IsZeroWidth(r rune) bool { return unicode.Is(ZeroWidth, r) }
 
 // IsInvisible reports whether r renders as nothing (or as pure formatting)
 // and should therefore be removed before matching.
 //
-// The old implementation stripped only the seven ZeroWidthRunes above,
-// which left the entire Tags block, the bidi controls, the soft hyphen and
-// every other Cf format character intact -- so an injection interleaved
-// with them never matched an ASCII pattern.
+// This is Default_Ignorable_Code_Point (variation selectors included) plus
+// every remaining Cf format character. The extra Cf characters -- the
+// Arabic number signs, interlinear annotation marks, Egyptian hieroglyph
+// format controls -- are not default-ignorable because they can render,
+// but none of them belongs inside an ASCII instruction, and removing them
+// from the scan-only views is what keeps them from splitting a pattern.
+//
+// The original implementation stripped only a hand-kept list of seven
+// zero-width runes, which left the entire Tags block, the bidi controls,
+// the soft hyphen and every other Cf format character intact -- so an
+// injection interleaved with them never matched an ASCII pattern.
 func IsInvisible(r rune) bool {
-	if _, ok := ZeroWidthSet[r]; ok {
-		return true
+	if r < 0x80 {
+		return false
 	}
-	if IsTagChar(r) || IsBidiControl(r) {
-		return true
+	return unicode.Is(DefaultIgnorable, r) || unicode.Is(unicode.Cf, r)
+}
+
+// buildDefaultIgnorable applies the DerivedCoreProperties.txt formula to
+// Go's unicode tables. The candidate universe is the union of the three
+// additive inputs (a few thousand code points), so this is cheap at init.
+func buildDefaultIgnorable() *unicode.RangeTable {
+	var runes []rune
+	for _, tab := range []*unicode.RangeTable{
+		unicode.Other_Default_Ignorable_Code_Point,
+		unicode.Cf,
+		unicode.Variation_Selector,
+	} {
+		runes = appendTable(runes, tab)
 	}
-	switch r {
-	case 0x00AD, // soft hyphen
-		0x180E,                         // Mongolian vowel separator
-		0x2061, 0x2062, 0x2063, 0x2064, // invisible math operators
-		0x115F, 0x1160, // Hangul filler / choseong filler
-		0x3164, 0xFFA0: // Hangul filler compatibility forms
+	return tableFromRunes(runes, func(r rune) bool {
+		switch {
+		case unicode.Is(unicode.White_Space, r):
+			return false
+		case r >= 0xFFF9 && r <= 0xFFFB:
+			return false
+		case r >= 0x13430 && r <= 0x13440:
+			return false
+		case unicode.Is(unicode.Prepended_Concatenation_Mark, r):
+			return false
+		}
 		return true
+	})
+}
+
+func buildZeroWidth() *unicode.RangeTable {
+	return tableFromRunes(appendTable(nil, DefaultIgnorable), func(r rune) bool {
+		return !unicode.Is(unicode.Variation_Selector, r)
+	})
+}
+
+// appendTable appends every code point in tab to runes.
+func appendTable(runes []rune, tab *unicode.RangeTable) []rune {
+	for _, rg := range tab.R16 {
+		for r := rune(rg.Lo); r <= rune(rg.Hi); r += rune(rg.Stride) {
+			runes = append(runes, r)
+		}
 	}
-	// Remaining format characters (Cf) and unassigned-but-invisible
-	// variation selectors.
-	if unicode.Is(unicode.Cf, r) {
-		return true
+	for _, rg := range tab.R32 {
+		for r := rune(rg.Lo); r <= rune(rg.Hi); r += rune(rg.Stride) {
+			runes = append(runes, r)
+		}
 	}
-	if r >= 0xFE00 && r <= 0xFE0F { // variation selectors
-		return true
+	return runes
+}
+
+// tableFromRunes builds a RangeTable of the runes that satisfy keep,
+// deduplicated and coalesced into stride-1 ranges.
+func tableFromRunes(runes []rune, keep func(rune) bool) *unicode.RangeTable {
+	slices.Sort(runes)
+	runes = slices.Compact(runes)
+	t := &unicode.RangeTable{}
+	add := func(lo, hi rune) {
+		if hi <= 0xFFFF {
+			t.R16 = append(t.R16, unicode.Range16{Lo: uint16(lo), Hi: uint16(hi), Stride: 1})
+			if hi <= unicode.MaxLatin1 {
+				t.LatinOffset++
+			}
+			return
+		}
+		if lo <= 0xFFFF { // split a range that straddles the BMP boundary
+			t.R16 = append(t.R16, unicode.Range16{Lo: uint16(lo), Hi: 0xFFFF, Stride: 1})
+			lo = 0x10000
+		}
+		t.R32 = append(t.R32, unicode.Range32{Lo: uint32(lo), Hi: uint32(hi), Stride: 1})
 	}
-	if r >= 0xE0100 && r <= 0xE01EF { // variation selectors supplement
-		return true
+	started := false
+	var lo, hi rune
+	for _, r := range runes {
+		if !keep(r) {
+			continue
+		}
+		switch {
+		case !started:
+			lo, hi, started = r, r, true
+		case r == hi+1:
+			hi = r
+		default:
+			add(lo, hi)
+			lo, hi = r, r
+		}
 	}
-	return false
+	if started {
+		add(lo, hi)
+	}
+	return t
 }
 
 // DecodeTagChars recovers the ASCII text smuggled in Unicode Tags
