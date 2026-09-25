@@ -10,7 +10,7 @@ at 02:00 with uploads failing.
 
 ---
 
-## Upgrading to the next release (unreleased)
+## Upgrading to 0.9.1 (from 0.9.0)
 
 No configuration changes. Two scanner changes can move verdicts:
 
