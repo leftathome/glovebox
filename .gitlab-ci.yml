@@ -246,6 +246,7 @@ integration-report:
 # so enricher-based connectors/importers can FROM it.
 # ---------------------------------------------------------------------------
 build-base:
+  tags: [cluster]
   extends: .kaniko-build
   stage: build-base
   needs: ["test"]
@@ -261,6 +262,7 @@ build-base:
 # the template's INTERNAL_REGISTRY_REPO).
 # ---------------------------------------------------------------------------
 build:
+  tags: [cluster]
   extends: .kaniko-build
   stage: build
   needs: ["build-base"]
@@ -341,6 +343,7 @@ build:
 # version/appVersion are stamped from the tag by the template.
 # ---------------------------------------------------------------------------
 chart:
+  tags: [cluster]
   extends: .helm-push
   stage: chart
   needs: ["build"]
