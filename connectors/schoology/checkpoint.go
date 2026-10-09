@@ -2,7 +2,9 @@ package schoology
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/leftathome/glovebox/connector"
 )
@@ -38,11 +40,73 @@ func LastSeenID(cp connector.Checkpoint, surface, scope string) (int64, error) {
 	return n, nil
 }
 
-// SaveLastSeenID advances the checkpoint after a successful Commit().
+// seenKey is the checkpoint key holding the set of item IDs already staged
+// for a surface/scope.
+func seenKey(surface, scope string) string {
+	if scope == "" {
+		return surface + ":seen"
+	}
+	return surface + ":" + scope + ":seen"
+}
+
+// maxSeenIDs bounds the seen-set. When it overflows the smallest IDs are
+// dropped; Schoology IDs grow over time, so those are the oldest items and
+// the least likely to be listed again.
+const maxSeenIDs = 5000
+
+// seenIDs loads the set of already-staged IDs. A missing key is an empty
+// set; an unparseable entry is an error (same contract as LastSeenID).
+func seenIDs(cp connector.Checkpoint, surface, scope string) (map[int64]struct{}, error) {
+	key := seenKey(surface, scope)
+	set := map[int64]struct{}{}
+	v, ok := cp.Load(key)
+	if !ok || v == "" {
+		return set, nil
+	}
+	for _, part := range strings.Split(v, ",") {
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint parse error key=%s value=%q: %w", key, part, err)
+		}
+		set[n] = struct{}{}
+	}
+	return set, nil
+}
+
+// SaveLastSeenID records an item as staged after a successful Commit().
 // MUST be called only after Commit() returns nil per the framework
 // per-item-checkpoint discipline (spec 05 §3.2).
+//
+// It adds the ID to the surface's seen-set and keeps the legacy
+// "<surface>:<scope>:last_id" key at the highest ID seen, which LastSeenID
+// and existing dashboards read.
 func SaveLastSeenID(cp connector.Checkpoint, surface, scope string, id int64) error {
-	return cp.Save(CheckpointKey(surface, scope), strconv.FormatInt(id, 10))
+	set, err := seenIDs(cp, surface, scope)
+	if err != nil {
+		// A corrupt set must not block progress forever: start a new one.
+		set = map[int64]struct{}{}
+	}
+	set[id] = struct{}{}
+	ids := make([]int64, 0, len(set))
+	for n := range set {
+		ids = append(ids, n)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if len(ids) > maxSeenIDs {
+		ids = ids[len(ids)-maxSeenIDs:]
+	}
+	parts := make([]string, len(ids))
+	for i, n := range ids {
+		parts[i] = strconv.FormatInt(n, 10)
+	}
+	if err := cp.Save(seenKey(surface, scope), strings.Join(parts, ",")); err != nil {
+		return err
+	}
+	last, err := LastSeenID(cp, surface, scope)
+	if err != nil || id > last {
+		return cp.Save(CheckpointKey(surface, scope), strconv.FormatInt(id, 10))
+	}
+	return nil
 }
 
 // StageDecision is the outcome of ShouldStage. Callers can label
@@ -51,10 +115,10 @@ func SaveLastSeenID(cp connector.Checkpoint, surface, scope string, id int64) er
 type StageDecision int
 
 const (
-	StageAccept        StageDecision = iota // id > last seen; emit
+	StageAccept        StageDecision = iota // id not staged before; emit
 	StageSkipZero                           // item id was 0; ignore
-	StageSkipDuplicate                      // id == last seen; likely a retry
-	StageSkipBelow                          // id < last seen; likely out-of-order arrival
+	StageSkipDuplicate                      // id already staged
+	StageSkipBelow                          // retired: no longer returned (kept for label stability)
 )
 
 // String returns a snake_case label suitable for metric labels and log
@@ -90,18 +154,24 @@ func ShouldStage(cp connector.Checkpoint, surface, scope string, id int64) (Stag
 	if id == 0 {
 		return StageSkipZero, nil
 	}
-	last, err := LastSeenID(cp, surface, scope)
+	// Validate the legacy high-water key too, so a corrupt value is still
+	// surfaced to the caller as before.
+	if _, err := LastSeenID(cp, surface, scope); err != nil {
+		return 0, err
+	}
+	seen, err := seenIDs(cp, surface, scope)
 	if err != nil {
 		return 0, err
 	}
-	switch {
-	case id > last:
-		return StageAccept, nil
-	case id == last:
+	if _, ok := seen[id]; ok {
 		return StageSkipDuplicate, nil
-	default:
-		return StageSkipBelow, nil
 	}
+	// Not "id > highest seen": Schoology lists items in page order (the
+	// feed is newest first, overdue work by due date), not ID order. A
+	// single high-water mark accepted the first item and rejected every
+	// lower ID after it -- on a live account, one feed post in ten -- and
+	// could never emit an older assignment that became overdue later.
+	return StageAccept, nil
 }
 
 // ParseID parses a string ID into int64.
