@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-09
+
+### Fixed
+
+- **Schoology connector exited at startup under HTTP ingest.** It required
+  the deprecated filesystem `ConnectorContext.Writer`, which is nil when the
+  framework delivers over `GLOVEBOX_INGEST_URL` -- how every in-cluster
+  connector runs. The first real deployment crash-looped with
+  `schoology.Wire: ConnectorContext.Writer is nil` before making any upstream
+  request. It now uses `ConnectorContext.Backend` like the other connectors,
+  and a new test wires it in HTTP-ingest mode and checks an item reaches the
+  ingest endpoint. The connector had only ever been tested against the
+  filesystem backend.
+
 ## [0.9.5] - 2026-10-09
 
 ### Fixed

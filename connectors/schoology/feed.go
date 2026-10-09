@@ -36,7 +36,7 @@ const feedAttachmentSurface = "feed_attachment"
 func ProcessFeed(
 	ctx context.Context,
 	client SchoologyClient,
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	tel *Telemetry,
@@ -201,7 +201,7 @@ func getFeedTraced(ctx context.Context, client SchoologyClient, tel *Telemetry, 
 // stageFeedItem writes the staging item under a schoology.staging.commit
 // span. parse_status is "normal" for happy-path posts; the feed
 // processor does not currently produce degraded items at this layer.
-func stageFeedItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, edgeID int64) error {
+func stageFeedItem(ctx context.Context, tel *Telemetry, writer connector.StagingBackend, opts connector.ItemOptions, body []byte, edgeID int64) error {
 	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
 		attribute.Int64("item_id", edgeID),
 		attribute.String("destination", opts.DestinationAgent),
@@ -332,7 +332,7 @@ func classifyLibError(err error) string {
 // "schoology-parse-failure:*". If neither matches, the receipt is
 // dropped silently with slog.Warn.
 func emitFeedTopLevelReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	kid Kid,
 	libVersion string,
@@ -355,7 +355,7 @@ func emitFeedTopLevelReceipt(
 // emitFeedRowParseReceipt stages a parse-failure receipt for a single
 // (parser, errorClass) bucket of row-parse failures.
 func emitFeedRowParseReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	kid Kid,
 	libVersion string,
@@ -384,7 +384,7 @@ func emitFeedRowParseReceipt(
 // emitReceipt is the shared receipt staging path. Routes via the
 // schoology-parse-failure rules and drops silently if no rule matches.
 func emitReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	in ReceiptInputs,
 	body []byte,

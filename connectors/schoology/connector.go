@@ -40,7 +40,7 @@ type SchoologyConnector struct {
 	// Framework-provided; set by Wire(). wireMu guards a slow Setup
 	// callback racing with an HTTP trigger that fires before Wire returns.
 	wireMu  sync.Mutex
-	writer  *connector.StagingWriter
+	writer  connector.StagingBackend
 	matcher *connector.RuleMatcher
 	tel     *Telemetry
 
@@ -126,8 +126,16 @@ func NewConnector(client SchoologyClient, cfg Config, libVersion string) (*Schoo
 // handles; the framework only ever calls Wire once per process so this
 // is not exercised in production.
 func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) error {
-	if cc.Writer == nil {
-		return errors.New("schoology.Wire: ConnectorContext.Writer is nil")
+	// Backend, not the deprecated Writer: Writer is the filesystem staging
+	// writer and is nil when the framework is delivering over HTTP ingest
+	// (GLOVEBOX_INGEST_URL), which is how every in-cluster connector runs.
+	// Requiring Writer made the connector exit at startup there.
+	backend := cc.Backend
+	if backend == nil && cc.Writer != nil {
+		backend = cc.Writer
+	}
+	if backend == nil {
+		return errors.New("schoology.Wire: ConnectorContext has no staging backend")
 	}
 	if cc.Matcher == nil {
 		return errors.New("schoology.Wire: ConnectorContext.Matcher is nil")
@@ -142,7 +150,7 @@ func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) error {
 	}
 
 	c.wireMu.Lock()
-	c.writer = cc.Writer
+	c.writer = backend
 	c.matcher = cc.Matcher
 	c.tel = tel
 	c.trigger.Tel = tel

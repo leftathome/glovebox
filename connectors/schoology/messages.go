@@ -48,7 +48,7 @@ import (
 func ProcessMessages(
 	ctx context.Context,
 	client SchoologyClient,
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	dedup *ReceiptDedup,
@@ -170,7 +170,7 @@ func getInboxTraced(ctx context.Context, client SchoologyClient, tel *Telemetry)
 // span. parse_status is "normal" because the messages processor stages
 // only fully-parsed threads; degraded receipts go through the receipt
 // path with their own emission helpers.
-func stageMessageItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, threadID int64) error {
+func stageMessageItem(ctx context.Context, tel *Telemetry, writer connector.StagingBackend, opts connector.ItemOptions, body []byte, threadID int64) error {
 	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
 		attribute.Int64("item_id", threadID),
 		attribute.String("destination", opts.DestinationAgent),
@@ -267,7 +267,7 @@ func classifyMessagesError(err error) string {
 // per-parser key first, fall back to the wildcard, and drop with a
 // warning if neither matches.
 func emitMessagesReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	dedup *ReceiptDedup,
 	libVersion string,

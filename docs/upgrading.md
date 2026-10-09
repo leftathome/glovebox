@@ -10,6 +10,12 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.6 (from 0.9.5)
+
+No required changes. 0.9.6 is the first release in which the Schoology
+connector starts when deployed with HTTP ingest (the chart's default); on
+0.9.5 and earlier it exits at startup.
+
 ## Upgrading to 0.9.5 (from 0.9.4)
 
 No required changes. The Schoology connector now polls each configured
