@@ -96,6 +96,12 @@ spec:
                       name: {{ .Values.schoologyAuthRefresher.browserless.tokenSecret.name | quote }}
                       key: {{ .Values.schoologyAuthRefresher.browserless.tokenSecret.key | default "token" | quote }}
                 {{- end }}
+                {{- with .Values.schoologyAuthRefresher.vault.caConfigMap }}
+                {{- if .name }}
+                - name: VAULT_CACERT
+                  value: /etc/vault-ca/{{ .key | default "ca.crt" }}
+                {{- end }}
+                {{- end }}
               envFrom:
                 # SCHOOLOGY_HOST, SCHOOLOGY_USERNAME, SCHOOLOGY_PASSWORD
                 # are projected from this Secret. The Secret itself is
@@ -104,4 +110,20 @@ spec:
                     name: {{ include "glovebox.fullname" . }}-schoology-refresher-credentials
               resources:
                 {{- toYaml .Values.schoologyAuthRefresher.resources | nindent 16 }}
+              {{- with .Values.schoologyAuthRefresher.vault.caConfigMap }}
+              {{- if .name }}
+              volumeMounts:
+                - name: vault-ca
+                  mountPath: /etc/vault-ca
+                  readOnly: true
+              {{- end }}
+              {{- end }}
+          {{- with .Values.schoologyAuthRefresher.vault.caConfigMap }}
+          {{- if .name }}
+          volumes:
+            - name: vault-ca
+              configMap:
+                name: {{ .name | quote }}
+          {{- end }}
+          {{- end }}
 {{- end }}

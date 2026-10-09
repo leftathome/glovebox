@@ -34,6 +34,7 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 	vaultk8s "github.com/hashicorp/vault/api/auth/kubernetes"
 
+	"github.com/leftathome/glovebox/connectors/schoology"
 	"github.com/leftathome/schoology-go/auth"
 )
 
@@ -244,7 +245,7 @@ func loadConfig() config {
 		mount = "secret"
 	}
 	return config{
-		SchoologyHost:     os.Getenv("SCHOOLOGY_HOST"),
+		SchoologyHost:     schoology.NormalizeHost(os.Getenv("SCHOOLOGY_HOST")),
 		SchoologyUsername: os.Getenv("SCHOOLOGY_USERNAME"),
 		SchoologyPassword: os.Getenv("SCHOOLOGY_PASSWORD"),
 		VaultAddr:         os.Getenv("VAULT_ADDR"),

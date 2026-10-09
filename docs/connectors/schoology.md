@@ -41,6 +41,20 @@ Optional environment: `SCHOOLOGY_TIMEZONE` (scheduler timezone, default
 `SCHOOLOGY_KID_UID`, a real child UID kept in env (not committed) since it is
 account-specific PII.
 
+## Read-only guarantee
+
+The session belongs to a real parent account, which upstream can post,
+message and submit. The connector cannot: every request it makes goes through
+`connector.ReadOnlyTransport`, which refuses any HTTP method other than
+GET/HEAD before it leaves the process (`connector/readonly.go`). Agents never
+receive the session or the credentials -- glovebox hands them scanned files
+only. Any future write capability (replying to a teacher, say) must be a
+separate, explicitly labelled workload that acts visibly as the account owner;
+it must not loosen this connector.
+
+`SCHOOLOGY_HOST` may be a bare host or a full `https://` URL; both binaries
+normalise it (`schoology.NormalizeHost`).
+
 ## Configuration
 
 Sample:

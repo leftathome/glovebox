@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connectors/schoology"
@@ -82,7 +83,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	host := os.Getenv("SCHOOLOGY_HOST")
+	host := schoology.NormalizeHost(os.Getenv("SCHOOLOGY_HOST"))
 	if host == "" {
 		slog.Error("schoology: SCHOOLOGY_HOST is required",
 			"recovery_doc", "docs/AUTH-RECOVERY.md")
@@ -102,9 +103,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	lib, err := schoologylib.NewClient(host, schoologylib.WithSession(
-		creds.SessID, creds.CSRFToken, creds.CSRFKey, creds.UID,
-	))
+	// The session belongs to a real parent account that can post and
+	// message. Every request this process makes goes through a transport
+	// that refuses anything but GET/HEAD. WithHTTPClient must precede
+	// WithSession: the session cookie is written into this client's jar.
+	httpClient, err := connector.NewReadOnlyHTTPClient("schoology", 30*time.Second)
+	if err != nil {
+		slog.Error("schoology: build read-only http client", "error", err)
+		os.Exit(1)
+	}
+	lib, err := schoologylib.NewClient(host,
+		schoologylib.WithHTTPClient(httpClient),
+		schoologylib.WithSession(creds.SessID, creds.CSRFToken, creds.CSRFKey, creds.UID),
+	)
 	if err != nil {
 		slog.Error("schoology: construct library client",
 			"host", host,
