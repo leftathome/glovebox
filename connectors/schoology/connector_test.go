@@ -200,6 +200,44 @@ func TestConnector_Poll_CallsPollNow(t *testing.T) {
 	}
 }
 
+// The framework re-invokes Poll on every periodic re-poll tick (5 minutes by
+// default). Only the first call may reach Schoology; the windowed schedule in
+// Watch owns everything after that.
+func TestConnector_Poll_OnlyFirstCallReachesSchoology(t *testing.T) {
+	var inboxCalls int
+	client := &fakeClient{
+		OverdueSubmissionsFunc: func(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {
+			return nil, nil, nil
+		},
+		FeedFunc: func(ctx context.Context, childUID int64) ([]*schoologylib.Post, schoologylib.ParseErrors, error) {
+			return nil, nil, nil
+		},
+		InboxFunc: func(ctx context.Context) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error) {
+			inboxCalls++
+			return nil, nil, nil
+		},
+	}
+	c := newWiredConnector(t, client)
+	cp := newTestCheckpoint(t)
+
+	for i := 0; i < 5; i++ {
+		if err := c.Poll(context.Background(), cp); err != nil {
+			t.Fatalf("Poll #%d: %v", i+1, err)
+		}
+	}
+	if inboxCalls != 1 {
+		t.Fatalf("Schoology was polled %d times across 5 framework Poll calls, want 1", inboxCalls)
+	}
+
+	// Scheduled and triggered polls are unaffected by the catch-up gate.
+	if err := c.pollNow(context.Background(), cp, "scheduled", 0); err != nil {
+		t.Fatalf("scheduled pollNow: %v", err)
+	}
+	if inboxCalls != 2 {
+		t.Fatalf("scheduled poll did not reach Schoology: inboxCalls = %d, want 2", inboxCalls)
+	}
+}
+
 func TestConnector_PollNow_ConvergesAllSources(t *testing.T) {
 	client := &fakeClient{
 		OverdueSubmissionsFunc: func(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {

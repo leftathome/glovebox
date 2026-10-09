@@ -301,7 +301,9 @@ func TestIntegration_HappyPath(t *testing.T) {
 	assertCheckpoint(t, cp, "message", "", 4001)
 
 	// --- Poll 2 -------------------------------------------------------
-	if err := c.Poll(context.Background(), cp); err != nil {
+	// Only the first framework Poll reaches Schoology (catch-up gate); every
+	// later poll comes from the schedule, so drive that path here.
+	if err := c.pollNow(context.Background(), cp, "scheduled", 0); err != nil {
 		t.Fatalf("poll 2: %v", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,6 +53,9 @@ type SchoologyConnector struct {
 	driftCounter *SchemaDriftCounter
 
 	pollMu sync.Mutex // serializes pollNow across Poll/Watch/trigger
+
+	// caughtUp is set by the first Poll; see Poll.
+	caughtUp atomic.Bool
 }
 
 // NewConnector constructs a SchoologyConnector. The returned value
@@ -143,7 +147,18 @@ func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) error {
 // startup (catch-up) and again from the re-poll branches of RunWatchLoop.
 // splaySecs is -1 because catch-up polls aren't scheduled through the
 // window scheduler — see pollNow's splay-handling.
+//
+// Only the FIRST call in a process reaches Schoology. The framework's
+// periodic re-poll is a safety net for connectors whose Watch can silently
+// stall; here the windowed schedule in Watch is the whole point (a handful
+// of polls a day, weekdays only, against a real parent account), and an
+// ungated re-poll would hit Schoology on every framework tick regardless of
+// poll_schedule. Later calls are no-ops.
 func (c *SchoologyConnector) Poll(ctx context.Context, cp connector.Checkpoint) error {
+	if !c.caughtUp.CompareAndSwap(false, true) {
+		slog.Debug("schoology catch-up poll skipped; schedule is authoritative")
+		return nil
+	}
 	return c.pollNow(ctx, cp, "catch_up", -1)
 }
 

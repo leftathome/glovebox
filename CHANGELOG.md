@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-09
+
+### Fixed
+
+- **Schoology connector ignored `poll_schedule` and polled every 5 minutes.**
+  The framework's periodic re-poll (a safety net for stalled watchers,
+  default 5m) called the connector's `Poll`, which ran an ungated catch-up
+  poll each time -- around the clock, regardless of the configured windows or
+  `weekdays_only`, against a real parent account. The same tick also restarted
+  `Watch`, re-rolling the in-window splay and occasionally skipping a window.
+  Only the first `Poll` in a process now reaches Schoology (startup
+  catch-up); the windowed schedule owns every poll after that, and the
+  connector sets a 30-day framework interval so `Watch` is left alone. Found
+  before the connector was first enabled against a live account.
+
 ## [0.9.3] - 2026-10-09
 
 0.9.2 was tagged and its chart published, but its container images were

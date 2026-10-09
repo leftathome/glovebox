@@ -10,6 +10,12 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.4 (from 0.9.3)
+
+No required changes. If you run the Schoology connector, upgrade before
+anything else: 0.9.3 and earlier poll Schoology every 5 minutes regardless of
+`poll_schedule`.
+
 ## Upgrading to 0.9.3 (from 0.9.1)
 
 No required changes. 0.9.2 was tagged but its images were never published;
