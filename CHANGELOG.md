@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-09
+
+### Fixed
+
+- **Schoology connector silently dropped most items.** It remembered one
+  "highest ID staged" per child and surface, and walked each listing in page
+  order. The feed is newest-first, so the first post carried the highest ID
+  and every post after it was rejected as already seen; overdue work is
+  listed by due date with the same effect. On the first live poll it staged
+  7 items where the account listed about 31 (1 feed post in 10 per child),
+  and an older assignment that became overdue later could never be staged.
+  It now keeps a bounded set of staged IDs per child and surface and stages
+  anything not in it. A test reproduces the live ordering.
+
+### Added
+
+- Chart: `schoologyConnector.state` (`persistent`, `size`, `storageClass`,
+  `existingClaim`). The connector's state was an `emptyDir`, so every pod
+  restart forgot what had been staged and re-delivered everything Schoology
+  currently lists. The default is unchanged (`persistent: false`); set it to
+  `true` for real use.
+
 ## [0.9.6] - 2026-10-09
 
 ### Fixed

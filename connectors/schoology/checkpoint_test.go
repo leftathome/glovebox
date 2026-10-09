@@ -49,9 +49,11 @@ func TestShouldStage_Advances(t *testing.T) {
 		t.Errorf("equal id: got d=%v err=%v, want StageSkipDuplicate nil", d, err)
 	}
 
+	// A lower id that has NOT been staged is a new item, not a duplicate:
+	// Schoology lists items in page order, not id order.
 	d, err = ShouldStage(cp, "feed", "k1", 99)
-	if err != nil || d != StageSkipBelow {
-		t.Errorf("below-checkpoint id: got d=%v err=%v, want StageSkipBelow nil", d, err)
+	if err != nil || d != StageAccept {
+		t.Errorf("unseen lower id: got d=%v err=%v, want StageAccept nil", d, err)
 	}
 
 	d, err = ShouldStage(cp, "feed", "k1", 101)
