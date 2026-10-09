@@ -10,9 +10,10 @@ at 02:00 with uploads failing.
 
 ---
 
-## Upgrading to 0.9.2 (from 0.9.1)
+## Upgrading to 0.9.3 (from 0.9.1)
 
-No required changes. Operators running the Schoology refresher against a Vault
+No required changes. 0.9.2 was tagged but its images were never published;
+go straight to 0.9.3. Operators running the Schoology refresher against a Vault
 secret whose properties are not literally `host`/`username`/`password` can
 drop any post-render patches in favour of
 `schoologyAuthRefresher.vault.credentialsKeys`, and can verify a private-CA

@@ -47,6 +47,9 @@ RUN set -eux; \
       *) echo "enricher-runtime: unsupported architecture '${arch}' (want amd64|arm64)" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
+    # Pick up security fixes Debian has published since the base image was
+    # last rebuilt (the Trivy gate fails on exactly those: fixed CRITICALs).
+    apt-get upgrade -y --no-install-recommends; \
     apt-get install -y --no-install-recommends \
       poppler-utils \
       tesseract-ocr \
