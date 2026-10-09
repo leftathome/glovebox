@@ -64,7 +64,7 @@ type AttachmentSkip struct {
 func ProcessAttachments(
 	ctx context.Context,
 	client SchoologyClient,
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	tel *Telemetry,
@@ -190,7 +190,7 @@ func downloadAttachmentCapped(ctx context.Context, client SchoologyClient, tel *
 // schoology.staging.commit span (spec §13.2). The parse_status attr is
 // "normal" because attachment items don't carry a degraded shape -- the
 // raw bytes are the content, with no separate parser.
-func stageAttachmentContent(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, data []byte, a Attachment) error {
+func stageAttachmentContent(ctx context.Context, tel *Telemetry, writer connector.StagingBackend, opts connector.ItemOptions, data []byte, a Attachment) error {
 	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
 		attribute.Int64("item_id", a.ID),
 		attribute.String("destination", opts.DestinationAgent),

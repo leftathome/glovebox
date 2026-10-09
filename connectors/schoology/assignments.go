@@ -33,7 +33,7 @@ const assignmentSurface = "assignment"
 func ProcessAssignments(
 	ctx context.Context,
 	client SchoologyClient,
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	cp connector.Checkpoint,
 	dedup *ReceiptDedup,
@@ -161,7 +161,7 @@ func getOverdueSubmissionsTraced(ctx context.Context, client SchoologyClient, te
 // span. parse_status is "normal" because the assignments processor stages
 // only fully-parsed assignments; degraded receipts go through the receipt
 // path with their own emission helpers.
-func stageAssignmentItem(ctx context.Context, tel *Telemetry, writer *connector.StagingWriter, opts connector.ItemOptions, body []byte, itemID int64) error {
+func stageAssignmentItem(ctx context.Context, tel *Telemetry, writer connector.StagingBackend, opts connector.ItemOptions, body []byte, itemID int64) error {
 	_, span := tel.StartSpan(ctx, "schoology.staging.commit",
 		attribute.Int64("item_id", itemID),
 		attribute.String("destination", opts.DestinationAgent),
@@ -268,7 +268,7 @@ func classifyAssignmentsErr(err error) string {
 // "schoology-parse-failure:*". If neither matches, the receipt is
 // dropped silently with slog.Warn.
 func emitAssignmentsTopLevelReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	kid Kid,
 	libVersion string,
@@ -297,7 +297,7 @@ func emitAssignmentsTopLevelReceipt(
 // emitAssignmentsRowParseReceipt stages a parse-failure receipt for a
 // single bucket of row-parse failures.
 func emitAssignmentsRowParseReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	kid Kid,
 	libVersion string,
@@ -330,7 +330,7 @@ func emitAssignmentsRowParseReceipt(
 // helper local rather than dedupe with feed.go's emitReceipt; a future
 // cleanup commit can consolidate the two implementations.
 func emitAssignmentsReceipt(
-	writer *connector.StagingWriter,
+	writer connector.StagingBackend,
 	matcher *connector.RuleMatcher,
 	in ReceiptInputs,
 	body []byte,

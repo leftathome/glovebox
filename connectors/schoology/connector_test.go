@@ -103,9 +103,9 @@ func TestConnector_Wire_RejectsNilDeps(t *testing.T) {
 		want string
 	}{
 		{
-			name: "nil writer",
-			cc:   connector.ConnectorContext{Writer: nil, Matcher: &connector.RuleMatcher{}, Metrics: mustMetrics(t)},
-			want: "Writer",
+			name: "no backend and no writer",
+			cc:   connector.ConnectorContext{Writer: nil, Backend: nil, Matcher: &connector.RuleMatcher{}, Metrics: mustMetrics(t)},
+			want: "no staging backend",
 		},
 		{
 			name: "nil matcher",
