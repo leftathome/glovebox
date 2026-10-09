@@ -1450,6 +1450,152 @@ connectors:
     affinity: {}
     tolerations: []
 
+  # PowerSchool parent portal (spec 16): grades, assignments and attendance
+  # per child. Read-only by construction -- every request goes through a
+  # transport pinned to the portal host that refuses anything but GET/HEAD,
+  # plus an allowlist of two POSTs that change no record: the assignment
+  # query and the portal's own student switcher, the latter only for the
+  # student ids configured below (see docs/connectors/powerschool.md).
+  #
+  # NOT READY TO ENABLE: it needs the login job that produces the session
+  # (not built yet) and a supervised first run (spec 16 section 11). Leave
+  # disabled until then.
+  powerschool:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-powerschool
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      # Opaque labels (k1, k2), never names. REPLACE the placeholder
+      # student_id values with each child's id from the portal's student
+      # switcher before enabling -- "0" fails ValidateConfig at startup.
+      # Optional per kid: student_number, the school-issued number shown on
+      # the portal page, and student_api_id, the student id the portal
+      # embeds in that child's scores pages -- further checks on which child
+      # a page belongs to (docs/connectors/powerschool.md). Both identify a
+      # real child; set them in private values only.
+      kids:
+        - name: k1
+          student_id: "0"
+        - name: k2
+          student_id: "0"
+      # Three polls a weekday, each at a random time inside its window.
+      # The connector shares the owner's own parent account and the portal
+      # appears to allow one live session per account, so the windows sit
+      # OUTSIDE 16:00-21:00 local, when the owner may be signed in: a
+      # session the owner's login has ended costs one poll, not a poll that
+      # could have collided with it. Keep any windows you add out of that
+      # span, and never schedule the login job inside it (it would sign the
+      # owner out).
+      poll_schedule:
+        weekdays_only: true
+        windows:
+          - start: "06:00"
+            end: "06:30"
+          - start: "15:00"
+            end: "15:30"
+          - start: "21:30"
+            end: "22:00"
+      # Turning assignments off removes the assignment-lookup POST from the
+      # transport's allowlist. The student-switch POST remains.
+      surfaces:
+        grades: true
+        assignments: true
+        attendance: true
+      assignments:
+        lookback_days: 30
+        course_delay_ms: 500
+      failure_threshold: 5
+      # Per-child visibility. Every enabled surface of every kid needs its
+      # own rule naming that kid's data_subject; startup fails if one is
+      # missing, if two kids share a subject, or if a "*" rule shadows them.
+      # There is deliberately no wildcard tail. REPLACE k1/k2 with each
+      # child's subject id. Destinations must appear in
+      # scanner.agentAllowlist above, or the scanner drops the item.
+      rules:
+        - match: "powerschool:k1:grade"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k1:assignment"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k1:attendance"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k2:grade"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:assignment"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:attendance"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+      identity:
+        provider: powerschool
+        auth_method: session_cookie
+        tenant: ""
+    env:
+      POWERSCHOOL_TIMEZONE: America/Los_Angeles
+      # The saved session, as a file from the Secret mounted below
+      # (externalSecret.files). A file, not an env var: when the login job
+      # replaces the session the kubelet updates the file in place and a
+      # connector that is waiting for a new session picks it up without a
+      # pod restart.
+      POWERSCHOOL_SESSION_FILE: /etc/powerschool/session.json
+    secrets: ""
+    # The connector takes the portal location and a saved SESSION -- never
+    # the account's username or password, which belong only to the login
+    # job that produces the session. Do not map powerschool_username /
+    # powerschool_password here. Remote keys and property names are yours
+    # to change; the env var name POWERSCHOOL_HOST and the file name
+    # session.json (which POWERSCHOOL_SESSION_FILE above points at) are
+    # fixed.
+    externalSecret:
+      enabled: false
+      refreshInterval: "5m"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data:
+        # Bare host or full https URL; the binary normalises it.
+        POWERSCHOOL_HOST:
+          key: eso/glovebox-powerschool
+          property: powerschool_hostname
+      # Delivered as files under mountPath, not as env vars.
+      files:
+        mountPath: /etc/powerschool
+        data:
+          # JSON written by the login job (powerschool-go
+          # Client.ExportSession). No such job ships yet.
+          session.json:
+            key: eso/glovebox-powerschool-session
+            property: session
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    # Checkpoints are per-record fingerprints. Losing them re-stages every
+    # current grade and every assignment inside the lookback window, so
+    # this is a PVC, not an emptyDir.
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
 # Schoology browser-session refresher (spec 06 §12). Disabled by
 # default; opt-in by setting schoologyAuthRefresher.enabled=true. When
 # enabled, the chart renders a CronJob, a dedicated ServiceAccount, and

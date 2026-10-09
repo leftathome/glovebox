@@ -41,7 +41,7 @@ later only where artifact/runtime verification is justified).
   stage-and-readback harness against a committed fixture archive; tracked
   separately (lower priority), not in this credential registry.
 
-## Registry (23 source connectors)
+## Registry (24 source connectors)
 
 | connector | cred source | vault path | secret shape | image smoke |
 |-----------|-------------|------------|--------------|-------------|
@@ -56,6 +56,7 @@ later only where artifact/runtime verification is justified).
 | onedrive | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
 | teams | real-readonly | TBD (private ci-templates) | TBD (OAuth token/creds file) | no |
 | schoology | real-readonly | TBD (private ci-templates) | env `SCHOOLOGY_HOST` + `SCHOOLOGY_CREDENTIALS_FILE` (session JSON: SessID/CSRFToken/CSRFKey/UID) + `SCHOOLOGY_KID_UID` | no |
+| powerschool | real-readonly | `eso/glovebox-powerschool` (host); session path TBD | env `POWERSCHOOL_HOST` + `POWERSCHOOL_SESSION` (or `POWERSCHOOL_SESSION_FILE`): powerschool-go `SessionExport` JSON. Never the username/password | no |
 | github | test-account | TBD (private ci-templates) | TBD (PAT) | no |
 | gitlab | test-account | TBD (private ci-templates) | TBD (PAT) | no |
 | jira | test-account | TBD (private ci-templates) | TBD (API token + email) | no |
@@ -69,7 +70,7 @@ later only where artifact/runtime verification is justified).
 | youtube | test-account | TBD (private ci-templates) | TBD (Data API key) | no |
 | semantic-scholar | test-account | TBD (private ci-templates) | free SEMANTIC_SCHOLAR_API_KEY | no |
 
-Tally: 3 `none` + 8 `real-readonly` + 12 `test-account` = 23 source connectors.
+Tally: 3 `none` + 9 `real-readonly` + 12 `test-account` = 24 source connectors.
 
 ## Onboarding order
 

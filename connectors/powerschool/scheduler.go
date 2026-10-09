@@ -1,0 +1,158 @@
+package powerschool
+
+import (
+	"fmt"
+	"math/rand"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// computeNextPollTime returns the next scheduled poll time given the
+// current moment, the timezone, and a random source for splay.
+// The second return value is true when the current day was skipped
+// because of weekdays_only=true falling on a weekend.
+//
+// The rng is mutated on each call and is not safe to share across
+// goroutines; the Watcher owns its own *rand.Rand.
+//
+// Panics if cfg.PollSchedule.Windows is empty (config validation
+// should have rejected this; see ValidateConfig).
+//
+// Copied from the Schoology connector (connectors/schoology/scheduler.go);
+// both are candidates for extraction to a shared connector primitive.
+func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand.Rand) (time.Time, bool) {
+	if len(cfg.PollSchedule.Windows) == 0 {
+		panic("powerschool: computeNextPollTime called with zero windows; config validation should have rejected this")
+	}
+	now = now.In(tz)
+	day := now
+	skipped := false
+
+	// Skip ahead through weekend days if weekdays_only.
+	if cfg.PollSchedule.WeekdaysOnly && isWeekend(day) {
+		skipped = true
+		for isWeekend(day) {
+			day = day.AddDate(0, 0, 1)
+		}
+		return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), true
+	}
+
+	// Find the first window today whose splayed time is not before now.
+	// "Not before", not "after": callers schedule the next poll from the
+	// end of the window that just fired, and when the next window starts
+	// at that very instant (adjacent windows) a splay of zero lands exactly
+	// on it. A strict comparison skipped that window. Equality cannot
+	// revisit the window that just fired, because a window's end is
+	// exclusive: no time inside it equals its end.
+	for _, w := range cfg.PollSchedule.Windows {
+		t := splayedTimeIn(w, day, tz, rng)
+		if !t.Before(now) {
+			return t, skipped
+		}
+	}
+
+	// All today's windows are past -- roll to next day (or next weekday).
+	day = day.AddDate(0, 0, 1)
+	for cfg.PollSchedule.WeekdaysOnly && isWeekend(day) {
+		day = day.AddDate(0, 0, 1)
+	}
+	return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), skipped
+}
+
+// windowEnd returns the end of the configured window that contains t (on
+// t's own day), or t unchanged when t is in no window.
+//
+// The scheduler picks "the first splayed time after now", so asking it for
+// the next poll from a moment still inside the window that just fired
+// re-rolls within that same window and polls it again whenever the roll
+// lands later. Scheduling the next poll from windowEnd(fired) instead gives
+// each window exactly one scheduled poll.
+func windowEnd(cfg Config, t time.Time, tz *time.Location) time.Time {
+	t = t.In(tz)
+	sec := t.Hour()*3600 + t.Minute()*60 + t.Second()
+	for _, w := range cfg.PollSchedule.Windows {
+		startH, startM := parseHHMM(w.Start)
+		endH, endM := parseHHMM(w.End)
+		startSec := startH*3600 + startM*60
+		endSec := endH*3600 + endM*60
+		if sec >= startSec && sec < endSec {
+			return time.Date(t.Year(), t.Month(), t.Day(), endH, endM, 0, 0, tz)
+		}
+	}
+	return t
+}
+
+// lastWindowStart returns the start of the most recent scheduled window
+// that had opened by now (weekends skipped under weekdays_only), or the
+// zero time if none opened in the past eight days.
+//
+// It decides whether a process that has just started owes a catch-up poll:
+// if the last recorded poll is at or after this instant, the most recent
+// window has been served and there is nothing to catch up on.
+func lastWindowStart(cfg Config, now time.Time, tz *time.Location) time.Time {
+	now = now.In(tz)
+	var latest time.Time
+	for back := 0; back <= 8; back++ {
+		day := now.AddDate(0, 0, -back)
+		if cfg.PollSchedule.WeekdaysOnly && isWeekend(day) {
+			continue
+		}
+		for _, w := range cfg.PollSchedule.Windows {
+			h, m := parseHHMM(w.Start)
+			start := time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, tz)
+			if !start.After(now) && start.After(latest) {
+				latest = start
+			}
+		}
+		if !latest.IsZero() {
+			return latest
+		}
+	}
+	return latest
+}
+
+func isWeekend(t time.Time) bool {
+	wd := t.Weekday()
+	return wd == time.Saturday || wd == time.Sunday
+}
+
+// splayedTimeIn returns a random time strictly within window w on the
+// given day. Both endpoints in the window are inclusive at start and
+// exclusive at end (the math reflects that).
+func splayedTimeIn(w PollWindow, day time.Time, tz *time.Location, rng *rand.Rand) time.Time {
+	startH, startM := parseHHMM(w.Start)
+	endH, endM := parseHHMM(w.End)
+	startSec := startH*3600 + startM*60
+	endSec := endH*3600 + endM*60
+	if endSec <= startSec {
+		panic(fmt.Sprintf("powerschool: invalid window %q-%q reached scheduler; config validation should have rejected it", w.Start, w.End))
+	}
+	splay := rng.Intn(endSec - startSec)
+	totalSec := startSec + splay
+	return time.Date(day.Year(), day.Month(), day.Day(),
+		totalSec/3600, (totalSec%3600)/60, totalSec%60, 0, tz)
+}
+
+func parseHHMM(s string) (int, int) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	hh, _ := strconv.Atoi(parts[0])
+	mm, _ := strconv.Atoi(parts[1])
+	return hh, mm
+}
+
+// loadTimezone returns the timezone for the scheduler. Empty input
+// defaults to America/Los_Angeles per spec 16 section 8.
+func loadTimezone(name string) (*time.Location, error) {
+	if name == "" {
+		name = "America/Los_Angeles"
+	}
+	tz, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("load timezone %q: %w", name, err)
+	}
+	return tz, nil
+}

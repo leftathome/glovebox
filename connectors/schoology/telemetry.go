@@ -74,7 +74,10 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 		return nil, errors.New("schoology.NewTelemetry: tracerName is required")
 	}
 
-	meter := otel.Meter(meterName)
+	// The framework's own provider, the one behind /metrics. otel.Meter()
+	// resolves against the global provider, which connector.Run never sets:
+	// every instrument below was a silent no-op in a connector process.
+	meter := base.Provider().Meter(meterName)
 	t := &Telemetry{
 		Metrics: base,
 		tracer:  otel.Tracer(tracerName),

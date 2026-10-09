@@ -295,6 +295,8 @@ build:
         DOCKERFILE: ./connectors/notion/Dockerfile
       - IMAGE: glovebox-onedrive
         DOCKERFILE: ./connectors/onedrive/Dockerfile
+      - IMAGE: glovebox-powerschool
+        DOCKERFILE: ./connectors/powerschool/Dockerfile
       - IMAGE: glovebox-rss
         DOCKERFILE: ./connectors/rss/Dockerfile
       - IMAGE: glovebox-schoology
