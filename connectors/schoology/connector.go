@@ -56,6 +56,13 @@ type SchoologyConnector struct {
 
 	// caughtUp is set by the first Poll; see Poll.
 	caughtUp atomic.Bool
+
+	// OnSessionRejected, when set, is called once Schoology has refused the
+	// session, just before the PermanentError that exits the process. The
+	// binary uses it to record the rejected session so the restarted
+	// process does not present the same dead cookie again (see
+	// RejectedSession). Set before Run; not safe to change afterwards.
+	OnSessionRejected func()
 }
 
 // NewConnector constructs a SchoologyConnector. The returned value
@@ -174,8 +181,16 @@ func (c *SchoologyConnector) Handler() http.Handler {
 // RunWatchLoop sees the PermanentError, logs it, and os.Exit(1)s -- the
 // operator runbook (docs/AUTH-RECOVERY.md) tells them what to do next.
 func (c *SchoologyConnector) Watch(ctx context.Context, cp connector.Checkpoint) error {
+	// notBefore is the end of the window whose scheduled poll last fired;
+	// the next poll is scheduled from there so a window is never polled
+	// twice (see windowEnd).
+	var notBefore time.Time
 	for {
-		next, splaySecs, window := c.nextPoll(time.Now())
+		from := time.Now()
+		if notBefore.After(from) {
+			from = notBefore
+		}
+		next, splaySecs, window := c.nextPoll(from)
 		slog.Debug("schoology splay computed",
 			"window", window,
 			"splay_seconds", splaySecs,
@@ -197,6 +212,7 @@ func (c *SchoologyConnector) Watch(ctx context.Context, cp connector.Checkpoint)
 		case <-timer.C:
 			source = "scheduled"
 			pollSplay = splaySecs
+			notBefore = windowEnd(c.cfg, next, c.tz)
 		case <-c.pollSignal:
 			timer.Stop()
 			source = "triggered"
@@ -379,6 +395,9 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 				"parser", parser,
 				"recovery_doc", "docs/AUTH-RECOVERY.md",
 			)
+			if c.OnSessionRejected != nil {
+				c.OnSessionRejected()
+			}
 			return connector.PermanentError(fmt.Errorf(
 				"schoology session expired (parser=%s); see docs/AUTH-RECOVERY.md",
 				parser,

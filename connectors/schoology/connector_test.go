@@ -322,9 +322,22 @@ func TestConnector_DetectBadCredentials(t *testing.T) {
 	c := newWiredConnector(t, client)
 	cp := newTestCheckpoint(t)
 
+	// The binary records the refused session through this hook so a
+	// restarted process does not present the same dead cookie again.
+	rejected := NewRejectedSession(t.TempDir())
+	fp := SessionFingerprint("sess-under-test")
+	c.OnSessionRejected = func() {
+		if err := rejected.Mark(fp); err != nil {
+			t.Errorf("Mark: %v", err)
+		}
+	}
+
 	err := c.pollNow(context.Background(), cp, "scheduled", 0)
 	if err == nil {
 		t.Fatal("pollNow with bad credentials returned nil error")
+	}
+	if !rejected.IsRejected(fp) {
+		t.Error("auth failure did not record the session as rejected")
 	}
 	if !connector.IsPermanent(err) {
 		t.Errorf("pollNow bad-credentials error is not permanent: %v", err)

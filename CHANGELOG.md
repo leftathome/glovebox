@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-09
+
+### Fixed
+
+- **Schoology connector could poll a window more than once**
+  (glovebox-wekc.6). After a scheduled poll the next one was computed from
+  the moment the poll fired, which was still inside the same window; the
+  scheduler re-rolled a time in that window and polled again whenever the
+  roll landed later (about 1.7 polls per window on average, occasionally 4-5).
+  The next poll is now scheduled from the end of the window that just fired:
+  exactly one scheduled poll per window.
+- **A session Schoology had refused was presented again on every restart.**
+  A refused session exits the process; the restarted process loaded the same
+  credentials file and immediately polled with the same dead cookie, at
+  crash-loop cadence, until the refresher replaced it. The connector now
+  records a SHA-256 of the refused session id in its state directory and, on
+  startup, waits without making upstream requests until the credentials file
+  holds a different session.
+
 ## [0.9.4] - 2026-10-09
 
 ### Fixed

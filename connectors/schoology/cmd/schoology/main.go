@@ -103,6 +103,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// If Schoology already refused this exact session, do not present it
+	// again: wait here, making no upstream requests, until the credentials
+	// file holds a different one (the refresher writes a new session and
+	// ESO updates the mounted Secret in place). The health endpoints are
+	// not up yet, so the pod reports unhealthy while it waits -- that is
+	// the operator signal.
+	rejected := schoology.NewRejectedSession(os.Getenv("GLOVEBOX_STATE_DIR"))
+	for rejected.IsRejected(schoology.SessionFingerprint(creds.SessID)) {
+		slog.Error("schoology: session was already rejected upstream; waiting for a new one, not polling",
+			"path", credsPath,
+			"recovery_doc", "docs/AUTH-RECOVERY.md")
+		time.Sleep(time.Minute)
+		if fresh, err := schoologyauth.LoadCredentials(credsPath); err == nil {
+			creds = fresh
+		}
+	}
+	sessionFP := schoology.SessionFingerprint(creds.SessID)
+
 	// The session belongs to a real parent account that can post and
 	// message. Every request this process makes goes through a transport
 	// that refuses anything but GET/HEAD. WithHTTPClient must precede
@@ -130,6 +148,11 @@ func main() {
 	if err != nil {
 		slog.Error("schoology: construct connector", "error", err)
 		os.Exit(1)
+	}
+	c.OnSessionRejected = func() {
+		if err := rejected.Mark(sessionFP); err != nil {
+			slog.Error("schoology: could not record rejected session", "error", err)
+		}
 	}
 
 	connector.Run(connector.Options{
