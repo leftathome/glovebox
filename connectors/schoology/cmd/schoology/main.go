@@ -50,7 +50,7 @@ import (
 // receipts so operators can correlate breakage to a specific upstream
 // commit. It must be kept in sync with the go.mod pin for
 // github.com/leftathome/schoology-go.
-const schoologyLibVersion = "v0.1.0"
+const schoologyLibVersion = "v0.2.1"
 
 func main() {
 	configFile := os.Getenv("GLOVEBOX_CONNECTOR_CONFIG")
