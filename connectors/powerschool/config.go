@@ -34,10 +34,18 @@ type Config struct {
 // from the same page as the grades, must equal it or the kid is skipped for
 // that poll. It is an identifier of a real child, so set it through the
 // deployment's private values, never in a committed file.
+//
+// StudentAPIID is optional. It is the student id the portal embeds in this
+// child's scores pages (powerschool-go's StudentAPIID), which is not the
+// switcher id. Every scores page read for the kid must carry it (see
+// binding.go). When it is unset the connector learns it on the kid's first
+// clean poll and keeps it in the checkpoint; setting it here also protects
+// that first poll. Like StudentNumber it identifies a real child.
 type Kid struct {
 	Name          string `json:"name"`
 	StudentID     string `json:"student_id"`
 	StudentNumber string `json:"student_number,omitempty"`
+	StudentAPIID  string `json:"student_api_id,omitempty"`
 }
 
 // PollSchedule defines when the connector polls. See spec 16 section 8.
@@ -123,6 +131,7 @@ func ValidateConfig(c *Config) error {
 	seenName := make(map[string]bool, len(c.Kids))
 	seenID := make(map[string]bool, len(c.Kids))
 	seenNumber := make(map[string]bool, len(c.Kids))
+	seenAPIID := make(map[string]bool, len(c.Kids))
 	for i, k := range c.Kids {
 		if k.Name == "" {
 			return fmt.Errorf("kids[%d]: empty name", i)
@@ -151,6 +160,17 @@ func ValidateConfig(c *Config) error {
 				return fmt.Errorf("kids: duplicate student_number (kid %q)", k.Name)
 			}
 			seenNumber[k.StudentNumber] = true
+		}
+		if k.StudentAPIID != "" {
+			if !isStudentID(k.StudentAPIID) {
+				return fmt.Errorf("kids[%d] (%s): student_api_id must be a non-zero numeric string", i, k.Name)
+			}
+			// One id for two kids would let either kid's turn accept the
+			// other child's pages.
+			if seenAPIID[k.StudentAPIID] {
+				return fmt.Errorf("kids: duplicate student_api_id (kid %q)", k.Name)
+			}
+			seenAPIID[k.StudentAPIID] = true
 		}
 		seenName[k.Name] = true
 		seenID[k.StudentID] = true

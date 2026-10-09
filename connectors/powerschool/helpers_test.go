@@ -20,18 +20,14 @@ import (
 // field can be set per-test; nil defaults to a "not configured" error. It
 // records every call so tests can assert what was (not) asked for.
 //
-// Like the library, a successful GetAssignments stamps the grade with the
-// student id of the scores page it "read" (Grade.StudentAPIID). The fake
-// uses fakeAPIID unless AssignmentsFunc set one itself, or NoAPIID is set.
-//
-// SelectStudent behaves like the library's on top of HomeFunc: read the
-// page, and if another student is marked, "post the switcher form" -- which
-// moves Selected unless IgnoreSwitch is set -- then read again and confirm.
-// Fixtures built by pollFixture render the page from Selected, so the fake
-// has the same server-side selection state the portal has.
+// FetchScoresMetadata stands in for the scores page: it reports the
+// student id from APIIDFunc (fakeAPIID when nil, none when NoAPIID is set),
+// or whatever ScoresFunc returns.
 type fakeClient struct {
 	HomeFunc        func(ctx context.Context) (*pslib.HomePage, error)
 	AssignmentsFunc func(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error)
+	ScoresFunc      func(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error)
+	APIIDFunc       func(scoresURL string) string
 	NoAPIID         bool
 
 	// Selected is the portal-side selection (a student id).
@@ -41,6 +37,7 @@ type fakeClient struct {
 
 	HomeCalls        int
 	SwitchCalls      []string // student id per form post
+	ScoresCalls      []string // scores URL per scores-page read
 	AssignmentsCalls []string // "<studentID>/<courseID>" per call
 }
 
@@ -99,11 +96,22 @@ func (f *fakeClient) GetAssignments(ctx context.Context, studentID string, grade
 	if f.AssignmentsFunc == nil {
 		return nil, errors.New("fakeClient.GetAssignments not configured")
 	}
-	out, err := f.AssignmentsFunc(ctx, studentID, grade)
-	if err == nil && grade.StudentAPIID == "" && !f.NoAPIID {
-		grade.StudentAPIID = fakeAPIID
+	return f.AssignmentsFunc(ctx, studentID, grade)
+}
+
+func (f *fakeClient) FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error) {
+	f.ScoresCalls = append(f.ScoresCalls, scoresURL)
+	if f.ScoresFunc != nil {
+		return f.ScoresFunc(ctx, scoresURL)
 	}
-	return out, err
+	md := &pslib.ScoresMetadata{SectionID: "654321", StudentAPIID: fakeAPIID}
+	if f.APIIDFunc != nil {
+		md.StudentAPIID = f.APIIDFunc(scoresURL)
+	}
+	if f.NoAPIID {
+		md.StudentAPIID = ""
+	}
+	return md, nil
 }
 
 // Compile-time check: fake implements the interface.

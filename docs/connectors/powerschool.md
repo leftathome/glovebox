@@ -14,43 +14,70 @@ session. Design: [spec 16](../specs/16-powerschool-connector-design.md).
 
 ## Status
 
-Shipped **disabled, and not deployable yet**:
+Shipped **disabled**. It builds against the released
+`github.com/leftathome/powerschool-go v0.2.0`, and the portal behaviour it
+depends on has been verified live with the library. What is missing before
+it can be enabled:
 
-1. It depends on an unreleased `powerschool-go` (branch
-   `feat/readonly-session-client`). `go.mod` currently replaces the module
-   with a pseudo-version on a private host, which CI and the image build
-   cannot fetch. A release is needed first.
-2. There is no login workload yet to produce the session.
-3. The student switch and the dead-session handling have only been run
-   against synthetic fixtures built to the live page's shape. One supervised
-   run against the real portal is needed before enabling.
+1. The **login job** that produces the session (below). Not built yet;
+   tracked separately.
+2. A supervised first run, to bind each kid to its scores-page student id
+   (see "One child at a time").
 
-See spec 16 section 11 for the full list.
+See spec 16 section 11.
 
-## Authentication
+## Authentication and the session
 
-The connector never sees the account's username or password and never logs
-in. At startup `cmd/powerschool/main.go` reads:
+**The connector never logs in.** It never sees the account's username or
+password and has no way to authenticate. At startup
+`cmd/powerschool/main.go` reads:
 
 - `POWERSCHOOL_HOST` -- the portal location. A bare host or a full `https://`
   URL; the binary normalises it (`powerschool.NormalizeBaseURL`) and always
   uses https.
-- `POWERSCHOOL_SESSION_FILE`, a path to a session document, or
-  `POWERSCHOOL_SESSION`, the document itself (the file wins if both are
-  set). It is the JSON form of `powerschool-go`'s `SessionExport`:
-  `{"cookies":[...],"expires_at":"..."}`.
+- `POWERSCHOOL_SESSION_FILE`, a path to a session document (what the chart
+  sets up: a mounted Secret), or `POWERSCHOOL_SESSION`, the document itself.
+  The file wins if both are set. It is the JSON form of `powerschool-go`'s
+  `SessionExport`: `{"cookies":[...],"expires_at":"..."}`.
 
-The session is produced by a separate login workload that holds the
-credentials, drives the browser login and calls `Client.ExportSession`. A
-missing, malformed or expired session is a startup error.
+The session is produced by a separate, scheduled **login job** that holds
+the credentials, drives the browser login and calls `Client.ExportSession`.
+A missing, malformed or expired session is a startup error.
 
-If the portal refuses the session while the connector is running, the
-connector records a fingerprint of it (a hash, in `rejected-session` under
-`GLOVEBOX_STATE_DIR`) and exits. The restarted process does **not** present
-that session again: it waits, not ready and making no upstream request,
-until the session source holds a different one. With the file form that
-happens when the mounted Secret is updated; with the environment form the
-pod has to be replaced.
+### One account, one session
+
+The connector uses the owner's own parent account, and the portal appears
+to keep **one live session per account**: a second login ends the first
+(observed once). So:
+
+- When the owner signs in to the portal, the connector's session ends. That
+  is expected. He does so rarely, and between 16:00 and 21:00 Pacific.
+- A login by the job would sign the owner out. **The login job must never
+  run between 16:00 and 21:00 Pacific.**
+- The default poll windows (06:00-06:30, 15:00-15:30, 21:30-22:00, weekdays)
+  stay outside that span. Keep any you add outside it too.
+- A session rejected mid-day costs data only until the next off-hours
+  login; the first poll on the new session stages everything that changed
+  in between. It is not an incident and must not trigger a login.
+
+### When the session is rejected
+
+The connector records a fingerprint of the session (a hash, in
+`rejected-session` under `GLOVEBOX_STATE_DIR`) and exits. The restarted
+process does **not** present that session again. It waits, making no
+upstream request at all, and re-reads the session file once a minute; when
+the login job replaces the Secret the kubelet updates the mounted file in
+place and the connector starts polling again without a pod restart.
+
+While it waits the pod is **Running and NotReady** (`/healthz` 200,
+`/readyz` 503), not crash-looping. `kubectl get pods` showing 0/1 Ready with
+no restarts, and the log line `this session was already rejected upstream;
+waiting for a new one`, mean "waiting for the next login", nothing more.
+
+To learn how long sessions really last (the expiry in the session document
+is a placeholder), the connector reports each rejected session's age: the
+gauge `powerschool_rejected_session_age_seconds` and one INFO log line with
+`session_age_seconds`. Use it to set the login job's schedule.
 
 Optional: `POWERSCHOOL_TIMEZONE` (scheduler and due-date timezone, default
 `America/Los_Angeles`).
@@ -86,16 +113,30 @@ scanned files only.
 
 The portal shows one child per session. Each poll takes the configured kids
 in turn: select the kid's student (switching if needed), check the page's
-explicit selection marker, read, check the marker again, and only then
-stage. If the page carries no marker, nothing is posted and no kid is read.
-If anything read for a kid disagrees about which student it belongs to,
-everything read for that kid in that poll is discarded. Spec 16 section 6.1.
+explicit selection marker, read, and only then stage. If the page carries no
+marker, nothing is posted and no kid is read.
+
+With the assignments surface on, every scores page read for a kid must
+carry that kid's own student id -- the portal renders a scores page for
+whichever student the session has selected, so this id is proof of whose
+page it is -- and the home-page marker is checked again after the reads. If
+any page is another child's, everything read for that kid in that poll is
+discarded (`error_class=selection_changed`) and none of the kid's
+checkpoints move.
+
+The id comes from `student_api_id` in the kid's config, or is learned on the
+kid's first clean poll and kept in the checkpoint
+(`meta:student_api_id:<kid>`). Setting it in config also protects that
+first poll: after a supervised first run, read the learned values out of
+the checkpoint and put them in your private values. Spec 16 sections 6.1
+and 6.2.
 
 ## Schedule
 
-One poll per configured window, at a random time inside it. The framework's
-periodic re-poll is disabled, and a restart polls only if a window opened
-while the process was down. Spec 16 section 8.
+One poll per configured window, at a random time inside it; by default
+three weekday windows outside 16:00-21:00 local (see "One account, one
+session"). The framework's periodic re-poll is disabled, and a restart
+polls only if a window opened while the process was down. Spec 16 section 8.
 
 ## Configuration
 
@@ -109,7 +150,7 @@ Connector-specific fields:
 
 | field | type | required | description |
 |-------|------|----------|-------------|
-| `kids` | `[]{name,student_id,student_number?}` | yes | children to poll. `name` is an opaque label (`k1`, `k2`) -- never a name -- with no `:` or whitespace. `student_id` is the numeric id from the portal's student switcher, as a string; `"0"` fails validation. Optional `student_number` is the school-issued number the portal page shows; when set, the selected student's number on the page must equal it or that kid is skipped. It identifies a real child: set it in private values only. Names, ids and numbers must be unique |
+| `kids` | `[]{name,student_id,student_api_id?,student_number?}` | yes | children to poll. `name` is an opaque label (`k1`, `k2`) -- never a name -- with no `:` or whitespace. `student_id` is the numeric id from the portal's student switcher, as a string; `"0"` fails validation. Optional `student_number` is the school-issued number the portal page shows; when set, the selected student's number on the page must equal it or that kid is skipped. Optional `student_api_id` is the student id the portal embeds in that child's scores pages; every scores page read for the kid must carry it (learned on the first clean poll when unset). Both identify a real child: set them in private values only. Names, ids, api ids and numbers must be unique |
 | `poll_schedule` | object | yes | `weekdays_only` (bool) + `windows` (`[]{start,end}`), `HH:MM` local times. Exactly one poll at a random time inside each window |
 | `surfaces` | object | no | `grades`, `assignments`, `attendance` booleans; each defaults to `true`. At least one must be on |
 | `assignments.lookback_days` | int | no | assignments first seen with a due date older than this and no missing/late/incomplete flag are recorded without being staged (default 30) |
@@ -170,9 +211,15 @@ connectors:
       enabled: true
       secretStoreRef: { kind: ClusterSecretStore, name: vault-default }
       data:
-        POWERSCHOOL_HOST:    { key: eso/glovebox-powerschool, property: powerschool_hostname }
-        POWERSCHOOL_SESSION: { key: eso/glovebox-powerschool-session, property: session }
+        POWERSCHOOL_HOST: { key: eso/glovebox-powerschool, property: powerschool_hostname }
+      files:                      # mounted, not env: updated in place
+        mountPath: /etc/powerschool
+        data:
+          session.json: { key: eso/glovebox-powerschool-session, property: session }
 ```
+
+`POWERSCHOOL_SESSION_FILE=/etc/powerschool/session.json` is set by the
+chart's default `env`.
 
 The remote keys and property names are yours to change. Do **not** map the
 account's username or password into this connector. The rule destinations
@@ -193,5 +240,4 @@ the production transport against a stateful loopback TLS server
 (`transport_test.go`, `transport_switch_test.go`). All ids, names and
 fixtures are synthetic.
 
-Until `powerschool-go` is released, building needs access to the private
-module host: `GOPRIVATE=gitlab.orac.local GOFLAGS=-mod=mod`.
+

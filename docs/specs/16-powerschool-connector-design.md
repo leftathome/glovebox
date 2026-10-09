@@ -1,6 +1,6 @@
 # PowerSchool Connector -- Design Specification
 
-**Version 0.2 (DRAFT) -- October 2026**
+**Version 0.3 (DRAFT) -- October 2026**
 
 *This document specifies the PowerSchool connector for Glovebox. It reads a
 parent-portal account's grades, gradebook assignments and attendance counts
@@ -10,16 +10,17 @@ differs from it in three places that matter: the read path cannot be a pure
 GET path (two POSTs are allowlisted, section 5), the portal shows one child
 per session so the children are read one at a time behind a switch that is
 verified before and after (section 6), and records are mutable so dedup is
-by fingerprint rather than highest id. The connector ships disabled and
-depends on an unreleased powerschool-go; section 11 lists what is missing.*
+by fingerprint rather than highest id. The connector ships disabled;
+section 11 lists what is missing before it can be enabled.*
 
-*The page structure this design relies on -- the explicit `li.selected`
-marker, the switcher form, server-rendered grades -- was observed on a live
-instance (structure only). The connector and the library code have been
-tested offline against fakes and synthetic fixtures built to that shape; no
-request has been made to a real PowerSchool instance by this code. Claims
-about upstream behaviour are marked as observed, read from the library
-source, or unverified.*
+*The upstream behaviour this design relies on -- the explicit
+`li.selected` marker, the switcher form and that it works, server-rendered
+pages, per-session selection, the scores page following the session's
+selection, a second login ending the first session -- was verified against
+a live instance with the library (section 11.2). The connector itself has
+only been run offline, against fakes and synthetic fixtures built to that
+shape. Claims about upstream behaviour are marked as observed, read from
+the library source, or unverified.*
 
 ---
 
@@ -50,8 +51,7 @@ logs and metrics here).
 
 ## 3. What powerschool-go does
 
-Read from the library source on branch `feat/readonly-session-client`
-(based on `v0.1.2`; unreleased -- section 11.1).
+Read from the library source at `v0.2.0`, the version `go.mod` requires.
 
 | Concern | Finding |
 |---|---|
@@ -60,7 +60,7 @@ Read from the library source on branch `feat/readonly-session-client`
 | Page reads | By default each page read starts a headless Chrome. With `WithHTTPPageFetch` every post-login read is a plain GET through the injected `http.Client`, with each session cookie attached to the request explicitly (no cookie jar: observed live, a jar dropped the cookies and the portal answered 302). Pages are server-rendered; `home.html` contains `table#tblgrades` without JavaScript (observed live). |
 | Non-GET requests | Two from Go code, both through the injected client: `POST /ws/xte/assignment/lookup` (JSON filter: section ids, student ids, date range; `Referer` required) and `POST /guardian/home.html` with the single form field `selected_student_id` (the student switch). The login form submit happens inside Chrome, in the login workload only. |
 | Student selection | The portal shows one student per session. The home page marks that student explicitly (`#students-list li.selected`); `Student.Selected` is set from that marker and from nothing else, and the page-level details are attached to that student only. `GetHomePage` returns the students and the grades table from one fetch, each grade stamped with the selected student's id. `SelectStudent(id)` posts the switcher form when another student is selected, re-reads the page and fails (`ErrSwitchNotConfirmed`) unless the marker moved; with no marker it posts nothing (`ErrSelectionUnknown`). |
-| Dead session | A redirect to `/public/`, a 401/403, or a 200 whose body is the sign-in form is a session-expired `*Error`, on page reads and on the lookup. |
+| Dead session | A redirect whose `Location` is under `/public/`, a 401/403, or a 200 whose body is the sign-in form is a session-expired `*Error`, on page reads and on the lookup. Any other redirect is not. |
 | Errors and logs | Errors carry no response body, query string or student id; an unexpected status is an `*HTTPStatusError` (operation, status, body length). INFO lines carry no ids. |
 | Real surfaces | Students (ids and names; details for the selected one), the home-page grades table (per-term grades, per-course absence and tardy totals, scores-page URL), assignments (title, due date, category, points, score, percent, letter, flags). |
 | Stubs / heuristics | GPA (text heuristic), grade history (placeholder column guess), progress reports (placeholder; hard-coded `psplugin.example.org` host), `DownloadProgressReport` (returns "not yet implemented"). Attendance and calendar are declared as types only. |
@@ -69,33 +69,98 @@ Two details of the assignment mapping the connector has to live with: a
 score of zero leaves `Assignment.Score` nil (the library tests `> 0`), and a
 late assignment keeps status `pending` or `graded` with only the flag set.
 
-## 4. Authentication: where login happens
+## 4. Session lifecycle: where login happens, and what ends a session
 
-The connector never logs in and never holds the username or password.
+**The connector never logs in.** It never holds the username or password,
+has no code path that can authenticate, and its transport refuses a
+credentialed POST (section 5).
 
-- A separate **login workload** (not part of this change; the analogue of
-  `schoology-auth-refresher`) holds the credentials, runs the browser login,
-  calls `ExportSession` and stores the resulting JSON
+- A separate, scheduled **login job** (not built yet; tracked separately --
+  the analogue of `schoology-auth-refresher`) holds the credentials, runs
+  the browser login, calls `ExportSession` and stores the resulting JSON
   (`{"cookies":[...],"expires_at":"..."}`) where ESO can sync it.
-- The connector receives that JSON as a file (`POWERSCHOOL_SESSION_FILE`)
+- The connector receives that JSON as a mounted file
+  (`POWERSCHOOL_SESSION_FILE`, preferred; this is what the chart sets up)
   or in `POWERSCHOOL_SESSION`, and the portal location as
   `POWERSCHOOL_HOST`. It builds the library client with `WithSession` and no
   credentials.
 - A missing or malformed session, or one past its `expires_at`, is a startup
   error; nothing is requested upstream.
-- **A session the portal refuses is not presented twice.** When a poll gets
-  an auth-class error the connector writes a marker in its state directory
-  (`rejected-session`, a SHA-256 over the session's cookies -- never the
-  cookies) and returns a `PermanentError`; the framework exits the process.
-  The restarted process loads the same session, finds its fingerprint in
-  the marker, and waits -- re-reading the session source once a minute and
-  making no upstream request -- until the source holds a different session.
-  The health endpoints are not up while it waits, so the pod is not ready;
-  that is the operator signal. The mechanism is `connector.RejectedSession`,
-  shared with the Schoology connector. A session delivered in the
-  `POWERSCHOOL_SESSION` environment variable cannot change under a running
-  process; there the wait lasts until the pod is replaced. Prefer the file
-  form.
+
+### 4.1 One account, one session
+
+The connector uses the owner's own parent account; there is no separate
+guardian account for it. Observed live (once): **a second login to the
+account ended the first session** -- the first session's next request got
+the sign-in page. The design treats "one live session per account" as the
+rule. Consequences:
+
+- **The owner signing in ends the connector's session.** This is expected,
+  not a fault. The owner signs in rarely, and when he does it is between
+  16:00 and 21:00 Pacific.
+- **A login by the job signs the owner out.** The login job must therefore
+  **never run between 16:00 and 21:00 Pacific**. It runs off-hours, and no
+  more often than the session's real lifetime requires (measured below).
+- **The connector stays out of the way.** The default poll windows are three
+  weekday windows outside that span -- 06:00-06:30, 15:00-15:30,
+  21:30-22:00 `America/Los_Angeles` -- so a poll does not find a session the
+  owner's evening login has just ended, and does not run while he is using
+  the portal.
+- **A session rejected mid-day costs data only until the next off-hours
+  login.** Nothing is lost: records are fingerprinted, and the first poll on
+  the new session stages whatever changed in between. It does not page
+  anyone and must not trigger a login.
+
+Selection, by contrast, is per session (observed live): the connector
+switching students does not change what the owner sees in his own session.
+
+### 4.2 A rejected session
+
+When a poll gets an auth-class error (a redirect to the sign-in area, a
+401/403, or the sign-in page served with a 200):
+
+1. The poll stops. Nothing read for the kid in progress is staged.
+2. The session's age is recorded (4.3), and a marker is written to the
+   state directory (`rejected-session`: a SHA-256 over the session's
+   cookies, never the cookies).
+3. The poll returns a `PermanentError`; the framework exits the process.
+4. The restarted process loads the same session, finds its fingerprint in
+   the marker, and **waits, making zero upstream requests**: it re-reads the
+   session file once a minute until it holds a different session. Because
+   the session is a mounted Secret, the kubelet updates the file in place
+   when the login job writes a new one, and the wait ends **without a pod
+   restart**.
+5. While it waits, the binary serves `/healthz` (200) and `/readyz` (503)
+   on the health port itself -- the framework's health server only starts
+   with `connector.Run` -- so the pod sits **Running, NotReady** rather
+   than being killed by its liveness probe into `CrashLoopBackOff`. When
+   the wait ends that listener is closed before the framework binds the
+   port.
+
+The mechanism (`connector.RejectedSession`) is shared with the Schoology
+connector. A session delivered in the `POWERSCHOOL_SESSION` environment
+variable cannot change under a running process; there the wait lasts until
+the pod is replaced.
+
+### 4.3 Measuring the real session lifetime
+
+The expiry the library records at login is a one-year placeholder, so the
+portal's real session lifetime is unknown. The connector measures it: it
+keeps, in the state directory, when it first loaded the current session
+(`session-first-seen`, keyed by the session fingerprint), and at the moment
+that session is first rejected it emits the age
+
+- in the gauge `powerschool_rejected_session_age_seconds`, and
+- in one INFO line, `powerschool session rejected: age since this connector
+  first loaded it`, with `session_age_seconds` and `session_age_hours` and
+  no identifier of any kind.
+
+The process exits right after a rejection, usually before a scrape, so the
+age is also saved (`session-rejected-age`) and the next process exports the
+same gauge at startup. The figure is time since the connector first loaded
+the session -- slightly less than time since login -- and it conflates the
+two ways a session ends (idle or absolute timeout, and the owner signing
+in); a run of values clustered at one duration is the timeout.
 
 The operator's existing Vault secret has `powerschool_username`,
 `powerschool_password` and `powerschool_hostname`. Only the hostname is
@@ -192,26 +257,29 @@ portal.
   with a different credential set and its own review.
 - Whether a GET on the portal has side effects (last-access timestamps,
   notification read-state). Unverified.
-- The switch does have one observable effect outside the connector if the
-  portal keeps the selection per *account* rather than per session: a
-  parent using the portal at the same moment would see the other child
-  selected. Unverified (section 11.2); it is also the case the end-of-turn
-  check in section 6.1 exists for.
+- Anything outside the connector's own session. Selection is per session
+  (observed live), so the switch does not change what the owner sees in
+  his. Signing in is a different matter -- it ends the other session
+  (section 4.1) -- which is one more reason the connector cannot log in.
 
 ## 6. Kids, match keys and per-child visibility
 
 Kids are opaque labels with a portal student id, as in spec 12 section 10:
 
 ```json
-"kids": [{"name": "k1", "student_id": "111111"},
-         {"name": "k2", "student_id": "111112", "student_number": "9000002"}]
+"kids": [{"name": "k1", "student_id": "111111", "student_api_id": "999001"},
+         {"name": "k2", "student_id": "111112", "student_api_id": "999002",
+          "student_number": "9000002"}]
 ```
 
-`student_id` is the number in the portal's student switcher
-(`javascript:switchStudent(<id>)`). The optional `student_number` is the
-school-issued number the page shows as "Student ID #"; when set it is a
-second, independent check (below). It identifies a real child: set it in
-the deployment's private values, not in a committed file. Match keys:
+| field | what it is | used for |
+|---|---|---|
+| `student_id` | the number in the portal's student switcher (`javascript:switchStudent(<id>)`) | selecting the child; the home-page marker |
+| `student_api_id` (optional) | the student id the portal embeds in that child's scores pages (`studentFRN`, the library's `StudentAPIID`); not the same number as `student_id` | the binding in 6.2 |
+| `student_number` (optional) | the school-issued number the home page shows as "Student ID #" | a further check on the home page |
+
+The two optional fields identify a real child: set them in the deployment's
+private values, not in a committed file. Match keys:
 
 - `powerschool:<kid>:grade`
 - `powerschool:<kid>:assignment`
@@ -219,21 +287,22 @@ the deployment's private values, not in a committed file. Match keys:
 
 Config validation: at startup every enabled surface of every kid must
 resolve to a rule that sets `data_subject`; one kid's surfaces must agree
-on it; no two kids may share it, a `student_id` or a `student_number`. A
-`*` rule cannot stand in. There is no fallback destination at runtime
-either: no rule, no item. Checkpoint keys include the kid label.
+on it; no two kids may share it, a `student_id`, a `student_api_id` or a
+`student_number`. A `*` rule cannot stand in. There is no fallback
+destination at runtime either: no rule, no item. Checkpoint keys include
+the kid label.
 
 ### 6.1 One child at a time
 
 The portal returns the *selected* student's data whatever it is asked for.
 Attaching a child's label to a page is therefore only ever justified by
-that page's own explicit marker. The connector never infers the selection
-from anything else -- not from which student is listed first, and not from
-which student carries page details. (An earlier library version filled the
+evidence on that page. The connector never infers the selection from
+anything else -- not from which student is listed first, and not from which
+student carries page details. (An earlier library version filled the
 details in for the first student whenever the marker was missing, and an
 earlier connector read "has details" as "is selected": on markup without
 the marker, the second child's records were staged under the first child's
-label. Both are fixed; this section is the rule that replaced them.)
+label.)
 
 A poll takes each configured kid in turn, in config order. Polls are
 serialised, so two polls never interleave their kids. One kid's turn:
@@ -241,26 +310,78 @@ serialised, so two polls never interleave their kids. One kid's turn:
 1. **Select.** `SelectStudent(kid.student_id)`: read the home page; if it
    marks another student, post the switcher form (section 5.2 b) and read
    the page again. The library fails unless the page read last marks the
-   requested student.
-2. **Verify.** On the page that step 1 returned, the connector checks for
-   itself: exactly one student is marked, it is this kid's; every row of
-   the grades table is stamped with that same student id (parsed from the
-   same response); and, if `student_number` is configured, the number on
-   the page equals it.
-3. **Read.** That page's grades table is the kid's grades and attendance.
-   If the assignments surface is on, one scores page and one lookup per
-   course follow. Each scores page names its student (`studentFRN`); every
-   one read in this turn must name the same student, and one that names
-   none counts as a mismatch.
-4. **Verify again.** Read the home page once more; it must still mark this
-   kid's student. The selection lives on the portal's side, and if it moved
-   while step 3 was running, part of what step 3 read may be the other
-   child's. The connector does not switch back and carry on.
-5. **Stage.** Only now are items written and checkpoints advanced.
+   requested student. If the page marks nobody, nothing is posted.
+2. **Verify the home page.** On the page step 1 returned, the connector
+   checks for itself: exactly one student is marked, it is this kid's;
+   every row of the grades table is stamped with that same student id
+   (parsed from the same response); and, if `student_number` is configured,
+   the number on the page equals it. That page's grades table is the kid's
+   grades and attendance.
+3. **Read the assignment pages** -- only if the assignments surface is
+   enabled. For each course: the scores page, the check in 6.2 on that
+   page, and only then the lookup POST, sent for exactly the section and
+   student ids the checked page carried.
+4. **Verify the home page again** -- only if step 3 ran. Read it once more;
+   it must still mark this kid's student. The connector does not switch
+   back and carry on. With the assignments surface off, nothing is read
+   after the page verified in step 2, so there is nothing to re-check and
+   this step does not run.
+5. **Learn** (6.2), if this kid has no bound id yet.
+6. **Stage.** Only now are items written and checkpoints advanced.
 
-Any failure in steps 1-4 discards everything read for that kid in this
+Any failure in steps 1-5 discards everything read for that kid in this
 poll: nothing is staged, no checkpoint moves, and the next clean poll stages
 it all as if this one had not happened.
+
+### 6.2 The scores-page binding
+
+**The fact it rests on (observed live).** A course's `scores.html` is
+rendered for the student the *session* has selected, not for the course in
+the URL: fetching child B's scores URL while child A is selected returns a
+page carrying child A's student id. That id is distinct per child. So the
+id on a scores page is direct evidence of which child the session had
+selected at the moment that page was served.
+
+**Why the marker checks are not enough.** Steps 2 and 4 look at the
+selection before and after the assignment reads. A selection that changes
+to the other child after step 2 and changes back before step 4 passes both,
+and every scores page served in between is the other child's. Comparing the
+scores pages only with each other does not catch it either: they agree, on
+the wrong child.
+
+**The rule.** Each kid is bound to one scores-page student id, and every
+scores page read for that kid must carry exactly that id.
+
+- The bound id is `student_api_id` from config when set.
+- Otherwise it is **learned**: on the first poll in which the kid's turn
+  passes step 2, every scores page of the turn carries one and the same id,
+  that id is not bound to another kid, and step 4 passes, the id is saved
+  in the checkpoint (`meta:student_api_id:<kid>`) and required on every
+  later poll, across restarts.
+- Two kids never share an id: config validation rejects it, a page carrying
+  an id bound to *another* kid is refused whether or not this kid is bound
+  yet, and an id cannot be learned for a second kid.
+- A scores page that carries no id is refused like a wrong one.
+
+The first page that fails ends the kid's turn at once: the lookup for that
+course is not sent, the remaining courses are not read, nothing is staged
+for the kid (grades and attendance included), no checkpoint of the kid
+advances, and the error class is `selection_changed`.
+
+**What it does not cover.**
+
+- *The learning poll.* Until a kid is bound, a flip that lasts for the whole
+  of that kid's assignment reads is not detectable (if the other kid is
+  already bound it is: the page carries that kid's id). A wrong id learned
+  this way fails closed afterwards -- the kid's real pages no longer match,
+  and the other kid is refused its own id -- but that one poll stages the
+  wrong child's assignment data. **Set `student_api_id` in config** to close
+  it; the learned values can be read from the checkpoint file after a
+  supervised first run.
+- *Grades and attendance with the assignments surface off.* They come from
+  the one home page whose marker step 2 verified, in the same response; no
+  scores page is read, so there is no binding evidence, and none is needed
+  for a single response.
 
 What each failure does to the rest of the poll:
 
@@ -268,10 +389,12 @@ What each failure does to the rest of the poll:
 |---|---|---|---|
 | Page carries no selection marker (or two) | `selection_unknown` | skipped | skipped unread; nothing is posted |
 | Home page unreadable (network, parse, HTTP status) | `network`, `parse`, `http_status`, ... | skipped | skipped unread |
-| Session refused | `auth` | skipped | poll ends; section 4 |
+| Session refused | `auth` | skipped | poll ends; section 4.2 |
 | Student id not in the account's switcher | `not_found` / `unknown_student` | skipped | continue |
 | Switch posted but not confirmed | `switch_not_confirmed` | skipped | continue |
-| Marker, grade rows or scores pages disagree | `selection_mismatch` | discarded | continue |
+| Marker or grade rows disagree; marker moved by step 4 | `selection_mismatch` | discarded | continue |
+| A scores page is not this kid's (6.2) | `selection_changed` | discarded | continue |
+| Learned id already bound to another kid | `student_api_id_conflict` | discarded | continue |
 | Configured `student_number` is not the page's | `student_number_mismatch` | skipped | continue |
 
 Requests per poll, for two kids with *n* courses each and assignments on:
@@ -344,8 +467,10 @@ count moved", not "absent on the 3rd".
 ## 8. Poll schedule
 
 Windows are local `HH:MM` ranges in `POWERSCHOOL_TIMEZONE` (default
-`America/Los_Angeles`), optionally weekdays only. The default is a single
-late-afternoon window, i.e. one poll a day. There is no trigger endpoint.
+`America/Los_Angeles`), optionally weekdays only. The shipped default is
+three weekday windows, 06:00-06:30, 15:00-15:30 and 21:30-22:00, chosen to
+stay outside 16:00-21:00 when the account's owner may be signed in (section
+4.1). There is no trigger endpoint.
 
 **Exactly one scheduled poll per window.** `Watch` picks one random time
 inside the next window, sleeps until then, and polls. It then schedules the
@@ -353,7 +478,10 @@ following poll from the *end* of the window it just polled, not from the
 moment the poll fired; scheduling from the fire time re-rolls inside the
 same window and polls it again most of the time. The end of the last polled
 window (`notBefore`) is kept on the connector, so it survives the framework
-restarting `Watch`.
+restarting `Watch`. A window's start is inclusive and its end exclusive:
+when two windows touch and the second one's random time falls on its first
+second, that time equals the instant scheduling resumes from, and it is
+taken, not skipped.
 
 **The framework's own polling is neutralised.** The framework calls `Poll`
 at startup and again on `PollInterval`, and restarts `Watch` each time.
@@ -407,10 +535,11 @@ every current grade and everything inside the lookback window.
 
 - Auth-class errors (session expired or rejected) at any step stop the poll,
   mark the session rejected and return a `PermanentError`; the framework
-  exits the process and the restart waits for a new session (section 4).
+  exits the process and the restart waits for a new session (section 4.2).
+  This is routine (section 4.1), not an alert condition.
 - Anything else is logged, counted and retried at the next window. A course
   whose lookup fails is skipped; the rest of the kid's turn continues.
-  Selection failures are in the table in section 6.1.
+  Selection failures are in the table in section 6.2.
 - An item the staging backend refuses is not checkpointed; it is staged
   again, still as `new`, at the next poll.
 - A poll that stages from no kid at all is a failed poll.
@@ -430,65 +559,68 @@ framework carry `error_class` (a fixed vocabulary) and `error_detail`, the
 error chain rendered as kinds only: library error codes, HTTP status and
 body length, known sentinel names, Go type names
 (`powerschool-go:NETWORK_ERROR > url:Get > http:503(1832b)`). Kids are
-named by their opaque label; student ids and student numbers are not
-logged. The library applies the same rule to its own errors and INFO lines,
+named by their opaque label; student ids, scores-page student ids and
+student numbers are not logged. The library applies the same rule to its own errors and INFO lines,
 and the connector runs it at WARN.
 
 Metrics, on top of the framework's: `powerschool_polls_total{trigger_source}`,
 `powerschool_items_total{surface,kid,change}`,
 `powerschool_surface_errors_total{surface,error_class,kid}`,
-`powerschool_kids_skipped_total{kid,reason}`. They are registered on the
-framework's own meter provider, the one behind `/metrics`. Spans:
-`powerschool.poll`, `powerschool.poll.kid`, `powerschool.lib.SelectStudent`,
-`powerschool.lib.GetHomePage`, `powerschool.lib.GetAssignments`,
+`powerschool_kids_skipped_total{kid,reason}`,
+`powerschool_rejected_session_age_seconds` (section 4.3). They are
+registered on the framework's own meter provider, the one behind
+`/metrics`. Spans: `powerschool.poll`, `powerschool.poll.kid`,
+`powerschool.lib.SelectStudent`, `powerschool.lib.GetHomePage`,
+`powerschool.lib.FetchScoresMetadata`, `powerschool.lib.GetAssignments`,
 `powerschool.staging.commit`.
 
-## 11. Library gaps and open questions
+## 11. Open items
 
-### 11.1 Required before the connector can run
+### 11.1 Required before the connector is enabled
 
-1. **A powerschool-go release** containing branch
-   `feat/readonly-session-client` (HTTP page fetch, explicit selection,
-   `GetHomePage`, `SelectStudent`, typed login-page and status errors).
-   Until then `go.mod` replaces the module with a pseudo-version served
-   from the private GitLab, which CI and the image build cannot fetch.
-   After the release: drop the `replace`, require the tag.
-2. **A login workload** that produces the session (section 4). It needs
-   Chrome in its own image; a remote-browser option in the library would
-   let it reuse the cluster's Browserless.
-3. **One supervised live run** (section 11.2) before the connector is
-   enabled against the real account.
+1. **The login job** (section 4): scheduled, off-hours only (never
+   16:00-21:00 Pacific), writing the session where the chart's
+   `externalSecret.files` picks it up. Not built; tracked separately. It
+   needs Chrome in its own image, or a remote-browser option in the library
+   so it can reuse the cluster's Browserless.
+2. **A supervised first run** with `student_api_id` either configured or
+   read back from the checkpoint and then configured (section 6.2).
 
-### 11.2 Needs a live login to settle
+The library dependency is settled: `github.com/leftathome/powerschool-go
+v0.2.0`, released, required directly in `go.mod`.
 
-Observed live already (structure only): the `li.selected` marker and the
-`<li >` shape of unselected items; the switcher form and its script;
-`tblgrades` in the raw `home.html`; that cookies must be attached per
-request. Not yet exercised or observed:
+### 11.2 Verified live, and still unverified
 
-- **The switch, end to end.** The form post's status and `Location`;
-  whether it sets or rotates a cookie (the library ignores `Set-Cookie`, so
-  a rotated session cookie would read as an expired session on the next
-  request); that the page read afterwards carries the marker on the
-  requested student.
-- **Whether the selection is per session or per account**, and which
-  student a fresh session starts on. If per account, a parent using the
-  portal can move the connector's selection mid-turn (handled: section 6.1
-  step 4) and the connector moves theirs (not avoidable while switching).
-- **The scores page.** That `data-sectionid` and `studentFRN` are in the raw
-  `scores.html` response; that `studentFRN` differs between the two
-  children (the per-turn invariant depends on it); whether the page also
-  carries the `li.selected` marker.
+Verified against a live instance (structure and behaviour; no real value is
+recorded in this repository):
+
+- HTTP page fetch through the library works; pages are server-rendered and
+  `home.html` contains the grades table.
+- The `li.selected` marker, the `<li >` shape of unselected items, the
+  switcher form and its script.
+- `SelectStudent` works in both directions and the home page confirms the
+  selection each time. The switch does not rotate cookies.
+- Selection is per session: an independent login kept its own default
+  child.
+- `scores.html` reflects the session's selected student, not the course
+  link, and its student id is distinct per child (section 6.2).
+- Observed once: a second login invalidated the first session (section
+  4.1).
+
+Not yet verified:
+
+- **The real session lifetime**, and whether it is an idle or an absolute
+  timeout. Measured from now on (section 4.3).
+- **That "one session per account" always holds**, rather than having been
+  a coincidence of the one observation. The design assumes it does; if it
+  does not, nothing breaks.
 - **Single-child accounts.** Whether the page has a `#students-list` and
   marks its one item. Without a marker the connector reads nothing.
-- **A dead session.** 302 to `/public/`, a 200 sign-in page at the same URL
-  or a 401 -- all three are handled, none has been seen. The sign-in page
-  is recognised by its form fields on a page with no switcher; a
-  `scores.html` request with incomplete parameters gets the same answer and
-  cannot be told apart from a dead session, so a library bug there would
-  read as a rejected session.
-- **Real session lifetime.** The recorded expiry is a placeholder; expiry
-  is only discovered when a read is refused.
+- **Which dead-session shape the portal uses** in each case (302 to
+  `/public/`, a 200 sign-in page, 401). All are handled. A `scores.html`
+  request with incomplete parameters also gets the sign-in page and cannot
+  be told apart from a dead session, so a library bug there would read as a
+  rejected session.
 - What a grade cell contains beyond `letter<br>percent` on this district's
   instance (standards-based marks, `--`, `[ i ]`).
 - Whether the lookup response distinguishes "may still be turned in" from
@@ -502,6 +634,14 @@ request. Not yet exercised or observed:
 ## 12. Chart
 
 `connectors.powerschool` in the generic map: Deployment, ConfigMap, state
-PVC and, when `externalSecret.enabled`, the generic ExternalSecret mapping
-`POWERSCHOOL_HOST` and `POWERSCHOOL_SESSION`. Remote keys and properties are
-values; the username and password are not mapped. Disabled by default.
+PVC and, when `externalSecret.enabled`, two ExternalSecrets. One maps
+`POWERSCHOOL_HOST` into the environment. The other
+(`externalSecret.files`, a generic addition to the connector templates)
+materialises the session as `session.json` in a Secret that the Deployment
+mounts read-only at `/etc/powerschool`, with
+`POWERSCHOOL_SESSION_FILE=/etc/powerschool/session.json`; the mount has no
+`subPath`, so the kubelet updates the file in place when the Secret
+changes. The pod template carries `checksum/secret`, a hash of the
+ExternalSecret template, next to `checksum/config`. Remote keys and
+properties are values; the username and password are not mapped. Disabled
+by default.

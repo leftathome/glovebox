@@ -38,10 +38,16 @@ func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand
 		return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), true
 	}
 
-	// Find the first window today whose splayed time is strictly after now.
+	// Find the first window today whose splayed time is not before now.
+	// "Not before", not "after": callers schedule the next poll from the
+	// end of the window that just fired, and when the next window starts
+	// at that very instant (adjacent windows) a splay of zero lands exactly
+	// on it. A strict comparison skipped that window. Equality cannot
+	// revisit the window that just fired, because a window's end is
+	// exclusive: no time inside it equals its end.
 	for _, w := range cfg.PollSchedule.Windows {
 		t := splayedTimeIn(w, day, tz, rng)
-		if t.After(now) {
+		if !t.Before(now) {
 			return t, skipped
 		}
 	}

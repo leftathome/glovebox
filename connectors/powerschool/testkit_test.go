@@ -96,7 +96,8 @@ func newRecordingTelemetry(t *testing.T) (*Telemetry, *metricRecorder) {
 }
 
 // counters returns every recorded counter data point as
-// "name{k=v,k=v}" -> value, attributes in key order.
+// "name{k=v,k=v}" -> value, attributes in key order. A float gauge is
+// reported as "name{}" -> its value truncated to an integer.
 func (r *metricRecorder) counters() map[string]int64 {
 	r.t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -106,6 +107,12 @@ func (r *metricRecorder) counters() map[string]int64 {
 	out := map[string]int64{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
+			if gauge, isGauge := m.Data.(metricdata.Gauge[float64]); isGauge {
+				for _, dp := range gauge.DataPoints {
+					out[m.Name+"{}"] = int64(dp.Value)
+				}
+				continue
+			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
 			if !ok {
 				continue

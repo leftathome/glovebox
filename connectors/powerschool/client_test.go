@@ -170,35 +170,6 @@ func TestSelectedStudent(t *testing.T) {
 	}
 }
 
-func TestVerifyOneStudent(t *testing.T) {
-	g := func(apiID string) *pslib.Grade { return &pslib.Grade{StudentAPIID: apiID} }
-	cases := []struct {
-		name    string
-		read    []*pslib.Grade
-		wantErr bool
-	}{
-		{"nothing read", nil, false},
-		{"one page", []*pslib.Grade{g("999999")}, false},
-		{"all the same", []*pslib.Grade{g("999999"), g("999999"), g("999999")}, false},
-		{"second page is another student", []*pslib.Grade{g("999999"), g("999998")}, true},
-		{"last page is another student", []*pslib.Grade{g("999999"), g("999999"), g("999998")}, true},
-		{"a page with no id", []*pslib.Grade{g("999999"), g("")}, true},
-		{"only page has no id", []*pslib.Grade{g("")}, true},
-		{"nil entry", []*pslib.Grade{g("999999"), nil}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := verifyOneStudent(tc.read)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, ErrSelectionMismatch) {
-				t.Errorf("err = %v, want ErrSelectionMismatch", err)
-			}
-		})
-	}
-}
-
 func TestClassifyErr(t *testing.T) {
 	cases := []struct {
 		name string
@@ -216,6 +187,8 @@ func TestClassifyErr(t *testing.T) {
 		{"selection mismatch", ErrSelectionMismatch, "selection_mismatch"},
 		{"another student selected, from the library", pslib.ErrStudentNotSelected, "selection_mismatch"},
 		{"student number mismatch", ErrStudentNumberMismatch, "student_number_mismatch"},
+		{"scores page of another student", ErrSelectionChanged, "selection_changed"},
+		{"student api id bound twice", ErrStudentAPIIDConflict, "student_api_id_conflict"},
 		{"switch not confirmed", pslib.ErrSwitchNotConfirmed, "switch_not_confirmed"},
 		{"rate limited", pslib.ErrRateLimited, "rate_limit"},
 		{"not found", pslib.ErrNotFound, "not_found"},

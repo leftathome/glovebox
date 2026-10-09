@@ -55,7 +55,20 @@ type PowerSchoolConnector struct {
 	// process does not present the same dead cookie again (see
 	// connector.RejectedSession). Set before Run; not safe to change
 	// afterwards.
-	OnSessionRejected func()
+	//
+	// age is how long ago this connector first loaded the session, or
+	// negative when SessionFirstSeen was not set.
+	OnSessionRejected func(age time.Duration)
+
+	// SessionFirstSeen is when this connector first loaded the session it
+	// is running on (SessionClock). Zero means unknown. It is used only to
+	// report a session's age when it is rejected.
+	SessionFirstSeen time.Time
+	// PreviousRejectedAge is the age of the last session that was
+	// rejected, from an earlier process, re-exported as a gauge so the
+	// measurement survives the exit that follows every rejection. Negative
+	// means none is known.
+	PreviousRejectedAge time.Duration
 
 	// Framework-provided; set by Wire().
 	wireMu  sync.Mutex
@@ -111,6 +124,8 @@ func NewConnector(client PowerSchoolClient, cfg Config, libVersion string) (*Pow
 		tz:         tz,
 		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		now:        time.Now,
+
+		PreviousRejectedAge: -1,
 	}, nil
 }
 
@@ -133,6 +148,10 @@ func (c *PowerSchoolConnector) Wire(cc connector.ConnectorContext) error {
 	}
 	if c.cfg.ConfigIdentity != nil {
 		cc.Backend.SetConfigIdentity(c.cfg.ConfigIdentity)
+	}
+
+	if c.PreviousRejectedAge >= 0 {
+		tel.SetRejectedSessionAge(c.PreviousRejectedAge)
 	}
 
 	c.wireMu.Lock()
@@ -304,8 +323,21 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	if authErr != nil {
 		slog.Error("powerschool session expired or rejected",
 			append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
+		// How long did this session last? The expiry in the session
+		// document is a placeholder, so this is the only measurement of
+		// the portal's real session lifetime. No identifier is logged.
+		age := time.Duration(-1)
+		if !c.SessionFirstSeen.IsZero() {
+			if age = c.now().Sub(c.SessionFirstSeen); age < 0 {
+				age = 0
+			}
+			tel.SetRejectedSessionAge(age)
+			slog.Info("powerschool session rejected: age since this connector first loaded it",
+				"session_age_seconds", int64(age/time.Second),
+				"session_age_hours", fmt.Sprintf("%.1f", age.Hours()))
+		}
 		if c.OnSessionRejected != nil {
-			c.OnSessionRejected()
+			c.OnSessionRejected(age)
 		}
 		// The framework logs this error verbatim, so it carries no library
 		// text (errlog.go).
@@ -395,12 +427,13 @@ func selectKidTraced(ctx context.Context, e Env, kid Kid) (*pslib.HomePage, erro
 //     itself as well (verifyKidPage): explicit marker on this kid's
 //     student, every grade row attributed to that student, and the
 //     configured student_number if there is one.
-//  2. Read the assignment pages (one scores page and one lookup per
-//     course). Each scores page names its student; they must all name the
-//     same one.
-//  3. Read the home page once more and require it to still mark this kid's
-//     student. Selection is state on the portal's side; if it moved while
-//     step 2 was running, some of what step 2 read may be another child's.
+//  2. If the assignments surface is on: read the assignment pages (one
+//     scores page and one lookup per course). Each scores page carries the
+//     id of the student the session had selected when it was served; every
+//     one must carry this kid's bound id (binding.go).
+//  3. If step 2 ran: read the home page once more and require it to still
+//     mark this kid's student. With assignments off nothing was read after
+//     step 1's page, so there is nothing to re-check.
 //  4. Only now stage. Any failure in 1-3 discards everything read for this
 //     kid in this poll: nothing is staged and no checkpoint moves.
 //
@@ -447,7 +480,8 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 	if c.cfg.AssignmentsEnabled() {
 		var ok bool
 		var fetched Result
-		reads, fetched, ok = readAssignments(ctx, env, kid, grades, c.cfg.Assignments)
+		binding := newStudentBinding(c.cfg.Kids, env.CP, kid)
+		reads, fetched, ok = readAssignments(ctx, env, kid, grades, c.cfg.Assignments, binding)
 		res.add(fetched)
 		if !ok {
 			return res, false, ""
@@ -467,6 +501,30 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 				"confirmed after the reads; nothing staged",
 				append([]any{"kid", kid.Name}, errAttrs(err)...)...)
 			return res, false, ""
+		}
+
+		// Marker confirmed before and after, every scores page agreed: if
+		// this kid had no bound id yet, this is the poll that binds it.
+		learned, err := binding.learn(env.CP, kid)
+		if err != nil {
+			class := classifyErr(err)
+			env.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
+			env.Tel.RecordKidSkipped(kid.Name, class)
+			res.Failed++
+			if class == "student_api_id_conflict" {
+				slog.Error("powerschool poll discarded for kid: its scores pages carry the student id "+
+					"bound to another kid; nothing staged", "kid", kid.Name, "error_class", class)
+			} else {
+				// The id could not be saved. Staging without a binding
+				// that the next poll can enforce is not safe.
+				slog.Error("powerschool poll discarded for kid: could not save the kid's student id "+
+					"binding; nothing staged", "kid", kid.Name, "error", err)
+			}
+			return res, false, ""
+		}
+		if learned {
+			slog.Info("powerschool bound kid to the student id on its scores pages; "+
+				"later polls require it on every scores page", "kid", kid.Name)
 		}
 	}
 

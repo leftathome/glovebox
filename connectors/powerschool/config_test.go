@@ -71,6 +71,15 @@ func TestValidateConfig(t *testing.T) {
 		{name: "student numbers set", mutate: func(c *Config) {
 			c.Kids[0].StudentNumber, c.Kids[1].StudentNumber = "9000001", "9000002"
 		}},
+		{name: "student api ids set", mutate: func(c *Config) {
+			c.Kids[0].StudentAPIID, c.Kids[1].StudentAPIID = "999001", "999002"
+		}},
+		{name: "one student api id set", mutate: func(c *Config) { c.Kids[1].StudentAPIID = "999002" }},
+		{name: "duplicate student api id", mutate: func(c *Config) {
+			c.Kids[0].StudentAPIID, c.Kids[1].StudentAPIID = "999001", "999001"
+		}, wantErr: "duplicate student_api_id"},
+		{name: "non-numeric student api id", mutate: func(c *Config) { c.Kids[0].StudentAPIID = "99a" }, wantErr: "student_api_id"},
+		{name: "zero student api id", mutate: func(c *Config) { c.Kids[0].StudentAPIID = "0" }, wantErr: "student_api_id"},
 		{name: "one student number set", mutate: func(c *Config) { c.Kids[1].StudentNumber = "9000002" }},
 		{name: "student number with whitespace", mutate: func(c *Config) { c.Kids[0].StudentNumber = "9000 001" }, wantErr: "student_number"},
 		{name: "student number padded", mutate: func(c *Config) { c.Kids[0].StudentNumber = " 9000001" }, wantErr: "student_number"},

@@ -69,8 +69,8 @@ covers apple, mbox, and walhelm.
   `schoologyAuthRefresher` values keys (dedicated templates), not the generic
   `connectors:` map — see [schoology.md](schoology.md).
 - `powerschool` uses the generic `connectors:` map. It is shipped disabled and
-  is not deployable until a `powerschool-go` release and a login workload
-  exist -- see
+  cannot be enabled until the login job that produces its session exists
+  -- see
   [powerschool.md](powerschool.md#status).
 - `schoology-auth-refresher` is an auth helper, not a source connector, so it has
   no sample config or integration test.

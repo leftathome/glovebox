@@ -63,6 +63,8 @@ var sentinels = []struct {
 	{ErrHostBlocked, "host_blocked"},
 	{ErrSelectionUnknown, "selection_unknown"},
 	{ErrSelectionMismatch, "selection_mismatch"},
+	{ErrSelectionChanged, "selection_changed"},
+	{ErrStudentAPIIDConflict, "student_api_id_conflict"},
 	{ErrStudentNumberMismatch, "student_number_mismatch"},
 }
 

@@ -127,28 +127,56 @@ func assignmentFingerprint(a *pslib.Assignment) string {
 }
 
 // courseRead is one course's assignment lookup: the grade row it was read
-// for (which the library has stamped with the student id of the scores page
-// it read) and what came back.
+// for and what came back.
 type courseRead struct {
 	grade       *pslib.Grade
 	assignments []*pslib.Assignment
 }
 
-// readAssignments is the read half of the assignments surface: one lookup
-// per course, nothing staged. It then checks that every page it read named
-// the same student (verifyOneStudent).
+// readAssignments is the read half of the assignments surface: for each
+// course, the scores page and then the lookup. Nothing is staged.
 //
-// ok is false when the kid's poll must be discarded: the session was
-// reported expired (Result.AuthErr is set), the context ended, or the pages
-// disagreed about whose they were. The caller then stages nothing for this
-// kid -- not the grades it already holds either.
+// The scores page is the check. The portal renders scores.html for the
+// student the SESSION has selected, whatever course the link was for
+// (observed live), and embeds that student's id in it. So before anything
+// else is done with a scores page, its student id is put to the kid's
+// binding (studentBinding.check): it must be this kid's bound id, or -- for
+// a kid with no bound id yet -- the same id as every other scores page of
+// this turn and nobody else's bound id. The first page that fails ends the
+// kid's turn; the lookup for that course is not sent.
+//
+// ok is false when the kid's poll must be discarded: a scores page belonged
+// to another student (or to nobody), the session was reported expired
+// (Result.AuthErr is set), or the context ended. The caller then stages
+// nothing for this kid -- not the grades it already holds either.
 //
 // Courses are taken from the grades the caller already fetched (the
-// library needs each row's scores URL). A course whose lookup fails for
+// library needs each row's scores URL). A course whose read fails for
 // another reason is logged, counted and skipped.
-func readAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade, cfg AssignmentsConfig) (reads []courseRead, res Result, ok bool) {
+func readAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade, cfg AssignmentsConfig, binding *studentBinding) (reads []courseRead, res Result, ok bool) {
 	first := true
-	var verified []*pslib.Grade
+	failed := func(err error) (auth bool) {
+		class := classifyErr(err)
+		e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
+		slog.Warn("powerschool assignments read failed",
+			append([]any{"kid", kid.Name}, errAttrs(err)...)...)
+		res.Failed++
+		if class == "auth" {
+			res.AuthErr = err
+			return true
+		}
+		return false
+	}
+	discard := func(err error, coursesRead int) {
+		class := classifyErr(err)
+		e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
+		e.Tel.RecordKidSkipped(kid.Name, class)
+		slog.Error("powerschool poll discarded for kid: a scores page read in this poll does not "+
+			"belong to this kid's student; nothing staged, no checkpoint advanced",
+			append([]any{"kid", kid.Name, "courses_read", coursesRead}, errAttrs(err)...)...)
+		res.Failed++
+	}
+
 	for _, g := range grades {
 		if g == nil || g.ScoresURL == "" {
 			// No scores link: the portal offers no assignment list for
@@ -162,34 +190,51 @@ func readAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade,
 		}
 		first = false
 
-		assignments, err := getAssignmentsTraced(ctx, e, kid, g)
+		md, err := getScoresTraced(ctx, e, kid, g)
 		if err != nil {
-			class := classifyErr(err)
-			e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
-			slog.Warn("powerschool assignments read failed",
-				append([]any{"kid", kid.Name}, errAttrs(err)...)...)
-			res.Failed++
-			if class == "auth" {
-				res.AuthErr = err
+			if failed(err) {
 				return nil, res, false
 			}
 			continue
 		}
-		verified = append(verified, g)
+		apiID := ""
+		if md != nil {
+			apiID = md.StudentAPIID
+		}
+		if err := binding.check(apiID); err != nil {
+			discard(err, len(reads))
+			return nil, res, false
+		}
+		// Hand the verified ids to the library so the lookup it sends is
+		// for exactly the page that was checked, and it does not fetch the
+		// scores page a second time.
+		g.SectionID, g.StudentAPIID = md.SectionID, md.StudentAPIID
+
+		assignments, err := getAssignmentsTraced(ctx, e, kid, g)
+		if err != nil {
+			if failed(err) {
+				return nil, res, false
+			}
+			continue
+		}
+		// The library must not have swapped the id underneath the check.
+		if err := binding.check(g.StudentAPIID); err != nil {
+			discard(err, len(reads))
+			return nil, res, false
+		}
 		reads = append(reads, courseRead{grade: g, assignments: assignments})
 	}
-
-	if err := verifyOneStudent(verified); err != nil {
-		class := classifyErr(err)
-		e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
-		e.Tel.RecordKidSkipped(kid.Name, class)
-		slog.Error("powerschool poll discarded for kid: the pages read in this poll do not all "+
-			"belong to one student; nothing staged",
-			append([]any{"kid", kid.Name, "courses_read", len(verified)}, errAttrs(err)...)...)
-		res.Failed++
-		return nil, res, false
-	}
 	return reads, res, true
+}
+
+// getScoresTraced wraps client.FetchScoresMetadata in the
+// powerschool.lib.FetchScoresMetadata span.
+func getScoresTraced(ctx context.Context, e Env, kid Kid, g *pslib.Grade) (*pslib.ScoresMetadata, error) {
+	ctx, span := e.Tel.StartSpan(ctx, "powerschool.lib.FetchScoresMetadata",
+		attribute.String("kid", kid.Name),
+	)
+	defer span.End()
+	return e.Client.FetchScoresMetadata(ctx, g.ScoresURL)
 }
 
 // stageAssignments is the write half: it stages every assignment in reads
@@ -264,7 +309,7 @@ func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Gra
 	if _, ok := matchRule(e, kid, assignmentSurface); !ok {
 		return Result{}
 	}
-	reads, res, ok := readAssignments(ctx, e, kid, grades, cfg)
+	reads, res, ok := readAssignments(ctx, e, kid, grades, cfg, newStudentBinding(nil, e.CP, kid))
 	if !ok {
 		return res
 	}

@@ -83,7 +83,7 @@ func TestWaitForFreshSession_RejectedSessionIsNotPresentedAgain(t *testing.T) {
 
 	// Process 1: the session is fine as far as anyone knows.
 	rejected := connector.NewRejectedSession(stateDir)
-	first, err := WaitForFreshSession(context.Background(), rejected, load, time.Millisecond)
+	first, err := WaitForFreshSession(context.Background(), rejected, load, time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("first start: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestWaitForFreshSession_RejectedSessionIsNotPresentedAgain(t *testing.T) {
 	client := pollFixture("111111")
 	client.HomeFunc = func(ctx context.Context) (*pslib.HomePage, error) { return nil, pslib.ErrSessionExpired }
 	c, cp, _ := newWiredConnector(t, client, testConfig())
-	c.OnSessionRejected = func() {
+	c.OnSessionRejected = func(time.Duration) {
 		if err := rejected.Mark(SessionFingerprint(first)); err != nil {
 			t.Errorf("Mark: %v", err)
 		}
@@ -111,6 +111,7 @@ func TestWaitForFreshSession_RejectedSessionIsNotPresentedAgain(t *testing.T) {
 
 	// Process 2: same state dir, same session file. It must block.
 	restarted := connector.NewRejectedSession(stateDir)
+	var waits atomic.Int32
 	loads.Store(0)
 	type result struct {
 		s   *pslib.SessionExport
@@ -118,7 +119,7 @@ func TestWaitForFreshSession_RejectedSessionIsNotPresentedAgain(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		s, err := WaitForFreshSession(context.Background(), restarted, load, 2*time.Millisecond)
+		s, err := WaitForFreshSession(context.Background(), restarted, load, 2*time.Millisecond, func() { waits.Add(1) })
 		done <- result{s, err}
 	}()
 
@@ -126,6 +127,9 @@ func TestWaitForFreshSession_RejectedSessionIsNotPresentedAgain(t *testing.T) {
 	case r := <-done:
 		t.Fatalf("restart with the rejected session did not wait: (%v, %v)", r.s, r.err)
 	case <-time.After(100 * time.Millisecond):
+	}
+	if waits.Load() != 1 {
+		t.Errorf("onWait called %d times while waiting, want exactly 1", waits.Load())
 	}
 	if loads.Load() < 2 {
 		t.Errorf("session re-read %d times while waiting, want it polled", loads.Load())
@@ -159,7 +163,7 @@ func TestWaitForFreshSession_EdgeCases(t *testing.T) {
 	t.Run("a first load failure is a startup error", func(t *testing.T) {
 		want := errors.New("session has no cookies")
 		_, err := WaitForFreshSession(context.Background(), connector.NewRejectedSession(t.TempDir()),
-			func() (*pslib.SessionExport, error) { return nil, want }, time.Millisecond)
+			func() (*pslib.SessionExport, error) { return nil, want }, time.Millisecond, nil)
 		if !errors.Is(err, want) {
 			t.Errorf("err = %v, want the load error", err)
 		}
@@ -168,7 +172,7 @@ func TestWaitForFreshSession_EdgeCases(t *testing.T) {
 	t.Run("no marker: returns at once", func(t *testing.T) {
 		calls := 0
 		s, err := WaitForFreshSession(context.Background(), connector.NewRejectedSession(t.TempDir()),
-			func() (*pslib.SessionExport, error) { calls++; return good, nil }, time.Hour)
+			func() (*pslib.SessionExport, error) { calls++; return good, nil }, time.Hour, func() { t.Error("onWait called without a wait") })
 		if err != nil || s != good || calls != 1 {
 			t.Errorf("(%v, %v) after %d loads, want the session after 1", s, err, calls)
 		}
@@ -176,7 +180,7 @@ func TestWaitForFreshSession_EdgeCases(t *testing.T) {
 
 	t.Run("no state dir: the mechanism is off", func(t *testing.T) {
 		s, err := WaitForFreshSession(context.Background(), connector.NewRejectedSession(""),
-			func() (*pslib.SessionExport, error) { return good, nil }, time.Hour)
+			func() (*pslib.SessionExport, error) { return good, nil }, time.Hour, nil)
 		if err != nil || s != good {
 			t.Errorf("(%v, %v), want the session", s, err)
 		}
@@ -196,7 +200,7 @@ func TestWaitForFreshSession_EdgeCases(t *testing.T) {
 				return nil, errors.New("file is mid-rewrite")
 			}
 			return good, nil
-		}, time.Millisecond)
+		}, time.Millisecond, nil)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("err = %v, want the context deadline", err)
 		}

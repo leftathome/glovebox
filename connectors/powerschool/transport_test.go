@@ -621,6 +621,7 @@ type fakePortal struct {
 	noMarker     bool
 	ignoreSwitch bool   // accept the form post, change nothing
 	flipAfter    string // after the first scores page is served, select this id
+	scoresAs     string // serve the NEXT scores page as if this id were selected, then restore
 	loginPage    bool   // answer the home page with the sign-in form (200)
 
 	posts []string // switcher form bodies, in order
@@ -659,7 +660,13 @@ func (p *fakePortal) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, "/guardian/home.html", http.StatusFound)
 	case r.Method == http.MethodGet && r.URL.Path == "/guardian/scores.html":
-		_, _ = w.Write([]byte(syntheticScores(studentAPIIDs[p.selected])))
+		// The page is rendered for the session's selected student, not for
+		// the course in the URL (observed live).
+		shown := p.selected
+		if p.scoresAs != "" {
+			shown, p.scoresAs = p.scoresAs, ""
+		}
+		_, _ = w.Write([]byte(syntheticScores(studentAPIIDs[shown])))
 		if p.flipAfter != "" {
 			p.selected, p.flipAfter = p.flipAfter, ""
 		}
@@ -718,16 +725,20 @@ func TestReadOnlyWiring_LibraryPageReads(t *testing.T) {
 // the bytes parsed by powerschool-go, the transport is the production one,
 // and nothing is handed over by a fake client.
 func TestEndToEnd_RealLibrary(t *testing.T) {
-	poll := func(t *testing.T, portal *fakePortal) (items []stagedItem, cp connector.Checkpoint, err error) {
+	pollWith := func(t *testing.T, portal *fakePortal, cfg Config) (items []stagedItem, cp connector.Checkpoint, err error) {
 		t.Helper()
 		captureLogs(t)
 		client, cerr := NewProductionClient(libraryOn(t, portal.recordingServer, true))
 		if cerr != nil {
 			t.Fatalf("NewProductionClient: %v", cerr)
 		}
-		c, cp, dir := newWiredConnector(t, client, testConfig())
+		c, cp, dir := newWiredConnector(t, client, cfg)
 		err = c.Poll(context.Background(), cp)
 		return readItems(t, dir), cp, err
+	}
+	poll := func(t *testing.T, portal *fakePortal) ([]stagedItem, connector.Checkpoint, error) {
+		t.Helper()
+		return pollWith(t, portal, testConfig())
 	}
 	kidTurn := []string{"GET /guardian/scores.html", "POST " + AssignmentLookupPath, "GET /guardian/home.html"}
 	home, post := "GET /guardian/home.html", "POST "+SwitchStudentPath
@@ -801,6 +812,62 @@ func TestEndToEnd_RealLibrary(t *testing.T) {
 		if got := portal.formPosts(); len(got) != 0 {
 			t.Errorf("switcher form posted %q; the connector must not move the selection back and carry on", got)
 		}
+	})
+
+	// (d) The selection is the other child's only while k1's scores page is
+	// served: right before, right after. Both marker checks pass. The id on
+	// the scores page does not, and the lookup for that course is never
+	// sent.
+	t.Run("selection flips away and back around a scores page", func(t *testing.T) {
+		portal := newFakePortal(t, "111111")
+		portal.scoresAs = "111112"
+		items, cp, err := pollWith(t, portal, boundConfig())
+		if err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+		assertKidItems(t, items, "k2")
+		assertNoFingerprints(t, cp, "k1")
+		lookups := 0
+		for _, r := range portal.requests() {
+			if r == "POST "+AssignmentLookupPath {
+				lookups++
+			}
+		}
+		if lookups != 1 {
+			t.Errorf("%d assignment lookups sent, want 1 (k2's only)", lookups)
+		}
+	})
+
+	// The same flip against kids that have learned their ids on a first,
+	// clean poll and no configured ids.
+	t.Run("learned ids catch the same flip on the next poll", func(t *testing.T) {
+		portal := newFakePortal(t, "111111")
+		captureLogs(t)
+		client, err := NewProductionClient(libraryOn(t, portal.recordingServer, true))
+		if err != nil {
+			t.Fatalf("NewProductionClient: %v", err)
+		}
+		c, cp, dir := newWiredConnector(t, client, testConfig())
+		ctx := context.Background()
+		if err := c.pollNow(ctx, cp, "scheduled"); err != nil {
+			t.Fatalf("first poll: %v", err)
+		}
+		assertKidItems(t, readItems(t, dir), "k1", "k2")
+		if got, _ := cp.Load(apiIDKey("k1")); got != studentAPIIDs["111111"] {
+			t.Fatalf("k1 learned %q, want %q", got, studentAPIIDs["111111"])
+		}
+
+		rec := recordMetrics(t, c)
+		portal.mu.Lock()
+		portal.scoresAs = "111112" // the next scores page (k1's) is the other child's
+		portal.mu.Unlock()
+		if err := c.pollNow(ctx, cp, "scheduled"); err != nil {
+			t.Fatalf("second poll: %v", err)
+		}
+		if rec.counters()["powerschool_kids_skipped_total{kid=k1,reason=selection_changed}"] != 1 {
+			t.Errorf("selection_changed not recorded for k1: %v", rec.counters())
+		}
+		assertKidItems(t, readItems(t, dir), "k1", "k2") // nothing new staged
 	})
 
 	// The markup the cross-child defect needed: no marker at all. The old

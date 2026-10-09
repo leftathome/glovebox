@@ -39,6 +39,11 @@ import (
 	pslib "github.com/leftathome/powerschool-go"
 )
 
+// healthAddr is where the framework's health server listens
+// (connector.Options.HealthPort defaults to 8080) and therefore where the
+// stand-in must listen while the binary waits for a session.
+const healthAddr = ":8080"
+
 func main() {
 	// Logged with every escalation; read from the binary's build info so it
 	// cannot drift from go.mod.
@@ -86,13 +91,31 @@ func main() {
 	// through the POWERSCHOOL_SESSION environment variable cannot change
 	// under a running process; there the wait lasts until the pod is
 	// replaced, which is still the right amount of upstream traffic: none.
-	rejected := connector.NewRejectedSession(os.Getenv("GLOVEBOX_STATE_DIR"))
+	stateDir := os.Getenv("GLOVEBOX_STATE_DIR")
+	rejected := connector.NewRejectedSession(stateDir)
+	// While it waits the framework's health server is not up. Answer the
+	// kubelet's probes ourselves (alive, not ready) so the pod is not
+	// restarted for waiting, and release the port before connector.Run
+	// binds it.
+	var waitHealth *powerschool.WaitHealth
 	session, err := powerschool.WaitForFreshSession(context.Background(), rejected,
 		func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
-		time.Minute)
+		time.Minute,
+		func() {
+			h, err := powerschool.StartWaitHealth(healthAddr)
+			if err != nil {
+				slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
+				return
+			}
+			waitHealth = h
+		})
+	if stopErr := waitHealth.Stop(); stopErr != nil {
+		slog.Error("powerschool: could not release the health port", "error", stopErr)
+		os.Exit(1)
+	}
 	if err != nil {
-		// Missing, malformed or expired: the login workload must produce
-		// a fresh session before the connector can come up.
+		// Missing, malformed or expired: the login job must produce a
+		// fresh session before the connector can come up.
 		slog.Error("powerschool: load session", "error", err)
 		os.Exit(1)
 	}
@@ -133,9 +156,17 @@ func main() {
 		slog.Error("powerschool: construct connector", "error", err)
 		os.Exit(1)
 	}
-	c.OnSessionRejected = func() {
+	clock := powerschool.SessionClock{Dir: stateDir}
+	c.SessionFirstSeen = clock.FirstSeen(sessionFP, time.Now())
+	if age, ok := clock.LastRejectedAge(); ok {
+		c.PreviousRejectedAge = age
+	}
+	c.OnSessionRejected = func(age time.Duration) {
 		if err := rejected.Mark(sessionFP); err != nil {
 			slog.Error("powerschool: could not record rejected session", "error", err)
+		}
+		if err := clock.SaveRejectedAge(age); err != nil {
+			slog.Error("powerschool: could not record the rejected session's age", "error", err)
 		}
 	}
 

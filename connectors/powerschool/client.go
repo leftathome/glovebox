@@ -35,14 +35,20 @@ import (
 //     student the session has selected from ONE fetch of the home page, so
 //     "whose grades are these" is answered by the same response the grades
 //     came from.
-//   - GetAssignments accepts a studentID but does not act on it: it reads
-//     the scores page the grade row links to. It mutates the *Grade it is
-//     given, recording the student id that page carried in
-//     Grade.StudentAPIID; the connector compares those across a poll (see
-//     verifyOneStudent).
+//   - FetchScoresMetadata reads a course's scores page and returns the
+//     section id and the student id that page carries. The portal renders
+//     that page for the session's selected student, so the id says whose
+//     page it is; the connector checks it against the kid's bound id
+//     before using the page (binding.go).
+//   - GetAssignments accepts a studentID but does not act on it. When the
+//     *Grade it is given already carries SectionID and StudentAPIID -- the
+//     connector fills them in from the scores page it just checked -- it
+//     sends the lookup for exactly those ids without reading the page
+//     again.
 type PowerSchoolClient interface {
 	SelectStudent(ctx context.Context, studentID string) (*pslib.HomePage, error)
 	GetHomePage(ctx context.Context) (*pslib.HomePage, error)
+	FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error)
 	GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error)
 }
 
@@ -100,6 +106,10 @@ func (p *productionClient) GetHomePage(ctx context.Context) (*pslib.HomePage, er
 	return p.lib.GetHomePage(ctx)
 }
 
+func (p *productionClient) FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error) {
+	return p.lib.FetchScoresMetadata(ctx, scoresURL)
+}
+
 func (p *productionClient) GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error) {
 	return p.lib.GetAssignments(ctx, studentID, grade)
 }
@@ -113,6 +123,13 @@ var (
 	// ErrSelectionMismatch: two parts of one poll disagree about which
 	// student they belong to.
 	ErrSelectionMismatch = errors.New("powerschool: pages read in one poll belong to different students")
+	// ErrSelectionChanged: a scores page read during a kid's turn carries
+	// a student id other than the one that kid is bound to. The session's
+	// selected student was not this kid's when that page was served.
+	ErrSelectionChanged = errors.New("powerschool: a scores page read for this kid belongs to another student")
+	// ErrStudentAPIIDConflict: the id a kid's pages agreed on is already
+	// bound to another kid.
+	ErrStudentAPIIDConflict = errors.New("powerschool: the scores-page student id observed for this kid is bound to another kid")
 	// ErrStudentNumberMismatch: the selected student's number on the page
 	// is not the student_number configured for that kid.
 	ErrStudentNumberMismatch = errors.New("powerschool: the selected student's number does not match the configured student_number")
@@ -174,26 +191,6 @@ func verifyKidPage(page *pslib.HomePage, kid Kid) error {
 	return nil
 }
 
-// verifyOneStudent enforces the per-poll invariant on the assignment reads:
-// every scores page the library read for this kid in this poll carried the
-// same student id. The library records that id in Grade.StudentAPIID when
-// GetAssignments succeeds, so read lists the grades whose lookup succeeded.
-// A missing id is a failure too -- an unattributed page is not evidence.
-func verifyOneStudent(read []*pslib.Grade) error {
-	want := ""
-	for _, g := range read {
-		switch {
-		case g == nil || g.StudentAPIID == "":
-			return ErrSelectionMismatch
-		case want == "":
-			want = g.StudentAPIID
-		case g.StudentAPIID != want:
-			return ErrSelectionMismatch
-		}
-	}
-	return nil
-}
-
 // classifyErr maps a library or transport error to one of the short stable
 // strings used as the error_class metric label and log field.
 func classifyErr(err error) string {
@@ -210,6 +207,10 @@ func classifyErr(err error) string {
 		return "selection_unknown"
 	case errors.Is(err, ErrSelectionMismatch), errors.Is(err, pslib.ErrStudentNotSelected):
 		return "selection_mismatch"
+	case errors.Is(err, ErrSelectionChanged):
+		return "selection_changed"
+	case errors.Is(err, ErrStudentAPIIDConflict):
+		return "student_api_id_conflict"
 	case errors.Is(err, ErrStudentNumberMismatch):
 		return "student_number_mismatch"
 	case errors.Is(err, pslib.ErrSwitchNotConfirmed):

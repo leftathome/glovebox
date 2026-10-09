@@ -2,6 +2,10 @@
 {{- if $connector.enabled }}
 {{- $ingestMode := $connector.ingestMode | default "http" }}
 {{- $es := $connector.externalSecret | default dict }}
+{{- $esFiles := dict }}
+{{- if $es.enabled }}
+{{- $esFiles = ($es.files | default dict) }}
+{{- end }}
 {{- /*
 Read-only root filesystem ($roRoot, below).
 
@@ -55,6 +59,13 @@ spec:
         glovebox.io/connector: {{ $name }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/connector-configmap.yaml") $ | sha256sum }}
+        {{- if $es.enabled }}
+        # Rolls the pod when an ExternalSecret's spec changes (a new remote
+        # key, say). A refreshed VALUE does not change this: env-delivered
+        # secrets then need a restart, file-delivered ones (files.data) are
+        # updated in place by the kubelet.
+        checksum/secret: {{ include (print $.Template.BasePath "/connector-externalsecret.yaml") $ | sha256sum }}
+        {{- end }}
         {{- if $.Values.metrics.annotations }}
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
@@ -171,6 +182,13 @@ spec:
             - name: config
               mountPath: /etc/connector
               readOnly: true
+            {{- if $esFiles.data }}
+            # No subPath: a subPath mount is a one-time copy and would never
+            # see the Secret being updated.
+            - name: secret-files
+              mountPath: {{ required (printf "connectors.%s.externalSecret.files.mountPath is required with files.data" $name) $esFiles.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if and (eq $ingestMode "http") (ne $.Values.ingest.tls.mode "disabled") }}
             - name: ingest-tls
               mountPath: /etc/ingest-tls
@@ -204,6 +222,12 @@ spec:
         - name: config
           configMap:
             name: {{ include "glovebox.fullname" $ }}-{{ $name }}-config
+        {{- if $esFiles.data }}
+        - name: secret-files
+          secret:
+            secretName: {{ include "glovebox.fullname" $ }}-{{ $name }}-files
+            defaultMode: 0440
+        {{- end }}
         {{- if and (eq $ingestMode "http") (ne $.Values.ingest.tls.mode "disabled") }}
         - name: ingest-tls
           secret:

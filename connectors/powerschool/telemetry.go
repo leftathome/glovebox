@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -28,6 +29,7 @@ type Telemetry struct {
 	itemsTotal         metric.Int64Counter
 	surfaceErrorsTotal metric.Int64Counter
 	kidsSkippedTotal   metric.Int64Counter
+	rejectedSessionAge metric.Float64Gauge
 
 	tracer trace.Tracer
 }
@@ -82,7 +84,24 @@ func newTelemetry(base *connector.Metrics, meter metric.Meter, tracer trace.Trac
 	if err != nil {
 		return nil, fmt.Errorf("construct powerschool_kids_skipped_total: %w", err)
 	}
+	t.rejectedSessionAge, err = meter.Float64Gauge("powerschool_rejected_session_age_seconds",
+		metric.WithDescription("Age of the most recently rejected session when it was rejected: "+
+			"seconds since this connector first loaded it"),
+		metric.WithUnit("s"))
+	if err != nil {
+		return nil, fmt.Errorf("construct powerschool_rejected_session_age_seconds: %w", err)
+	}
 	return t, nil
+}
+
+// SetRejectedSessionAge sets powerschool_rejected_session_age_seconds. It
+// is set when a session is rejected and again at the next start (the
+// process exits right after a rejection, usually before a scrape).
+func (t *Telemetry) SetRejectedSessionAge(age time.Duration) {
+	if t == nil {
+		return
+	}
+	t.rejectedSessionAge.Record(context.Background(), age.Seconds())
 }
 
 // RecordItemProduced wraps the framework RecordItemProduced with

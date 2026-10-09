@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
-	github.com/leftathome/powerschool-go v0.1.2
+	github.com/leftathome/powerschool-go v0.2.0
 	github.com/leftathome/schoology-go v0.2.1
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/prometheus/client_golang v1.24.1
@@ -89,9 +89,3 @@ require (
 )
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
-
-// TEMPORARY, blocks merge: powerschool-go branch feat/readonly-session-client is
-// unreleased and lives only on the private GitLab. Building needs
-// GOPRIVATE=gitlab.orac.local. Drop this and require the release tag once the
-// library is published (spec 16 section 11.1).
-replace github.com/leftathome/powerschool-go => gitlab.orac.local/steve/powerschool-go v0.1.3-0.20261009200757-34dd60a8b95e

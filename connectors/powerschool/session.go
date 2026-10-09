@@ -99,25 +99,39 @@ func SessionFingerprint(s *pslib.SessionExport) string {
 // WaitForFreshSession returns the session to run on, having first waited
 // out a session the portal has already refused.
 //
-// A refused session is a permanent error, the process exits, and the
+// A refused session is routine, not exceptional: the account is shared with
+// its human owner and the portal appears to keep one live session per
+// account, so the owner signing in ends the connector's session. The poll
+// that discovers it returns a permanent error, the process exits, and the
 // kubelet starts it again with the same session file. If the loaded session
 // is the one recorded in rejected, this function blocks -- re-reading the
 // session every interval and contacting nothing upstream -- until load
-// returns a different one, or ctx ends. The health endpoints are not up
-// while it waits, so the pod reports not-ready: that is the operator
-// signal.
+// returns a different one, or ctx ends. With the session mounted as a file,
+// an in-place update of the Secret ends the wait without a pod restart.
+//
+// onWait, if not nil, is called once, the first time the function is about
+// to wait. The binary uses it to bring up WaitHealth: connector.Run has not
+// started, so without it nothing answers the kubelet's probes and the pod
+// is restarted instead of sitting Running and NotReady.
 //
 // The first load must succeed (a missing or malformed session is a startup
 // error). Later failures are tolerated: the file may be mid-rewrite.
 func WaitForFreshSession(ctx context.Context, rejected connector.RejectedSession,
-	load func() (*pslib.SessionExport, error), interval time.Duration) (*pslib.SessionExport, error) {
+	load func() (*pslib.SessionExport, error), interval time.Duration, onWait func()) (*pslib.SessionExport, error) {
 	session, err := load()
 	if err != nil {
 		return nil, err
 	}
+	waiting := false
 	for rejected.IsRejected(SessionFingerprint(session)) {
-		slog.Error("powerschool: this session was already rejected upstream; " +
-			"waiting for a new one, not contacting the portal")
+		if !waiting {
+			waiting = true
+			slog.Warn("powerschool: this session was already rejected upstream; " +
+				"waiting for a new one, not contacting the portal")
+			if onWait != nil {
+				onWait()
+			}
+		}
 		t := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -128,6 +142,9 @@ func WaitForFreshSession(ctx context.Context, rejected connector.RejectedSession
 		if fresh, err := load(); err == nil {
 			session = fresh
 		}
+	}
+	if waiting {
+		slog.Info("powerschool: a new session is in place; starting")
 	}
 	return session, nil
 }

@@ -55,8 +55,9 @@ func pollFixture(selected string) *fakeClient {
 	f.HomeFunc = func(ctx context.Context) (*pslib.HomePage, error) {
 		return homeFixture(f.Selected), nil
 	}
+	// The scores page is rendered for whoever the session has selected.
+	f.APIIDFunc = func(scoresURL string) string { return studentAPIIDs[f.Selected] }
 	f.AssignmentsFunc = func(ctx context.Context, studentID string, g *pslib.Grade) ([]*pslib.Assignment, error) {
-		g.StudentAPIID = studentAPIIDs[f.Selected]
 		a := sampleAssignment("5001", "Lab report")
 		a.Status, a.Flags = pslib.StatusMissing, []pslib.AssignmentFlag{pslib.FlagMissing}
 		return []*pslib.Assignment{a}, nil
@@ -336,22 +337,21 @@ func twoCourses(f *fakeClient) {
 	}
 }
 
-// TestPoll_ScoresPagesOfTwoStudents: the home page and the first course's
-// scores page belong to one student, the second course's to another, and
-// the selection marker never moves (so the end-of-turn check alone would
-// pass). The per-poll invariant -- every scores page names the same student
-// -- discards the kid's poll, grades and attendance included.
+// TestPoll_ScoresPagesOfTwoStudents: a kid with no bound id yet. The home
+// page and the first course's scores page belong to one student, the second
+// course's to another, and the selection marker never moves (so the
+// end-of-turn check alone would pass). While unbound, every scores page of
+// a turn must still carry the same id; the kid's poll is discarded, grades
+// and attendance included, and no id is learned from it.
 func TestPoll_ScoresPagesOfTwoStudents(t *testing.T) {
 	client := pollFixture("111111")
 	twoCourses(client)
 	apiIDs := []string{"999001", "999002"}
 	call := 0
-	client.AssignmentsFunc = func(ctx context.Context, studentID string, g *pslib.Grade) ([]*pslib.Assignment, error) {
-		g.StudentAPIID = apiIDs[call%len(apiIDs)]
+	client.APIIDFunc = func(scoresURL string) string {
+		id := apiIDs[call%len(apiIDs)]
 		call++
-		a := sampleAssignment("5001", "Lab report")
-		a.Status, a.Flags = pslib.StatusMissing, []pslib.AssignmentFlag{pslib.FlagMissing}
-		return []*pslib.Assignment{a}, nil
+		return id
 	}
 	c, cp, dir := newWiredConnector(t, client, oneKidConfig())
 	rec := recordMetrics(t, c)
@@ -363,8 +363,13 @@ func TestPoll_ScoresPagesOfTwoStudents(t *testing.T) {
 	if items := readItems(t, dir); len(items) != 0 {
 		t.Fatalf("staged %d items from a poll whose pages disagreed, want 0: first subject %q", len(items), items[0].Meta.Subject)
 	}
-	if len(client.AssignmentsCalls) != 2 {
-		t.Errorf("lookups = %v, want both courses read before deciding", client.AssignmentsCalls)
+	// The second scores page is refused before its lookup is sent.
+	if len(client.ScoresCalls) != 2 || len(client.AssignmentsCalls) != 1 {
+		t.Errorf("scores reads %d / lookups %v, want 2 scores pages and only the first course's lookup",
+			len(client.ScoresCalls), client.AssignmentsCalls)
+	}
+	if _, bound := cp.Load(apiIDKey("k1")); bound {
+		t.Error("a discarded poll bound the kid to a student id")
 	}
 	assertNoFingerprints(t, cp, "k1")
 	for _, key := range []string{CheckpointKey(gradeSurface, "k1", "00200"), CheckpointKey(assignmentSurface, "k1", "00200:5001")} {
@@ -373,9 +378,9 @@ func TestPoll_ScoresPagesOfTwoStudents(t *testing.T) {
 		}
 	}
 	counters := rec.counters()
-	if counters["powerschool_kids_skipped_total{kid=k1,reason=selection_mismatch}"] != 1 ||
-		counters["powerschool_surface_errors_total{error_class=selection_mismatch,kid=k1,surface=assignment}"] != 1 {
-		t.Errorf("selection_mismatch not recorded: %v", counters)
+	if counters["powerschool_kids_skipped_total{kid=k1,reason=selection_changed}"] != 1 ||
+		counters["powerschool_surface_errors_total{error_class=selection_changed,kid=k1,surface=assignment}"] != 1 {
+		t.Errorf("selection_changed not recorded: %v", counters)
 	}
 
 	// Consistent again: everything stages, as new.
@@ -398,9 +403,6 @@ func TestPoll_ScoresPagesOfTwoStudents(t *testing.T) {
 func TestPoll_ScoresPageWithoutStudentIDIsDiscarded(t *testing.T) {
 	client := pollFixture("111111")
 	client.NoAPIID = true
-	client.AssignmentsFunc = func(ctx context.Context, studentID string, g *pslib.Grade) ([]*pslib.Assignment, error) {
-		return []*pslib.Assignment{sampleAssignment("5001", "Lab report")}, nil
-	}
 	c, cp, dir := newWiredConnector(t, client, testConfig())
 
 	if err := c.Poll(context.Background(), cp); err != nil {
@@ -761,7 +763,7 @@ func TestPoll_SessionExpiredIsPermanent(t *testing.T) {
 			tc.breakIt(client)
 			c, cp, dir := newWiredConnector(t, client, testConfig())
 			rejected := 0
-			c.OnSessionRejected = func() { rejected++ }
+			c.OnSessionRejected = func(time.Duration) { rejected++ }
 
 			err := c.Poll(context.Background(), cp)
 			if err == nil || !connector.IsPermanent(err) {
@@ -795,7 +797,7 @@ func TestPoll_FailureThresholdEscalates(t *testing.T) {
 	cfg.FailureThreshold = 3
 	c, cp, _ := newWiredConnector(t, client, cfg)
 	rejected := 0
-	c.OnSessionRejected = func() { rejected++ }
+	c.OnSessionRejected = func(time.Duration) { rejected++ }
 	ctx := context.Background()
 
 	for i := 1; i <= 2; i++ {
