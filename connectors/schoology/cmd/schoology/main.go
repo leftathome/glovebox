@@ -139,6 +139,13 @@ func main() {
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
+		// The windowed schedule in Watch decides when to poll. The framework's
+		// periodic re-poll (default 5m) both called Poll and restarted Watch,
+		// which re-rolled the in-window splay each time and could skip a
+		// window outright. Push it out past the pod's natural lifetime (the
+		// session refresh rolls the pod about every 12 days); Poll is also
+		// gated to its first call.
+		PollInterval: 30 * 24 * time.Hour,
 		Setup: func(cc connector.ConnectorContext) error {
 			return c.Wire(cc)
 		},
