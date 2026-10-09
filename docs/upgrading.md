@@ -10,6 +10,14 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.2 (from 0.9.1)
+
+No required changes. Operators running the Schoology refresher against a Vault
+secret whose properties are not literally `host`/`username`/`password` can
+drop any post-render patches in favour of
+`schoologyAuthRefresher.vault.credentialsKeys`, and can verify a private-CA
+Vault with `schoologyAuthRefresher.vault.caConfigMap`.
+
 ## Upgrading to 0.9.1 (from 0.9.0)
 
 No configuration changes. Two scanner changes can move verdicts:

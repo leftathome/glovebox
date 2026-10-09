@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-09
+
+### Security
+
+- **Schoology connector is now read-only by construction** (glovebox-wekc.1).
+  Its session is a real parent account, which upstream can post, message and
+  submit. Every request the connector makes now goes through
+  `connector.ReadOnlyTransport`, which refuses any HTTP method other than
+  GET/HEAD before it leaves the process. The guard lives in the framework so
+  other account-backed connectors can adopt it.
+
+### Fixed
+
+- **Schoology session refresher could not complete a login** against
+  `app.schoology.com` through Browserless: `schoology-go` extracted the CSRF
+  token before the home page had loaded (`credentials missing CSRFToken`,
+  4/4 attempts on a live account). Bumped `schoology-go` to v0.2.1, which
+  waits for the page settings.
+- `SCHOOLOGY_HOST` may be a full `https://` URL. The login path builds
+  `https://` + host itself, so a tenant stored as a URL produced a broken
+  login URL. Both the connector and the refresher normalise it
+  (glovebox-wekc.2).
+- Parse-failure receipts reported `schoology-go` v0.1.0 regardless of the
+  version actually linked.
+
+### Added
+
+- Chart: `schoologyAuthRefresher.vault.credentialsKeys` maps differently
+  named Vault properties onto host/username/password, and
+  `schoologyAuthRefresher.vault.caConfigMap` mounts a CA bundle as
+  `VAULT_CACERT`, so an `https` Vault on a private CA verifies without
+  disabling TLS checks. Defaults render exactly as 0.9.1.
+
 ## [0.9.1] - 2026-09-25
 
 ### Security
