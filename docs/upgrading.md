@@ -10,6 +10,13 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.5 (from 0.9.4)
+
+No required changes. The Schoology connector now polls each configured
+window exactly once and no longer retries a refused session on restart. While
+it waits for a replacement session its pod reports unhealthy; that is
+intended.
+
 ## Upgrading to 0.9.4 (from 0.9.3)
 
 No required changes. If you run the Schoology connector, upgrade before

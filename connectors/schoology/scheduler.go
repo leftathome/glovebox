@@ -54,6 +54,29 @@ func computeNextPollTime(cfg Config, now time.Time, tz *time.Location, rng *rand
 	return splayedTimeIn(cfg.PollSchedule.Windows[0], day, tz, rng), skipped
 }
 
+// windowEnd returns the end of the configured window that contains t (on
+// t's own day), or t unchanged when t is in no window.
+//
+// The scheduler picks "the first splayed time after now", so asking it for
+// the next poll from a moment still inside the window that just fired
+// re-rolls within that same window and polls it again whenever the roll
+// lands later. Scheduling the next poll from windowEnd(fired) instead gives
+// each window exactly one scheduled poll.
+func windowEnd(cfg Config, t time.Time, tz *time.Location) time.Time {
+	t = t.In(tz)
+	sec := t.Hour()*3600 + t.Minute()*60 + t.Second()
+	for _, w := range cfg.PollSchedule.Windows {
+		startH, startM := parseHHMM(w.Start)
+		endH, endM := parseHHMM(w.End)
+		startSec := startH*3600 + startM*60
+		endSec := endH*3600 + endM*60
+		if sec >= startSec && sec < endSec {
+			return time.Date(t.Year(), t.Month(), t.Day(), endH, endM, 0, 0, tz)
+		}
+	}
+	return t
+}
+
 func isWeekend(t time.Time) bool {
 	wd := t.Weekday()
 	return wd == time.Saturday || wd == time.Sunday
