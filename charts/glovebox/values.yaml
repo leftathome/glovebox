@@ -1450,6 +1450,126 @@ connectors:
     affinity: {}
     tolerations: []
 
+  # PowerSchool parent portal (spec 16): grades, assignments and attendance
+  # per child. Read-only by construction -- every request goes through a
+  # transport pinned to the portal host that refuses anything but GET/HEAD,
+  # plus one named query POST for assignment scores (see
+  # docs/connectors/powerschool.md).
+  #
+  # NOT RUNNABLE YET: the pinned powerschool-go (v0.1.0) reads pages through
+  # a headless browser, which that transport cannot see, so the binary
+  # refuses to start. It also cannot switch students, so only the child the
+  # portal session opens on would be read. Leave disabled until both are
+  # fixed upstream (spec 16 section 11).
+  powerschool:
+    enabled: false
+    image:
+      repository: ghcr.io/leftathome/glovebox-powerschool
+      tag: latest
+      pullPolicy: IfNotPresent
+    config:
+      # Opaque labels (k1, k2), never names. REPLACE the placeholder
+      # student_id values with each child's id from the portal's student
+      # switcher before enabling -- "0" fails ValidateConfig at startup.
+      kids:
+        - name: k1
+          student_id: "0"
+        - name: k2
+          student_id: "0"
+      # One poll a day, at a random time inside the window, after school
+      # has had the afternoon to enter grades and attendance.
+      poll_schedule:
+        weekdays_only: false
+        windows:
+          - start: "16:30"
+            end: "18:00"
+      # Turning assignments off also closes the transport's one POST
+      # exception, leaving it strictly GET/HEAD.
+      surfaces:
+        grades: true
+        assignments: true
+        attendance: true
+      assignments:
+        lookback_days: 30
+        course_delay_ms: 500
+      failure_threshold: 5
+      # Per-child visibility. Every enabled surface of every kid needs its
+      # own rule naming that kid's data_subject; startup fails if one is
+      # missing, if two kids share a subject, or if a "*" rule shadows them.
+      # There is deliberately no wildcard tail. REPLACE k1/k2 with each
+      # child's subject id. Destinations must appear in
+      # scanner.agentAllowlist above, or the scanner drops the item.
+      rules:
+        - match: "powerschool:k1:grade"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k1:assignment"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k1:attendance"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k2:grade"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:assignment"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:attendance"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+      identity:
+        provider: powerschool
+        auth_method: session_cookie
+        tenant: ""
+    env:
+      POWERSCHOOL_TIMEZONE: America/Los_Angeles
+    secrets: ""
+    # The connector takes the portal location and a saved SESSION -- never
+    # the account's username or password, which belong only to the login
+    # workload that produces the session. Do not map powerschool_username /
+    # powerschool_password here. Both remote keys and property names are
+    # yours to change; the env var names (the map keys) are fixed.
+    externalSecret:
+      enabled: false
+      refreshInterval: "5m"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: ""
+      data:
+        # Bare host or full https URL; the binary normalises it.
+        POWERSCHOOL_HOST:
+          key: eso/glovebox-powerschool
+          property: powerschool_hostname
+        # JSON written by the login workload (powerschool-go
+        # Client.ExportSession). No such workload ships yet.
+        POWERSCHOOL_SESSION:
+          key: eso/glovebox-powerschool-session
+          property: session
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    # Checkpoints are per-record fingerprints. Losing them re-stages every
+    # current grade and every assignment inside the lookback window, so
+    # this is a PVC, not an emptyDir.
+    state:
+      size: 1Gi
+      storageClass: ""
+      existingClaim: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+
 # Schoology browser-session refresher (spec 06 §12). Disabled by
 # default; opt-in by setting schoologyAuthRefresher.enabled=true. When
 # enabled, the chart renders a CronJob, a dedicated ServiceAccount, and
