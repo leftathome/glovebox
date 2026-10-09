@@ -28,6 +28,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -38,11 +39,11 @@ import (
 	pslib "github.com/leftathome/powerschool-go"
 )
 
-// powerschoolLibVersion is logged with every escalation. It must be kept
-// in sync with the go.mod pin for github.com/leftathome/powerschool-go.
-const powerschoolLibVersion = "v0.1.0"
-
 func main() {
+	// Logged with every escalation; read from the binary's build info so it
+	// cannot drift from go.mod.
+	libVersion := powerschool.LibraryVersion()
+
 	configFile := os.Getenv("GLOVEBOX_CONNECTOR_CONFIG")
 	if configFile == "" {
 		configFile = "/etc/connector/config.json"
@@ -72,22 +73,46 @@ func main() {
 		os.Exit(1)
 	}
 
-	session, err := powerschool.LoadSession(os.Getenv, time.Now())
+	if err := powerschool.CheckLibrary(); err != nil {
+		slog.Error("powerschool: linked library is not the one this connector was reviewed against",
+			"library_version", libVersion, "error", err)
+		os.Exit(1)
+	}
+
+	// If the portal already refused this exact session, do not present it
+	// again: wait here, making no upstream requests, until the session
+	// source holds a different one (the login workload writes a new session
+	// and the mounted Secret is updated in place). A session delivered
+	// through the POWERSCHOOL_SESSION environment variable cannot change
+	// under a running process; there the wait lasts until the pod is
+	// replaced, which is still the right amount of upstream traffic: none.
+	rejected := connector.NewRejectedSession(os.Getenv("GLOVEBOX_STATE_DIR"))
+	session, err := powerschool.WaitForFreshSession(context.Background(), rejected,
+		func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
+		time.Minute)
 	if err != nil {
 		// Missing, malformed or expired: the login workload must produce
 		// a fresh session before the connector can come up.
 		slog.Error("powerschool: load session", "error", err)
 		os.Exit(1)
 	}
+	sessionFP := powerschool.SessionFingerprint(session)
 
 	// The session belongs to a real parent account. Every request the
 	// library makes goes through a transport pinned to this host that
-	// refuses anything but GET/HEAD, plus the assignment-lookup query
-	// when (and only when) the assignments surface is enabled. No
-	// credentials are passed, so the library cannot re-authenticate.
-	httpClient := powerschool.NewHTTPClient(host, cfg.AssignmentsEnabled(), 30*time.Second)
+	// refuses anything but GET/HEAD, with an allowlist of two POSTs that
+	// change no record: the assignment-lookup query (only while the
+	// assignments surface is enabled) and the portal's student-switcher
+	// form (only for the student ids configured here). No credentials are
+	// passed, so the library cannot re-authenticate.
+	studentIDs := make([]string, 0, len(cfg.Kids))
+	for _, kid := range cfg.Kids {
+		studentIDs = append(studentIDs, kid.StudentID)
+	}
+	httpClient := powerschool.NewHTTPClient(host, cfg.AssignmentsEnabled(), studentIDs, 30*time.Second)
 	lib, err := pslib.NewClient(baseURL,
 		pslib.WithHTTPClient(httpClient),
+		pslib.WithHTTPPageFetch(),
 		pslib.WithSession(session.Cookies, session.ExpiresAt),
 		pslib.WithLogLevel(pslib.LogLevelWarn),
 	)
@@ -98,18 +123,20 @@ func main() {
 
 	client, err := powerschool.NewProductionClient(lib)
 	if err != nil {
-		// With powerschool-go v0.1.0 this is where the binary stops: its
-		// page reads would start a headless browser the transport above
-		// cannot see.
 		slog.Error("powerschool: library cannot honour the read-only transport",
-			"library_version", powerschoolLibVersion, "error", err)
+			"library_version", libVersion, "error", err)
 		os.Exit(1)
 	}
 
-	c, err := powerschool.NewConnector(client, cfg, powerschoolLibVersion)
+	c, err := powerschool.NewConnector(client, cfg, libVersion)
 	if err != nil {
 		slog.Error("powerschool: construct connector", "error", err)
 		os.Exit(1)
+	}
+	c.OnSessionRejected = func() {
+		if err := rejected.Mark(sessionFP); err != nil {
+			slog.Error("powerschool: could not record rejected session", "error", err)
+		}
 	}
 
 	connector.Run(connector.Options{
@@ -119,10 +146,12 @@ func main() {
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
-		// The window scheduler in Watch drives the daily poll. The
-		// framework also re-polls on this interval; keep it at a day so
-		// the portal is not read every few minutes.
-		PollInterval: 24 * time.Hour,
+		// The windowed schedule in Watch decides when to poll. The
+		// framework's periodic re-poll both calls Poll and restarts Watch;
+		// push it out past the pod's natural lifetime. Poll is also gated
+		// to its first call per process, and skips that one when no window
+		// has opened since the last recorded poll.
+		PollInterval: 30 * 24 * time.Hour,
 		Setup: func(cc connector.ConnectorContext) error {
 			return c.Wire(cc)
 		},

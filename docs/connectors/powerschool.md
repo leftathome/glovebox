@@ -14,19 +14,18 @@ session. Design: [spec 16](../specs/16-powerschool-connector-design.md).
 
 ## Status
 
-Shipped **disabled, and not runnable yet**. Two gaps in the pinned
-`powerschool-go` (v0.1.0) block it:
+Shipped **disabled, and not deployable yet**:
 
-1. Its page reads go through a headless browser that the connector's
-   read-only transport cannot see. The binary detects this and **exits at
-   startup** rather than run without the guarantee. A fix is proposed in
-   `powerschool-go` branch `fix/http-page-fetch`.
-2. It cannot switch students. On a two-child account only the child the
-   session opens on is read; the other is skipped every poll.
+1. It depends on an unreleased `powerschool-go` (branch
+   `feat/readonly-session-client`). `go.mod` currently replaces the module
+   with a pseudo-version on a private host, which CI and the image build
+   cannot fetch. A release is needed first.
+2. There is no login workload yet to produce the session.
+3. The student switch and the dead-session handling have only been run
+   against synthetic fixtures built to the live page's shape. One supervised
+   run against the real portal is needed before enabling.
 
-There is also no login workload yet to produce the session. See spec 16
-section 11 for the full list, including what still needs checking against a
-live portal.
+See spec 16 section 11 for the full list.
 
 ## Authentication
 
@@ -36,15 +35,22 @@ in. At startup `cmd/powerschool/main.go` reads:
 - `POWERSCHOOL_HOST` -- the portal location. A bare host or a full `https://`
   URL; the binary normalises it (`powerschool.NormalizeBaseURL`) and always
   uses https.
-- `POWERSCHOOL_SESSION` -- a session document, or `POWERSCHOOL_SESSION_FILE`,
-  a path to one (the file wins if both are set). It is the JSON form of
-  `powerschool-go`'s `SessionExport`: `{"cookies":[...],"expires_at":"..."}`.
+- `POWERSCHOOL_SESSION_FILE`, a path to a session document, or
+  `POWERSCHOOL_SESSION`, the document itself (the file wins if both are
+  set). It is the JSON form of `powerschool-go`'s `SessionExport`:
+  `{"cookies":[...],"expires_at":"..."}`.
 
 The session is produced by a separate login workload that holds the
 credentials, drives the browser login and calls `Client.ExportSession`. A
-missing, malformed or expired session is a startup error. If the session
-expires while running, the connector exits and the restarted container reads
-whatever the Secret then holds.
+missing, malformed or expired session is a startup error.
+
+If the portal refuses the session while the connector is running, the
+connector records a fingerprint of it (a hash, in `rejected-session` under
+`GLOVEBOX_STATE_DIR`) and exits. The restarted process does **not** present
+that session again: it waits, not ready and making no upstream request,
+until the session source holds a different one. With the file form that
+happens when the mounted Secret is updated; with the environment form the
+pod has to be replaced.
 
 Optional: `POWERSCHOOL_TIMEZONE` (scheduler and due-date timezone, default
 `America/Los_Angeles`).
@@ -54,19 +60,42 @@ Optional: `POWERSCHOOL_TIMEZONE` (scheduler and due-date timezone, default
 The session belongs to a real parent account. Every request goes through
 `powerschool.Transport`, which:
 
-- forwards only `https` requests to the configured host, so the session
-  cookie cannot be carried anywhere else; and
-- hands everything to `connector.ReadOnlyTransport`, which refuses any method
-  but GET/HEAD before it leaves the process -- with **one exception**: when
-  the assignments surface is enabled, a POST to exactly
-  `/ws/xte/assignment/lookup` is forwarded. That endpoint is the query the
-  portal's own scores page uses to list a section's assignments; there is no
-  GET form of it. Set `surfaces.assignments: false` and the transport is
-  strictly GET/HEAD.
+- forwards only `https` requests to exactly the configured host, so the
+  session cookie cannot be carried anywhere else;
+- refuses any request carrying a method-override header; and
+- hands everything to `connector.ReadOnlyTransport`, which refuses any
+  method but GET/HEAD before it leaves the process -- with an explicit
+  allowlist of **two** POSTs, neither of which changes any record:
+  1. `POST /ws/xte/assignment/lookup`, only while the assignments surface is
+     enabled. It is the query the portal's own scores page uses to list a
+     section's assignments; there is no GET form of it.
+  2. `POST /guardian/home.html` whose body is exactly
+     `selected_student_id=<id>` for a student id configured under `kids`.
+     It is the portal's own student switcher and changes which child the
+     session displays, nothing else.
+
+Everything about those two requests is matched literally -- path as sent on
+the wire, method, content type, and for the switch every byte of the body.
+Spec 16 section 5 has the rule and the reasoning.
 
 The library client is built with a session and no credentials, so it cannot
 re-authenticate. Agents never receive the session -- glovebox hands them
 scanned files only.
+
+## One child at a time
+
+The portal shows one child per session. Each poll takes the configured kids
+in turn: select the kid's student (switching if needed), check the page's
+explicit selection marker, read, check the marker again, and only then
+stage. If the page carries no marker, nothing is posted and no kid is read.
+If anything read for a kid disagrees about which student it belongs to,
+everything read for that kid in that poll is discarded. Spec 16 section 6.1.
+
+## Schedule
+
+One poll per configured window, at a random time inside it. The framework's
+periodic re-poll is disabled, and a restart polls only if a window opened
+while the process was down. Spec 16 section 8.
 
 ## Configuration
 
@@ -80,8 +109,8 @@ Connector-specific fields:
 
 | field | type | required | description |
 |-------|------|----------|-------------|
-| `kids` | `[]{name,student_id}` | yes | children to poll. `name` is an opaque label (`k1`, `k2`) -- never a name -- with no `:` or whitespace. `student_id` is the numeric id from the portal's student switcher, as a string; `"0"` fails validation. Names and ids must be unique |
-| `poll_schedule` | object | yes | `weekdays_only` (bool) + `windows` (`[]{start,end}`), `HH:MM` local times. One poll at a random time inside each window |
+| `kids` | `[]{name,student_id,student_number?}` | yes | children to poll. `name` is an opaque label (`k1`, `k2`) -- never a name -- with no `:` or whitespace. `student_id` is the numeric id from the portal's student switcher, as a string; `"0"` fails validation. Optional `student_number` is the school-issued number the portal page shows; when set, the selected student's number on the page must equal it or that kid is skipped. It identifies a real child: set it in private values only. Names, ids and numbers must be unique |
+| `poll_schedule` | object | yes | `weekdays_only` (bool) + `windows` (`[]{start,end}`), `HH:MM` local times. Exactly one poll at a random time inside each window |
 | `surfaces` | object | no | `grades`, `assignments`, `attendance` booleans; each defaults to `true`. At least one must be on |
 | `assignments.lookback_days` | int | no | assignments first seen with a due date older than this and no missing/late/incomplete flag are recorded without being staged (default 30) |
 | `assignments.course_delay_ms` | int | no | pause between per-course requests (default 500) |
@@ -157,7 +186,12 @@ recent assignment.
 go test -race ./connectors/powerschool/...
 ```
 
-Unit tests use a hand-rolled fake client (`helpers_test.go`). The read-only
-wiring is tested by driving the real `powerschool-go` client through the
-transport against a local TLS test server (`transport_test.go`). All ids,
-names and fixtures are synthetic.
+Unit tests use a hand-rolled fake client with the portal's selection state
+(`helpers_test.go`). The read-only wiring, the student switch and whole
+polls are also tested by driving the real `powerschool-go` client through
+the production transport against a stateful loopback TLS server
+(`transport_test.go`, `transport_switch_test.go`). All ids, names and
+fixtures are synthetic.
+
+Until `powerschool-go` is released, building needs access to the private
+module host: `GOPRIVATE=gitlab.orac.local GOFLAGS=-mod=mod`.

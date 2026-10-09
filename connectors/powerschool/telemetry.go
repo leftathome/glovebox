@@ -45,10 +45,19 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 		return nil, errors.New("powerschool.NewTelemetry: tracerName is required")
 	}
 
-	meter := otel.Meter(meterName)
+	// The meter comes from the framework's own provider -- the one behind
+	// the /metrics endpoint. otel.Meter() would resolve against the global
+	// provider, which connector.Run never sets, and every instrument below
+	// would be a silent no-op.
+	return newTelemetry(base, base.Provider().Meter(meterName), otel.Tracer(tracerName))
+}
+
+// newTelemetry builds Telemetry on an explicit meter, so tests can read the
+// recorded values back through their own reader.
+func newTelemetry(base *connector.Metrics, meter metric.Meter, tracer trace.Tracer) (*Telemetry, error) {
 	t := &Telemetry{
 		Metrics: base,
-		tracer:  otel.Tracer(tracerName),
+		tracer:  tracer,
 	}
 
 	var err error
@@ -68,7 +77,8 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 		return nil, fmt.Errorf("construct powerschool_surface_errors_total: %w", err)
 	}
 	t.kidsSkippedTotal, err = meter.Int64Counter("powerschool_kids_skipped_total",
-		metric.WithDescription("Kids skipped in a poll by reason (not_selected, ...)"))
+		metric.WithDescription("Kids skipped in a poll by reason: unknown_student, switch_not_confirmed, "+
+			"student_number_mismatch, selection_unknown, selection_mismatch"))
 	if err != nil {
 		return nil, fmt.Errorf("construct powerschool_kids_skipped_total: %w", err)
 	}

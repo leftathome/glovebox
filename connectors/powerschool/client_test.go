@@ -12,9 +12,8 @@ import (
 	pslib "github.com/leftathome/powerschool-go"
 )
 
-// togglingLib stands in for a powerschool-go release that has HTTP page
-// fetching. stuck models a library that exposes the methods but does not
-// honour them.
+// togglingLib stands in for a powerschool-go client. stuck models a library
+// that exposes the page-fetch switch but does not honour it.
 type togglingLib struct {
 	on    bool
 	stuck bool
@@ -54,32 +53,28 @@ func TestRequireHTTPPageFetch(t *testing.T) {
 	}
 }
 
-// TestNewProductionClient_FailsClosedOnBrowserReads pins the behaviour
-// against whichever powerschool-go go.mod links. A library that cannot
-// route page reads through the injected client must be refused; one that
-// can must come back with the mode switched on. Neither outcome may leave
-// a usable client whose page reads go through a browser.
-func TestNewProductionClient_FailsClosedOnBrowserReads(t *testing.T) {
+// TestNewProductionClient_SwitchesBrowserReadsOff: against the library this
+// module actually links, the production client must come back with page
+// reads routed through the injected http.Client -- even when the caller did
+// not ask for that itself.
+func TestNewProductionClient_SwitchesBrowserReadsOff(t *testing.T) {
 	lib, err := pslib.NewClient("https://ps.example.org",
-		pslib.WithHTTPClient(NewHTTPClient("ps.example.org", false, time.Second)),
+		pslib.WithHTTPClient(NewHTTPClient("ps.example.org", false, nil, time.Second)),
 		pslib.WithSession([]*http.Cookie{{Name: "JSESSIONID", Value: "synthetic"}}, time.Now().Add(time.Hour)),
 	)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	if lib.UsesHTTPPageFetch() {
+		t.Fatal("precondition: library defaults to HTTP page fetch; the test proves nothing")
+	}
 
 	client, err := NewProductionClient(lib)
-	if f, capable := any(lib).(httpPageFetcher); capable {
-		if err != nil {
-			t.Fatalf("capable library refused: %v", err)
-		}
-		if !f.UsesHTTPPageFetch() {
-			t.Error("capable library accepted without HTTP page fetch on")
-		}
-		return
+	if err != nil || client == nil {
+		t.Fatalf("NewProductionClient = (%v, %v), want a client", client, err)
 	}
-	if !errors.Is(err, ErrBrowserReads) || client != nil {
-		t.Errorf("NewProductionClient = (%v, %v), want (nil, ErrBrowserReads)", client, err)
+	if !lib.UsesHTTPPageFetch() {
+		t.Error("library accepted with browser page reads still on")
 	}
 }
 
@@ -89,28 +84,116 @@ func TestNewProductionClient_NilLibrary(t *testing.T) {
 	}
 }
 
-func TestSelectedStudentID(t *testing.T) {
+// TestCheckLibrary: the linked library must POST where, and what, the
+// transport's allowlist was approved for. The literals are repeated here on
+// purpose: changing either side has to be a visible edit to this test.
+func TestCheckLibrary(t *testing.T) {
+	if err := CheckLibrary(); err != nil {
+		t.Fatalf("CheckLibrary: %v", err)
+	}
+	for name, pair := range map[string][2]string{
+		"assignment lookup path": {pslib.AssignmentLookupPath, AssignmentLookupPath},
+		"student switch path":    {pslib.SwitchStudentPath, SwitchStudentPath},
+		"student switch field":   {pslib.SwitchStudentField, SwitchStudentField},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s: library %q, connector %q", name, pair[0], pair[1])
+		}
+	}
+	if AssignmentLookupPath != "/ws/xte/assignment/lookup" ||
+		SwitchStudentPath != "/guardian/home.html" || SwitchStudentField != "selected_student_id" {
+		t.Errorf("allowlist literals changed: %q %q %q", AssignmentLookupPath, SwitchStudentPath, SwitchStudentField)
+	}
+}
+
+// page builds a HomePage of two students. selected lists the ids the
+// "library" marked Selected; attributed is the id stamped on the one grade
+// row.
+func page(attributed string, selected ...string) *pslib.HomePage {
+	students := []*pslib.Student{{ID: "111111", Name: "Student One"}, {ID: "111112", Name: "Student Two"}}
+	for _, s := range students {
+		for _, id := range selected {
+			if s.ID == id {
+				s.Selected = true
+				s.StudentNumber = "9000002"
+			}
+		}
+	}
+	g := sampleGrade("00100", "Example Science 7", "B+88")
+	g.StudentID = attributed
+	return &pslib.HomePage{Students: students, Grades: []*pslib.Grade{g}}
+}
+
+func TestSelectedStudent(t *testing.T) {
+	// The pre-fix library shape: the FIRST student carries the page's
+	// details although nothing marks it selected. That must not count.
+	enrichedButUnmarked := page("")
+	enrichedButUnmarked.Students[0].StudentNumber = "9000002"
+
+	nilEntries := page("111112", "111112")
+	nilEntries.Students = append([]*pslib.Student{nil}, nilEntries.Students...)
+	nilEntries.Grades = append(nilEntries.Grades, nil)
+
 	cases := []struct {
-		name     string
-		students []*pslib.Student
-		want     string
-		wantErr  bool
+		name    string
+		page    *pslib.HomePage
+		want    string
+		wantErr error
 	}{
-		{"none", nil, "", true},
-		{"one student, enriched", []*pslib.Student{{ID: "111111", StudentNumber: "9000001"}}, "111111", false},
-		{"two students, first selected", []*pslib.Student{{ID: "111111", StudentNumber: "9000001"}, {ID: "111112"}}, "111111", false},
-		{"two students, second selected", []*pslib.Student{{ID: "111111"}, nil, {ID: "111112", StudentNumber: "9000002"}}, "111112", false},
-		{"nobody enriched", []*pslib.Student{{ID: "111111"}, {ID: "111112"}}, "", true},
-		{"both enriched is ambiguous", []*pslib.Student{{ID: "111111", StudentNumber: "9000001"}, {ID: "111112", StudentNumber: "9000002"}}, "", true},
+		{"nil page", nil, "", ErrSelectionUnknown},
+		{"no students", &pslib.HomePage{}, "", ErrSelectionUnknown},
+		{"marker on the first student", page("111111", "111111"), "111111", nil},
+		{"marker on the second student", page("111112", "111112"), "111112", nil},
+		{"nil entries are skipped", nilEntries, "111112", nil},
+		{"no marker", page(""), "", ErrSelectionUnknown},
+		{"no marker, first student enriched anyway", enrichedButUnmarked, "", ErrSelectionUnknown},
+		{"two markers", page("111111", "111111", "111112"), "", ErrSelectionUnknown},
+		{"grades attributed to the other student", page("111112", "111111"), "", ErrSelectionMismatch},
+		{"grades attributed to nobody", page("", "111111"), "", ErrSelectionMismatch},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := SelectedStudentID(tc.students)
-			if (err != nil) != tc.wantErr || got != tc.want {
-				t.Errorf("SelectedStudentID = (%q, %v), want (%q, wantErr %v)", got, err, tc.want, tc.wantErr)
+			got, err := SelectedStudent(tc.page)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
-			if tc.wantErr && !errors.Is(err, ErrSelectionUnknown) {
-				t.Errorf("err = %v, want ErrSelectionUnknown", err)
+			if tc.wantErr != nil {
+				if got != nil {
+					t.Errorf("returned a student alongside an error: %+v", got)
+				}
+				return
+			}
+			if got == nil || got.ID != tc.want {
+				t.Errorf("SelectedStudent = %+v, want id %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyOneStudent(t *testing.T) {
+	g := func(apiID string) *pslib.Grade { return &pslib.Grade{StudentAPIID: apiID} }
+	cases := []struct {
+		name    string
+		read    []*pslib.Grade
+		wantErr bool
+	}{
+		{"nothing read", nil, false},
+		{"one page", []*pslib.Grade{g("999999")}, false},
+		{"all the same", []*pslib.Grade{g("999999"), g("999999"), g("999999")}, false},
+		{"second page is another student", []*pslib.Grade{g("999999"), g("999998")}, true},
+		{"last page is another student", []*pslib.Grade{g("999999"), g("999999"), g("999998")}, true},
+		{"a page with no id", []*pslib.Grade{g("999999"), g("")}, true},
+		{"only page has no id", []*pslib.Grade{g("")}, true},
+		{"nil entry", []*pslib.Grade{g("999999"), nil}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyOneStudent(tc.read)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, ErrSelectionMismatch) {
+				t.Errorf("err = %v, want ErrSelectionMismatch", err)
 			}
 		})
 	}
@@ -129,8 +212,14 @@ func TestClassifyErr(t *testing.T) {
 		{"write blocked through the library wrapper", pslib.WrapNetworkError(fmt.Errorf("%w: POST h/p", connector.ErrWriteBlocked)), "write_blocked"},
 		{"host blocked through the library wrapper", pslib.WrapNetworkError(fmt.Errorf("%w: https://h/p", ErrHostBlocked)), "host_blocked"},
 		{"selection unknown", ErrSelectionUnknown, "selection_unknown"},
+		{"selection unknown from the library", pslib.ErrSelectionUnknown, "selection_unknown"},
+		{"selection mismatch", ErrSelectionMismatch, "selection_mismatch"},
+		{"another student selected, from the library", pslib.ErrStudentNotSelected, "selection_mismatch"},
+		{"student number mismatch", ErrStudentNumberMismatch, "student_number_mismatch"},
+		{"switch not confirmed", pslib.ErrSwitchNotConfirmed, "switch_not_confirmed"},
 		{"rate limited", pslib.ErrRateLimited, "rate_limit"},
 		{"not found", pslib.ErrNotFound, "not_found"},
+		{"http status", pslib.WrapNetworkError(&pslib.HTTPStatusError{Op: "GET /x", StatusCode: 500, BodyLen: 10}), "http_status"},
 		{"parse", pslib.WrapParseError(errors.New("x"), "grades"), "parse"},
 		{"network", pslib.WrapNetworkError(errors.New("dial")), "network"},
 		{"timeout", context.DeadlineExceeded, "timeout"},

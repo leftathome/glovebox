@@ -19,36 +19,91 @@ import (
 // fakeClient is a hand-rolled PowerSchoolClient for connector tests. Each
 // field can be set per-test; nil defaults to a "not configured" error. It
 // records every call so tests can assert what was (not) asked for.
+//
+// Like the library, a successful GetAssignments stamps the grade with the
+// student id of the scores page it "read" (Grade.StudentAPIID). The fake
+// uses fakeAPIID unless AssignmentsFunc set one itself, or NoAPIID is set.
+//
+// SelectStudent behaves like the library's on top of HomeFunc: read the
+// page, and if another student is marked, "post the switcher form" -- which
+// moves Selected unless IgnoreSwitch is set -- then read again and confirm.
+// Fixtures built by pollFixture render the page from Selected, so the fake
+// has the same server-side selection state the portal has.
 type fakeClient struct {
-	StudentsFunc    func(ctx context.Context) ([]*pslib.Student, error)
-	GradesFunc      func(ctx context.Context, studentID string) ([]*pslib.Grade, error)
+	HomeFunc        func(ctx context.Context) (*pslib.HomePage, error)
 	AssignmentsFunc func(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error)
+	NoAPIID         bool
 
-	GradesCalls      []string // studentID per call
+	// Selected is the portal-side selection (a student id).
+	Selected string
+	// IgnoreSwitch makes the "form post" change nothing.
+	IgnoreSwitch bool
+
+	HomeCalls        int
+	SwitchCalls      []string // student id per form post
 	AssignmentsCalls []string // "<studentID>/<courseID>" per call
 }
 
-func (f *fakeClient) GetStudents(ctx context.Context) ([]*pslib.Student, error) {
-	if f.StudentsFunc != nil {
-		return f.StudentsFunc(ctx)
+func (f *fakeClient) SelectStudent(ctx context.Context, studentID string) (*pslib.HomePage, error) {
+	page, err := f.GetHomePage(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errors.New("fakeClient.GetStudents not configured")
+	selected := page.SelectedStudent()
+	if selected == nil {
+		return nil, pslib.ErrSelectionUnknown
+	}
+	if selected.ID == studentID {
+		return page, nil
+	}
+	known := false
+	for _, s := range page.Students {
+		if s != nil && s.ID == studentID {
+			known = true
+		}
+	}
+	if !known {
+		return nil, pslib.ErrNotFound
+	}
+	f.SwitchCalls = append(f.SwitchCalls, studentID)
+	if !f.IgnoreSwitch {
+		f.Selected = studentID
+	}
+	page, err = f.GetHomePage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if now := page.SelectedStudent(); now == nil || now.ID != studentID {
+		return nil, pslib.ErrSwitchNotConfirmed
+	}
+	return page, nil
 }
 
-func (f *fakeClient) GetGrades(ctx context.Context, studentID string) ([]*pslib.Grade, error) {
-	f.GradesCalls = append(f.GradesCalls, studentID)
-	if f.GradesFunc != nil {
-		return f.GradesFunc(ctx, studentID)
+// fakeAPIID is the synthetic scores-page student id the fake stamps.
+const fakeAPIID = "999999"
+
+func (f *fakeClient) GetHomePage(ctx context.Context) (*pslib.HomePage, error) {
+	f.HomeCalls++
+	if f.HomeFunc != nil {
+		page, err := f.HomeFunc(ctx)
+		if err == nil && page == nil {
+			return nil, errors.New("fakeClient: HomeFunc returned no page")
+		}
+		return page, err
 	}
-	return nil, errors.New("fakeClient.GetGrades not configured")
+	return nil, errors.New("fakeClient.GetHomePage not configured")
 }
 
 func (f *fakeClient) GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error) {
 	f.AssignmentsCalls = append(f.AssignmentsCalls, studentID+"/"+grade.CourseID)
-	if f.AssignmentsFunc != nil {
-		return f.AssignmentsFunc(ctx, studentID, grade)
+	if f.AssignmentsFunc == nil {
+		return nil, errors.New("fakeClient.GetAssignments not configured")
 	}
-	return nil, errors.New("fakeClient.GetAssignments not configured")
+	out, err := f.AssignmentsFunc(ctx, studentID, grade)
+	if err == nil && grade.StudentAPIID == "" && !f.NoAPIID {
+		grade.StudentAPIID = fakeAPIID
+	}
+	return out, err
 }
 
 // Compile-time check: fake implements the interface.

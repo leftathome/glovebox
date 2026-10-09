@@ -1,14 +1,50 @@
 package powerschool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/leftathome/glovebox/connector"
 	pslib "github.com/leftathome/powerschool-go"
 )
+
+// libraryModule is the module path of powerschool-go.
+const libraryModule = "github.com/leftathome/powerschool-go"
+
+// LibraryVersion returns the version of powerschool-go linked into this
+// binary, from its build info (the replacement's version when go.mod
+// replaces the module), or "unknown". It is logged with every escalation.
+func LibraryVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	return libraryVersionFrom(bi.Deps)
+}
+
+// libraryVersionFrom picks powerschool-go's version out of a dependency
+// list.
+func libraryVersionFrom(deps []*debug.Module) string {
+	for _, dep := range deps {
+		if dep == nil || dep.Path != libraryModule {
+			continue
+		}
+		if dep.Replace != nil && dep.Replace.Version != "" {
+			return dep.Replace.Version
+		}
+		if dep.Version != "" {
+			return dep.Version
+		}
+	}
+	return "unknown"
+}
 
 // LoadSession reads the saved PowerSchool session the connector runs on.
 //
@@ -40,6 +76,60 @@ func LoadSession(getenv func(string) string, now time.Time) (*pslib.SessionExpor
 		return nil, fmt.Errorf("neither POWERSCHOOL_SESSION_FILE nor POWERSCHOOL_SESSION is set")
 	}
 	return ParseSession(raw, now)
+}
+
+// SessionFingerprint returns a stable, non-reversible identifier for a
+// session: a SHA-256 over its cookies in name order. Two documents with the
+// same cookies have the same fingerprint whatever their order or expiry;
+// any changed, added or removed cookie changes it.
+func SessionFingerprint(s *pslib.SessionExport) string {
+	if s == nil {
+		return ""
+	}
+	pairs := make([]string, 0, len(s.Cookies))
+	for _, c := range s.Cookies {
+		if c != nil {
+			pairs = append(pairs, c.Name+"="+c.Value)
+		}
+	}
+	sort.Strings(pairs)
+	return connector.SessionFingerprint(strings.Join(pairs, "\x1f"))
+}
+
+// WaitForFreshSession returns the session to run on, having first waited
+// out a session the portal has already refused.
+//
+// A refused session is a permanent error, the process exits, and the
+// kubelet starts it again with the same session file. If the loaded session
+// is the one recorded in rejected, this function blocks -- re-reading the
+// session every interval and contacting nothing upstream -- until load
+// returns a different one, or ctx ends. The health endpoints are not up
+// while it waits, so the pod reports not-ready: that is the operator
+// signal.
+//
+// The first load must succeed (a missing or malformed session is a startup
+// error). Later failures are tolerated: the file may be mid-rewrite.
+func WaitForFreshSession(ctx context.Context, rejected connector.RejectedSession,
+	load func() (*pslib.SessionExport, error), interval time.Duration) (*pslib.SessionExport, error) {
+	session, err := load()
+	if err != nil {
+		return nil, err
+	}
+	for rejected.IsRejected(SessionFingerprint(session)) {
+		slog.Error("powerschool: this session was already rejected upstream; " +
+			"waiting for a new one, not contacting the portal")
+		t := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+		if fresh, err := load(); err == nil {
+			session = fresh
+		}
+	}
+	return session, nil
 }
 
 // ParseSession decodes and validates a session document. Errors never

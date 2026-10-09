@@ -1453,14 +1453,13 @@ connectors:
   # PowerSchool parent portal (spec 16): grades, assignments and attendance
   # per child. Read-only by construction -- every request goes through a
   # transport pinned to the portal host that refuses anything but GET/HEAD,
-  # plus one named query POST for assignment scores (see
-  # docs/connectors/powerschool.md).
+  # plus an allowlist of two POSTs that change no record: the assignment
+  # query and the portal's own student switcher, the latter only for the
+  # student ids configured below (see docs/connectors/powerschool.md).
   #
-  # NOT RUNNABLE YET: the pinned powerschool-go (v0.1.0) reads pages through
-  # a headless browser, which that transport cannot see, so the binary
-  # refuses to start. It also cannot switch students, so only the child the
-  # portal session opens on would be read. Leave disabled until both are
-  # fixed upstream (spec 16 section 11).
+  # NOT DEPLOYABLE YET: it needs a powerschool-go release, a login workload
+  # to produce the session, and one supervised run against the real portal
+  # (spec 16 section 11). Leave disabled until then.
   powerschool:
     enabled: false
     image:
@@ -1471,6 +1470,9 @@ connectors:
       # Opaque labels (k1, k2), never names. REPLACE the placeholder
       # student_id values with each child's id from the portal's student
       # switcher before enabling -- "0" fails ValidateConfig at startup.
+      # Optional per kid: student_number, the school-issued number shown on
+      # the portal page, as a second check on which child a page belongs
+      # to. It identifies a real child; set it in private values only.
       kids:
         - name: k1
           student_id: "0"

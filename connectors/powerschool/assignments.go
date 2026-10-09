@@ -126,27 +126,29 @@ func assignmentFingerprint(a *pslib.Assignment) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// ProcessAssignments reads each course's assignments and stages every one
-// that is new or has changed.
+// courseRead is one course's assignment lookup: the grade row it was read
+// for (which the library has stamped with the student id of the scores page
+// it read) and what came back.
+type courseRead struct {
+	grade       *pslib.Grade
+	assignments []*pslib.Assignment
+}
+
+// readAssignments is the read half of the assignments surface: one lookup
+// per course, nothing staged. It then checks that every page it read named
+// the same student (verifyOneStudent).
+//
+// ok is false when the kid's poll must be discarded: the session was
+// reported expired (Result.AuthErr is set), the context ended, or the pages
+// disagreed about whose they were. The caller then stages nothing for this
+// kid -- not the grades it already holds either.
 //
 // Courses are taken from the grades the caller already fetched (the
-// library needs each row's scores URL). A course whose lookup fails is
-// logged, counted and skipped; an auth failure stops the surface and is
-// returned in Result.AuthErr.
-//
-// First-sight backlog: an assignment seen for the first time that is due
-// before the lookback window and carries no missing/late/incomplete flag
-// is checkpointed without being staged, so enabling the connector
-// mid-year does not stage the whole year's gradebook. If such an
-// assignment later changes it stages like any other.
-func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade, cfg AssignmentsConfig) Result {
-	var res Result
-	rule, ok := matchRule(e, kid, assignmentSurface)
-	if !ok {
-		return res
-	}
-
+// library needs each row's scores URL). A course whose lookup fails for
+// another reason is logged, counted and skipped.
+func readAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade, cfg AssignmentsConfig) (reads []courseRead, res Result, ok bool) {
 	first := true
+	var verified []*pslib.Grade
 	for _, g := range grades {
 		if g == nil || g.ScoresURL == "" {
 			// No scores link: the portal offers no assignment list for
@@ -155,7 +157,7 @@ func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Gra
 		}
 		if !first && cfg.CourseDelayMS > 0 {
 			if err := sleep(ctx, time.Duration(cfg.CourseDelayMS)*time.Millisecond); err != nil {
-				return res
+				return nil, res, false
 			}
 		}
 		first = false
@@ -165,17 +167,50 @@ func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Gra
 			class := classifyErr(err)
 			e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
 			slog.Warn("powerschool assignments read failed",
-				"kid", kid.Name, "error_class", class, "error", err)
+				append([]any{"kid", kid.Name}, errAttrs(err)...)...)
 			res.Failed++
 			if class == "auth" {
 				res.AuthErr = err
-				return res
+				return nil, res, false
 			}
 			continue
 		}
+		verified = append(verified, g)
+		reads = append(reads, courseRead{grade: g, assignments: assignments})
+	}
 
-		seen := make(map[string]int, len(assignments))
-		for _, a := range assignments {
+	if err := verifyOneStudent(verified); err != nil {
+		class := classifyErr(err)
+		e.Tel.RecordSurfaceError(assignmentSurface, class, kid.Name)
+		e.Tel.RecordKidSkipped(kid.Name, class)
+		slog.Error("powerschool poll discarded for kid: the pages read in this poll do not all "+
+			"belong to one student; nothing staged",
+			append([]any{"kid", kid.Name, "courses_read", len(verified)}, errAttrs(err)...)...)
+		res.Failed++
+		return nil, res, false
+	}
+	return reads, res, true
+}
+
+// stageAssignments is the write half: it stages every assignment in reads
+// that is new or has changed.
+//
+// First-sight backlog: an assignment seen for the first time that is due
+// before the lookback window and carries no missing/late/incomplete flag
+// is checkpointed without being staged, so enabling the connector
+// mid-year does not stage the whole year's gradebook. If such an
+// assignment later changes it stages like any other.
+func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, cfg AssignmentsConfig) Result {
+	var res Result
+	rule, ok := matchRule(e, kid, assignmentSurface)
+	if !ok {
+		return res
+	}
+
+	for _, r := range reads {
+		g := r.grade
+		seen := make(map[string]int, len(r.assignments))
+		for _, a := range r.assignments {
 			if a == nil {
 				continue
 			}
@@ -218,6 +253,22 @@ func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Gra
 			res.Staged++
 		}
 	}
+	return res
+}
+
+// ProcessAssignments reads each course's assignments and stages every one
+// that is new or has changed: readAssignments then stageAssignments. The
+// connector's poll calls the two halves itself so that grades and
+// attendance are also held back until the reads have been verified.
+func ProcessAssignments(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade, cfg AssignmentsConfig) Result {
+	if _, ok := matchRule(e, kid, assignmentSurface); !ok {
+		return Result{}
+	}
+	reads, res, ok := readAssignments(ctx, e, kid, grades, cfg)
+	if !ok {
+		return res
+	}
+	res.add(stageAssignments(ctx, e, kid, reads, cfg))
 	return res
 }
 

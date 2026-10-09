@@ -27,9 +27,17 @@ type Config struct {
 // StudentID is the numeric id in the portal's student switcher
 // (javascript:switchStudent(<id>)). It is a string because the library
 // treats it as one and leading zeros are significant on some instances.
+//
+// StudentNumber is optional. When set it is the school-issued student
+// number shown on the portal page ("Student ID #"), and a second,
+// independent check on the selection: the selected student's number, parsed
+// from the same page as the grades, must equal it or the kid is skipped for
+// that poll. It is an identifier of a real child, so set it through the
+// deployment's private values, never in a committed file.
 type Kid struct {
-	Name      string `json:"name"`
-	StudentID string `json:"student_id"`
+	Name          string `json:"name"`
+	StudentID     string `json:"student_id"`
+	StudentNumber string `json:"student_number,omitempty"`
 }
 
 // PollSchedule defines when the connector polls. See spec 16 section 8.
@@ -114,6 +122,7 @@ func ValidateConfig(c *Config) error {
 	}
 	seenName := make(map[string]bool, len(c.Kids))
 	seenID := make(map[string]bool, len(c.Kids))
+	seenNumber := make(map[string]bool, len(c.Kids))
 	for i, k := range c.Kids {
 		if k.Name == "" {
 			return fmt.Errorf("kids[%d]: empty name", i)
@@ -133,6 +142,15 @@ func ValidateConfig(c *Config) error {
 		// under both subjects.
 		if seenID[k.StudentID] {
 			return fmt.Errorf("kids: duplicate student_id (kid %q)", k.Name)
+		}
+		if k.StudentNumber != "" {
+			if strings.TrimSpace(k.StudentNumber) != k.StudentNumber || strings.ContainsAny(k.StudentNumber, " \t\n") {
+				return fmt.Errorf("kids[%d] (%s): student_number must not contain whitespace", i, k.Name)
+			}
+			if seenNumber[k.StudentNumber] {
+				return fmt.Errorf("kids: duplicate student_number (kid %q)", k.Name)
+			}
+			seenNumber[k.StudentNumber] = true
 		}
 		seenName[k.Name] = true
 		seenID[k.StudentID] = true
