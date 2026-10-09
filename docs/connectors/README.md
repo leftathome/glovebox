@@ -41,6 +41,7 @@ Public connectors (`none` credential class) need neither.
 | teams | real-readonly | [teams.md](teams.md) |
 | imap | real-readonly | [imap.md](imap.md) |
 | schoology | real-readonly | [schoology.md](schoology.md) |
+| powerschool | real-readonly | [powerschool.md](powerschool.md) |
 | github | test-account | [github.md](github.md) |
 | gitlab | test-account | [gitlab.md](gitlab.md) |
 | jira | test-account | [jira.md](jira.md) |
@@ -54,7 +55,7 @@ Public connectors (`none` credential class) need neither.
 | youtube | test-account | [youtube.md](youtube.md) |
 | unifi | real-readonly | [unifi.md](unifi.md) |
 
-23 source connectors. Credential classes and secret shapes are defined
+25 source connectors. Credential classes and secret shapes are defined
 authoritatively in [integration-credentials.md](integration-credentials.md).
 
 ## Importers
@@ -67,5 +68,8 @@ covers apple, mbox, and walhelm.
 - `schoology` is configured via the bespoke `schoologyConnector` /
   `schoologyAuthRefresher` values keys (dedicated templates), not the generic
   `connectors:` map — see [schoology.md](schoology.md).
+- `powerschool` uses the generic `connectors:` map. It is shipped disabled and
+  is not runnable until two `powerschool-go` gaps are closed -- see
+  [powerschool.md](powerschool.md#status).
 - `schoology-auth-refresher` is an auth helper, not a source connector, so it has
   no sample config or integration test.
