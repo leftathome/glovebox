@@ -39,19 +39,21 @@ do, so the connector is read-only by construction (section 5).
 
 ## 2. Scope
 
-In scope: three per-kid surfaces -- `grade`, `assignment`, `attendance` --
-from one parent account; a daily windowed poll; per-record change detection;
-a Helm values block (generic `connectors:` map), disabled by default.
+In scope: six per-kid surfaces from one parent account -- `grade`,
+`assignment` and `attendance` (on by default), and `attendance_day`,
+`term_grade` and `teacher_comment` (each from a further portal page, off by
+default; section 7.4); a windowed poll; per-record change detection; a Helm
+values block (generic `connectors:` map), disabled by default.
 
-Out of scope: logging in (section 4); any write; teacher comments, GPA,
-grade history, progress-report PDFs (stubs or heuristics in the library,
-section 3); dated attendance records (the library has none); parse-failure
-receipts and an HTTP trigger endpoint as in spec 12 (not ported; failures are
-logs and metrics here).
+Out of scope: logging in (section 4); any write; GPA and progress-report
+PDFs (a heuristic and an unimplemented stub in the library, section 3);
+parse-failure receipts and an HTTP trigger endpoint as in spec 12 (not
+ported; failures are logs and metrics here).
 
 ## 3. What powerschool-go does
 
-Read from the library source at `v0.2.0`, the version `go.mod` requires.
+Read from the library source on branch `feat/attendance-termgrades-comments`
+(`v0.2.0` plus the three page parsers; unreleased -- section 11.1).
 
 | Concern | Finding |
 |---|---|
@@ -63,7 +65,8 @@ Read from the library source at `v0.2.0`, the version `go.mod` requires.
 | Dead session | A redirect whose `Location` is under `/public/`, a 401/403, or a 200 whose body is the sign-in form is a session-expired `*Error`, on page reads and on the lookup. Any other redirect is not. |
 | Errors and logs | Errors carry no response body, query string or student id; an unexpected status is an `*HTTPStatusError` (operation, status, body length). INFO lines carry no ids. |
 | Real surfaces | Students (ids and names; details for the selected one), the home-page grades table (per-term grades, per-course absence and tardy totals, scores-page URL), assignments (title, due date, category, points, score, percent, letter, flags). |
-| Stubs / heuristics | GPA (text heuristic), grade history (placeholder column guess), progress reports (placeholder; hard-coded `psplugin.example.org` host), `DownloadProgressReport` (returns "not yet implemented"). Attendance and calendar are declared as types only. |
+| More pages | `GetAttendance` (the per-course, per-day grid of `attendance.html`, with dates, codes and the legend as `Code` / `Category` / `Description`), `GetGradeHistoryPage` (`termgrades.html`: stored grades and credit), `GetTeacherComments` (`teachercomments.html?fg=<term>`; the page must mark the requested term). Each returns `PageStudent` with the id that page's own switcher marks, and fails rather than return a page that marks nobody. Unreleased (section 11.1); structure verified live, code run on fixtures. |
+| Stubs / heuristics | GPA (text heuristic). Progress reports return `ErrNotImplemented`. Calendar is declared as types only. |
 
 Two details of the assignment mapping the connector has to live with: a
 score of zero leaves `Assignment.Score` nil (the library tests `> 0`), and a
@@ -393,13 +396,48 @@ What each failure does to the rest of the poll:
 | Student id not in the account's switcher | `not_found` / `unknown_student` | skipped | continue |
 | Switch posted but not confirmed | `switch_not_confirmed` | skipped | continue |
 | Marker or grade rows disagree; marker moved by step 4 | `selection_mismatch` | discarded | continue |
-| A scores page is not this kid's (6.2) | `selection_changed` | discarded | continue |
+| A scores page is not this kid's (6.2), or another page's own switcher marks another student (6.3) | `selection_changed` | discarded | continue |
+| A page's switcher marks nobody (6.3) | `selection_unknown` | discarded | continue |
 | Learned id already bound to another kid | `student_api_id_conflict` | discarded | continue |
 | Configured `student_number` is not the page's | `student_number_mismatch` | skipped | continue |
 
 Requests per poll, for two kids with *n* courses each and assignments on:
 between 5 and 6 home-page GETs, at most 2 switch POSTs (each followed by
 one redirect GET), and 2*n* scores GETs and 2*n* lookup POSTs.
+
+### 6.3 Pages other than the home page and the scores pages
+
+The three page surfaces (section 7.4) read `attendance.html`,
+`termgrades.html` and `teachercomments.html`. Each describes the session's
+selected student, like everything else -- and each carries the portal's
+full student switcher, exactly as the home page does: `ul#students-list`
+with exactly one `li.selected` (verified live on all four pages).
+
+So every page says, itself, whose it is, and the rule is the same for each:
+
+1. The library reads the selected id from that page's own switcher and
+   returns it with the page (`PageStudent.SelectedID`). It refuses
+   (`ErrSelectionUnknown`) to return a page that marks nobody or more than
+   one student.
+2. The connector compares that id with the `student_id` of the kid whose
+   turn it is, for **every** page it reads (`checkPageStudent`). Another id
+   is `selection_changed`; no id is `selection_unknown`. Either discards
+   the kid's whole turn (section 6.1): nothing is staged for the kid, no
+   checkpoint moves, and the throttled surfaces' last-read times do not
+   advance.
+3. The comparison is on the switcher id only. The pages' headings end with
+   the student's name (`Teacher Comments: Last, First`); the library
+   reports it for people to read, and nothing compares it.
+
+Because each page carries its own evidence, no home-page read is needed
+around any of them. The turn's end-of-turn check (section 6.1 step 4) still
+runs whenever any page was read after the home page that opened the turn.
+A turn with everything on, for one kid:
+
+```
+home (select, verify)  ->  termgrades  ->  attendance  ->
+teachercomments x terms  ->  [scores -> lookup] x courses  ->  home
+```
 
 ## 7. Surfaces and item shape
 
@@ -463,6 +501,173 @@ whole year.
 A course never seen is compared against zero, so a clean record stages
 nothing. The library exposes no dated records, so this surface says "the
 count moved", not "absent on the 3rd".
+
+### 7.4 The three page surfaces
+
+Three further surfaces each read one more portal page. Each has its own
+flag under `surfaces` and each is **off unless set true** (the first three
+are on unless set false): they cost extra requests per child per poll. The
+page structure they rely on has been checked against the live portal; the
+connector code has run against synthetic fixtures only (section 11.2).
+
+They are read inside the kid's turn (section 6.3), never outside it.
+
+#### `attendance_day` -- one item per (course, day) with a code
+
+From `/guardian/attendance.html`: a grid with one row per course and one
+cell per school day. A cell is blank (present), an attendance code, `-` or
+`.`. Only codes stage.
+
+The page's legend is `CODE=CATEGORY-Description` (for example
+`ME=EA-Medical/Sick`, `VU=UA-Unexcused Travel`, `FT=AUTH-Field Trip`). It is
+district policy vocabulary and is **parsed from the page on every read,
+never hardcoded**.
+
+| tag | meaning |
+|---|---|
+| `date` | the day, `2006-01-02` |
+| `code` | the attendance code as printed |
+| `category` | the code's legend category; absent when the legend lacks the code |
+| `code_description` | its legend description; absent likewise |
+| `kind` | a coarse class derived from `category` (below) |
+| `previous_code` | on `updated`: the code it replaced |
+
+`kind` comes from the category through `attendance_days.kinds`, a map of
+kind to categories. The default:
+
+| kind | categories |
+|---|---|
+| `absence_excused` | `EA` |
+| `absence_unexcused` | `UA`, `A` |
+| `late_excused` | `EL` |
+| `late_unexcused` | `UL`, `L` |
+| `left_early_excused` | `LE` |
+| `left_early_unexcused` | `LU` |
+| `authorized` | `AUTH` |
+
+`authorized` is an authorized activity (a field trip, the student elsewhere
+in the building): it is staged, and tagged so a summariser does not count
+it as an absence. A category the map does not list -- or a code the legend
+does not list -- gets `kind=unknown` and **is still staged**, so a new code
+is seen rather than dropped. A category may appear under one kind only.
+
+`-` and `.` are not in the legend. They are non-events (no class for the
+student that day; nothing marked) and are never staged. They are counted in
+`powerschool_attendance_non_event_cells_total{kid,cell}` (`cell` = `dash` /
+`dot`) so that if one of them turned out to carry a meaning, the change in
+how often it appears would be noticed.
+
+The header prints month/day without a year; the library takes the year from
+each row's enrolment dates and checks every date against its weekday
+column. A course is identified by name, period and enrolment start date, so
+a section that was dropped and re-enrolled is two courses and its two rows
+do not overwrite each other. Fingerprint: the code. A day is staged again
+when its code changes (unexcused becomes excused). A code that is removed
+stages nothing: the cell is then blank, like a day never marked. A coded day
+first seen more than `attendance_days.lookback_days` (default 30) after it
+happened is recorded without being staged.
+
+The existing `attendance` surface (per-course totals from the home page) is
+unchanged; the two can be on together.
+
+#### `term_grade` -- one item per stored grade
+
+From `/guardian/termgrades.html`, which on this portal is the **grade
+history**: the stored final grade and credit of each completed course, one
+row per course and completion month (columns `Date Compl`, `Grade Level`,
+`School`, `Course #`, `Course`, `Credit Earned`, `Credit Attempted`,
+`Grade`). It is not a per-quarter view (the in-progress Q1..S2 grades are
+the `grade` surface), it has no percentages, and it names no reporting
+term.
+
+| tag | meaning |
+|---|---|
+| `term` | the completion month, `2006-01` |
+| `date_completed` | as printed, `MM/YYYY` |
+| `grade` | the stored letter grade |
+| `course_number`, `school`, `grade_level` | as printed |
+| `credit_earned`, `credit_attempted` | as printed |
+| `included_in_gpa` | `false` when the page marks the grade with `*` |
+| `previous_grade` | on `updated`, when the letter changed |
+
+A stored grade is identified by course number, completion month, credit
+attempted, school, grade level and course name -- none of which changes
+when a grade is corrected -- so reordering the page stages nothing; only
+rows identical in all of those fall back to their position. Fingerprint:
+letter, credits, GPA flag. First-sight backlog:
+`term_grades.lookback_days` (default 365). Read at most once per
+`term_grades.min_interval_hours` (default 24) per kid.
+
+#### `teacher_comment` -- one item per (course, term) with a comment
+
+From `/guardian/teachercomments.html`, one GET per reporting term:
+`teachercomments.html?fg=<term>`. (The parameter is `fg`; the page's
+selector is *named* `storecode`, but that name has no effect as a
+parameter.) `teacher_comments.terms` lists the terms to read; empty means
+the bare page -- which shows the current term -- and then every other term
+its selector offers. Read at most once per
+`teacher_comments.min_interval_hours` (default 24) per kid. A row with an
+empty comment stages nothing.
+
+| tag | meaning |
+|---|---|
+| `term` | the reporting term (`Q1`, `S1`, ...) |
+| `course_number` | as printed |
+| `teacher_present` | `true` when the row names a teacher |
+
+The teacher's name is in the body only, never in a tag, the subject or the
+sender. Fingerprint: a hash of the comment text and teacher; an edited
+comment stages again.
+
+**Teacher comments are for the parents only** (owner decision). This is
+enforced as an **allowlist**, in three places:
+
+1. `ValidateConfig`, at startup, whether or not the surface is enabled:
+   every rule that *can* match a kid's `powerschool:<kid>:teacher_comment`
+   key -- the exact rule, and any wildcard (`*`; also `powerschool:*` and
+   `powerschool:<kid>:*`, which the framework's matcher does not match
+   today and which are treated as if it did) -- must set `audience`, and
+   every token in it must be exactly `guardians`. `subject`, `household`,
+   `public`, `siblings`, `caregivers`, a token in another case or an
+   unknown one is a config error naming the rule, alone or combined with
+   `guardians`. An unset audience is refused: it would fall back to a
+   default this connector does not control.
+2. Rule order. The framework's `RuleMatcher` is first-match-wins, so a
+   broader rule placed before a kid's exact `teacher_comment` rule would
+   win over it. That is a config error too, even when the broader rule is
+   itself guardians-only (the exact rule's `data_subject` would be dead).
+3. At staging time, as defence in depth: a `teacher_comment` item whose
+   resolved audience is not exactly `["guardians"]` is not staged and not
+   checkpointed. It is counted (`connector_items_dropped_total{reason=
+   "teacher_comment_audience"}`, `powerschool_surface_errors_total{
+   error_class="audience_not_guardians_only"}`) and logged with the kid
+   label and the number of audience tokens -- no content.
+
+**Ships disabled.** `surfaces.teacher_comments` is `false` in the sample
+config, the chart defaults and the built-in defaults, and must stay off
+until a real, non-empty teacher comment has been parsed from a live page:
+none was posted in any term when the page was verified, so reading a
+comment's text has only ever run against fixtures.
+
+**Bounded reads.** One request per reporting term. At most
+`teacher_comments.max_terms` (default 12) terms are read per kid per poll,
+whatever the selector offers; the cap is logged once per process when it
+applies. Each term is throttled on its own: a term whose page was read and
+accepted is not read again for `min_interval_hours`; a term whose page was
+refused (another term's page, an HTTP error) is asked for again at the
+next poll. The list of terms the bare page offered is kept in the
+checkpoint so that retry does not need the bare page again.
+
+**Term confirmation.** The term is half of a comment's identity, and the
+page states it: the selector option of the term being shown carries
+`selected` (verified live: the bare page marks the current term, `?fg=Q1`
+marks Q1). The library reads the available terms from the options' URLs --
+the first option is the "show dropped classes" entry and is never a term,
+even though its URL carries the requested term -- and, when a term was
+requested, refuses a page that marks a different one (`term_mismatch`; that
+term is skipped for the poll). `teacher_comments.require_term_confirmation`
+(default true) additionally refuses to stage a page that marks no term at
+all (`term_unconfirmed`).
 
 ## 8. Poll schedule
 
@@ -567,12 +772,14 @@ Metrics, on top of the framework's: `powerschool_polls_total{trigger_source}`,
 `powerschool_items_total{surface,kid,change}`,
 `powerschool_surface_errors_total{surface,error_class,kid}`,
 `powerschool_kids_skipped_total{kid,reason}`,
-`powerschool_rejected_session_age_seconds` (section 4.3). They are
+`powerschool_rejected_session_age_seconds` (section 4.3),
+`powerschool_attendance_non_event_cells_total{kid,cell}` (section 7.4). They are
 registered on the framework's own meter provider, the one behind
 `/metrics`. Spans: `powerschool.poll`, `powerschool.poll.kid`,
 `powerschool.lib.SelectStudent`, `powerschool.lib.GetHomePage`,
 `powerschool.lib.FetchScoresMetadata`, `powerschool.lib.GetAssignments`,
-`powerschool.staging.commit`.
+`powerschool.lib.attendance_day`, `powerschool.lib.term_grade`,
+`powerschool.lib.teacher_comment`, `powerschool.staging.commit`.
 
 ## 11. Open items
 
@@ -586,8 +793,13 @@ registered on the framework's own meter provider, the one behind
 2. **A supervised first run** with `student_api_id` either configured or
    read back from the checkpoint and then configured (section 6.2).
 
-The library dependency is settled: `github.com/leftathome/powerschool-go
-v0.2.0`, released, required directly in `go.mod`.
+3. **A powerschool-go release** containing the three page parsers
+   (proposed 0.3.0). Until then `go.mod` replaces the module with a
+   pseudo-version served from the private GitLab, marked TEMPORARY, which
+   CI and the image build cannot fetch. Before merge: drop the `replace`
+   and require the tag.
+4. **A supervised first run of the three page surfaces** (section 11.2)
+   before any of them is left switched on.
 
 ### 11.2 Verified live, and still unverified
 
@@ -607,7 +819,34 @@ recorded in this repository):
 - Observed once: a second login invalidated the first session (section
   4.1).
 
-Not yet verified:
+Verified live for the three page surfaces (structure only):
+
+- All four pages -- home, attendance, grade history, teacher comments --
+  carry the full student switcher with exactly one `li.selected`.
+- The attendance legend's text and its `CODE=CATEGORY-Description` form;
+  the cell values that occur in the grid (blank, `-`, `.`, and codes).
+- The grade history's column headers.
+- Teacher comments: the term parameter is `fg` (`storecode` has no effect);
+  the option values are URLs; the page marks the shown term with
+  `selected`; the first option's URL takes on the requested term.
+
+Not yet verified, for the three page surfaces:
+
+- **A non-empty teacher comment.** None was posted in any term when the
+  page was checked, so reading a comment's text is fixture-tested only.
+- **The connector's own run.** The library parsers and the connector's
+  three surfaces have been exercised against synthetic fixtures built to
+  the verified shapes, not against the portal.
+- **Attendance:** that the teacher line ends with the room; that the weekly
+  columns are always Monday to Friday; the year logic across a real
+  new-year week. `-` and `.` are treated as non-events on the owner's
+  reading; the debug counter exists in case that is wrong.
+- **Grade history:** what the bare URL returns for a student with several
+  school years -- everything, or one `termid` (the site map links it as
+  `termgrades.html?schoolid=..&termid=..`). Observed: one school year, two
+  completion months.
+
+Not yet verified, generally:
 
 - **The real session lifetime**, and whether it is an idle or an absolute
   timeout. Measured from now on (section 4.3).

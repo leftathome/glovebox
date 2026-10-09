@@ -1503,9 +1503,46 @@ connectors:
         grades: true
         assignments: true
         attendance: true
+        # Three further surfaces, each from its own portal page and so each
+        # costing extra requests per child per poll. Off unless set true.
+        #   attendance_days:  one item per (course, day) with an attendance
+        #                     code (attendance.html)
+        #   term_grades:      one item per stored final grade (termgrades.html)
+        #   teacher_comments: one item per (course, term) with a comment
+        #                     (teachercomments.html)
+        attendance_days: false
+        term_grades: false
+        # KEEP teacher_comments OFF until a real, non-empty teacher comment
+        # has been parsed from a live page: none was posted when the page
+        # was verified, so reading a comment's text is fixture-tested only.
+        teacher_comments: false
       assignments:
         lookback_days: 30
         course_delay_ms: 500
+      attendance_days:
+        lookback_days: 30
+        # kinds: which attendance legend CATEGORIES (the part before the
+        # hyphen in the portal's "CODE=CATEGORY-Description") each `kind`
+        # tag covers. Unset uses the built-in default:
+        #   absence_excused: [EA]       absence_unexcused: [UA, A]
+        #   late_excused: [EL]          late_unexcused: [UL, L]
+        #   left_early_excused: [LE]    left_early_unexcused: [LU]
+        #   authorized: [AUTH]
+        # A category in no kind is staged with kind=unknown.
+      term_grades:
+        lookback_days: 365
+        min_interval_hours: 24
+      teacher_comments:
+        # Reporting terms to read; empty reads every term the page offers
+        # (one request per term).
+        terms: []
+        min_interval_hours: 24
+        # At most this many terms are read per child per poll, whatever
+        # the page offers.
+        max_terms: 12
+        # Stage a comment only when the page itself marks which term it
+        # shows (the portal does: the selected option of its term selector).
+        require_term_confirmation: true
       failure_threshold: 5
       # Per-child visibility. Every enabled surface of every kid needs its
       # own rule naming that kid's data_subject; startup fails if one is
@@ -1526,6 +1563,23 @@ connectors:
           destination: school
           data_subject: k1
           audience: [subject, guardians]
+        - match: "powerschool:k1:attendance_day"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        - match: "powerschool:k1:term_grade"
+          destination: school
+          data_subject: k1
+          audience: [subject, guardians]
+        # TEACHER COMMENTS ARE FOR THE PARENTS ONLY. The audience must be
+        # exactly [guardians]: startup refuses any rule that can match a
+        # teacher_comment key (this one, or a "*" rule) with any other
+        # token, in any combination, or with the audience unset; and a
+        # broader rule may not come before this one.
+        - match: "powerschool:k1:teacher_comment"
+          destination: school
+          data_subject: k1
+          audience: [guardians]
         - match: "powerschool:k2:grade"
           destination: school
           data_subject: k2
@@ -1538,6 +1592,18 @@ connectors:
           destination: school
           data_subject: k2
           audience: [subject, guardians]
+        - match: "powerschool:k2:attendance_day"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:term_grade"
+          destination: school
+          data_subject: k2
+          audience: [subject, guardians]
+        - match: "powerschool:k2:teacher_comment"
+          destination: school
+          data_subject: k2
+          audience: [guardians]
       identity:
         provider: powerschool
         auth_method: session_cookie

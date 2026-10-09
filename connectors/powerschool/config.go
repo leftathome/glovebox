@@ -18,6 +18,54 @@ type Config struct {
 	Surfaces         SurfacesConfig    `json:"surfaces"`
 	Assignments      AssignmentsConfig `json:"assignments"`
 	FailureThreshold int               `json:"failure_threshold"`
+
+	AttendanceDays  AttendanceDaysConfig  `json:"attendance_days"`
+	TermGrades      TermGradesConfig      `json:"term_grades"`
+	TeacherComments TeacherCommentsConfig `json:"teacher_comments"`
+}
+
+// AttendanceDaysConfig tunes the attendance_day surface.
+type AttendanceDaysConfig struct {
+	// LookbackDays bounds the first-sight backlog: a coded day first seen
+	// more than this many days after it happened is recorded silently.
+	LookbackDays int `json:"lookback_days"`
+	// Kinds maps the coarse `kind` tag to the attendance legend CATEGORIES
+	// it covers (the part before the hyphen in the page's
+	// "CODE=CATEGORY-Description"). Unset means defaultAttendanceKinds. A
+	// category that appears under no kind is tagged kind=unknown and still
+	// staged.
+	Kinds map[string][]string `json:"kinds,omitempty"`
+}
+
+// TermGradesConfig tunes the term_grade surface.
+type TermGradesConfig struct {
+	// LookbackDays bounds the first-sight backlog: a stored grade first
+	// seen more than this many days after its completion month is
+	// recorded silently.
+	LookbackDays int `json:"lookback_days"`
+	// MinIntervalHours is the least time between reads of the grade
+	// history page for one kid. Stored grades change a few times a year.
+	MinIntervalHours int `json:"min_interval_hours"`
+}
+
+// TeacherCommentsConfig tunes the teacher_comment surface.
+type TeacherCommentsConfig struct {
+	// Terms lists the reporting terms to read (Q1, S1, ...). Empty means
+	// every term the page's own selector offers.
+	Terms []string `json:"terms"`
+	// MinIntervalHours is the least time between reads of the comment
+	// pages for one kid (one request per term).
+	MinIntervalHours int `json:"min_interval_hours"`
+	// RequireTermConfirmation, true unless set to false, stages comments
+	// only from a page that itself marks which reporting term it shows.
+	RequireTermConfirmation *bool `json:"require_term_confirmation"`
+	// MaxTerms caps how many reporting terms are read per kid per poll
+	// (one request each), whatever the page's selector offers.
+	MaxTerms int `json:"max_terms"`
+}
+
+func (c TeacherCommentsConfig) requireTermConfirmation() bool {
+	return c.RequireTermConfirmation == nil || *c.RequireTermConfirmation
 }
 
 // Kid maps an operator-chosen opaque label to a PowerSchool student. Per
@@ -65,10 +113,17 @@ type PollWindow struct {
 // SurfacesConfig switches individual surfaces off. A nil pointer means
 // "not set" and ApplyDefaults turns it on, so an omitted key enables the
 // surface and only an explicit false disables it.
+//
+// The three later surfaces are the other way round: each reads a further
+// portal page per kid per poll, so each is off unless explicitly set true.
 type SurfacesConfig struct {
 	Grades      *bool `json:"grades"`
 	Assignments *bool `json:"assignments"`
 	Attendance  *bool `json:"attendance"`
+
+	AttendanceDays  *bool `json:"attendance_days"`
+	TermGrades      *bool `json:"term_grades"`
+	TeacherComments *bool `json:"teacher_comments"`
 }
 
 // AssignmentsConfig tunes the assignments surface.
@@ -105,6 +160,24 @@ func ApplyDefaults(c *Config) {
 	if c.FailureThreshold == 0 {
 		c.FailureThreshold = 5
 	}
+	if c.AttendanceDays.LookbackDays == 0 {
+		c.AttendanceDays.LookbackDays = 30
+	}
+	if c.AttendanceDays.Kinds == nil {
+		c.AttendanceDays.Kinds = defaultAttendanceKinds()
+	}
+	if c.TermGrades.LookbackDays == 0 {
+		c.TermGrades.LookbackDays = 365
+	}
+	if c.TermGrades.MinIntervalHours == 0 {
+		c.TermGrades.MinIntervalHours = 24
+	}
+	if c.TeacherComments.MinIntervalHours == 0 {
+		c.TeacherComments.MinIntervalHours = 24
+	}
+	if c.TeacherComments.MaxTerms == 0 {
+		c.TeacherComments.MaxTerms = 12
+	}
 }
 
 // GradesEnabled reports whether the grades surface is on.
@@ -119,6 +192,21 @@ func (c *Config) AssignmentsEnabled() bool {
 // AttendanceEnabled reports whether the attendance surface is on.
 func (c *Config) AttendanceEnabled() bool {
 	return c.Surfaces.Attendance == nil || *c.Surfaces.Attendance
+}
+
+// AttendanceDaysEnabled reports whether the attendance_day surface is on.
+func (c *Config) AttendanceDaysEnabled() bool {
+	return c.Surfaces.AttendanceDays != nil && *c.Surfaces.AttendanceDays
+}
+
+// TermGradesEnabled reports whether the term_grade surface is on.
+func (c *Config) TermGradesEnabled() bool {
+	return c.Surfaces.TermGrades != nil && *c.Surfaces.TermGrades
+}
+
+// TeacherCommentsEnabled reports whether the teacher_comment surface is on.
+func (c *Config) TeacherCommentsEnabled() bool {
+	return c.Surfaces.TeacherComments != nil && *c.Surfaces.TeacherComments
 }
 
 // ValidateConfig enforces the spec 16 invariants. Run at startup before the
@@ -181,6 +269,47 @@ func ValidateConfig(c *Config) error {
 	if err := validateKidRules(c); err != nil {
 		return err
 	}
+	if err := validateTeacherCommentRules(c); err != nil {
+		return err
+	}
+	if c.AttendanceDays.LookbackDays < 0 {
+		return fmt.Errorf("attendance_days.lookback_days: must not be negative")
+	}
+	owner := map[string]string{}
+	for kind, categories := range c.AttendanceDays.Kinds {
+		if strings.TrimSpace(kind) == "" || kind == attendanceKindUnknown || strings.ContainsAny(kind, " \t\n") {
+			return fmt.Errorf("attendance_days.kinds: %q is not a usable kind name", kind)
+		}
+		for _, cat := range categories {
+			key := strings.ToUpper(strings.TrimSpace(cat))
+			if key == "" {
+				return fmt.Errorf("attendance_days.kinds[%s]: empty category", kind)
+			}
+			if other, dup := owner[key]; dup && other != kind {
+				return fmt.Errorf("attendance_days.kinds: category %q is listed under both %q and %q", cat, other, kind)
+			}
+			owner[key] = kind
+		}
+	}
+	if c.TermGrades.LookbackDays < 0 || c.TermGrades.MinIntervalHours < 0 {
+		return fmt.Errorf("term_grades: lookback_days and min_interval_hours must not be negative")
+	}
+	if c.TeacherComments.MinIntervalHours < 0 {
+		return fmt.Errorf("teacher_comments.min_interval_hours: must not be negative")
+	}
+	if c.TeacherComments.MaxTerms < 0 {
+		return fmt.Errorf("teacher_comments.max_terms: must not be negative")
+	}
+	seenTerm := map[string]bool{}
+	for i, term := range c.TeacherComments.Terms {
+		if !isTerm(term) {
+			return fmt.Errorf("teacher_comments.terms[%d]: %q is not a reporting term (1-8 letters or digits)", i, term)
+		}
+		if seenTerm[strings.ToUpper(term)] {
+			return fmt.Errorf("teacher_comments.terms: duplicate term %q", term)
+		}
+		seenTerm[strings.ToUpper(term)] = true
+	}
 	if c.Assignments.LookbackDays < 0 {
 		return fmt.Errorf("assignments.lookback_days: must not be negative")
 	}
@@ -221,7 +350,107 @@ func (c *Config) enabledSurfaces() []string {
 	if c.AttendanceEnabled() {
 		out = append(out, attendanceSurface)
 	}
+	if c.AttendanceDaysEnabled() {
+		out = append(out, attendanceDaySurface)
+	}
+	if c.TermGradesEnabled() {
+		out = append(out, termGradeSurface)
+	}
+	if c.TeacherCommentsEnabled() {
+		out = append(out, teacherCommentSurface)
+	}
 	return out
+}
+
+// teacherCommentAudience is the one audience a teacher comment may have.
+// Owner decision: teacher comments are for the parents only.
+const teacherCommentAudience = "guardians"
+
+// guardiansOnly reports whether audience is set and every token in it is
+// exactly "guardians". It is an allowlist: "subject", "household",
+// "public", "siblings", "caregivers", a token in another case and an
+// unknown token all fail, alone or next to "guardians".
+func guardiansOnly(audience []string) bool {
+	if len(audience) == 0 {
+		return false
+	}
+	for _, a := range audience {
+		if a != teacherCommentAudience {
+			return false
+		}
+	}
+	return true
+}
+
+// ruleCanMatch reports whether a rule's match pattern can match key. The
+// framework's RuleMatcher matches a rule when its pattern equals the key or
+// is "*". Prefix patterns ("powerschool:*", "powerschool:k1:*") are not
+// matched by it today; they are treated here as able to match so that a
+// matcher that learns them cannot open a path around this check.
+func ruleCanMatch(pattern, key string) bool {
+	if pattern == key || pattern == "*" {
+		return true
+	}
+	if prefix, isGlob := strings.CutSuffix(pattern, "*"); isGlob {
+		return strings.HasPrefix(key, prefix)
+	}
+	return false
+}
+
+// validateTeacherCommentRules enforces the owner's decision that teacher
+// comments are for the parents only, as an allowlist:
+//
+//   - EVERY rule that can match a kid's teacher_comment key -- the exact
+//     rule, a kid wildcard, "powerschool:*" or "*" -- must set an audience
+//     in which every token is exactly "guardians". It does not matter
+//     where the rule sits or whether another rule would win: a rule that
+//     could route a teacher comment anywhere else is a config error.
+//   - An unset audience is refused: it would fall back to a default this
+//     connector does not control.
+//   - The RuleMatcher is first-match-wins. If a kid has an exact
+//     teacher_comment rule, no broader rule may come before it, even a
+//     guardians-only one: it would win, and the exact rule (with that
+//     kid's data_subject) would never be used.
+//
+// It applies whether or not the surface is enabled.
+func validateTeacherCommentRules(c *Config) error {
+	for _, k := range c.Kids {
+		key := MatchKey(k.Name, teacherCommentSurface)
+		exactAt := -1
+		for i, rule := range c.Rules {
+			if rule.Match == key {
+				exactAt = i
+				break
+			}
+		}
+		for i, rule := range c.Rules {
+			if !ruleCanMatch(rule.Match, key) {
+				continue
+			}
+			if !guardiansOnly(rule.Audience) {
+				return fmt.Errorf("rules[%d] (match %q) can match %q and has audience %q; teacher comments are for "+
+					"the parents only: the audience must be set and be exactly [\"guardians\"]", i, rule.Match, key, rule.Audience)
+			}
+			if exactAt >= 0 && i < exactAt {
+				return fmt.Errorf("rules[%d] (match %q) comes before the rule for %q and would win over it; "+
+					"move the teacher_comment rule first", i, rule.Match, key)
+			}
+		}
+	}
+	return nil
+}
+
+// isTerm reports whether s looks like a reporting term code.
+func isTerm(s string) bool {
+	if s == "" || len(s) > 8 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // validateKidRules is the per-child visibility check (spec 16 section 6).

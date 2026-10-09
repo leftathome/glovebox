@@ -587,6 +587,7 @@ func syntheticHome(selected string) string {
 <ul id="students-list">` + li("111111", "Student One") + li("111112", "Student Two") + `</ul>
 <form id="switch_student_form" action="home.html" method="post"><input type="hidden" name="selected_student_id"/></form>
 <script>function switchStudent(studentId){ var f = document.getElementById('switch_student_form'); f.selected_student_id.value=studentId; f.submit(); }</script>
+<div id="content-main" role="main"><h1>Grades and Attendance: ` + studentHeadings[selected] + `</h1>
 <table class="student-demo"><tr><td class="lbl">Student ID #:</td><td>` + studentNumbers[selected] + `</td></tr></table>
 <table id="tblgrades">
 <tr class="center">
@@ -599,6 +600,7 @@ func syntheticHome(selected string) string {
   <td>1</td>
 </tr>
 </table>
+</div>
 </body></html>`
 }
 
@@ -623,6 +625,9 @@ type fakePortal struct {
 	flipAfter    string // after the first scores page is served, select this id
 	scoresAs     string // serve the NEXT scores page as if this id were selected, then restore
 	loginPage    bool   // answer the home page with the sign-in form (200)
+	// extra serves further guardian pages: path -> body for the student
+	// selected at that moment and the request's raw query.
+	extra map[string]func(selected, rawQuery string) string
 
 	posts []string // switcher form bodies, in order
 }
@@ -674,6 +679,10 @@ func (p *fakePortal) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(syntheticLookupResponse))
 	default:
+		if render, ok := p.extra[r.URL.Path]; ok && r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(render(p.selected, r.URL.RawQuery)))
+			return
+		}
 		http.NotFound(w, r)
 	}
 }

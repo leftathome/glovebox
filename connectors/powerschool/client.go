@@ -49,6 +49,11 @@ type PowerSchoolClient interface {
 	SelectStudent(ctx context.Context, studentID string) (*pslib.HomePage, error)
 	GetHomePage(ctx context.Context) (*pslib.HomePage, error)
 	FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error)
+	// The three extra pages (more_surfaces.go). Each returns, in its
+	// Student field, the selected-student evidence found on that page.
+	GetAttendance(ctx context.Context) (*pslib.AttendancePage, error)
+	GetGradeHistoryPage(ctx context.Context) (*pslib.GradeHistoryPage, error)
+	GetTeacherComments(ctx context.Context, term string) (*pslib.TeacherCommentsPage, error)
 	GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error)
 }
 
@@ -108,6 +113,18 @@ func (p *productionClient) GetHomePage(ctx context.Context) (*pslib.HomePage, er
 
 func (p *productionClient) FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error) {
 	return p.lib.FetchScoresMetadata(ctx, scoresURL)
+}
+
+func (p *productionClient) GetAttendance(ctx context.Context) (*pslib.AttendancePage, error) {
+	return p.lib.GetAttendance(ctx)
+}
+
+func (p *productionClient) GetGradeHistoryPage(ctx context.Context) (*pslib.GradeHistoryPage, error) {
+	return p.lib.GetGradeHistoryPage(ctx)
+}
+
+func (p *productionClient) GetTeacherComments(ctx context.Context, term string) (*pslib.TeacherCommentsPage, error) {
+	return p.lib.GetTeacherComments(ctx, term)
 }
 
 func (p *productionClient) GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error) {
@@ -213,6 +230,10 @@ func classifyErr(err error) string {
 		return "student_api_id_conflict"
 	case errors.Is(err, ErrStudentNumberMismatch):
 		return "student_number_mismatch"
+	case errors.Is(err, pslib.ErrTermMismatch):
+		return "term_mismatch"
+	case errors.Is(err, pslib.ErrNotImplemented):
+		return "not_implemented"
 	case errors.Is(err, pslib.ErrSwitchNotConfirmed):
 		return "switch_not_confirmed"
 	case errors.Is(err, pslib.ErrRateLimited):
