@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-09
+
+0.9.2 was tagged and its chart published, but its container images were
+never pushed: two release gates failed on advisories published after 0.9.1.
+0.9.3 is 0.9.2 plus the fixes below. Use 0.9.3; there are no 0.9.2 images.
+
+### Security
+
+- Bumped `golang.org/x/net` v0.58.0 -> v0.60.0 for five HTTP/2 advisories
+  reachable from connector and Vault-client code paths (GO-2026-6603,
+  GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6617).
+- `glovebox-enricher-runtime` now runs `apt-get upgrade` while building, so
+  security fixes Debian has published since the `bookworm-slim` base was last
+  rebuilt are picked up. Clears three fixed CRITICALs in `perl-base`
+  (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376).
+
 ## [0.9.2] - 2026-10-09
 
 ### Security
