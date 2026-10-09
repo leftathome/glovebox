@@ -1535,6 +1535,16 @@ schoologyConnector:
   # -schoology-refresher-credentials Secret so it always matches the host
   # the refresher logged into.
   host: ""
+  # Connector state: the per-child sets of already-staged item IDs and the
+  # rejected-session marker. The default (persistent: false) is an emptyDir,
+  # so every pod restart forgets what was staged and re-delivers everything
+  # Schoology currently lists. Set persistent: true (or existingClaim) for
+  # real use.
+  state:
+    persistent: false
+    size: 100Mi
+    storageClass: ""
+    existingClaim: ""
   # Scheduler timezone (spec 12 §6.1).
   timezone: America/Los_Angeles
   # Name of an operator-provisioned Secret holding the bearer token for

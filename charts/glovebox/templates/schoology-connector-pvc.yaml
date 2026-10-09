@@ -1,0 +1,28 @@
+{{- if .Values.schoologyConnector.enabled }}
+{{- with .Values.schoologyConnector.state }}
+{{- if and .persistent (not .existingClaim) }}
+# Persistent state for the Schoology connector: the per-child sets of
+# already-staged item IDs and the rejected-session marker. Kept on uninstall
+# so a reinstall does not re-stage the whole backlog.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "glovebox.fullname" $ }}-schoology-state
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: schoology
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .size | default "100Mi" }}
+  {{- if .storageClass }}
+  storageClassName: {{ .storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

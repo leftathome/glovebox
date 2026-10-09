@@ -10,6 +10,13 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.9.7 (from 0.9.6)
+
+No required changes. If you run the Schoology connector, set
+`schoologyConnector.state.persistent: true`: without it each pod restart
+re-delivers every item Schoology currently lists. On first start after the
+upgrade the connector stages the items 0.9.6 wrongly skipped.
+
 ## Upgrading to 0.9.6 (from 0.9.5)
 
 No required changes. 0.9.6 is the first release in which the Schoology

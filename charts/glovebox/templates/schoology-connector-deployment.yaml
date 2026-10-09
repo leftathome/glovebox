@@ -185,13 +185,25 @@ spec:
           secret:
             secretName: {{ include "glovebox.fullname" . }}-schoology-ingest-client-tls
         {{- end }}
-        # State is checkpoint-only (last-seen IDs); emptyDir is sufficient
-        # for v1. A restart re-reads the live Schoology surfaces from the
-        # most recent checkpoint Schoology itself exposes, so a lost
-        # emptyDir at most re-stages a small backlog. Switch to a PVC if
-        # strict de-dup across pod restarts is required.
+        # State holds the per-child sets of already-staged item IDs and the
+        # rejected-session marker. With an emptyDir every pod restart forgets
+        # them and re-stages everything Schoology currently lists as if it
+        # were new; set schoologyConnector.state.persistent (or
+        # existingClaim) to keep it across restarts.
         - name: state
+          {{- with .Values.schoologyConnector.state }}
+          {{- if .existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .existingClaim | quote }}
+          {{- else if .persistent }}
+          persistentVolumeClaim:
+            claimName: {{ include "glovebox.fullname" $ }}-schoology-state
+          {{- else }}
           emptyDir: {}
+          {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         - name: config
           configMap:
             name: {{ include "glovebox.fullname" . }}-schoology-config
