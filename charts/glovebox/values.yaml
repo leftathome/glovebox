@@ -1472,6 +1472,19 @@ schoologyAuthRefresher:
     # KV v2 path holding {host, username, password} for the parent
     # Schoology account. Operator-provisioned; the refresher reads it.
     credentialsPath: "glovebox/schoology/default/credentials"
+    # Property names inside credentialsPath. Override when the secret was
+    # seeded with different keys (e.g. schoology_hostname). The host value may
+    # be a bare host or a full https URL; the binaries normalise it.
+    credentialsKeys:
+      host: host
+      username: username
+      password: password
+    # Optional ConfigMap holding the CA bundle that signed Vault's serving
+    # certificate. When name is set it is mounted read-only and exported as
+    # VAULT_CACERT, so an https vault.addr on a private CA verifies properly.
+    caConfigMap:
+      name: ""
+      key: ca.crt
     # KV v2 path receiving the 5-field session JSON the refresher
     # writes; ESO syncs it into the connector pod.
     sessionPath: "glovebox/schoology/default/session"
