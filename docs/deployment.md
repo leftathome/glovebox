@@ -57,6 +57,7 @@ images-markdown` and paste; CI fails if it drifts from what is built.
 | `connectors/notion` | `ghcr.io/leftathome/glovebox-notion` |
 | `connectors/onedrive` | `ghcr.io/leftathome/glovebox-onedrive` |
 | `connectors/outlook` | `ghcr.io/leftathome/glovebox-outlook` |
+| `connectors/powerschool` | `ghcr.io/leftathome/glovebox-powerschool` |
 | `connectors/rss` | `ghcr.io/leftathome/glovebox-rss` |
 | `connectors/schoology` | `ghcr.io/leftathome/glovebox-schoology` |
 | `connectors/schoology-auth-refresher` | `ghcr.io/leftathome/glovebox-schoology-auth-refresher` |

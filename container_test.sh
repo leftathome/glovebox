@@ -175,8 +175,8 @@ fi
 #   distroless/static-debian12:nonroot (no shell, no glibc layer, just
 #                                       the static Go binary + CA certs):
 #       rss, hackernews, github, gitlab, linkedin, bluesky, x,
-#       notion, jira, schoology, gcalendar, gdrive, onedrive, teams,
-#       steam, meta, trello, youtube
+#       notion, jira, schoology, powerschool, gcalendar, gdrive, onedrive,
+#       teams, steam, meta, trello, youtube
 #
 # For each enricher-runtime connector: assert pdftotext, tesseract,
 # pandoc are all present and runnable.
@@ -224,6 +224,7 @@ else
         "notion:connectors/notion/Dockerfile"
         "jira:connectors/jira/Dockerfile"
         "schoology:connectors/schoology/Dockerfile"
+        "powerschool:connectors/powerschool/Dockerfile"
         "gcalendar:connectors/gcalendar/Dockerfile"
         "gdrive:connectors/gdrive/Dockerfile"
         "onedrive:connectors/onedrive/Dockerfile"
