@@ -20,7 +20,10 @@ var (
 	studentGrades  = map[string]string{"111111": "B+88", "111112": "A-91"}
 	studentAPIIDs  = map[string]string{"111111": "999001", "111112": "999002"}
 	kidOf          = map[string]string{"111111": "k1", "111112": "k2"}
-	subjectOf      = map[string]string{"k1": "e_333333", "k2": "e_444444"}
+	// studentHeadings is the name each student's pages end their heading
+	// with ("<page title>: <Last, First>").
+	studentHeadings = map[string]string{"111111": "Rivera, Ana", "111112": "Rivera, Ben"}
+	subjectOf       = map[string]string{"k1": "e_333333", "k2": "e_444444"}
 )
 
 // homeFixture is the home page as the library returns it: two students,
@@ -42,7 +45,11 @@ func homeFixture(selected string) *pslib.HomePage {
 	g := sampleGrade("00100", "Example Science 7", q1)
 	g.Absences = 2
 	g.StudentID = selected
-	return &pslib.HomePage{Students: students, Grades: []*pslib.Grade{g}}
+	return &pslib.HomePage{
+		Students: students,
+		Grades:   []*pslib.Grade{g},
+		Student:  pslib.PageStudent{SelectedID: selected, HeadingName: studentHeadings[selected]},
+	}
 }
 
 // pollFixture is a client with the portal's selection state: the home page

@@ -85,6 +85,9 @@ type PowerSchoolConnector struct {
 
 	// caughtUp is set by the first Poll; see Poll.
 	caughtUp atomic.Bool
+	// termCapLogged makes the "more terms than max_terms" warning a
+	// once-per-process line.
+	termCapLogged atomic.Bool
 
 	// notBefore is the end of the window that was last polled; the next
 	// scheduled poll is computed from there so no window is polled twice
@@ -476,6 +479,26 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 		slog.Warn("powerschool grades page listed no courses", "kid", kid.Name)
 	}
 
+	// The extra pages (attendance by day, grade history, teacher comments).
+	// Each must itself mark this kid's student as selected.
+	var extras *extraPages
+	if c.cfg.TermGradesEnabled() || c.cfg.AttendanceDaysEnabled() || c.cfg.TeacherCommentsEnabled() {
+		var extraRes Result
+		extras, extraRes, err = c.readExtraPages(ctx, env, kid)
+		res.add(extraRes)
+		if err != nil {
+			if res.AuthErr != nil {
+				return res, false, ""
+			}
+			class := classifyErr(err)
+			env.Tel.RecordKidSkipped(kid.Name, class)
+			slog.Error("powerschool poll discarded for kid: a page read in this turn could not be "+
+				"attributed to this kid's student; nothing staged",
+				append([]any{"kid", kid.Name}, errAttrs(err)...)...)
+			return res, false, ""
+		}
+	}
+
 	var reads []courseRead
 	if c.cfg.AssignmentsEnabled() {
 		var ok bool
@@ -528,6 +551,25 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 		}
 	}
 
+	if !c.cfg.AssignmentsEnabled() && extras != nil && extras.needConfirm {
+		// No assignment reads, but extra pages were read after the last
+		// verified home page: the turn still ends with a selection check.
+		if err := c.confirmStillSelected(ctx, env, kid); err != nil {
+			class := classifyErr(err)
+			env.Tel.RecordSurfaceError("home", class, kid.Name)
+			res.Failed++
+			if class == "auth" {
+				res.AuthErr = err
+				return res, false, ""
+			}
+			env.Tel.RecordKidSkipped(kid.Name, class)
+			slog.Error("powerschool poll discarded for kid: the session's selected student could not be "+
+				"confirmed after the reads; nothing staged",
+				append([]any{"kid", kid.Name}, errAttrs(err)...)...)
+			return res, false, ""
+		}
+	}
+
 	if c.cfg.GradesEnabled() {
 		res.add(ProcessGrades(ctx, env, kid, grades))
 	}
@@ -537,6 +579,7 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 	if c.cfg.AssignmentsEnabled() {
 		res.add(stageAssignments(ctx, env, kid, reads, c.cfg.Assignments))
 	}
+	res.add(c.stageExtraPages(ctx, env, kid, extras))
 	return res, true, ""
 }
 

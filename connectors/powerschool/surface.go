@@ -2,6 +2,7 @@ package powerschool
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -84,6 +85,10 @@ func matchRule(e Env, kid Kid, surface string) (connector.MatchResult, bool) {
 	return rule, ok
 }
 
+// errTeacherCommentAudience is returned by stage for a teacher_comment item
+// whose audience is not exactly ["guardians"].
+var errTeacherCommentAudience = errors.New("powerschool: teacher comment audience is not exactly [guardians]; not staged")
+
 // stage commits one item under a powerschool.staging.commit span.
 func stage(ctx context.Context, e Env, surface string, opts connector.ItemOptions, body string) error {
 	_, span := e.Tel.StartSpan(ctx, "powerschool.staging.commit",
@@ -92,6 +97,12 @@ func stage(ctx context.Context, e Env, surface string, opts connector.ItemOption
 		attribute.String("data_subject", opts.DataSubject),
 	)
 	defer span.End()
+
+	// The last line of the teacher-comment audience rule: whatever built
+	// opts, a teacher comment leaves here for the guardians only.
+	if surface == teacherCommentSurface && !guardiansOnly(opts.Audience) {
+		return errTeacherCommentAudience
+	}
 
 	item, err := e.Writer.NewItem(opts)
 	if err != nil {

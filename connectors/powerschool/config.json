@@ -14,7 +14,10 @@
     "surfaces": {
         "grades": true,
         "assignments": true,
-        "attendance": true
+        "attendance": true,
+        "attendance_days": true,
+        "term_grades": true,
+        "teacher_comments": false
     },
     "assignments": {
         "lookback_days": 30,
@@ -22,12 +25,18 @@
     },
     "failure_threshold": 5,
     "rules": [
-        {"match": "powerschool:k1:grade",      "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
-        {"match": "powerschool:k1:assignment", "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
-        {"match": "powerschool:k1:attendance", "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
-        {"match": "powerschool:k2:grade",      "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
-        {"match": "powerschool:k2:assignment", "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
-        {"match": "powerschool:k2:attendance", "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"}
+        {"match": "powerschool:k1:grade",           "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k1:assignment",      "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k1:attendance",      "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k1:attendance_day",  "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k1:term_grade",      "data_subject": "e_333333", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k1:teacher_comment", "data_subject": "e_333333", "audience": ["guardians"], "destination": "school"},
+        {"match": "powerschool:k2:grade",           "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k2:assignment",      "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k2:attendance",      "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k2:attendance_day",  "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k2:term_grade",      "data_subject": "e_444444", "audience": ["subject", "guardians"], "destination": "school"},
+        {"match": "powerschool:k2:teacher_comment", "data_subject": "e_444444", "audience": ["guardians"], "destination": "school"}
     ],
     "identity": {
         "provider": "powerschool",

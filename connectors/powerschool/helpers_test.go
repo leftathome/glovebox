@@ -30,6 +30,14 @@ type fakeClient struct {
 	APIIDFunc       func(scoresURL string) string
 	NoAPIID         bool
 
+	// The extra pages. nil funcs return an error ("not configured").
+	AttendanceFunc func(ctx context.Context) (*pslib.AttendancePage, error)
+	HistoryFunc    func(ctx context.Context) (*pslib.GradeHistoryPage, error)
+	CommentsFunc   func(ctx context.Context, term string) (*pslib.TeacherCommentsPage, error)
+	// Log is every call in order, e.g. "home", "switch:111112",
+	// "attendance", "history", "comments:Q1", "scores", "lookup".
+	Log []string
+
 	// Selected is the portal-side selection (a student id).
 	Selected string
 	// IgnoreSwitch makes the "form post" change nothing.
@@ -63,6 +71,7 @@ func (f *fakeClient) SelectStudent(ctx context.Context, studentID string) (*psli
 		return nil, pslib.ErrNotFound
 	}
 	f.SwitchCalls = append(f.SwitchCalls, studentID)
+	f.Log = append(f.Log, "switch:"+studentID)
 	if !f.IgnoreSwitch {
 		f.Selected = studentID
 	}
@@ -81,6 +90,7 @@ const fakeAPIID = "999999"
 
 func (f *fakeClient) GetHomePage(ctx context.Context) (*pslib.HomePage, error) {
 	f.HomeCalls++
+	f.Log = append(f.Log, "home")
 	if f.HomeFunc != nil {
 		page, err := f.HomeFunc(ctx)
 		if err == nil && page == nil {
@@ -92,6 +102,7 @@ func (f *fakeClient) GetHomePage(ctx context.Context) (*pslib.HomePage, error) {
 }
 
 func (f *fakeClient) GetAssignments(ctx context.Context, studentID string, grade *pslib.Grade) ([]*pslib.Assignment, error) {
+	f.Log = append(f.Log, "lookup")
 	f.AssignmentsCalls = append(f.AssignmentsCalls, studentID+"/"+grade.CourseID)
 	if f.AssignmentsFunc == nil {
 		return nil, errors.New("fakeClient.GetAssignments not configured")
@@ -99,7 +110,32 @@ func (f *fakeClient) GetAssignments(ctx context.Context, studentID string, grade
 	return f.AssignmentsFunc(ctx, studentID, grade)
 }
 
+func (f *fakeClient) GetAttendance(ctx context.Context) (*pslib.AttendancePage, error) {
+	f.Log = append(f.Log, "attendance")
+	if f.AttendanceFunc == nil {
+		return nil, errors.New("fakeClient.GetAttendance not configured")
+	}
+	return f.AttendanceFunc(ctx)
+}
+
+func (f *fakeClient) GetGradeHistoryPage(ctx context.Context) (*pslib.GradeHistoryPage, error) {
+	f.Log = append(f.Log, "history")
+	if f.HistoryFunc == nil {
+		return nil, errors.New("fakeClient.GetGradeHistoryPage not configured")
+	}
+	return f.HistoryFunc(ctx)
+}
+
+func (f *fakeClient) GetTeacherComments(ctx context.Context, term string) (*pslib.TeacherCommentsPage, error) {
+	f.Log = append(f.Log, "comments:"+term)
+	if f.CommentsFunc == nil {
+		return nil, errors.New("fakeClient.GetTeacherComments not configured")
+	}
+	return f.CommentsFunc(ctx, term)
+}
+
 func (f *fakeClient) FetchScoresMetadata(ctx context.Context, scoresURL string) (*pslib.ScoresMetadata, error) {
+	f.Log = append(f.Log, "scores")
 	f.ScoresCalls = append(f.ScoresCalls, scoresURL)
 	if f.ScoresFunc != nil {
 		return f.ScoresFunc(ctx, scoresURL)
@@ -171,6 +207,12 @@ func testRules() []connector.Rule {
 		{Match: "powerschool:k2:grade", Destination: "school", DataSubject: "e_444444", Audience: []string{"subject", "guardians"}},
 		{Match: "powerschool:k2:assignment", Destination: "school", DataSubject: "e_444444", Audience: []string{"subject", "guardians"}},
 		{Match: "powerschool:k2:attendance", Destination: "school", DataSubject: "e_444444", Audience: []string{"subject", "guardians"}},
+		{Match: "powerschool:k1:attendance_day", Destination: "school", DataSubject: "e_333333", Audience: []string{"subject", "guardians"}},
+		{Match: "powerschool:k1:term_grade", Destination: "school", DataSubject: "e_333333", Audience: []string{"subject", "guardians"}},
+		{Match: "powerschool:k1:teacher_comment", Destination: "school", DataSubject: "e_333333", Audience: []string{"guardians"}},
+		{Match: "powerschool:k2:attendance_day", Destination: "school", DataSubject: "e_444444", Audience: []string{"subject", "guardians"}},
+		{Match: "powerschool:k2:term_grade", Destination: "school", DataSubject: "e_444444", Audience: []string{"subject", "guardians"}},
+		{Match: "powerschool:k2:teacher_comment", Destination: "school", DataSubject: "e_444444", Audience: []string{"guardians"}},
 	}
 }
 

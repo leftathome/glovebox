@@ -30,6 +30,7 @@ type Telemetry struct {
 	surfaceErrorsTotal metric.Int64Counter
 	kidsSkippedTotal   metric.Int64Counter
 	rejectedSessionAge metric.Float64Gauge
+	attendanceNonEvent metric.Int64Counter
 
 	tracer trace.Tracer
 }
@@ -84,6 +85,13 @@ func newTelemetry(base *connector.Metrics, meter metric.Meter, tracer trace.Trac
 	if err != nil {
 		return nil, fmt.Errorf("construct powerschool_kids_skipped_total: %w", err)
 	}
+	t.attendanceNonEvent, err = meter.Int64Counter("powerschool_attendance_non_event_cells_total",
+		metric.WithDescription("Attendance grid cells that are not attendance codes and are never staged, "+
+			"by kid and cell (dash = \"-\", dot = \".\"). A debugging aid: neither value is in the "+
+			"portal's legend, and a shift in these counts would mean one of them has a meaning."))
+	if err != nil {
+		return nil, fmt.Errorf("construct powerschool_attendance_non_event_cells_total: %w", err)
+	}
 	t.rejectedSessionAge, err = meter.Float64Gauge("powerschool_rejected_session_age_seconds",
 		metric.WithDescription("Age of the most recently rejected session when it was rejected: "+
 			"seconds since this connector first loaded it"),
@@ -102,6 +110,18 @@ func (t *Telemetry) SetRejectedSessionAge(age time.Duration) {
 		return
 	}
 	t.rejectedSessionAge.Record(context.Background(), age.Seconds())
+}
+
+// RecordAttendanceNonEvents adds n to
+// powerschool_attendance_non_event_cells_total{kid,cell}.
+func (t *Telemetry) RecordAttendanceNonEvents(kid, cell string, n int) {
+	if t == nil || n <= 0 {
+		return
+	}
+	t.attendanceNonEvent.Add(context.Background(), int64(n), metric.WithAttributes(
+		attribute.String("kid", kid),
+		attribute.String("cell", cell),
+	))
 }
 
 // RecordItemProduced wraps the framework RecordItemProduced with
