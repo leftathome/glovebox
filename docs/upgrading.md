@@ -10,6 +10,14 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.10.3 (from 0.10.2)
+
+No required changes. If you run the PowerSchool login workload behind an
+access gateway that sets cookies over redirects before showing the sign-in
+page (an F5 `/my.policy` hop, for example), 0.10.2 refuses every run with
+`signin_page_unrecognised: no_password_form` without logging in; 0.10.3
+carries the gateway's cookies for that one check.
+
 ## Upgrading to 0.10.2 (from 0.10.1)
 
 No required changes. 0.10.1 did not publish the
