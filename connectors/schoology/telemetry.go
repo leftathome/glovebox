@@ -4,7 +4,7 @@
 //
 //   1. The framework-provided *connector.Metrics, which exposes the
 //      cross-connector metrics (connector_polls_total, connector_*).
-//   2. Seven schoology-specific OTel instruments plus a tracer for the
+//   2. Eight schoology-specific OTel instruments plus a tracer for the
 //      span structure in §13.2.
 //
 // Rather than juggle two handles in every processor signature, the
@@ -37,7 +37,7 @@ import (
 // RecordItemDropped, etc.) are available directly on Telemetry via
 // method promotion; processors don't juggle two handles.
 //
-// On top of the framework metrics, Telemetry adds the seven
+// On top of the framework metrics, Telemetry adds the eight
 // schoology-specific OTel instruments named in spec 12 §13.1 and the
 // tracer from §13.2.
 type Telemetry struct {
@@ -50,6 +50,7 @@ type Telemetry struct {
 	attachmentsSkippedTotal metric.Int64Counter
 	triggerRequestsTotal    metric.Int64Counter
 	viewChildSwitchesTotal  metric.Int64Counter
+	detailFetchesTotal      metric.Int64Counter
 
 	tracer trace.Tracer
 }
@@ -119,8 +120,29 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 	if err != nil {
 		return nil, fmt.Errorf("construct schoology_view_child_switches_total: %w", err)
 	}
+	t.detailFetchesTotal, err = meter.Int64Counter("schoology_assignment_detail_fetches_total",
+		metric.WithDescription("Assignment details considered, by kid and outcome"))
+	if err != nil {
+		return nil, fmt.Errorf("construct schoology_assignment_detail_fetches_total: %w", err)
+	}
 
 	return t, nil
+}
+
+// RecordAssignmentDetailFetch increments
+// schoology_assignment_detail_fetches_total{kid,outcome}. outcome is one of
+// "staged", "unchanged" (read, same content as last staged), "rejected"
+// (permission, not found, or a course that does not match the list row),
+// "error" (the read or the stage failed) and "deferred" (over the per-poll
+// cap; no request was made).
+func (t *Telemetry) RecordAssignmentDetailFetch(kid, outcome string) {
+	if t == nil {
+		return
+	}
+	t.detailFetchesTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("kid", kid),
+		attribute.String("outcome", outcome),
+	))
 }
 
 // RecordItemDropped is a nil-safe shim over the embedded

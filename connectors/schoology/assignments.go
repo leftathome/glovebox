@@ -41,6 +41,25 @@ func ProcessAssignments(
 	kid Kid,
 	libVersion string,
 ) (staged int, errsLogged bool) {
+	staged, errsLogged, _, _ = processAssignments(ctx, client, writer, matcher, cp, dedup, tel, kid, libVersion)
+	return staged, errsLogged
+}
+
+// processAssignments is ProcessAssignments plus the listing it read. listed
+// is true when GetOverdueSubmissions answered, whether or not anything was
+// staged; rows is then what it returned. The assignment_detail surface
+// works from these rows so the list is requested once per kid per poll.
+func processAssignments(
+	ctx context.Context,
+	client SchoologyClient,
+	writer connector.StagingBackend,
+	matcher *connector.RuleMatcher,
+	cp connector.Checkpoint,
+	dedup *ReceiptDedup,
+	tel *Telemetry,
+	kid Kid,
+	libVersion string,
+) (staged int, errsLogged bool, rows []*schoologylib.Assignment, listed bool) {
 	assignments, parseErrs, err := getOverdueSubmissionsTraced(ctx, client, tel, kid)
 	if err != nil {
 		errsLogged = true
@@ -64,7 +83,7 @@ func ProcessAssignments(
 			"receipt_emitted", receiptEmitted,
 			"affected_count", dedup.AffectedCount("assignments", errorClass),
 		)
-		return 0, errsLogged
+		return 0, errsLogged, nil, false
 	}
 
 	// Emit one row-parse receipt per unique (parser, errorClass) in this
@@ -107,7 +126,7 @@ func ProcessAssignments(
 	if !ok {
 		slog.Warn("schoology assignments no rule match",
 			"match_key", matchKey, "kid", kid.Name)
-		return 0, errsLogged
+		return 0, errsLogged, assignments, true
 	}
 
 	for _, a := range assignments {
@@ -144,7 +163,7 @@ func ProcessAssignments(
 		staged++
 	}
 
-	return staged, errsLogged
+	return staged, errsLogged, assignments, true
 }
 
 // getOverdueSubmissionsTraced wraps client.GetOverdueSubmissions in the

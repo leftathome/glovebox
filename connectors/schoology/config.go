@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leftathome/glovebox/connector"
 )
@@ -18,6 +19,81 @@ type Config struct {
 	Trigger               TriggerConfig     `json:"trigger"`
 	Attachments           AttachmentsConfig `json:"attachments"`
 	ParseFailureThreshold int               `json:"parse_failure_threshold"`
+
+	// AssignmentDetail configures the assignment_detail surface. It is off
+	// unless at least one kid is listed.
+	AssignmentDetail AssignmentDetailConfig `json:"assignment_detail"`
+}
+
+// AssignmentDetailConfig configures the assignment_detail surface: one
+// extra page read per assignment, staged as its own item. See
+// assignment_detail.go. A zero numeric field means "use the default".
+type AssignmentDetailConfig struct {
+	// Kids lists the kid labels the surface is enabled for. Empty (the
+	// default) disables it: no detail page is ever requested.
+	Kids []string `json:"kids"`
+
+	// MaxPerPoll caps how many assignments have their detail fetched in
+	// one poll, across all kids (default 20). An assessment costs two
+	// requests (the page and its comments page), so the request ceiling is
+	// twice this.
+	MaxPerPoll int `json:"max_per_poll"`
+
+	// RefreshHours is how long a still-listed, unchanged assignment waits
+	// before its detail is read again (default 20). That re-read is how a
+	// teacher comment added later is noticed. The default is 20 and not 24
+	// so that it means "once a day": each poll lands at a random time
+	// inside its window, and with 24 a poll a few minutes earlier in the
+	// day than yesterday's would find the row not yet due and skip a day.
+	RefreshHours int `json:"refresh_hours"`
+
+	// RequestSpacingMS is the pause between two detail requests (default
+	// 1500).
+	RequestSpacingMS int `json:"request_spacing_ms"`
+}
+
+// Defaults and bounds for AssignmentDetailConfig.
+const (
+	defaultDetailMaxPerPoll       = 20
+	maxDetailMaxPerPoll           = 200
+	defaultDetailRefreshHours     = 20
+	defaultDetailRequestSpacingMS = 1500
+	minDetailRequestSpacingMS     = 1000
+	maxDetailRequestSpacingMS     = 60000
+)
+
+// Enabled reports whether the surface is on for the named kid.
+func (a AssignmentDetailConfig) Enabled(kid string) bool {
+	for _, k := range a.Kids {
+		if k == kid {
+			return true
+		}
+	}
+	return false
+}
+
+// maxPerPoll, refreshInterval and requestSpacing read the numeric fields
+// with their defaults applied, so a Config that skipped ApplyDefaults (as
+// tests build them) still behaves.
+func (a AssignmentDetailConfig) maxPerPoll() int {
+	if a.MaxPerPoll <= 0 {
+		return defaultDetailMaxPerPoll
+	}
+	return a.MaxPerPoll
+}
+
+func (a AssignmentDetailConfig) refreshInterval() time.Duration {
+	if a.RefreshHours <= 0 {
+		return defaultDetailRefreshHours * time.Hour
+	}
+	return time.Duration(a.RefreshHours) * time.Hour
+}
+
+func (a AssignmentDetailConfig) requestSpacing() time.Duration {
+	if a.RequestSpacingMS <= 0 {
+		return defaultDetailRequestSpacingMS * time.Millisecond
+	}
+	return time.Duration(a.RequestSpacingMS) * time.Millisecond
 }
 
 // Kid maps an operator-chosen opaque label to a Schoology UID. Per spec 12
@@ -68,6 +144,15 @@ func ApplyDefaults(c *Config) {
 	if c.ParseFailureThreshold == 0 {
 		c.ParseFailureThreshold = 10
 	}
+	if c.AssignmentDetail.MaxPerPoll == 0 {
+		c.AssignmentDetail.MaxPerPoll = defaultDetailMaxPerPoll
+	}
+	if c.AssignmentDetail.RefreshHours == 0 {
+		c.AssignmentDetail.RefreshHours = defaultDetailRefreshHours
+	}
+	if c.AssignmentDetail.RequestSpacingMS == 0 {
+		c.AssignmentDetail.RequestSpacingMS = defaultDetailRequestSpacingMS
+	}
 }
 
 // ValidateConfig enforces spec 12 §4 invariants. Run at startup before the
@@ -106,7 +191,60 @@ func ValidateConfig(c *Config) error {
 			return fmt.Errorf("poll_schedule.windows[%d]: end %q must be strictly after start %q", i, w.End, w.Start)
 		}
 	}
+	return validateAssignmentDetail(c, seen)
+}
+
+// validateAssignmentDetail checks the assignment_detail block. The numeric
+// bounds apply even when the surface is off, so a typo is caught before the
+// day someone enables it; zero means "default" and is accepted.
+//
+// An enabled kid must have a rule that names its key exactly, placed
+// before any "*" rule. The rule matcher is first-match-wins and falls back
+// to the wildcard, and a detail item routed by the wildcard would carry the
+// config-wide default subject instead of the child's. Refusing to start is
+// better than staging a child's assignment text under the wrong subject.
+func validateAssignmentDetail(c *Config, kidNames map[string]bool) error {
+	d := c.AssignmentDetail
+	if d.MaxPerPoll < 0 || d.MaxPerPoll > maxDetailMaxPerPoll {
+		return fmt.Errorf("assignment_detail.max_per_poll: %d out of range 1..%d", d.MaxPerPoll, maxDetailMaxPerPoll)
+	}
+	if d.RefreshHours < 0 {
+		return fmt.Errorf("assignment_detail.refresh_hours: %d must be at least 1", d.RefreshHours)
+	}
+	if d.RequestSpacingMS != 0 &&
+		(d.RequestSpacingMS < minDetailRequestSpacingMS || d.RequestSpacingMS > maxDetailRequestSpacingMS) {
+		return fmt.Errorf("assignment_detail.request_spacing_ms: %d out of range %d..%d",
+			d.RequestSpacingMS, minDetailRequestSpacingMS, maxDetailRequestSpacingMS)
+	}
+	enabled := make(map[string]bool, len(d.Kids))
+	for i, name := range d.Kids {
+		if !kidNames[name] {
+			return fmt.Errorf("assignment_detail.kids[%d]: %q is not a configured kid", i, name)
+		}
+		if enabled[name] {
+			return fmt.Errorf("assignment_detail.kids: duplicate name %q", name)
+		}
+		enabled[name] = true
+		key := detailMatchKey(name)
+		if !firstMatchIsExact(c.Rules, key) {
+			return fmt.Errorf("assignment_detail.kids[%d]: no rule matches %q exactly ahead of any \"*\" rule", i, key)
+		}
+	}
 	return nil
+}
+
+// firstMatchIsExact reports whether the rule the matcher would pick for key
+// names key itself rather than the "*" wildcard.
+func firstMatchIsExact(rules []connector.Rule, key string) bool {
+	for _, r := range rules {
+		if r.Match == key {
+			return true
+		}
+		if r.Match == "*" {
+			return false
+		}
+	}
+	return false
 }
 
 // parseTimeOfDay parses an HH:MM local-time string into minutes-of-day

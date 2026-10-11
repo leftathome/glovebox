@@ -1767,6 +1767,34 @@ schoologyConnector:
   # Framework health/metrics port. The POST /v1/poll trigger listener is
   # served on healthPort+1.
   healthPort: 8080
+  # Assignment detail surface: for each assignment in a child's
+  # overdue/upcoming list, read the assignment's own page and stage its
+  # description, category, grading period, status and comment count as a
+  # second item (rule key "schoology:<kid>:assignment_detail"). Off by
+  # default: it is one extra page read per assignment against the school's
+  # site. To enable it for a child, list the child's label under kids AND
+  # add a rule for that key to config.rules, ahead of the "*" rule, e.g.
+  #   - match: "schoology:k1:assignment_detail"
+  #     destination: school
+  #     data_subject: k1
+  #     audience: [operator]
+  # The chart refuses to render, and the connector to start, without it.
+  # An assignment_detail block written directly in config (below) is kept
+  # and wins key by key over these values.
+  assignmentDetail:
+    # Kid labels (from config.kids) the surface is enabled for.
+    kids: []
+    # Most assignments whose detail is read in one poll, across all kids
+    # (1-200). The rest wait for the next poll. An assessment costs two
+    # requests, so the request ceiling is twice this.
+    maxPerPoll: 20
+    # Hours before a still-listed, unchanged assignment is read again (how a
+    # comment added later is noticed). 20, not 24, so that it means "once a
+    # day": polls land at a random time inside their window, and with 24 a
+    # poll a few minutes earlier than yesterday's would skip a day.
+    refreshHours: 20
+    # Pause between two detail requests, in milliseconds (1000-60000).
+    requestSpacingMs: 1500
   # Operator config rendered verbatim into config.json. Per spec 12 §10
   # kids use opaque labels (k1, k2) -- never legal names -- so PII stays
   # out of metadata/audit logs. The per-kid rules carry data_subject so

@@ -23,7 +23,9 @@
 //	GLOVEBOX_INGEST_URL         HTTP ingest URL (takes precedence over
 //	                            GLOVEBOX_STAGING_DIR)
 //	GLOVEBOX_STATE_DIR          checkpoint root
-//	SCHOOLOGY_TIMEZONE          scheduler timezone, default America/Los_Angeles
+//	SCHOOLOGY_TIMEZONE          timezone of the poll schedule and of the
+//	                            due/posted times Schoology prints, default
+//	                            America/Los_Angeles
 //	SCHOOLOGY_TRIGGER_TOKEN     bearer token for POST /v1/poll
 //
 // Fatal startup errors (missing config, malformed config, missing or
@@ -50,7 +52,7 @@ import (
 // receipts so operators can correlate breakage to a specific upstream
 // commit. It must be kept in sync with the go.mod pin for
 // github.com/leftathome/schoology-go.
-const schoologyLibVersion = "v0.2.1"
+const schoologyLibVersion = "v0.3.0"
 
 func main() {
 	configFile := os.Getenv("GLOVEBOX_CONNECTOR_CONFIG")
@@ -130,9 +132,18 @@ func main() {
 		slog.Error("schoology: build read-only http client", "error", err)
 		os.Exit(1)
 	}
+	// Schoology prints due and posted times as wall-clock text without
+	// naming a zone. The library reads them in this location, the same one
+	// the poll schedule uses; without it they would stay unparsed.
+	tz, err := schoology.Timezone()
+	if err != nil {
+		slog.Error("schoology: load timezone", "error", err)
+		os.Exit(1)
+	}
 	lib, err := schoologylib.NewClient(host,
 		schoologylib.WithHTTPClient(httpClient),
 		schoologylib.WithSession(creds.SessID, creds.CSRFToken, creds.CSRFKey, creds.UID),
+		schoologylib.WithLocation(tz),
 	)
 	if err != nil {
 		slog.Error("schoology: construct library client",

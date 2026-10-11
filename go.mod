@@ -11,7 +11,7 @@ require (
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
 	github.com/leftathome/powerschool-go v0.3.0
-	github.com/leftathome/schoology-go v0.2.1
+	github.com/leftathome/schoology-go v0.3.0
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
