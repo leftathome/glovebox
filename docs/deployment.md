@@ -58,6 +58,7 @@ images-markdown` and paste; CI fails if it drifts from what is built.
 | `connectors/onedrive` | `ghcr.io/leftathome/glovebox-onedrive` |
 | `connectors/outlook` | `ghcr.io/leftathome/glovebox-outlook` |
 | `connectors/powerschool` | `ghcr.io/leftathome/glovebox-powerschool` |
+| `connectors/powerschool-auth-refresher` | `ghcr.io/leftathome/glovebox-powerschool-auth-refresher` |
 | `connectors/rss` | `ghcr.io/leftathome/glovebox-rss` |
 | `connectors/schoology` | `ghcr.io/leftathome/glovebox-schoology` |
 | `connectors/schoology-auth-refresher` | `ghcr.io/leftathome/glovebox-schoology-auth-refresher` |
@@ -330,7 +331,9 @@ helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.10.0 
 The chart covers all 24 connectors and 3 importers, toggled via `values.yaml`.
 22 connectors live under the generic `connectors:` map; schoology and its auth
 refresher have their own `schoologyConnector:` and `schoologyAuthRefresher:`
-blocks because they need a trigger token and a scheduled browser job. Each
+blocks because they need a trigger token and a scheduled browser job. The
+PowerSchool connector's login job has its own `powerschoolAuthRefresher:` block
+([runbook](connectors/powerschool-auth-refresher.md)). Each
 enabled connector gets its own Deployment, ConfigMap, Service, and state PVC. See the chart's
 `values.yaml` for the full configuration reference.
 

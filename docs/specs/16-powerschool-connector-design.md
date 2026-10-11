@@ -78,10 +78,11 @@ late assignment keeps status `pending` or `graded` with only the flag set.
 has no code path that can authenticate, and its transport refuses a
 credentialed POST (section 5).
 
-- A separate, scheduled **login job** (not built yet; tracked separately --
-  the analogue of `schoology-auth-refresher`) holds the credentials, runs
-  the browser login, calls `ExportSession` and stores the resulting JSON
-  (`{"cookies":[...],"expires_at":"..."}`) where ESO can sync it.
+- A separate, scheduled **login job** (`powerschool-auth-refresher`, the
+  analogue of `schoology-auth-refresher`; see section 4.4) holds the
+  credentials, runs the browser login, calls `ExportSession` and stores the
+  resulting JSON (`{"cookies":[...],"expires_at":"..."}`) where ESO can sync
+  it.
 - The connector receives that JSON as a mounted file
   (`POWERSCHOOL_SESSION_FILE`, preferred; this is what the chart sets up)
   or in `POWERSCHOOL_SESSION`, and the portal location as
@@ -168,6 +169,73 @@ in); a run of values clustered at one duration is the timeout.
 The operator's existing Vault secret has `powerschool_username`,
 `powerschool_password` and `powerschool_hostname`. Only the hostname is
 mapped into the connector. The chart comments say so.
+
+### 4.4 The login job
+
+`connectors/powerschool-auth-refresher` (bead `glovebox-wekc.7`), deployed
+by the chart's `powerschoolAuthRefresher` block. Operator runbook:
+`docs/connectors/powerschool-auth-refresher.md`. It follows
+`schoology-auth-refresher` (spec 06 section 12) in layout, Vault wiring
+(Kubernetes auth, KV v2) and exit codes 0-4. What section 4.1 adds:
+
+- **Blackout in the binary.** No login between 16:00 and 21:00
+  `America/Los_Angeles`, evaluated against the real clock in that zone at
+  start and again immediately before each login; such a run exits 0 having
+  contacted nothing. A login may take up to 90s, so one is started only when
+  the next 150s are clear of the window. The window is a constant:
+  configuration can widen it, never shorten it or change its zone. The
+  chart additionally refuses to render a schedule that can fire inside the
+  window or within `startingDeadlineSeconds` plus three minutes before it.
+  The schedule is a convenience; the binary is the guarantee.
+- **A latch against lockout.** A sibling KV path, `.../login-state`, holds
+  the job's own record. A login the portal rejects sets `login_blocked`
+  there with a salted SHA-256 fingerprint of the credentials used; every
+  later run refuses to start a browser (exit 6) until the fingerprint of
+  the configured credentials differs or an operator deletes the record. The
+  record is written before each login, so a rejection can always be
+  recorded; if that write fails there is no login.
+- **Unconfirmed logins.** The library reports success whenever the portal
+  shows no error notice, so a CAPTCHA, a second factor or an expired
+  password looks like a login. Such a login -- returned, but its session
+  does not open the home page -- is `login_unconfirmed` (exit 5), is never
+  written, and is counted in the state record; two in a row set the latch.
+  Only a confirmed login resets the count.
+- **Sign-in page check.** Before the browser starts, one GET of the sign-in
+  page through section 5's transport must show a password form served by,
+  and posting to, the configured host over https; otherwise exit 7 and no
+  browser. The browser fetches the page again, so this is not atomic;
+  closing that belongs in `powerschool-go`.
+- **No needless login.** The job reads the stored session first. If it is
+  younger than a minimum age and one GET of the home page with it returns
+  the signed-in page, the job exits 0. A young session whose state cannot be
+  established (network error) is also left alone.
+- **One login per run.** One attempt; one more only when the first failed
+  before the credentials were submitted (browser start, DNS, connect).
+  `powerschool-go` returns a single undifferentiated error for a failed
+  login, so "before the submit" is an allowlist over its text and everything
+  else is not retried. The Job has `backoffLimit: 0`.
+- **Read-only after login.** The new session is confirmed with one GET of
+  the home page through section 5's transport with neither POST exception
+  enabled. An unconfirmed session is not written (exit 5), so a login the
+  library wrongly reported as successful cannot replace a working session.
+- **Schedules.** 05:00 Monday-Friday (minimum age 10h: logs in daily) and
+  21:05 Sunday-Thursday (minimum age 30h: logs in only when the day's
+  session is gone; after the blackout, before the 21:30 poll), as two
+  CronJobs in `America/Los_Angeles`.
+- **`expires_at`.** The library's value is the latest cookie expiry or a
+  four-hour guess, neither of which describes the portal's session. The job
+  writes login time + 36h; section 4.3's measurement is what will replace
+  that number.
+- **Vault secret.** `secret/glovebox/powerschool/default/session`, fields
+  `session` (the JSON above, as a string; the property the connector's
+  `externalSecret.files` reads), `logged_in_at`, `expires_at`,
+  `selected_student_id`, written check-and-set. Policy: `create`, `read`,
+  `update` on that path and on the state path -- `read` because of the
+  young-session check and the latch. The token is revoked at exit.
+- **Browser.** `powerschool-go` v0.4.0 can only start a local Chromium, so
+  the image bundles one (`debian:bookworm-slim` pinned by digest, uid 65532,
+  `--no-sandbox`). The pod has a read-only root and memory-backed `/tmp`,
+  `$HOME` and `/dev/shm`; the profile directory is removed after each login.
 
 ## 5. Read-only guarantee
 
@@ -845,11 +913,12 @@ registered on the framework's own meter provider, the one behind
 
 ### 11.1 Required before the connector is enabled
 
-1. **The login job** (section 4): scheduled, off-hours only (never
+1. **The login job** (section 4.4): scheduled, off-hours only (never
    16:00-21:00 Pacific), writing the session where the chart's
-   `externalSecret.files` picks it up. Not built; tracked separately. It
-   needs Chrome in its own image, or a remote-browser option in the library
-   so it can reuse the cluster's Browserless.
+   `externalSecret.files` picks it up. Built (`glovebox-wekc.7`), with
+   Chromium in its own image; not yet run against the live portal. A
+   remote-browser option in the library would let it reuse the cluster's
+   Browserless and drop the bundled browser.
 2. **A supervised first run** with `student_api_id` either configured or
    read back from the checkpoint and then configured (section 6.2).
 

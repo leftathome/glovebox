@@ -297,6 +297,10 @@ build:
         DOCKERFILE: ./connectors/onedrive/Dockerfile
       - IMAGE: glovebox-powerschool
         DOCKERFILE: ./connectors/powerschool/Dockerfile
+      # debian:bookworm-slim + Chromium, not distroless: powerschool-go can
+      # only drive a local browser (see the Dockerfile).
+      - IMAGE: glovebox-powerschool-auth-refresher
+        DOCKERFILE: ./connectors/powerschool-auth-refresher/Dockerfile
       - IMAGE: glovebox-rss
         DOCKERFILE: ./connectors/rss/Dockerfile
       - IMAGE: glovebox-schoology

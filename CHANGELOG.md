@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PowerSchool session login job: `powerschool-auth-refresher`**
+  (glovebox-wekc.7). The PowerSchool connector never logs in; this job does,
+  and writes the session to Vault KV v2
+  (`secret/glovebox/powerschool/default/session`, Kubernetes auth role
+  `glovebox-powerschool-refresher`), from where ESO syncs it into the Secret
+  the connector mounts. New image `glovebox-powerschool-auth-refresher`
+  (bundles Chromium: `powerschool-go` cannot drive a remote browser) and a
+  new chart block `powerschoolAuthRefresher`, disabled by default. Runbook,
+  with the exact Vault policy and role:
+  `docs/connectors/powerschool-auth-refresher.md`.
+  - The account is its owner's own and the portal keeps one live session per
+    account, so a login ends whatever session existed. The binary refuses to
+    log in between 16:00 and 21:00 `America/Los_Angeles`, and in the 150
+    seconds before (a login can take that long), checked against the real
+    clock whatever started the run; such a run logs one line, writes a
+    termination message and exits 0. The window is compiled in:
+    configuration can widen it (earlier start, later end, extra windows),
+    never shorten it or change its zone.
+  - A login the portal rejects sets a latch in Vault
+    (`secret/glovebox/powerschool/default/login-state`): later runs refuse
+    to start a browser (exit 6) until the credentials change or an operator
+    clears it, so a wrong password is submitted once, not twice a day. Two
+    logins in a row that return without a working session (a CAPTCHA, a
+    second factor, an expired password) set it too.
+  - Before starting the browser it fetches the sign-in page with a GET and
+    requires a password form on the configured host that posts to that host
+    (`signin_page_unrecognised`, exit 7, otherwise).
+  - It reads the stored session first and does not log in while that session
+    is younger than a minimum age (default 10h) and the portal still accepts
+    it.
+  - One login per run: a second attempt only when the first failed before
+    the credentials were submitted, never after rejected credentials; the
+    Job has `backoffLimit: 0`.
+  - After the login it only reads: one GET of the home page through the
+    connector's read-only transport. An unconfirmed session is not written.
+    The session write is check-and-set, so an overlapping manual run cannot
+    store a session the portal has already ended.
+  - Two CronJobs in `America/Los_Angeles`: `0 5 * * 1-5` (logs in each school
+    day) and `5 21 * * 0-4` (after the blackout, before the connector's
+    21:30 poll; logs in only if the day's session is gone),
+    `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 1800`. The chart
+    refuses to render a schedule that can fire inside the blackout or within
+    the catch-up deadline plus three minutes before it, and a blackout that
+    does not contain 16:00-21:00 Pacific.
+  - The pod: uid 65532, no capabilities, seccomp `RuntimeDefault`, read-only
+    root; `/tmp`, `$HOME` and `/dev/shm` are memory-backed emptyDirs, and the
+    browser profile is removed on every exit path. A NetworkPolicy limits
+    egress to cluster DNS, the Vault pods, and port 443 outside private
+    address space.
+  - Vault is reached over https only, with certificate verification always
+    on (`powerschoolAuthRefresher.vault.caConfigMap`); `VAULT_SKIP_VERIFY`
+    is refused. The token is revoked at exit. The Vault policy covers two
+    paths (session and login-state): `create`, `read`, `update`.
+  - The image's base is pinned by digest. GitHub CI starts the browser
+    inside the built image (`scripts/test-powerschool-auth-refresher-image.sh`)
+    and scans it with Trivy before any image is published.
+  - `scripts/test-chart-powerschool-login.sh` pins the rendered manifests
+    and the refused schedules.
+  - Not yet run against the live portal.
+
+### Changed
+
+- Chart: the PowerSchool connector's default session source
+  (`connectors.powerschool.externalSecret.files.data."session.json".key`)
+  moves from `eso/glovebox-powerschool-session` to
+  `glovebox/powerschool/default/session`, the path the new login job writes.
+  The connector is shipped disabled and nothing wrote the old path; an
+  overlay that set the key explicitly keeps its value, but the chart refuses
+  to render when it differs from `powerschoolAuthRefresher.vault.sessionPath`
+  with both enabled.
+
 ## [0.10.0] - 2026-10-11
 
 ### Added
