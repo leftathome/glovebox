@@ -158,12 +158,12 @@ func ProcessGrades(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade) R
 // same facts for a reader and for the scanner.
 func buildGradeBody(g *pslib.Grade, terms map[string]string, term, current, previous string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Course: %s\n", g.CourseName)
+	fmt.Fprintf(&b, "Course: %s\n", oneLine(g.CourseName))
 	if g.Period != "" {
-		fmt.Fprintf(&b, "Period: %s\n", g.Period)
+		fmt.Fprintf(&b, "Period: %s\n", oneLine(g.Period))
 	}
 	if g.Teacher != "" {
-		fmt.Fprintf(&b, "Teacher: %s\n", g.Teacher)
+		fmt.Fprintf(&b, "Teacher: %s\n", oneLine(g.Teacher))
 	}
 	fmt.Fprintf(&b, "Current grade (%s): %s\n", term, displayGrade(current))
 	if previous != "" && previous != current {

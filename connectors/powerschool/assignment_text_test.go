@@ -32,16 +32,18 @@ func TestAssignmentFingerprint_FreeText(t *testing.T) {
 		a.CategoryDescription = "Work done in class."
 		return a
 	}
-	base := assignmentFingerprint(sample())
+	base := fpOf(sample())
 
 	changes := map[string]func(a *pslib.Assignment){
-		"comment edited":               func(a *pslib.Assignment) { withComment(a, "Good work. Show the units next time!") },
+		"comment edited": func(a *pslib.Assignment) { withComment(a, "Good work. Show the units next time!") },
+		// The body then ends the block with the marker: a visible change.
+		"comment reported cut":         func(a *pslib.Assignment) { a.TeacherCommentTruncated = true },
 		"comment removed":              func(a *pslib.Assignment) { withComment(a, "") },
 		"comment case":                 func(a *pslib.Assignment) { withComment(a, "GOOD WORK.\nShow the units next time.") },
 		"description edited":           func(a *pslib.Assignment) { a.Description = "Write up the density lab, two pages." },
 		"description removed":          func(a *pslib.Assignment) { a.Description = "" },
-		"category description edited":  func(a *pslib.Assignment) { a.CategoryDescription = "Work done at home." },
-		"category description removed": func(a *pslib.Assignment) { a.CategoryDescription = "" },
+		"comment line break moved":     func(a *pslib.Assignment) { withComment(a, "Good work. Show the units\nnext time.") },
+		"description line break added": func(a *pslib.Assignment) { a.Description = "Write up\nthe density lab." },
 		"score, text unchanged":        func(a *pslib.Assignment) { a.Score = floatPtr(7) },
 		// The same words must not hash the same wherever they are put.
 		"text moved between fields": func(a *pslib.Assignment) {
@@ -52,33 +54,36 @@ func TestAssignmentFingerprint_FreeText(t *testing.T) {
 		t.Run("changes on "+name, func(t *testing.T) {
 			a := sample()
 			mutate(a)
-			if assignmentFingerprint(a) == base {
+			if fpOf(a) == base {
 				t.Errorf("%s did not change the fingerprint", name)
 			}
 		})
 	}
 
 	same := map[string]func(a *pslib.Assignment){
-		"comment re-wrapped": func(a *pslib.Assignment) { a.TeacherComment = "  Good work.   Show the units\nnext time.\n\n" },
+		"comment spacing": func(a *pslib.Assignment) { a.TeacherComment = "\n  Good work.  \n Show   the units next time.\n\n" },
+		// The category description belongs to the category, not to the
+		// assignment: editing it must not stage every assignment in it.
+		"category description edited":  func(a *pslib.Assignment) { a.CategoryDescription = "Work done at home." },
+		"category description removed": func(a *pslib.Assignment) { a.CategoryDescription = "" },
 		"comment CRLF and tabs": func(a *pslib.Assignment) {
 			a.TeacherComment = "Good work.\r\n\tShow the units next time."
 		},
 		"comment non-breaking spaces": func(a *pslib.Assignment) {
 			a.TeacherComment = "Good\u00a0work.\nShow the units next time."
 		},
-		"description whitespace":          func(a *pslib.Assignment) { a.Description = "Write up\n   the density lab. " },
+		"description whitespace":          func(a *pslib.Assignment) { a.Description = "  Write up   the density lab. \n" },
 		"category description whitespace": func(a *pslib.Assignment) { a.CategoryDescription = " Work done\tin class." },
 		// The HTML form is not what is staged, so markup alone is no change.
 		"comment markup only": func(a *pslib.Assignment) {
 			a.TeacherCommentHTML = "<div><b>Good work.</b><br>Show the units next time.</div>"
 		},
-		"truncation flag": func(a *pslib.Assignment) { a.TeacherCommentTruncated = true },
 	}
 	for name, mutate := range same {
 		t.Run("unchanged by "+name, func(t *testing.T) {
 			a := sample()
 			mutate(a)
-			if assignmentFingerprint(a) != base {
+			if fpOf(a) != base {
 				t.Errorf("%s changed the fingerprint", name)
 			}
 		})
@@ -87,7 +92,7 @@ func TestAssignmentFingerprint_FreeText(t *testing.T) {
 	// Text the library does not vouch for as a comment is not one.
 	a, b := sampleAssignment("1", "Lab report"), sampleAssignment("1", "Lab report")
 	b.TeacherComment = "stray"
-	if assignmentFingerprint(a) != assignmentFingerprint(b) {
+	if fpOf(a) != fpOf(b) {
 		t.Error("TeacherComment without HasTeacherComment changed the fingerprint")
 	}
 }
@@ -125,7 +130,7 @@ func TestProcessAssignments_FreeTextIdentity(t *testing.T) {
 		}, 0, nil, "", ""},
 		{"comment differs only in whitespace: not re-staged", func(a *pslib.Assignment) {
 			scored(a)
-			withComment(a, "  Good work.   Show the units\r\nnext time.\n")
+			withComment(a, "  Good work.  \r\n\tShow the   units next time.\n")
 		}, 0, nil, "", ""},
 		{"comment edited: re-staged", func(a *pslib.Assignment) {
 			scored(a)
@@ -140,21 +145,22 @@ func TestProcessAssignments_FreeTextIdentity(t *testing.T) {
 		{"description differs only in whitespace: not re-staged", func(a *pslib.Assignment) {
 			scored(a)
 			withComment(a, "Good work. See me about question 4.")
-			a.Description = " Write up the density lab.\n\nTwo   pages. "
+			a.Description = " Write up the   density lab. Two pages. \n"
 		}, 0, nil, "", ""},
-		{"category description changed: re-staged", func(a *pslib.Assignment) {
+		{"category description changed: not re-staged", func(a *pslib.Assignment) {
 			scored(a)
 			withComment(a, "Good work. See me about question 4.")
 			a.Description = "Write up the density lab. Two pages."
 			a.CategoryDescription = "Work done in class, 40% of the grade."
-		}, 1, map[string]string{"change": "updated"}, "Category description:\n  Work done in class, 40% of the grade.\n", ""},
+		}, 0, nil, "", ""},
 		{"score changed, text the same: re-staged", func(a *pslib.Assignment) {
 			scored(a)
 			withComment(a, "Good work. See me about question 4.")
 			a.Description = "Write up the density lab. Two pages."
 			a.CategoryDescription = "Work done in class, 40% of the grade."
 			a.Score, a.Percentage, a.LetterGrade = floatPtr(9), floatPtr(90), "A-"
-		}, 1, map[string]string{"change": "updated", "score": "9", "has_teacher_comment": "true"}, "Score: 9/10\n", ""},
+		}, 1, map[string]string{"change": "updated", "changed": "score", "score": "9", "has_teacher_comment": "true"},
+			"Category description:\n  Work done in class, 40% of the grade.\n", ""},
 		{"flag set, text the same: re-staged", func(a *pslib.Assignment) {
 			scored(a)
 			withComment(a, "Good work. See me about question 4.")
@@ -248,8 +254,8 @@ func TestProcessAssignments_FingerprintUpgrade(t *testing.T) {
 			t.Errorf("%s: change = %q, want updated", it.Meta.Subject, it.Meta.Tags["change"])
 		}
 	}
-	if stored, _ := seed.CP.Load(CheckpointKey(assignmentSurface, testKid.Name, "00100:1")); stored != assignmentFingerprint(plain()) {
-		t.Errorf("uncommented assignment's checkpoint = %q, want it re-baselined to %q", stored, assignmentFingerprint(plain()))
+	if stored, _ := seed.CP.Load(CheckpointKey(assignmentSurface, testKid.Name, "00100:1")); stored != fpOf(plain()) {
+		t.Errorf("uncommented assignment's checkpoint = %q, want it re-baselined to %q", stored, fpOf(plain()))
 	}
 	if again := poll(); len(again) != 0 {
 		t.Errorf("second poll staged %v, want nothing", subjects(again))
@@ -346,7 +352,7 @@ func TestProcessAssignments_FreeTextBlocksAreOptional(t *testing.T) {
 		{"category description only", func(a *pslib.Assignment) { a.CategoryDescription = "Work done in class." },
 			[]string{"\nCategory description:\n  Work done in class.\n"}, []string{"Teacher comment:", "Assignment description:"}, "false"},
 		{"category description repeats the description", func(a *pslib.Assignment) {
-			a.Description, a.CategoryDescription = "Work done in class.", " Work done\nin class. "
+			a.Description, a.CategoryDescription = "Work done in class.", "  Work done   in class. \n"
 		}, []string{"\nAssignment description:\n  Work done in class.\n"}, []string{"Category description:"}, "false"},
 		{"library reports a comment with no text", func(a *pslib.Assignment) {
 			a.HasTeacherComment, a.TeacherComment, a.TeacherCommentHTML = true, " \n\t ", "<p></p>"
@@ -531,18 +537,29 @@ func TestCleanAndBoundText(t *testing.T) {
 		{"", ""},
 		{" \n\t\r\n ", ""},
 		{"one\r\ntwo\rthree", "one\ntwo\nthree"},
-		{"\n\n  keep leading indent  \n\n", "  keep leading indent"},
+		{"\n\n  lines are   trimmed  \n\n\n\nand blank runs kept as one\n\n", "lines are trimmed\n\nand blank runs kept as one"},
 		{"a\tb", "a b"},
-		{"a\x00b\x1bc\u0085d", "abcd"},
-		{"bad \xff utf8", "bad  utf8"},
+		{"a\x00b\x1bc", "abc"},
+		{"a\vb\fc" + uNEL + "d" + uLS + "e" + uPS + "f", "a\nb\nc\nd\ne\nf"},
+		{uBOM + "a" + uZWJ + uZWS + uRLO + uLRI + "b", "ab"},
+		{"bad \xff utf8", "bad utf8"},
 	}
 	for _, tc := range cases {
 		if got, cut := boundText(tc.in); got != tc.want || cut {
 			t.Errorf("boundText(%q) = %q cut=%v, want %q", tc.in, got, cut, tc.want)
 		}
 	}
-	if got := normaliseText(" a\u00a0b\r\n\tc  "); got != "a b c" {
-		t.Errorf("normaliseText = %q, want %q", got, "a b c")
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{" a\r\n\tb" + uLS + "c" + uPS + uRLO + "d\ve\x00  ", "a b c d e"},
+		{uZWJ + uBOM, ""},
+	} {
+		if got := oneLine(tc.in); got != tc.want {
+			t.Errorf("oneLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := oneLine(strings.Repeat(euro, 200)); len(got) != 255 || !utf8.ValidString(got) {
+		t.Errorf("oneLine of a long value is %d bytes, want 255 (85 whole characters)", len(got))
 	}
 }
 

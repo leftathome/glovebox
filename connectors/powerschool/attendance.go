@@ -84,9 +84,9 @@ func ProcessAttendance(ctx context.Context, e Env, kid Kid, grades []*pslib.Grad
 		opts := itemOptions(e, rule, kid, attendanceSurface, change, g.CourseName, subject, tags)
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "Course: %s\n", g.CourseName)
+		fmt.Fprintf(&b, "Course: %s\n", oneLine(g.CourseName))
 		if g.Period != "" {
-			fmt.Fprintf(&b, "Period: %s\n", g.Period)
+			fmt.Fprintf(&b, "Period: %s\n", oneLine(g.Period))
 		}
 		fmt.Fprintf(&b, "Absences this year: %d (was %d)\n", g.Absences, prevAbs)
 		fmt.Fprintf(&b, "Tardies this year: %d (was %d)\n", g.Tardies, prevTardy)

@@ -61,9 +61,14 @@ func TestIsOutstanding(t *testing.T) {
 	}
 }
 
+// fpOf is the fingerprint of a as the connector stages it.
+func fpOf(a *pslib.Assignment) string {
+	return assignmentFingerprint(a, textOf(a))
+}
+
 func TestAssignmentFingerprint(t *testing.T) {
-	base := assignmentFingerprint(sampleAssignment("1", "Lab report"))
-	if base != assignmentFingerprint(sampleAssignment("1", "Lab report")) {
+	base := fpOf(sampleAssignment("1", "Lab report"))
+	if base != fpOf(sampleAssignment("1", "Lab report")) {
 		t.Fatal("fingerprint is not deterministic")
 	}
 	mutations := map[string]func(a *pslib.Assignment){
@@ -82,7 +87,7 @@ func TestAssignmentFingerprint(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			a := sampleAssignment("1", "Lab report")
 			mutate(a)
-			if assignmentFingerprint(a) == base {
+			if fpOf(a) == base {
 				t.Errorf("changing %s did not change the fingerprint", name)
 			}
 		})
@@ -92,7 +97,7 @@ func TestAssignmentFingerprint(t *testing.T) {
 	x, y := sampleAssignment("1", "Lab report"), sampleAssignment("1", "Lab report")
 	x.Flags = []pslib.AssignmentFlag{pslib.FlagLate, pslib.FlagMissing}
 	y.Flags = []pslib.AssignmentFlag{pslib.FlagMissing, pslib.FlagLate}
-	if assignmentFingerprint(x) != assignmentFingerprint(y) {
+	if fpOf(x) != fpOf(y) {
 		t.Error("flag order changed the fingerprint")
 	}
 }

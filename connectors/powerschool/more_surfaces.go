@@ -481,14 +481,14 @@ func ProcessAttendanceDays(ctx context.Context, e Env, kid Kid, page *pslib.Atte
 			opts := itemOptions(e, rule, kid, attendanceDaySurface, change, course.CourseName, subject, tags)
 
 			var b strings.Builder
-			fmt.Fprintf(&b, "Course: %s\n", course.CourseName)
+			fmt.Fprintf(&b, "Course: %s\n", oneLine(course.CourseName))
 			if course.Expression != "" {
-				fmt.Fprintf(&b, "Period: %s\n", course.Expression)
+				fmt.Fprintf(&b, "Period: %s\n", oneLine(course.Expression))
 			}
 			fmt.Fprintf(&b, "Date: %s (%s)\n", date, day.Date.Weekday())
-			fmt.Fprintf(&b, "Code: %s\n", day.Code)
+			fmt.Fprintf(&b, "Code: %s\n", oneLine(day.Code))
 			if entry.Description != "" {
-				fmt.Fprintf(&b, "Meaning: %s\n", entry.Description)
+				fmt.Fprintf(&b, "Meaning: %s\n", oneLine(entry.Description))
 			}
 			fmt.Fprintf(&b, "Kind: %s\n", kind)
 			if p := strings.TrimPrefix(prev, "code="); p != "" && p != day.Code {
@@ -613,12 +613,12 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 		opts := itemOptions(e, rule, kid, termGradeSurface, change, g.CourseName, subject, tags)
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "Course: %s\n", g.CourseName)
+		fmt.Fprintf(&b, "Course: %s\n", oneLine(g.CourseName))
 		if g.CourseNumber != "" {
-			fmt.Fprintf(&b, "Course number: %s\n", g.CourseNumber)
+			fmt.Fprintf(&b, "Course number: %s\n", oneLine(g.CourseNumber))
 		}
-		fmt.Fprintf(&b, "Completed: %s\n", term)
-		fmt.Fprintf(&b, "Final grade: %s\n", g.LetterGrade)
+		fmt.Fprintf(&b, "Completed: %s\n", oneLine(term))
+		fmt.Fprintf(&b, "Final grade: %s\n", oneLine(g.LetterGrade))
 		if previous != "" && previous != g.LetterGrade {
 			fmt.Fprintf(&b, "Previously recorded: %s\n", previous)
 		}
@@ -627,7 +627,7 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 			b.WriteString("Not included in GPA\n")
 		}
 		if g.School != "" {
-			fmt.Fprintf(&b, "School: %s\n", g.School)
+			fmt.Fprintf(&b, "School: %s\n", oneLine(g.School))
 		}
 
 		if err := stage(ctx, e, termGradeSurface, opts, b.String()); err != nil {
@@ -718,13 +718,13 @@ func ProcessTeacherComments(ctx context.Context, e Env, kid Kid, page *pslib.Tea
 		opts := itemOptions(e, rule, kid, teacherCommentSurface, change, cm.CourseName, subject, tags)
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "Course: %s\n", cm.CourseName)
+		fmt.Fprintf(&b, "Course: %s\n", oneLine(cm.CourseName))
 		if cm.Expression != "" {
-			fmt.Fprintf(&b, "Period: %s\n", cm.Expression)
+			fmt.Fprintf(&b, "Period: %s\n", oneLine(cm.Expression))
 		}
-		fmt.Fprintf(&b, "Reporting term: %s\n", term)
+		fmt.Fprintf(&b, "Reporting term: %s\n", oneLine(term))
 		if cm.Teacher != "" {
-			fmt.Fprintf(&b, "Teacher: %s\n", cm.Teacher)
+			fmt.Fprintf(&b, "Teacher: %s\n", oneLine(cm.Teacher))
 		}
 		fmt.Fprintf(&b, "\n%s\n", cm.Comment)
 
