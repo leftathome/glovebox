@@ -376,9 +376,19 @@ func refuseWriteRedirects(req *http.Request, via []*http.Request) error {
 //
 // The client has no cookie jar: the library attaches the session cookies to
 // each request itself. What a response sets is not stored either, with one
-// narrow exception that lives inside the pinned transport and dies with
-// this client: the gateway-cookie overlay below.
+// narrow exception that lives inside the pinned transport and lasts one
+// poll: the gateway-cookie overlay below.
 func NewHTTPClient(host string, allowAssignmentLookup bool, switchStudentIDs []string, timeout time.Duration) *http.Client {
+	client, _ := NewHTTPClientWithReset(host, allowAssignmentLookup, switchStudentIDs, timeout)
+	return client
+}
+
+// NewHTTPClientWithReset is NewHTTPClient, also returning the function
+// that empties the client's gateway-cookie overlay. The connector calls it
+// at the start of every poll: what the gateway handed out during one poll
+// is not carried into the next.
+func NewHTTPClientWithReset(host string, allowAssignmentLookup bool, switchStudentIDs []string, timeout time.Duration) (*http.Client, func()) {
+	overlay := psportal.NewGatewayCookies(nil)
 	return &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: refuseWriteRedirects,
@@ -388,9 +398,10 @@ func NewHTTPClient(host string, allowAssignmentLookup bool, switchStudentIDs []s
 			SwitchStudentIDs:      append([]string(nil), switchStudentIDs...),
 			// Underneath the pin and the read-only rule: carry a cookie the
 			// access gateway renews in mid-request (see
-			// psportal.GatewayCookies). One per client, so one per stored
-			// session; nothing it collects is written anywhere.
-			Base: psportal.NewGatewayCookies(nil),
+			// psportal.GatewayCookies). It can add or replace a cookie,
+			// never remove one; it is emptied at the start of each poll;
+			// nothing it collects is written anywhere.
+			Base: overlay,
 		},
-	}
+	}, overlay.Reset
 }

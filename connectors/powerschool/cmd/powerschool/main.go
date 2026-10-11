@@ -25,8 +25,10 @@
 // With login_on_demand enabled in the config the session need not exist at
 // startup, and the pod needs its ServiceAccount token mounted
 // (KUBERNETES_SERVICE_HOST/_PORT, /var/run/secrets/kubernetes.io/serviceaccount):
-// when a poll finds the session dead the binary creates a Job from the
-// login CronJob and waits for the new session file.
+// when a poll finds the session dead the binary writes a login request
+// into one field of one ConfigMap and waits for the new session file.
+// POWERSCHOOL_LOGIN_BACKOFF_RESET (any new value) clears the count of
+// requests that led nowhere, after which the connector asks again.
 //
 // This binary never reads a username or password and never logs in; see
 // docs/connectors/powerschool.md. Fatal startup errors log one ERROR line
@@ -42,6 +44,7 @@ import (
 
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/kubecm"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -112,8 +115,8 @@ func main() {
 		Load: func(now time.Time) (*pslib.SessionExport, bool, error) {
 			return powerschool.LoadSessionAdvisory(os.Getenv, now)
 		},
-		Build: func(session *pslib.SessionExport) (powerschool.PowerSchoolClient, powerschool.ProbeFunc, error) {
-			httpClient := powerschool.NewHTTPClient(host, cfg.AssignmentsEnabled(), studentIDs, 30*time.Second)
+		Build: func(session *pslib.SessionExport) (powerschool.PowerSchoolClient, powerschool.ProbeFunc, func(), error) {
+			httpClient, resetGatewayCookies := powerschool.NewHTTPClientWithReset(host, cfg.AssignmentsEnabled(), studentIDs, 30*time.Second)
 			lib, err := pslib.NewClient(baseURL,
 				pslib.WithHTTPClient(httpClient),
 				pslib.WithHTTPPageFetch(),
@@ -121,13 +124,13 @@ func main() {
 				pslib.WithLogLevel(pslib.LogLevelWarn),
 			)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			client, err := powerschool.NewProductionClient(lib)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
-			return client, powerschool.NewSessionProbe(httpClient, baseURL, session), nil
+			return client, powerschool.NewSessionProbe(httpClient, baseURL, session), resetGatewayCookies, nil
 		},
 		FileAge:   func(now time.Time) (time.Duration, bool) { return powerschool.SessionFileAge(os.Getenv, now) },
 		FirstSeen: clock.FirstSeen,
@@ -136,22 +139,26 @@ func main() {
 	var c *powerschool.PowerSchoolConnector
 	if cfg.LoginOnDemand.Enabled {
 		// On-demand login: when a poll finds the session dead (or there is
-		// none yet), the connector asks for a login by creating a Job from
-		// the login CronJob and waits for the new session file. It does
-		// not log in and holds no credentials -- the Job is the login
-		// workload, with its own pod, identity and rules. So there is
-		// nothing to wait for at startup and no "rejected" marker: a dead
-		// session is simply replaced at the next poll.
-		kube, err := powerschool.NewInClusterKubeClient(os.Getenv, powerschool.ServiceAccountDir, cfg.LoginOnDemand.Namespace)
+		// none yet), the connector ASKS for a login and waits for the new
+		// session file. Asking is writing one short string into one field
+		// of one ConfigMap; the login workload reads it on its own schedule
+		// and decides by its own rules. This process does not log in, holds
+		// no credentials and cannot start a workload. So there is nothing
+		// to wait for at startup and no "rejected" marker: a dead session
+		// is simply replaced at the next poll.
+		kube, err := kubecm.NewInCluster(os.Getenv, kubecm.ServiceAccountDir, cfg.LoginOnDemand.Namespace)
 		if err != nil {
 			slog.Error("powerschool: login_on_demand is enabled but the Kubernetes API is not usable from this pod",
 				"error", err)
 			os.Exit(1)
 		}
 		slog.Info("powerschool: on-demand login is enabled",
-			"cronjob", cfg.LoginOnDemand.CronJobName, "namespace", kube.Namespace(),
+			"configmap", cfg.LoginOnDemand.ConfigMapName, "namespace", kube.Namespace(),
 			"wait_seconds", cfg.LoginOnDemand.WaitSeconds, "min_interval_minutes", cfg.LoginOnDemand.MinIntervalMinutes)
-		gate := powerschool.NewSessionGate(source, cfg.LoginOnDemand, kube)
+		requester := powerschool.ConfigMapRequester{Client: kube, ConfigMap: cfg.LoginOnDemand.ConfigMapName}
+		gate := powerschool.NewSessionGate(source, cfg.LoginOnDemand, requester)
+		// An operator's "try again" after the connector stopped asking.
+		gate.BackoffResetToken = os.Getenv("POWERSCHOOL_LOGIN_BACKOFF_RESET")
 		c, err = powerschool.NewConnectorWithGate(gate, cfg, libVersion)
 		if err != nil {
 			slog.Error("powerschool: construct connector", "error", err)

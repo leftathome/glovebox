@@ -23,9 +23,9 @@ const (
 	SessionUnknown SessionState = iota
 	// SessionLive: the portal served the signed-in home page.
 	SessionLive
-	// SessionDead: the portal (or the access gateway in front of it)
-	// answered with a sign-in or session-refused page. The session is no
-	// longer accepted. This is routine -- the portal ends an idle session
+	// SessionDead: the portal answered with its own sign-in page, or the
+	// access gateway in front of it sent the session to its "no session"
+	// page. The session is no longer accepted. This is routine -- the portal ends an idle session
 	// in well under an hour -- and it is NOT a page that failed to parse.
 	SessionDead
 )
@@ -53,7 +53,7 @@ const (
 	ReasonSignedIn        = "signed_in"
 	ReasonSignInPage      = "sign_in_page"
 	ReasonGatewayPage     = "gateway_page"
-	ReasonRefusedStatus   = "http_unauthorized"
+	ReasonGatewayPolicy   = "gateway_policy_page"
 	ReasonNetwork         = "network"
 	ReasonServerError     = "server_error"
 	ReasonUnexpectedPage  = "unrecognised_page"
@@ -77,16 +77,25 @@ const maxProbeBytes = 4 << 20
 // cannot be anything but a read, and carries a renewed gateway cookie
 // across the gateway's redirect.
 //
-// The answer is classified by where the redirects ended and what kind of
-// page came back, never by whether a parser could make sense of it:
+// The answer is classified by its status, where the redirects ended and
+// what kind of page came back, never by whether a parser could make sense
+// of it. Dead is a strong claim -- it leads to a login request -- so only
+// two answers earn it:
 //
-//	live     the page has the student switcher (only a signed-in guardian
-//	         page does)
-//	dead     the final page is under /public/ (the portal's signed-out
-//	         area), or is one of the access gateway's own pages
-//	         (/my.policy, /my.logout.php3), or has a password form, or the
-//	         status is 401/403
-//	unknown  anything else: a network error, a 5xx, a page that is neither
+//	live     200, and the page has the student switcher (only a signed-in
+//	         guardian page does)
+//	dead     200 under /public/ (the portal's signed-out area) AND the page
+//	         has a password form: the portal's own sign-in page, positively
+//	         identified; or
+//	         200 at /my.logout.php3: the access gateway refusing the
+//	         session whose cookies this request carried
+//	unknown  everything else: a network error; any status but 200 (a 401
+//	         or 403 says "not now", it does not say why); the gateway's
+//	         policy endpoint; a page under /public/ without a password
+//	         form; any page that is neither
+//
+// The status is looked at before the path: an error answer proves nothing
+// about the session wherever it was served from.
 //
 // It does not log, and it does not use the library: the library reports a
 // gateway page as a parse error, which is how a dead session used to be
@@ -124,29 +133,37 @@ func NewSessionProbe(httpClient *http.Client, baseURL string, session *pslib.Ses
 // be tested without a server: finalPath is the path the redirects ended at.
 func ClassifyHomeResponse(finalPath string, status int, body string) SessionVerdict {
 	switch {
-	case psportal.IsGatewayPath(finalPath):
-		return SessionVerdict{SessionDead, ReasonGatewayPage}
-	case strings.HasPrefix(finalPath, "/public/"):
-		return SessionVerdict{SessionDead, ReasonSignInPage}
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return SessionVerdict{SessionDead, ReasonRefusedStatus}
 	case status >= 500:
 		return SessionVerdict{SessionUnknown, ReasonServerError}
 	case status != http.StatusOK:
 		return SessionVerdict{SessionUnknown, fmt.Sprintf("http_%d", status)}
 	}
+	switch {
+	case finalPath == psportal.GatewayLogoutPath:
+		return SessionVerdict{SessionDead, ReasonGatewayPage}
+	case psportal.IsGatewayPath(finalPath):
+		return SessionVerdict{SessionUnknown, ReasonGatewayPolicy}
+	case strings.HasPrefix(finalPath, "/public/"):
+		if hasPasswordForm(body) {
+			return SessionVerdict{SessionDead, ReasonSignInPage}
+		}
+		return SessionVerdict{SessionUnknown, ReasonUnexpectedPage}
+	}
 	// The switcher is on every signed-in guardian page and on no other.
 	if strings.Contains(body, "switchStudent(") {
 		return SessionVerdict{SessionLive, ReasonSignedIn}
 	}
-	// The portal can answer the original URL with 200 and its sign-in form
-	// instead of redirecting.
-	if strings.Contains(strings.ToLower(body), "password") {
-		if doc, err := goquery.NewDocumentFromReader(strings.NewReader(body)); err == nil {
-			if doc.Find(`form input[type="password"]`).Length() > 0 {
-				return SessionVerdict{SessionDead, ReasonSignInPage}
-			}
-		}
-	}
 	return SessionVerdict{SessionUnknown, ReasonUnexpectedPage}
+}
+
+// hasPasswordForm reports whether html has a form with a password input.
+func hasPasswordForm(html string) bool {
+	if !strings.Contains(strings.ToLower(html), "password") {
+		return false
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return false
+	}
+	return doc.Find(`form input[type="password"]`).Length() > 0
 }

@@ -28,19 +28,21 @@ type Config struct {
 }
 
 // LoginOnDemandConfig lets the connector ask for a login when it finds its
-// session dead, by creating a Job from the login workload's CronJob. Off by
-// default. The connector still never logs in and never sees a credential:
-// see session_gate.go and kube.go.
+// session dead, by writing a request into one field of one ConfigMap that
+// the login workload reads. Off by default. The connector still never logs
+// in, never sees a credential and cannot start a workload: see
+// session_gate.go.
 type LoginOnDemandConfig struct {
 	Enabled bool `json:"enabled"`
-	// CronJobName is the login CronJob whose jobTemplate the Job is made
-	// from. Required when Enabled.
-	CronJobName string `json:"cronjob_name"`
-	// Namespace of that CronJob. Empty means the pod's own (read from the
-	// ServiceAccount's namespace file).
+	// ConfigMapName is the ConfigMap the request is written to. Required
+	// when Enabled.
+	ConfigMapName string `json:"configmap_name"`
+	// Namespace of that ConfigMap. Empty means the pod's own (read from
+	// the ServiceAccount's namespace file).
 	Namespace string `json:"namespace"`
 	// WaitSeconds is how long a poll waits for the new session to reach
-	// the mounted file after asking (login + Secret sync). Default 360.
+	// the mounted file after asking: the login workload's next run, the
+	// login, and the Secret's sync. Default 600.
 	WaitSeconds int `json:"wait_seconds"`
 	// MinIntervalMinutes is the least time between two requests by this
 	// connector, across restarts. Default and minimum 20.
@@ -214,7 +216,7 @@ func ApplyDefaults(c *Config) {
 		c.TeacherComments.MaxTerms = 12
 	}
 	if c.LoginOnDemand.WaitSeconds == 0 {
-		c.LoginOnDemand.WaitSeconds = 360
+		c.LoginOnDemand.WaitSeconds = 600
 	}
 	if c.LoginOnDemand.MinIntervalMinutes == 0 {
 		c.LoginOnDemand.MinIntervalMinutes = 20
@@ -568,11 +570,11 @@ func validateLoginOnDemand(c LoginOnDemandConfig) error {
 	if !c.Enabled {
 		return nil
 	}
-	if strings.TrimSpace(c.CronJobName) == "" {
-		return fmt.Errorf("login_on_demand: cronjob_name is required when enabled")
+	if strings.TrimSpace(c.ConfigMapName) == "" {
+		return fmt.Errorf("login_on_demand: configmap_name is required when enabled")
 	}
-	if strings.ContainsAny(c.CronJobName, "/ \t\n") || strings.ContainsAny(c.Namespace, "/ \t\n") {
-		return fmt.Errorf("login_on_demand: cronjob_name and namespace must be plain Kubernetes names")
+	if strings.ContainsAny(c.ConfigMapName, "/ \t\n") || strings.ContainsAny(c.Namespace, "/ \t\n") {
+		return fmt.Errorf("login_on_demand: configmap_name and namespace must be plain Kubernetes names")
 	}
 	// Zero is "unset" before ApplyDefaults has run.
 	if c.WaitSeconds != 0 && (c.WaitSeconds < 30 || c.WaitSeconds > 1800) {

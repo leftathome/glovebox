@@ -362,9 +362,27 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		switch gate.Outcome {
 		case GateSkip:
 			tel.RecordPollSkipped(gateSkipLabel(gate.Reason))
-			slog.Info("powerschool poll skipped",
+			if !gate.Failed {
+				slog.Info("powerschool poll skipped",
+					"trigger_source", source, "poll_id", pollID, "skip_reason", gate.Reason)
+				return nil
+			}
+			// A login was asked for and no usable session came of it.
+			// That is a failed poll like any other that read nobody: it
+			// is logged as one and counts toward failure_threshold.
+			slog.Error("powerschool poll failed: no live session could be had",
 				"trigger_source", source, "poll_id", pollID, "skip_reason", gate.Reason)
-			return nil
+			return c.countFailedPoll("no live session (" + gateSkipLabel(gate.Reason) + ")")
+		case GateBlocked:
+			tel.RecordPollSkipped(gateSkipLabel(gate.Reason))
+			// The framework logs this verbatim and exits the process; the
+			// restart is the alert. Every later poll lands here again
+			// until the session file changes or the backoff is reset.
+			return connector.PermanentError(fmt.Errorf(
+				"powerschool: %d login requests in a row produced no session the portal accepts; "+
+					"no more are being made. Check the login workload (its log, its latch, the sign-in page), "+
+					"then run it once by hand or set POWERSCHOOL_LOGIN_BACKOFF_RESET to a new value",
+				maxUnansweredRequests))
 		case GateDead:
 			return c.sessionRejected(tel, nil, deadAge)
 		}
@@ -404,17 +422,25 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		c.failedPolls = 0
 		return nil
 	}
+	return c.countFailedPoll("no student read")
+}
+
+// countFailedPoll records a poll that read no student and returns the
+// PermanentError that ends the process once failure_threshold polls in a
+// row have gone that way. pollMu is held by the caller.
+func (c *PowerSchoolConnector) countFailedPoll(why string) error {
 	c.failedPolls++
 	if c.cfg.FailureThreshold > 0 && c.failedPolls >= c.cfg.FailureThreshold {
 		slog.Error("powerschool repeated poll failure",
 			"consecutive_polls", c.failedPolls,
 			"threshold", c.cfg.FailureThreshold,
+			"last_failure", why,
 			"library_version", c.libVersion,
 		)
 		return connector.PermanentError(fmt.Errorf(
-			"powerschool read no student for %d consecutive polls (threshold %d); "+
+			"powerschool read no student for %d consecutive polls (threshold %d; last: %s); "+
 				"check the session, the configured student ids and library version %s",
-			c.failedPolls, c.cfg.FailureThreshold, c.libVersion,
+			c.failedPolls, c.cfg.FailureThreshold, why, c.libVersion,
 		))
 	}
 	return nil
