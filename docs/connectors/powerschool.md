@@ -177,8 +177,8 @@ Match keys emitted by this connector:
 - `powerschool:<kid>:grade` -- a course's grades, when first seen or changed.
 - `powerschool:<kid>:assignment` -- a gradebook assignment, when first seen
   or changed (new score, flag set or cleared, due date moved, or a teacher's
-  comment, the assignment description or the category description added,
-  edited or removed).
+  comment or the assignment description added, edited or removed). The
+  `changed` tag says which.
 - `powerschool:<kid>:attendance` -- a course's absence/tardy totals, when
   they move.
 - `powerschool:<kid>:attendance_day` -- one (course, day) on which the
@@ -201,12 +201,12 @@ the full tables. The ones that answer the usual questions:
 | what is missing | `surface=assignment`, `missing=true` |
 | what is due tomorrow | `outstanding=true`, `due_day=<tomorrow>` |
 | what is past due | `outstanding=true`, `due_day` before today |
-| what was just graded | `surface=assignment`, `change=updated`, `scored=true` |
+| what was just graded | `surface=assignment`, `change=updated`, `scored=true` (`changed` contains `score`) |
 | did a grade move | `surface=grade`, `change=updated`, `grade`, `previous_grade` |
 | new absence or tardy | `surface=attendance`, `absences_delta`, `tardies_delta` |
 | which day, which class | `surface=attendance_day`, `date`, `course`, `code`, `kind` (`absence_unexcused`, `late_excused`, `authorized`, ...) |
 | final grade posted | `surface=term_grade`, `term` (completion month), `grade`, `credit_earned` |
-| a teacher commented on one assignment | `surface=assignment`, `has_teacher_comment=true` (text in the body, under `Teacher comment:`) |
+| a teacher commented on one assignment | `surface=assignment`, `has_teacher_comment=true`; newly written or edited when `changed` contains `teacher_comment` (text in the body, under `Teacher comment:`) |
 | a teacher wrote a term comment | `surface=teacher_comment`, `term`, `course` (text in the body) |
 
 `outstanding` cannot tell "not handed in" from "handed in, not yet marked":
@@ -252,56 +252,107 @@ Category description:
 
 Tags: `has_teacher_comment` is always present (`true` / `false`);
 `teacher_comment_truncated=true` is present only when the comment in the
-body is not the whole comment. The text itself is never in a tag.
+body is not the whole comment; `changed` is present on an item staged for a
+change (below). The text itself is never in a tag.
 
-All three are untrusted text written by a third party. They are staged as
-plain text only -- the library's plain-text form of the comment; its HTML
-form is never read -- with control characters removed and nothing decoded,
-expanded or acted on. Every line of a block is indented by two spaces while
-the connector's own labels start in column one, so text a teacher typed
-cannot pass for one of the connector's lines. Each block is cut at 4 KiB
-(4096 bytes, on a character boundary) and a cut block is followed by a line
-reading `[truncated]`.
+**Untrusted text.** Everything the portal returns was typed by a third
+party. Nothing is decoded, expanded or acted on, and the layout is the
+connector's, not the text's:
+
+- A *fact* (title, course, category, letter grade, and every tag value, the
+  subject and the sender, on every surface) is reduced to one line: every
+  kind of line break becomes a space, runs of whitespace become one space,
+  and the value is cut at 256 bytes. A title containing a line break
+  followed by `Grade: A+` stays on the `Assignment:` line.
+- A *text block* (the three above) is the library's plain-text form -- the
+  comment's HTML form is never read -- with each line trimmed, runs of
+  whitespace inside a line made one space, and blank lines at the ends
+  dropped. Every line is indented by two spaces, and the connector's own
+  labels are the only lines that start in column one, so text a teacher
+  typed cannot pass for one of the connector's lines. A block is cut at
+  4 KiB (4096 bytes, on a character boundary) and a cut block is followed
+  by a line reading `[truncated]`.
+- "Line break" means all of them: LF, CR, VT, FF, NEL (U+0085) and the
+  Unicode line and paragraph separators (U+2028, U+2029). Format characters
+  (bidirectional controls, zero-width spaces and joiners, the byte order
+  mark) and all other control characters are removed.
 
 **A new item per change.** A staged item gets a fresh id every time, and a
-consumer that notices new items by id sees one new item when -- and only
-when -- the assignment's fingerprint changes. The fingerprint covers the
-gradebook facts (title, due date, category, status, flags, score, points
-possible, percent, letter) and the three texts, each with runs of
-whitespace collapsed: a comment that appears, is edited or is removed
-stages the assignment again, once; a re-wrapped or re-indented text does
-not. The comment is fingerprinted in full, so an edit beyond the 4 KiB
-shown still stages the item. Editing a category's description stages every
-assignment in that category again.
+consumer that notices new items by id sees a new item only when the
+assignment's fingerprint changes. The fingerprint has one part per row
+below, and an item staged for a change names the parts that moved in its
+`changed` tag (comma-joined, in this order):
+
+| `changed` | covers |
+|---|---|
+| `details` | title, category name |
+| `due_date` | due date |
+| `status` | the status |
+| `flags` | missing / late / incomplete / exempt / collected / absent |
+| `score` | score, points possible, percent, letter |
+| `teacher_comment` | the teacher's comment: added, edited or removed |
+| `description` | the assignment description |
+| `record` | only after an upgrade: the gradebook facts differ from an old-format checkpoint that cannot say which |
+
+- Each part is taken over what the item **shows**: an edit that changes
+  nothing visible -- invisible characters, trailing space, markup of the
+  comment, text beyond the 4 KiB cut -- does not stage an identical item. A
+  moved line break is a change.
+- The **category description is not part of it.** It belongs to the
+  category, and one edit would otherwise stage every assignment in that
+  category again. The current text is shown whenever an assignment is
+  staged for a reason of its own.
+- **Old assignments.** An assignment outside `assignments.lookback_days`
+  with no missing / late / incomplete flag is not staged on first sight,
+  and is not staged again when nothing but its description is edited. Any
+  other change stages it however old it is -- a teacher comment always
+  does.
 
 **Who can read it.** The comment is part of the assignment's own item, so
 it has exactly that item's `data_subject` and `audience` -- those of the
 `powerschool:<kid>:assignment` rule. With the sample rules
-(`audience: [subject, guardians]`) the child can read a per-assignment
-comment, which is what the portal itself shows a student. This is
-deliberately different from the term-level `teacher_comment` surface below,
-which is for the parents only. To keep per-assignment comments from the
-child, narrow the audience of that kid's `assignment` rule; there is no
-separate switch.
+(`audience: [subject, guardians]`) that is the child who did the work and
+the guardians. **Owner decision, 2026-10-11:** per-assignment teacher
+feedback goes to the child and the guardians; term-level teacher comments
+(the `teacher_comment` surface below) stay guardians-only. There is no
+separate switch for the per-assignment comment; it follows the kid's
+`assignment` rule.
 
-**Upgrading.** Checkpoints written before the texts were part of the
-fingerprint are recognised: on the first poll after the upgrade an
-unchanged assignment is re-baselined without being staged, unless it
-already carries a teacher comment, which is staged once (`change=updated`)
-because it has never been delivered.
+**Upgrading.** Checkpoints in the first release's format (one hash, no
+text) are recognised: on the first poll after the upgrade an assignment
+whose gradebook facts have not moved is re-baselined without being staged,
+unless it already carries a teacher comment, which is staged once
+(`change=updated`, `changed=teacher_comment`) because it has never been
+delivered.
 
 ### The library version
 
-`go.mod` requires `github.com/leftathome/powerschool-go v0.4.0`, and the
-version linked into the binary is logged with every escalation. Raising it
-is a review step, not a routine dependency bump: read the library diff for
-any new request, POST path or form field before changing the requirement.
-`CheckLibrary` refuses to start if the library's two POST endpoints are not
-the ones the transport allowlists, and the transport refuses anything else
-at run time whatever the library does. v0.3.0 to v0.4.0 was reviewed for
-this connector: it adds response decoding only (the score comment and the
-category description from the lookup response the library already
-requested) -- no request, no POST path, no form field.
+The connector runs on exactly one `powerschool-go` version, the one whose
+source was read for requests, POST paths and form fields: `v0.4.0`, held in
+`reviewedLibraryVersion` (`transport.go`). At startup `CheckLibrary` reads
+the version linked into the binary from its build information and refuses
+to start unless it is that version. It fails closed:
+
+- another version, a pseudo-version or `(devel)`: refused;
+- the module replaced by a `replace` directive, to a directory or to
+  anything else, whatever version the replacement claims: refused;
+- a binary with no build information, or one that does not list the
+  library: refused. `go build`, `go run` and `go test` in this module all
+  record it, so an ordinary build is never in this case. There is no flag
+  or environment variable that skips the check.
+
+To change the library: read the diff between the two versions for any new
+request, POST path or form field; then raise the `go.mod` requirement and
+`reviewedLibraryVersion` in the same commit and say what was checked.
+`TestReviewedLibraryVersion` fails CI when the two disagree. Independently,
+`CheckLibrary` also refuses to start if the library's two POST endpoints
+are not the ones the transport allowlists, and the transport refuses
+anything else at run time whatever the library does.
+
+v0.3.0 to v0.4.0 was reviewed for this connector: it adds response decoding
+only (the score comment and the category description from the lookup
+response the library already requested) -- no request, no POST path, no
+form field.
 
 ### Term-level teacher comments are for the parents only
 
