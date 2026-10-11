@@ -15,11 +15,9 @@ session. Design: [spec 16](../specs/16-powerschool-connector-design.md).
 ## Status
 
 Shipped **disabled**. The portal behaviour the first three surfaces depend
-on has been verified live with the library. This branch adds three more
-surfaces on an unreleased `powerschool-go` (a TEMPORARY `replace` in
-`go.mod` to a private pseudo-version; building needs
-`GOPRIVATE=gitlab.orac.local GOFLAGS=-mod=mod`). What is missing before it
-can be enabled:
+on has been verified live with the library. It builds against the released
+`powerschool-go` v0.4.0 (see "The library version" below). What is missing
+before it can be enabled:
 
 1. The **login job** that produces the session (below). Not built yet;
    tracked separately.
@@ -178,7 +176,9 @@ Match keys emitted by this connector:
 
 - `powerschool:<kid>:grade` -- a course's grades, when first seen or changed.
 - `powerschool:<kid>:assignment` -- a gradebook assignment, when first seen
-  or changed (new score, flag set or cleared, due date moved).
+  or changed (new score, flag set or cleared, due date moved, or a teacher's
+  comment, the assignment description or the category description added,
+  edited or removed).
 - `powerschool:<kid>:attendance` -- a course's absence/tardy totals, when
   they move.
 - `powerschool:<kid>:attendance_day` -- one (course, day) on which the
@@ -206,7 +206,8 @@ the full tables. The ones that answer the usual questions:
 | new absence or tardy | `surface=attendance`, `absences_delta`, `tardies_delta` |
 | which day, which class | `surface=attendance_day`, `date`, `course`, `code`, `kind` (`absence_unexcused`, `late_excused`, `authorized`, ...) |
 | final grade posted | `surface=term_grade`, `term` (completion month), `grade`, `credit_earned` |
-| a teacher wrote something | `surface=teacher_comment`, `term`, `course` (text in the body) |
+| a teacher commented on one assignment | `surface=assignment`, `has_teacher_comment=true` (text in the body, under `Teacher comment:`) |
+| a teacher wrote a term comment | `surface=teacher_comment`, `term`, `course` (text in the body) |
 
 `outstanding` cannot tell "not handed in" from "handed in, not yet marked":
 PowerSchool is a gradebook and only knows what the teacher entered.
@@ -215,7 +216,94 @@ PowerSchool is a gradebook and only knows what the teacher entered.
 grades with credit, no percentages); the in-progress quarter grades are
 `grade`.
 
-### Teacher comments are for the parents only
+### Free text on an assignment item
+
+Besides the gradebook facts, an `assignment` item's body carries up to
+three blocks of teacher-authored text, each only when there is text for it:
+
+```
+Assignment: Density lab report
+Course: Example Science 7
+Category: Labs
+Due: 2026-10-08
+Status: graded
+Score: 8/10
+Percent: 80
+Grade: B-
+
+Teacher comment:
+  Good work. Show the units next time.
+
+Assignment description:
+  Write up the density lab.
+  Two pages.
+
+Category description:
+  Labs are 40% of the grade.
+```
+
+- **Teacher comment** is the note a teacher left on this student's score
+  for this assignment (the notes icon of the portal's class score page). It
+  comes from the same assignment-lookup response as the score: no extra
+  request.
+- **Assignment description** and **Category description** are the other two
+  tabs of the portal's assignment detail dialog. The category description
+  is left out when it says the same as the assignment description.
+
+Tags: `has_teacher_comment` is always present (`true` / `false`);
+`teacher_comment_truncated=true` is present only when the comment in the
+body is not the whole comment. The text itself is never in a tag.
+
+All three are untrusted text written by a third party. They are staged as
+plain text only -- the library's plain-text form of the comment; its HTML
+form is never read -- with control characters removed and nothing decoded,
+expanded or acted on. Every line of a block is indented by two spaces while
+the connector's own labels start in column one, so text a teacher typed
+cannot pass for one of the connector's lines. Each block is cut at 4 KiB
+(4096 bytes, on a character boundary) and a cut block is followed by a line
+reading `[truncated]`.
+
+**A new item per change.** A staged item gets a fresh id every time, and a
+consumer that notices new items by id sees one new item when -- and only
+when -- the assignment's fingerprint changes. The fingerprint covers the
+gradebook facts (title, due date, category, status, flags, score, points
+possible, percent, letter) and the three texts, each with runs of
+whitespace collapsed: a comment that appears, is edited or is removed
+stages the assignment again, once; a re-wrapped or re-indented text does
+not. The comment is fingerprinted in full, so an edit beyond the 4 KiB
+shown still stages the item. Editing a category's description stages every
+assignment in that category again.
+
+**Who can read it.** The comment is part of the assignment's own item, so
+it has exactly that item's `data_subject` and `audience` -- those of the
+`powerschool:<kid>:assignment` rule. With the sample rules
+(`audience: [subject, guardians]`) the child can read a per-assignment
+comment, which is what the portal itself shows a student. This is
+deliberately different from the term-level `teacher_comment` surface below,
+which is for the parents only. To keep per-assignment comments from the
+child, narrow the audience of that kid's `assignment` rule; there is no
+separate switch.
+
+**Upgrading.** Checkpoints written before the texts were part of the
+fingerprint are recognised: on the first poll after the upgrade an
+unchanged assignment is re-baselined without being staged, unless it
+already carries a teacher comment, which is staged once (`change=updated`)
+because it has never been delivered.
+
+### The library version
+
+`go.mod` requires `github.com/leftathome/powerschool-go v0.4.0`, and the
+version linked into the binary is logged with every escalation. Raising it
+is a review step, not a routine dependency bump: read the library diff for
+any new request, POST path or form field before changing the requirement.
+`CheckLibrary` refuses to start if the library's two POST endpoints are not
+the ones the transport allowlists, and the transport refuses anything else
+at run time whatever the library does. v0.3.0 to v0.4.0 was reviewed for
+this connector: it adds response decoding only (the score comment and the
+category description from the lookup response the library already
+requested) -- no request, no POST path, no form field.
+
+### Term-level teacher comments are for the parents only
 
 Route `powerschool:<kid>:teacher_comment` with `data_subject` = that kid and
 `audience: ["guardians"]`. The sample config and the chart defaults do.

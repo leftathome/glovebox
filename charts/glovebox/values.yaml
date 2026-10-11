@@ -1515,6 +1515,13 @@ connectors:
         # KEEP teacher_comments OFF until a real, non-empty teacher comment
         # has been parsed from a live page: none was posted when the page
         # was verified, so reading a comment's text is fixture-tested only.
+        #
+        # This switch is the TERM-level comment page. The note a teacher
+        # leaves on one assignment's score is not a surface: it is part of
+        # that assignment's item (body block "Teacher comment:", tag
+        # has_teacher_comment), comes from the assignment lookup already
+        # made, and is read by whoever the kid's `assignment` rule below
+        # names in `audience`.
         teacher_comments: false
       assignments:
         lookback_days: 30

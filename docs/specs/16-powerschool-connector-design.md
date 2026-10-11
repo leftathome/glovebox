@@ -472,6 +472,25 @@ A course with no posted grade stages nothing.
 | `scored` | a score has been entered |
 | `outstanding` | still wants work: missing or incomplete, or neither scored nor collected; never when exempt |
 | `score`, `max_score`, `percent`, `letter_grade` | when present |
+| `has_teacher_comment` | always present, `true` / `false`: the teacher left a note with text on this student's score |
+| `teacher_comment_truncated` | `true` when the comment in the body is not the whole comment; absent otherwise |
+
+**Free text.** After the fact lines the body carries up to three labelled
+blocks, each only when non-empty: `Teacher comment:` (the note on this
+student's score, `Assignment.TeacherComment`, from the same lookup response
+as the score -- powerschool-go v0.4.0), `Assignment description:` and
+`Category description:` (omitted when it equals the assignment
+description). All three are untrusted teacher-authored text: plain text
+only (the library's `TeacherCommentHTML` is never read), control characters
+dropped, nothing decoded or interpreted, never in a tag. Block lines are
+indented two spaces; the connector's own labels start in column one. Each
+block is bounded at 4 KiB and a cut block is followed by a `[truncated]`
+line.
+
+The comment is not a surface of its own. It rides on the assignment's item
+and so has that item's `data_subject` and `audience` (section 6); the
+guardians-only rule of section 7.4 applies to the term-level
+`teacher_comment` surface, not to this.
 
 Counting without parsing prose: *missing* is `missing=true`; *due tomorrow*
 is `outstanding=true` and `due_day` = tomorrow; *past due* is
@@ -725,7 +744,18 @@ records are edited in place, so each record has its own checkpoint entry,
   grade can be reported;
 - attendance: `absences=N|tardies=M`;
 - assignment: a hash over title, due date, category, status, flags, score,
-  points possible, percent and letter. The description is not included.
+  points possible, percent and letter, and over the teacher's comment, the
+  assignment description and the category description, each with runs of
+  whitespace collapsed (a whitespace-only difference is not a change).
+
+A staged item's id is minted per item, so for a consumer that notices new
+items by id the fingerprint is the record's identity: an unchanged record
+yields no item, a changed one exactly one.
+
+Assignment fingerprints saved before the free text was included are
+recognised (the stored value equals the hash of the gradebook facts alone):
+such a record is re-baselined without staging, unless it carries a teacher
+comment, which stages once.
 
 An unchanged fingerprint stages nothing; a new or different one stages one
 item and is saved after `Commit()`. A failed save is logged with
@@ -793,11 +823,9 @@ registered on the framework's own meter provider, the one behind
 2. **A supervised first run** with `student_api_id` either configured or
    read back from the checkpoint and then configured (section 6.2).
 
-3. **A powerschool-go release** containing the three page parsers
-   (proposed 0.3.0). Until then `go.mod` replaces the module with a
-   pseudo-version served from the private GitLab, marked TEMPORARY, which
-   CI and the image build cannot fetch. Before merge: drop the `replace`
-   and require the tag.
+3. **A powerschool-go release** containing the three page parsers. Done:
+   `go.mod` requires the released v0.4.0 (v0.3.0 brought the page parsers,
+   v0.4.0 the per-assignment teacher comment and category description).
 4. **A supervised first run of the three page surfaces** (section 11.2)
    before any of them is left switched on.
 

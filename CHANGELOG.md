@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PowerSchool connector: per-assignment teacher comments and
+  descriptions** (glovebox-wekc.12). An `assignment` item's body now carries
+  up to three labelled plain-text blocks -- `Teacher comment:` (the note a
+  teacher left on that student's score), `Assignment description:` and
+  `Category description:` -- and the tags `has_teacher_comment`
+  (`true`/`false`) and `teacher_comment_truncated` (when cut). The text is
+  untrusted: plain text only, never the HTML form, each block bounded at
+  4 KiB with a `[truncated]` marker. The comment comes from the assignment
+  lookup the connector already makes; no new request. It travels on the
+  assignment's own item, so it has that kid's `data_subject` and the
+  audience of the kid's `assignment` rule.
+
+### Changed
+
+- **PowerSchool connector: a changed comment or description stages the
+  assignment again.** The assignment fingerprint now includes the teacher
+  comment, the assignment description and the category description
+  (whitespace-normalised), in addition to the score, flags and dates it
+  already covered. Previously a description edit was ignored. Checkpoints
+  from before the change are recognised and re-baselined without re-staging
+  every assignment; one that already carries a teacher comment is staged
+  once. The assignment description in the body is now under an
+  `Assignment description:` label and indented.
+- `powerschool-go` v0.3.0 -> v0.4.0, reviewed for the connector's read-only
+  guarantee: response decoding only -- no new request, POST path or form
+  field.
+
 ## [0.9.7] - 2026-10-09
 
 ### Fixed
