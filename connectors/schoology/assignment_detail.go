@@ -23,23 +23,23 @@ import (
 // The assignment surface stages one short item per overdue/upcoming row:
 // title, course, due date, status. This surface reads each of those
 // assignments' own pages and stages what a parent can see there -- the
-// description, the grading category and period, an assessment's status, the
-// teacher's comments -- as a second item linked to the first by the
-// assignment_id tag.
+// description, the grading category and period, an assessment's status,
+// whether the teacher has commented -- as a second item linked to the first
+// by the assignment_id tag.
 //
 // ATTRIBUTION. GetAssignment takes no child: the page is the same whichever
 // child the session is viewing. Which child an item belongs to therefore
 // comes from exactly one place, the list the id was found in. The work list
 // is built only from the rows GetOverdueSubmissions returned for a kid, an
 // id that is in two kids' lists is staged once under each kid's own rule,
-// and a page whose course does not agree with the list row is not staged at
-// all.
+// and a page whose course or title does not agree with the list row is not
+// staged at all.
 //
 // REQUEST BUDGET. One page read per assignment per poll would be the single
 // largest source of requests in the connector, against a real parent
 // account. A detail is read only when its list row is new or changed, or
-// when it has not been read for RefreshHours; reads are spaced and capped
-// per poll.
+// when it has not been read for RefreshHours; reads are spaced, capped per
+// poll and stop at the end of the poll window.
 
 // detailSurface is the surface name: the rule-key suffix, the checkpoint
 // key prefix and the `kind` tag.
@@ -51,11 +51,15 @@ const detailParser = "assignment_detail"
 // Receipt error classes specific to this surface. The library's own codes
 // (auth, permission, not_found, parse, ...) are used as-is.
 const (
-	detailClassCourseMismatch = "course_mismatch"
-	detailClassIDMismatch     = "id_mismatch"
-	detailClassRowParse       = "row_parse"
-	detailClassCommentsParse  = "comments_parse"
-	detailClassUnexpectedPage = "unexpected_page"
+	detailClassCourseMismatch   = "course_mismatch"
+	detailClassTitleMismatch    = "title_mismatch"
+	detailClassCourseUnverified = "course_unverified"
+	detailClassIDMismatch       = "id_mismatch"
+	detailClassRowParse         = "row_parse"
+	detailClassCommentsParse    = "comments_parse"
+	detailClassUnexpectedPage   = "unexpected_page"
+	detailClassStageRejected    = "stage_rejected"
+	detailClassSurfaceDegraded  = "surface_degraded"
 )
 
 // Outcomes for schoology_assignment_detail_fetches_total.
@@ -66,6 +70,34 @@ const (
 	detailOutcomeError     = "error"
 	detailOutcomeDeferred  = "deferred"
 )
+
+// Size limits applied in the connector, on top of the library's own.
+const (
+	// maxDetailContentBytes caps the whole staged content.
+	maxDetailContentBytes = 96 << 10
+	// maxDetailCommentBytes caps everything derived from comments.
+	maxDetailCommentBytes = 16 << 10
+	// maxDetailMetaBytes is the staging limit for the subject, the sender
+	// and each tag value (internal/staging/metadata.go).
+	maxDetailMetaBytes = 1024
+	// detailTruncationMark ends a metadata value that was cut.
+	detailTruncationMark = " [truncated]"
+)
+
+// detailRequestAllowance is how long one request is allowed to take when
+// deciding whether it can still finish inside the poll window: the HTTP
+// client's 30 s timeout plus slack.
+const detailRequestAllowance = 45 * time.Second
+
+// detailStaleFactor promotes a refresh to the front of the queue once it is
+// this many refresh intervals overdue, so a steady supply of new rows can
+// never hold a refresh back forever.
+const detailStaleFactor = 3
+
+// detailWholesaleMin is the fewest details that must have been handled in a
+// poll before "every one of them failed" is read as the pages having
+// changed rather than as a coincidence.
+const detailWholesaleMin = 3
 
 // detailMatchKey is the rule key for a kid's detail items.
 func detailMatchKey(kid string) string {
@@ -98,15 +130,19 @@ type DetailDeps struct {
 	// Sleep waits between requests; nil sleeps for real. It returns
 	// ctx.Err() when the context ends first.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Deadline is the end of the poll window this poll belongs to. No
+	// request is started that could not finish before it. Zero is no
+	// deadline (a poll made outside any window).
+	Deadline time.Time
 }
 
 // detailWork is one assignment whose detail is due to be read for one kid.
 type detailWork struct {
-	kid     *detailKidState
-	row     *schoologylib.Assignment
-	rowFP   string
-	refresh bool
-	lastAt  int64
+	kid    *detailKidState
+	row    *schoologylib.Assignment
+	rowFP  string
+	since  int64 // when the row first needed reading (fresh work)
+	lastAt int64 // when it was last read (refresh work)
 }
 
 // detailKidState is one enabled kid's rule and checkpoint state for the
@@ -125,11 +161,13 @@ type detailFetch struct {
 	detail    *schoologylib.AssignmentDetail
 	comments  schoologylib.AssignmentComments
 	parseErrs schoologylib.ParseErrors
-	// commentsErr is a comments page that could not be understood; the
+	// commentsErr is a comments page that could not be read as one; the
 	// detail is still staged, with comments_state=unknown.
-	commentsErr error
-	// err is a per-assignment refusal (permission, not found).
-	err error
+	commentsErr   error
+	commentsClass string
+	// err is a per-assignment refusal, with its receipt class.
+	err      error
+	errClass string
 }
 
 // detailReceipt accumulates one (kid, error class) bucket of a poll.
@@ -151,6 +189,10 @@ type detailRun struct {
 	order      []string
 	staged     int
 	errsLogged bool
+	// handled and failed count the details that reached a verdict this
+	// poll and how many of those were rejected or did not parse.
+	handled int
+	failed  int
 }
 
 // ProcessAssignmentDetails reads and stages assignment details for the kids
@@ -160,12 +202,15 @@ type detailRun struct {
 // call failed must be left out (its remembered rows are then kept as they
 // are). Returns the number of items staged and whether an error that should
 // feed the schema-drift counter was logged. A per-assignment refusal
-// (permission, not found, a course that does not match) is a receipt, not
-// an error in that sense.
+// (permission, not found, a course or title that does not match) is a
+// receipt, not an error in that sense -- unless every detail handled in the
+// poll ended that way, which is reported once as the surface being broken.
 //
 // An expired session is recorded as dedup (assignment_detail, auth) and
 // stops the surface at once; pollNow turns that into the rejected-session
-// exit shared with the other surfaces.
+// exit shared with the other surfaces. An auth answer for one assignment is
+// only believed after a session check that does not involve that assignment
+// (see confirmAuth).
 func ProcessAssignmentDetails(ctx context.Context, deps DetailDeps, lists []KidAssignments) (staged int, errsLogged bool) {
 	if len(deps.Config.Kids) == 0 {
 		return 0, false
@@ -196,19 +241,28 @@ func ProcessAssignmentDetails(ctx context.Context, deps DetailDeps, lists []KidA
 		span.SetAttributes(attribute.Int("staged", run.staged))
 		span.End()
 	}
+	run.checkWholesale()
 	run.emitReceipts()
 	return run.staged, run.errsLogged
 }
 
 // plan loads each enabled kid's state and returns the assignments whose
-// detail is due, most urgent first: every new or changed row (kids in
-// config order, rows in list order), then refreshes, longest-unread first.
-// With the per-poll cap, that ordering means a backlog of refreshes can
-// never hold back a new assignment.
+// detail is due, most urgent first.
+//
+// New or changed rows come first, then refreshes (longest-unread first).
+// Within the first group the kids take turns -- one row each, round and
+// round -- and the kid who goes first rotates from poll to poll, so one
+// kid's long list cannot use up the per-poll cap ahead of another's. Each
+// kid's own rows are ordered by how long they have been waiting: a row the
+// cap deferred is remembered with the time it was first seen and goes ahead
+// of rows that appeared later. A refresh that is several intervals overdue
+// is promoted into the first group. Together these mean no assignment can
+// be passed over indefinitely.
 func (run *detailRun) plan(lists []KidAssignments) []detailWork {
 	deps := run.deps
 	refreshAfter := deps.Config.refreshInterval()
-	var fresh, refresh []detailWork
+	var perKid [][]detailWork
+	var refresh []detailWork
 
 	for _, l := range lists {
 		if !deps.Config.Enabled(l.Kid.Name) {
@@ -242,33 +296,82 @@ func (run *detailRun) plan(lists []KidAssignments) []detailWork {
 			ks.listed[a.ID] = true
 			ordered = append(ordered, a)
 		}
-		if pruneDetailRows(ks.rows, ks.listed) {
-			if err := saveDetailRows(deps.Checkpoint, l.Kid.Name, ks.rows); err != nil {
-				slog.Error("schoology assignment detail row state save failed",
-					"kid", l.Kid.Name, "error", err)
-			}
+		if ageDetailRows(ks.rows, ks.listed) {
+			run.saveRows(ks)
 		}
 
+		var fresh []detailWork
 		for _, a := range ordered {
 			fp := assignmentRowFingerprint(a)
 			prev, known := ks.rows[a.ID]
 			switch {
-			case !known || prev.Fingerprint != fp:
-				fresh = append(fresh, detailWork{kid: ks, row: a, rowFP: fp})
+			case !known || prev.FetchedAt == 0 || prev.Fingerprint != fp:
+				since := prev.Since
+				if since == 0 {
+					since = run.now.Unix()
+				}
+				fresh = append(fresh, detailWork{kid: ks, row: a, rowFP: fp, since: since})
+			case !run.now.Before(prev.fetchedAt().Add(detailStaleFactor * refreshAfter)):
+				fresh = append(fresh, detailWork{kid: ks, row: a, rowFP: fp, since: prev.FetchedAt})
 			case !run.now.Before(prev.fetchedAt().Add(refreshAfter)):
-				refresh = append(refresh, detailWork{kid: ks, row: a, rowFP: fp, refresh: true, lastAt: prev.FetchedAt})
+				refresh = append(refresh, detailWork{kid: ks, row: a, rowFP: fp, lastAt: prev.FetchedAt})
 			}
 		}
+		sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].since < fresh[j].since })
+		perKid = append(perKid, fresh)
 	}
 
+	work := interleave(perKid, run.nextTurn(len(perKid)))
 	sort.SliceStable(refresh, func(i, j int) bool { return refresh[i].lastAt < refresh[j].lastAt })
-	return append(fresh, refresh...)
+	return append(work, refresh...)
+}
+
+// detailTurnKey holds the index of the kid whose turn it is to go first.
+const detailTurnKey = detailSurface + ":turn"
+
+// nextTurn returns which of n kids goes first this poll and advances the
+// stored turn for the next one.
+func (run *detailRun) nextTurn(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	cp := run.deps.Checkpoint
+	turn := 0
+	if v, ok := cp.Load(detailTurnKey); ok {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			turn = parsed % n
+		}
+	}
+	if err := cp.Save(detailTurnKey, strconv.Itoa((turn+1)%n)); err != nil {
+		slog.Error("schoology assignment detail turn save failed", "error", err)
+	}
+	return turn
+}
+
+// interleave takes one item from each queue in turn, starting with queue
+// first, until all are empty.
+func interleave(queues [][]detailWork, first int) []detailWork {
+	var out []detailWork
+	for round := 0; ; round++ {
+		took := false
+		for i := range queues {
+			q := queues[(first+i)%len(queues)]
+			if round < len(q) {
+				out = append(out, q[round])
+				took = true
+			}
+		}
+		if !took {
+			return out
+		}
+	}
 }
 
 // execute works through the plan within the per-poll cap. It returns early
-// when the session is refused or a request fails in a way that is not about
-// one assignment (network, server, rate limit): continuing would only
-// repeat the failure against the school's site.
+// when the session is refused, when a request fails in a way that is not
+// about one assignment (network, server, rate limit), when staging is
+// failing, when the poll window is about to close or when ctx ends:
+// continuing would only repeat the failure against the school's site.
 func (run *detailRun) execute(ctx context.Context, work []detailWork) {
 	deps := run.deps
 	budget := deps.Config.maxPerPoll()
@@ -284,6 +387,7 @@ func (run *detailRun) execute(ctx context.Context, work []detailWork) {
 			if budget == 0 {
 				deferred++
 				deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeDeferred)
+				run.markWaiting(w)
 				continue
 			}
 			budget--
@@ -294,7 +398,9 @@ func (run *detailRun) execute(ctx context.Context, work []detailWork) {
 			}
 			run.cache[w.row.ID] = f
 		}
-		run.handle(ctx, w, f)
+		if stop := run.handle(ctx, w, f); stop {
+			return
+		}
 	}
 
 	if deferred > 0 {
@@ -303,13 +409,40 @@ func (run *detailRun) execute(ctx context.Context, work []detailWork) {
 	}
 }
 
-// pace waits the configured spacing before every request but the first.
-func (run *detailRun) pace(ctx context.Context) error {
+// markWaiting records when a row the cap deferred first needed reading, so
+// it goes ahead of later arrivals next poll.
+func (run *detailRun) markWaiting(w detailWork) {
+	ks := w.kid
+	row := ks.rows[w.row.ID]
+	if row.Since != 0 {
+		return
+	}
+	row.Since = w.since
+	ks.rows[w.row.ID] = row
+	run.saveRows(ks)
+}
+
+// before gates every request: it refuses once ctx has ended or the poll
+// window is about to close, and otherwise waits the configured spacing
+// (except ahead of the first request). ok=false means make no request.
+func (run *detailRun) before(ctx context.Context) (ok bool) {
+	if ctx.Err() != nil {
+		return false
+	}
+	deps := run.deps
+	if !deps.Deadline.IsZero() && deps.Now().Add(detailRequestAllowance).After(deps.Deadline) {
+		slog.Info("schoology assignment detail stopping at the end of the poll window; remainder deferred to the next poll",
+			"window_end", deps.Deadline.Format(time.RFC3339))
+		return false
+	}
 	if !run.requested {
 		run.requested = true
-		return ctx.Err()
+		return true
 	}
-	return run.deps.Sleep(ctx, run.deps.Config.requestSpacing())
+	if err := deps.Sleep(ctx, deps.Config.requestSpacing()); err != nil {
+		return false
+	}
+	return ctx.Err() == nil
 }
 
 // fetch reads one assignment's page and, for an assessment, its comments
@@ -317,20 +450,30 @@ func (run *detailRun) pace(ctx context.Context) error {
 // poll; the result is then nil.
 func (run *detailRun) fetch(ctx context.Context, kid Kid, id int64) (f *detailFetch, stop bool) {
 	deps := run.deps
-	if err := run.pace(ctx); err != nil {
+	if !run.before(ctx) {
 		return nil, true
 	}
 	detail, parseErrs, err := getAssignmentTraced(ctx, deps.Client, deps.Tel, id)
 	if err != nil {
-		class, perItem := classifyDetailErr(err)
-		if perItem {
-			return &detailFetch{err: err}, false
+		if ctx.Err() != nil {
+			// Cancelled mid-request: not a failure of anything.
+			return nil, true
 		}
-		run.hardFailure(kid, id, "GetAssignment", class, err)
+		class, perItem := classifyDetailErr(err)
+		if class == "auth" {
+			if stop := run.confirmAuth(ctx, kid, id, "GetAssignment", err); stop {
+				return nil, true
+			}
+			class, perItem = detailClassUnexpectedPage, true
+		}
+		if perItem {
+			return &detailFetch{err: err, errClass: class}, false
+		}
+		run.hardFailure(kid, id, "GetAssignment", class, err.Error())
 		return nil, true
 	}
 	if detail == nil {
-		run.hardFailure(kid, id, "GetAssignment", "unknown", fmt.Errorf("library returned no detail and no error"))
+		run.hardFailure(kid, id, "GetAssignment", "unknown", "library returned no detail and no error")
 		return nil, true
 	}
 	f = &detailFetch{detail: detail, parseErrs: parseErrs, comments: detail.Comments}
@@ -341,7 +484,7 @@ func (run *detailRun) fetch(ctx context.Context, kid Kid, id int64) (f *detailFe
 	if detail.Comments.State != schoologylib.CommentsStateUnknown || detail.Kind != schoologylib.AssignmentKindAssessment {
 		return f, false
 	}
-	if err := run.pace(ctx); err != nil {
+	if !run.before(ctx) {
 		return nil, true
 	}
 	comments, err := getAssignmentCommentsTraced(ctx, deps.Client, deps.Tel, id)
@@ -351,17 +494,67 @@ func (run *detailRun) fetch(ctx context.Context, kid Kid, id int64) (f *detailFe
 		f.comments = *comments
 	case err == nil:
 		// No block and no error: leave the state unknown.
+	case ctx.Err() != nil:
+		return nil, true
 	default:
 		class, perItem := classifyDetailErr(err)
+		if class == "auth" {
+			if stop := run.confirmAuth(ctx, kid, id, "GetAssignmentComments", err); stop {
+				return nil, true
+			}
+			class, perItem = detailClassUnexpectedPage, true
+		}
 		if !perItem {
-			run.hardFailure(kid, id, "GetAssignmentComments", class, err)
+			run.hardFailure(kid, id, "GetAssignmentComments", class, err.Error())
 			return nil, true
 		}
 		// Something was served but it is not a comments page we
 		// understand. Keep the detail; the state stays unknown.
-		f.commentsErr = err
+		if class == "parse" {
+			class = detailClassCommentsParse
+		}
+		f.commentsErr, f.commentsClass = err, class
 	}
 	return f, false
+}
+
+// confirmAuth decides whether an auth error on one assignment means the
+// session is dead.
+//
+// schoology-go reports ErrCodeAuth for any answer that ends on the site's
+// front, home, parent or user pages, because that is where an expired
+// session is sent. An assignment that simply redirects there -- one that was
+// withdrawn, say -- looks exactly the same. Believing it would mark a live
+// cookie as rejected and exit the process, and the same assignment would do
+// it again after every restart.
+//
+// So the session is checked with a request that has nothing to do with the
+// assignment. Only if that is refused too is the session treated as dead
+// (stop=true, and the auth observation pollNow acts on is recorded). If the
+// session is fine, stop=false and the caller treats the assignment as an
+// unexpected page. If the check cannot be made (network), the surface stops
+// for this poll without calling the session dead.
+func (run *detailRun) confirmAuth(ctx context.Context, kid Kid, id int64, op string, authErr error) (stop bool) {
+	deps := run.deps
+	if !run.before(ctx) {
+		return true
+	}
+	err := validateSessionTraced(ctx, deps.Client, deps.Tel)
+	switch {
+	case err == nil:
+		slog.Warn("schoology assignment detail got an auth answer on a live session; treating it as an unexpected page",
+			"kid", kid.Name, "assignment_id", id, "op", op)
+		return false
+	case ctx.Err() != nil:
+		return true
+	case schoologylib.IsAuthError(err):
+		run.hardFailure(kid, id, op, "auth", authErr.Error())
+		return true
+	default:
+		run.hardFailure(kid, id, "ValidateSession", classifyAssignmentsErr(err),
+			"could not confirm whether the session is still valid: "+err.Error())
+		return true
+	}
 }
 
 // classifyDetailErr classifies a GetAssignment / GetAssignmentComments
@@ -377,8 +570,9 @@ func (run *detailRun) fetch(ctx context.Context, kid Kid, id int64) (f *detailFe
 // the assignment would otherwise sit at the head of the queue forever and
 // starve every other one.
 //
-// Everything else -- an expired session, the network, a rate limit, a 5xx
-// -- ends the surface for this poll.
+// Everything else -- the network, a rate limit, a 5xx -- ends the surface
+// for this poll. "auth" is returned as not per-item; the caller confirms it
+// first (confirmAuth).
 func classifyDetailErr(err error) (class string, perItem bool) {
 	class = classifyAssignmentsErr(err)
 	switch class {
@@ -394,7 +588,7 @@ func classifyDetailErr(err error) (class string, perItem bool) {
 }
 
 // hardFailure records a failure that ends the surface for this poll.
-func (run *detailRun) hardFailure(kid Kid, id int64, op, class string, err error) {
+func (run *detailRun) hardFailure(kid Kid, id int64, op, class, msg string) {
 	deps := run.deps
 	run.errsLogged = true
 	deps.Tel.RecordParseFailure(detailParser, class, kid.Name, detailSurface)
@@ -402,7 +596,7 @@ func (run *detailRun) hardFailure(kid Kid, id int64, op, class string, err error
 	// The (parser, class) observation is what pollNow reads to detect an
 	// expired session.
 	deps.Dedup.Observe(detailParser, class, strconv.FormatInt(id, 10))
-	run.addReceipt(kid, class, op, id, err.Error())
+	run.addReceipt(kid, class, op, id, msg)
 	slog.Warn("schoology parse failure",
 		"parser", detailParser,
 		"error_class", class,
@@ -413,8 +607,9 @@ func (run *detailRun) hardFailure(kid Kid, id int64, op, class string, err error
 }
 
 // handle decides what one fetched assignment means for one kid: reject it,
-// leave it (unchanged), or stage it.
-func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) {
+// leave it (unchanged), or stage it. stop=true means staging is failing and
+// the surface must not go on.
+func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) (stop bool) {
 	deps := run.deps
 	ks := w.kid
 	kid := ks.kid
@@ -423,9 +618,8 @@ func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) 
 	if f.err != nil {
 		// This assignment only. Remember the read so it is retried at
 		// the refresh interval, not every poll.
-		class, _ := classifyDetailErr(f.err)
-		run.reject(w, class, "GetAssignment", f.err.Error())
-		return
+		run.reject(w, f.errClass, "GetAssignment", f.err.Error())
+		return false
 	}
 	d := f.detail
 
@@ -434,51 +628,104 @@ func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) 
 	if d.ID != 0 && d.ID != id {
 		run.reject(w, detailClassIDMismatch, "GetAssignment",
 			fmt.Sprintf("assignment %d: the page returned is for assignment %d; not staged", id, d.ID))
-		return
+		return false
 	}
 	if !sameCourse(w.row.CourseTitle, d.CourseTitle) {
 		run.reject(w, detailClassCourseMismatch, "GetAssignment", fmt.Sprintf(
 			"assignment %d: the detail page is filed under course %q but %s's list shows it under %q; "+
 				"not staged, because the list is the only thing that ties an assignment to a child",
-			id, d.CourseTitle, kid.Name, w.row.CourseTitle))
-		return
+			id, oneLine(d.CourseTitle), kid.Name, oneLine(w.row.CourseTitle)))
+		return false
+	}
+	if !sameTitle(w.row.Title, d.Title) {
+		run.reject(w, detailClassTitleMismatch, "GetAssignment", fmt.Sprintf(
+			"assignment %d: the detail page is titled %q but %s's list shows %q; "+
+				"not staged, because the list is the only thing that ties an assignment to a child",
+			id, oneLine(d.Title), kid.Name, oneLine(w.row.Title)))
+		return false
 	}
 
+	run.handled++
+	degraded := ""
+	parseFailed := false
 	for _, pe := range f.parseErrs {
 		if pe == nil {
 			continue
 		}
+		parseFailed = true
 		run.errsLogged = true
 		deps.Tel.RecordParseFailure(detailParser, detailClassRowParse, kid.Name, detailSurface)
 		deps.Dedup.Observe(detailParser, detailClassRowParse, strconv.FormatInt(id, 10))
 		run.addReceipt(kid, detailClassRowParse, pe.Op, id, pe.Error())
+		if degraded == "" {
+			degraded = pe.Error()
+		}
 	}
 	if f.commentsErr != nil {
+		parseFailed = true
 		run.errsLogged = true
-		deps.Tel.RecordParseFailure(detailParser, detailClassCommentsParse, kid.Name, detailSurface)
-		deps.Dedup.Observe(detailParser, detailClassCommentsParse, strconv.FormatInt(id, 10))
-		run.addReceipt(kid, detailClassCommentsParse, "GetAssignmentComments", id, f.commentsErr.Error())
+		deps.Tel.RecordParseFailure(detailParser, f.commentsClass, kid.Name, detailSurface)
+		deps.Dedup.Observe(detailParser, f.commentsClass, strconv.FormatInt(id, 10))
+		run.addReceipt(kid, f.commentsClass, "GetAssignmentComments", id, f.commentsErr.Error())
+	}
+	if parseFailed {
+		run.failed++
+	}
+
+	// The list names a course and the page shows none: the cross-check
+	// could not be made. That is what a changed breadcrumb would look like,
+	// so say so -- on the item and in a receipt -- rather than pass silently.
+	courseUnverified := strings.TrimSpace(w.row.CourseTitle) != "" && strings.TrimSpace(d.CourseTitle) == ""
+	if courseUnverified {
+		deps.Tel.RecordParseFailure(detailParser, detailClassCourseUnverified, kid.Name, detailSurface)
+		deps.Dedup.Observe(detailParser, detailClassCourseUnverified, strconv.FormatInt(id, 10))
+		run.addReceipt(kid, detailClassCourseUnverified, "GetAssignment", id, fmt.Sprintf(
+			"assignment %d: the detail page shows no course, so it could not be checked against %s's list; staged with course_unverified=true",
+			id, kid.Name))
+		if degraded == "" {
+			degraded = "the detail page shows no course to check against the list row"
+		}
 	}
 
 	opts := buildDetailItemOptions(w.row, d, f.comments, ks.rule)
+	if courseUnverified {
+		opts.Tags["course_unverified"] = "true"
+	}
 	body := buildDetailBody(w.row, d, f.comments, deps.Location)
 	hash := detailContentHash(opts, body)
 
 	if ks.seen[id] == hash {
 		deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeUnchanged)
 		run.rememberRow(w)
-		return
+		return false
 	}
 
-	if msg := firstParseError(f.parseErrs); msg != "" {
-		opts = BuildDegradedOptions(opts, msg, "", strconv.FormatInt(id, 10), detailSurface)
+	if degraded != "" {
+		opts = BuildDegradedOptions(opts, degraded, "", strconv.FormatInt(id, 10), detailSurface)
 	}
 	if err := stageAssignmentItem(ctx, deps.Tel, deps.Writer, opts, []byte(body), id); err != nil {
-		// Not remembered: the next poll reads and tries again.
+		if ctx.Err() != nil {
+			return true
+		}
+		if stagePermanent(err) {
+			// Staging will refuse this item every time. Reading the
+			// page again next poll would not change that.
+			run.handled--
+			if parseFailed {
+				run.failed--
+			}
+			run.reject(w, detailClassStageRejected, "stage", fmt.Sprintf(
+				"assignment %d: staging refused the item: %v", id, err))
+			return false
+		}
+		// Staging is unreachable or failing. Nothing is marked seen or
+		// remembered, and no more requests are spent on pages that could
+		// not be staged either.
+		run.errsLogged = true
 		deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeError)
-		slog.Warn("schoology assignment detail stage failed",
+		slog.Warn("schoology assignment detail stage failed; stopping the surface for this poll",
 			"kid", kid.Name, "assignment_id", id, "error", err)
-		return
+		return true
 	}
 	run.staged++
 	deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeStaged)
@@ -489,15 +736,25 @@ func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) 
 			"kid", kid.Name, "assignment_id", id, "duplicate_risk", true, "error", err)
 	}
 	run.rememberRow(w)
+	return false
+}
+
+// stagePermanent reports whether a staging error will repeat for the same
+// item: the ingest endpoint rejected it (400/413, a PermanentError) or its
+// metadata failed validation.
+func stagePermanent(err error) bool {
+	return connector.IsPermanent(err) || strings.Contains(err.Error(), "metadata validation")
 }
 
 // reject records a per-assignment refusal: a receipt, no staged item, and
 // the read remembered so the assignment is next tried at the refresh
 // interval (or sooner if its list row changes). It does not feed the
-// schema-drift counter.
+// schema-drift counter on its own (see checkWholesale).
 func (run *detailRun) reject(w detailWork, class, trace, msg string) {
 	kid := w.kid.kid
 	deps := run.deps
+	run.handled++
+	run.failed++
 	deps.Tel.RecordParseFailure(detailParser, class, kid.Name, detailSurface)
 	deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeRejected)
 	deps.Dedup.Observe(detailParser, class, strconv.FormatInt(w.row.ID, 10))
@@ -507,13 +764,41 @@ func (run *detailRun) reject(w detailWork, class, trace, msg string) {
 	run.rememberRow(w)
 }
 
+// checkWholesale reports the surface as broken when every detail handled in
+// the poll was rejected or did not parse. One odd assignment is a receipt;
+// all of them at once is what a change to Schoology's pages looks like, and
+// that must reach the schema-drift counter.
+func (run *detailRun) checkWholesale() {
+	if run.handled < detailWholesaleMin || run.failed < run.handled {
+		return
+	}
+	run.errsLogged = true
+	run.deps.Tel.RecordParseFailure(detailParser, detailClassSurfaceDegraded, "", detailSurface)
+	run.deps.Dedup.Observe(detailParser, detailClassSurfaceDegraded, "")
+	key := "|" + detailClassSurfaceDegraded
+	run.receipts[key] = &detailReceipt{
+		class: detailClassSurfaceDegraded,
+		trace: "ProcessAssignmentDetails",
+		ids:   []string{strconv.Itoa(run.handled)},
+		lines: []string{fmt.Sprintf(
+			"all %d assignment details handled in this poll were rejected or did not parse; "+
+				"Schoology's assignment pages may have changed (see the per-assignment receipts)", run.handled)},
+	}
+	run.order = append(run.order, key)
+	slog.Error("schoology assignment detail surface degraded", "handled", run.handled)
+}
+
 // rememberRow records that the row was read now.
 func (run *detailRun) rememberRow(w detailWork) {
 	ks := w.kid
 	ks.rows[w.row.ID] = detailRow{Fingerprint: w.rowFP, FetchedAt: run.now.Unix()}
+	run.saveRows(ks)
+}
+
+func (run *detailRun) saveRows(ks *detailKidState) {
 	if err := saveDetailRows(run.deps.Checkpoint, ks.kid.Name, ks.rows); err != nil {
 		slog.Error("schoology assignment detail row state save failed",
-			"kid", ks.kid.Name, "assignment_id", w.row.ID, "error", err)
+			"kid", ks.kid.Name, "error", err)
 	}
 }
 
@@ -551,6 +836,11 @@ func (run *detailRun) emitReceipts() {
 			AffectedCount:     len(r.ids),
 			AffectedItemIDs:   r.ids,
 		}
+		if r.class == detailClassSurfaceDegraded {
+			in.SourceURL = "schoology://assignment"
+			in.AffectedCount = run.handled
+			in.AffectedItemIDs = nil
+		}
 		emitAssignmentsReceipt(deps.Writer, deps.Matcher, in, []byte(strings.Join(r.lines, "\n")+"\n"))
 		deps.Tel.RecordParseFailureReceipt(detailParser, r.class)
 	}
@@ -574,6 +864,14 @@ func getAssignmentCommentsTraced(ctx context.Context, client SchoologyClient, te
 	)
 	defer span.End()
 	return client.GetAssignmentComments(ctx, id)
+}
+
+// validateSessionTraced wraps client.ValidateSession in the
+// schoology.lib.ValidateSession span.
+func validateSessionTraced(ctx context.Context, client SchoologyClient, tel *Telemetry) error {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.ValidateSession")
+	defer span.End()
+	return client.ValidateSession(ctx)
 }
 
 // sleepCtx waits d or until ctx ends.
@@ -604,10 +902,15 @@ func assignmentRowFingerprint(a *schoologylib.Assignment) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// foldText folds case and runs of whitespace for comparison.
+func foldText(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+}
+
 // normalizeCourse folds a course title for comparison: case, runs of
 // whitespace, and the spacing around a colon.
 func normalizeCourse(s string) string {
-	s = strings.Join(strings.Fields(strings.ToLower(s)), " ")
+	s = foldText(s)
 	s = strings.ReplaceAll(s, " :", ":")
 	s = strings.ReplaceAll(s, ": ", ":")
 	return s
@@ -619,9 +922,10 @@ func normalizeCourse(s string) string {
 // The two pages do not print a course the same way: the overdue/upcoming
 // list shows the course name alone ("Example Course A") and the detail
 // page's breadcrumb shows it with its section ("Example Course A: Section
-// 1"). So one title may be the other followed by a ":" suffix. Anything
-// else is a mismatch. An empty title on either side cannot be compared and
-// is not a mismatch.
+// 1"). So one title may be the other followed by a ":" suffix; that held
+// for every assignment checked on the live site. Anything else is a
+// mismatch. An empty title on either side cannot be compared and is not a
+// mismatch here (a page with no course is flagged separately).
 func sameCourse(listTitle, detailTitle string) bool {
 	a, b := normalizeCourse(listTitle), normalizeCourse(detailTitle)
 	if a == "" || b == "" || a == b {
@@ -630,22 +934,31 @@ func sameCourse(listTitle, detailTitle string) bool {
 	return strings.HasPrefix(b, a+":") || strings.HasPrefix(a, b+":")
 }
 
+// sameTitle reports whether a list row's title and a detail page's title
+// agree. Unlike the course, the two pages print the title identically, so
+// only case and whitespace are folded. An empty title on either side cannot
+// be compared.
+func sameTitle(listTitle, detailTitle string) bool {
+	a, b := foldText(listTitle), foldText(detailTitle)
+	return a == "" || b == "" || a == b
+}
+
 // detailCourse picks the course title to stage: the detail page's (it names
 // the section) or, when the page shows none, the list row's.
 func detailCourse(row *schoologylib.Assignment, d *schoologylib.AssignmentDetail) string {
-	if c := strings.TrimSpace(d.CourseTitle); c != "" {
+	if c := oneLine(d.CourseTitle); c != "" {
 		return c
 	}
-	return strings.TrimSpace(row.CourseTitle)
+	return oneLine(row.CourseTitle)
 }
 
 // detailTitle picks the title to stage, with the list row as a fallback for
 // a page whose heading could not be read.
 func detailTitle(row *schoologylib.Assignment, d *schoologylib.AssignmentDetail) string {
-	if t := strings.TrimSpace(d.Title); t != "" {
+	if t := oneLine(d.Title); t != "" {
 		return t
 	}
-	if t := strings.TrimSpace(row.Title); t != "" {
+	if t := oneLine(row.Title); t != "" {
 		return t
 	}
 	return "(untitled assignment)"
@@ -659,15 +972,101 @@ func commentsStateTag(s schoologylib.CommentsState) string {
 	return string(s)
 }
 
+// commentCount is the number of top-level entries in a comment block.
+func commentCount(c schoologylib.AssignmentComments) int {
+	n := 0
+	for _, e := range c.Comments {
+		if e != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// commentTextMapped is the switch for staging comment text.
+//
+// No page with a real comment had been seen when this was written, so the
+// library cannot tell a comment's author, time and body apart and says so
+// with LayoutUnmapped. Text read that way is not staged, and is not part of
+// the item's identity: only the state and the number of entries are. When
+// the library maps the layout it stops setting LayoutUnmapped, and the text
+// is then staged through renderComments.
+func commentTextMapped(c schoologylib.AssignmentComments) bool {
+	return c.State == schoologylib.CommentsStatePopulated && !c.LayoutUnmapped
+}
+
+// oneLine makes s safe as a single-line value: unsafe control characters
+// are dropped and every kind of line break becomes a space.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(cleanText(s, false)), " ")
+}
+
+// cleanText drops the control characters staging refuses and neutralises
+// the line separators a renderer might honour. With keepNewlines, "\n" is
+// kept and everything else that breaks a line becomes a space.
+func cleanText(s string, keepNewlines bool) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n':
+			if keepNewlines {
+				return r
+			}
+			return ' '
+		case r == '\t', r == '\r', r == 0x2028, r == 0x2029, r == 0x85, r == '\v', r == '\f':
+			return ' '
+		case r < 0x20, r == 0x7f, r >= 0x80 && r < 0xa0:
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// cutUTF8 returns s cut to at most max bytes on a rune boundary, and
+// whether it was cut.
+func cutUTF8(s string, max int) (string, bool) {
+	if len(s) <= max {
+		return s, false
+	}
+	if max < 0 {
+		max = 0
+	}
+	cut := max
+	for cut > 0 && cut < len(s) && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut], true
+}
+
+// metaValue fits a value into a metadata field: one line, within the
+// staging length limit, with a marker when it had to be cut.
+func metaValue(s string) (string, bool) {
+	s = oneLine(s)
+	if len(s) <= maxDetailMetaBytes {
+		return s, false
+	}
+	head, _ := cutUTF8(s, maxDetailMetaBytes-len(detailTruncationMark))
+	return head + detailTruncationMark, true
+}
+
 // buildDetailItemOptions composes the staged item's metadata. Optional
 // fields the page does not show are left out rather than staged empty.
+// Every value is teacher-authored or page-derived, so each is reduced to a
+// single line within the staging limits before it is used: an over-long
+// title must cost a marker, not the item.
 func buildDetailItemOptions(
 	row *schoologylib.Assignment,
 	d *schoologylib.AssignmentDetail,
 	comments schoologylib.AssignmentComments,
 	rule connector.MatchResult,
 ) connector.ItemOptions {
-	course := detailCourse(row, d)
+	truncated := false
+	fit := func(s string) string {
+		v, cut := metaValue(s)
+		truncated = truncated || cut
+		return v
+	}
+
+	course := fit(detailCourse(row, d))
 	sender := course
 	if sender == "" {
 		// Staging validation rejects an empty Sender.
@@ -680,12 +1079,13 @@ func buildDetailItemOptions(
 	tags := map[string]string{
 		"kind":            detailSurface,
 		"assignment_id":   strconv.FormatInt(row.ID, 10),
-		"assignment_kind": kind,
-		"comments_state":  commentsStateTag(comments.State),
+		"assignment_kind": fit(kind),
+		"comments_state":  fit(commentsStateTag(comments.State)),
+		"comment_count":   strconv.Itoa(commentCount(comments)),
 		"has_description": strconv.FormatBool(d.DescriptionText != ""),
 	}
 	setTag := func(k, v string) {
-		if v != "" {
+		if v = fit(v); v != "" {
 			tags[k] = v
 		}
 	}
@@ -702,11 +1102,15 @@ func buildDetailItemOptions(
 		setTag("posted", d.PostedRaw)
 	}
 	setTag("assessment_status", d.AssessmentStatus)
+	subject := fit(detailTitle(row, d))
+	if truncated {
+		tags["metadata_truncated"] = "true"
+	}
 
 	return connector.ItemOptions{
 		Source:           "schoology",
 		Sender:           sender,
-		Subject:          detailTitle(row, d),
+		Subject:          subject,
 		Timestamp:        time.Now().UTC(),
 		DestinationAgent: rule.Destination,
 		ContentType:      "text/plain",
@@ -720,15 +1124,91 @@ func buildDetailItemOptions(
 // renderedTime prints a page's own date text followed by the parsed
 // instant, when there is one.
 func renderedTime(raw string, at time.Time, loc *time.Location) string {
+	raw = oneLine(raw)
 	if at.IsZero() {
 		return raw
 	}
 	return raw + " (" + at.In(loc).Format(time.RFC3339) + ")"
 }
 
+// Framing for teacher-authored multi-line text. Every line of such text is
+// written with untrustedPrefix, between a BEGIN and an END line, so nothing
+// a teacher types can start a line at column zero and pass for one of the
+// connector's own "Field: value" lines or section headings.
+const (
+	untrustedPrefix      = "| "
+	descriptionBegin     = "----- BEGIN DESCRIPTION: untrusted teacher-authored text, each line prefixed \"| \" -----"
+	descriptionEnd       = "----- END DESCRIPTION -----"
+	descriptionCutMarker = "[The description was cut off at the size limit.]"
+	commentsBegin        = "----- BEGIN TEACHER COMMENTS: untrusted teacher-authored text, each line prefixed \"| \" -----"
+	commentsEnd          = "----- END TEACHER COMMENTS -----"
+	commentsCutMarker    = "[The comments were cut off at the size limit.]"
+	contentCutMarker     = "[The content was cut off at the connector's size limit.]"
+)
+
+// writeUntrusted writes text line by line with untrustedPrefix, stopping
+// before budget bytes are exceeded. It reports whether anything was left
+// out.
+func writeUntrusted(b *strings.Builder, text string, budget int) (cut bool) {
+	for _, line := range strings.Split(strings.TrimRight(cleanText(text, true), "\n"), "\n") {
+		if len(untrustedPrefix)+len(line)+1 > budget {
+			if room := budget - len(untrustedPrefix) - 1; room > 0 {
+				head, _ := cutUTF8(line, room)
+				b.WriteString(untrustedPrefix + head + "\n")
+			}
+			return true
+		}
+		b.WriteString(untrustedPrefix + line + "\n")
+		budget -= len(untrustedPrefix) + len(line) + 1
+	}
+	return false
+}
+
+// renderComments writes the comments section.
+//
+// While the layout is unmapped (see commentTextMapped) it is one fixed line
+// with the number of entries and no teacher text at all.
+func renderComments(comments schoologylib.AssignmentComments) string {
+	if comments.State != schoologylib.CommentsStatePopulated {
+		return ""
+	}
+	n := commentCount(comments)
+	if !commentTextMapped(comments) {
+		return fmt.Sprintf("\nTeacher comments: %d present (text not captured yet)\n", n)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nTeacher comments: %d\n%s\n", n, commentsBegin)
+	budget := maxDetailCommentBytes
+	cut := false
+	for _, c := range comments.Comments {
+		if c == nil {
+			continue
+		}
+		before := b.Len()
+		if writeUntrusted(&b, c.Text, budget) {
+			cut = true
+			break
+		}
+		budget -= b.Len() - before
+		if c.Truncated {
+			cut = true
+		}
+		if budget > len(untrustedPrefix)+1 {
+			b.WriteString(untrustedPrefix + "\n")
+			budget -= len(untrustedPrefix) + 1
+		}
+	}
+	b.WriteString(commentsEnd + "\n")
+	if cut {
+		b.WriteString(commentsCutMarker + "\n")
+	}
+	return b.String()
+}
+
 // buildDetailBody projects the detail into the plain text that is staged as
 // content, in the style of buildAssignmentBody. The description is the
-// library's plain-text rendering; the raw HTML is never staged.
+// library's plain-text rendering; the raw HTML is never staged. The whole
+// is kept within maxDetailContentBytes, the description giving way first.
 func buildDetailBody(
 	row *schoologylib.Assignment,
 	d *schoologylib.AssignmentDetail,
@@ -736,66 +1216,48 @@ func buildDetailBody(
 	loc *time.Location,
 ) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Assignment: %s\n", detailTitle(row, d))
-	if d.Kind != schoologylib.AssignmentKindUnknown {
-		fmt.Fprintf(&b, "Kind: %s\n", d.Kind)
+	line := func(label, value string) {
+		if value = oneLine(value); value != "" {
+			fmt.Fprintf(&b, "%s: %s\n", label, value)
+		}
 	}
-	if c := detailCourse(row, d); c != "" {
-		fmt.Fprintf(&b, "Course: %s\n", c)
-	}
-	if d.Folder != "" {
-		fmt.Fprintf(&b, "Folder: %s\n", d.Folder)
-	}
-	if d.Category != "" {
-		fmt.Fprintf(&b, "Category: %s\n", d.Category)
-	}
-	if d.GradingPeriod != "" {
-		fmt.Fprintf(&b, "Period: %s\n", d.GradingPeriod)
-	}
-	if d.DueRaw != "" {
-		fmt.Fprintf(&b, "Due: %s\n", renderedTime(d.DueRaw, d.DueAt, loc))
+	line("Assignment", detailTitle(row, d))
+	line("Kind", string(d.Kind))
+	line("Course", detailCourse(row, d))
+	line("Folder", d.Folder)
+	line("Category", d.Category)
+	line("Period", d.GradingPeriod)
+	if oneLine(d.DueRaw) != "" {
+		line("Due", renderedTime(d.DueRaw, d.DueAt, loc))
 	} else {
 		b.WriteString("Due: no due date listed\n")
 	}
-	if d.PostedRaw != "" {
-		fmt.Fprintf(&b, "Posted: %s\n", renderedTime(d.PostedRaw, d.PostedAt, loc))
+	if oneLine(d.PostedRaw) != "" {
+		line("Posted", renderedTime(d.PostedRaw, d.PostedAt, loc))
 	}
-	if d.AssessmentStatus != "" {
-		fmt.Fprintf(&b, "Status: %s\n", d.AssessmentStatus)
-	}
-	if row.URL != "" {
-		fmt.Fprintf(&b, "Link: %s\n", row.URL)
-	}
+	line("Status", d.AssessmentStatus)
+	line("Link", row.URL)
+
+	tail := renderComments(comments)
 
 	if d.DescriptionText != "" {
-		b.WriteString("\nDescription:\n")
-		b.WriteString(strings.TrimRight(d.DescriptionText, "\n"))
-		b.WriteString("\n")
-		if d.DescriptionTruncated {
-			b.WriteString("[The description was cut off at the size limit.]\n")
+		b.WriteString("\nDescription:\n" + descriptionBegin + "\n")
+		reserve := len(descriptionEnd) + len(descriptionCutMarker) + len(tail) + 64
+		cut := writeUntrusted(&b, d.DescriptionText, maxDetailContentBytes-b.Len()-reserve)
+		b.WriteString(descriptionEnd + "\n")
+		if cut || d.DescriptionTruncated {
+			b.WriteString(descriptionCutMarker + "\n")
 		}
 	}
+	b.WriteString(tail)
 
-	if comments.State == schoologylib.CommentsStatePopulated {
-		b.WriteString("\nTeacher comments:\n")
-		if comments.LayoutUnmapped {
-			b.WriteString("[The comment layout is unverified: author, time and text may run together below.]\n")
-		}
-		for _, c := range comments.Comments {
-			if c == nil {
-				continue
-			}
-			text := strings.TrimSpace(c.Text)
-			if text == "" {
-				continue
-			}
-			fmt.Fprintf(&b, "- %s\n", text)
-			if c.Truncated {
-				b.WriteString("  [This comment was cut off at the size limit.]\n")
-			}
-		}
+	out := b.String()
+	if len(out) > maxDetailContentBytes {
+		// Not reachable with the budgets above; kept as the hard stop.
+		head, _ := cutUTF8(out, maxDetailContentBytes-len(contentCutMarker)-2)
+		out = head + "\n" + contentCutMarker + "\n"
 	}
-	return b.String()
+	return out
 }
 
 // detailContentHash hashes everything that is staged for a detail item and
@@ -822,14 +1284,4 @@ func detailContentHash(opts connector.ItemOptions, body string) string {
 	}
 	write(body)
 	return hex.EncodeToString(h.Sum(nil)[:16])
-}
-
-// firstParseError returns the first non-nil parse error's text.
-func firstParseError(errs schoologylib.ParseErrors) string {
-	for _, pe := range errs {
-		if pe != nil {
-			return pe.Error()
-		}
-	}
-	return ""
 }

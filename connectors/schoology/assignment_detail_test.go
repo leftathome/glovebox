@@ -44,6 +44,15 @@ type detailHarness struct {
 	fetched         []int64
 	commentsFetched []int64
 	sleeps          []time.Duration
+
+	// validateErr is what the session check answers (nil: session fine).
+	validateErr error
+	validated   int
+	// onFetch runs at the start of every GetAssignment.
+	onFetch func(id int64)
+	// ctx and deadline override the poll context and window end.
+	ctx      context.Context
+	deadline time.Time
 }
 
 func newDetailHarness(t *testing.T) *detailHarness {
@@ -76,8 +85,15 @@ func newDetailHarness(t *testing.T) *detailHarness {
 
 func (h *detailHarness) client() *fakeClient {
 	return &fakeClient{
+		ValidateFunc: func(context.Context) error {
+			h.validated++
+			return h.validateErr
+		},
 		AssignmentFunc: func(_ context.Context, id int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error) {
 			h.fetched = append(h.fetched, id)
+			if h.onFetch != nil {
+				h.onFetch(id)
+			}
 			if err := h.failWith[id]; err != nil {
 				return nil, nil, err
 			}
@@ -107,7 +123,12 @@ func (h *detailHarness) client() *fakeClient {
 func (h *detailHarness) poll(lists ...KidAssignments) (int, bool, *ReceiptDedup) {
 	h.t.Helper()
 	dedup := NewReceiptDedup()
-	staged, errs := ProcessAssignmentDetails(context.Background(), DetailDeps{
+	ctx := h.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	staged, errs := ProcessAssignmentDetails(ctx, DetailDeps{
+		Deadline:   h.deadline,
 		Client:     h.client(),
 		Writer:     h.writer,
 		Matcher:    h.matcher,
@@ -333,8 +354,10 @@ func TestAssignmentDetail_RegularAssignmentItemShape(t *testing.T) {
 		"Link: /assignment/9100000001",
 		"",
 		"Description:",
-		"Read pages 40-52.",
-		"Answer the four questions on the handout.",
+		descriptionBegin,
+		"| Read pages 40-52.",
+		"| Answer the four questions on the handout.",
+		descriptionEnd,
 		"",
 	}, "\n")
 	if it.content != wantBody {
@@ -418,11 +441,16 @@ func TestAssignmentDetail_PopulatedCommentsAreStagedWithLayoutCaveat(t *testing.
 	if it.meta.Tags["comments_state"] != "populated" {
 		t.Errorf("comments_state = %q, want populated", it.meta.Tags["comments_state"])
 	}
-	want := "\nTeacher comments:\n" +
-		"[The comment layout is unverified: author, time and text may run together below.]\n" +
-		"- Teacher Example Mon Oct 12 Please redo the conclusion.\n"
+	if it.meta.Tags["comment_count"] != "1" {
+		t.Errorf("comment_count = %q, want 1", it.meta.Tags["comment_count"])
+	}
+	// The layout is unmapped: the count is staged, the text is not.
+	want := "\nTeacher comments: 1 present (text not captured yet)\n"
 	if !strings.HasSuffix(it.content, want) {
-		t.Errorf("content does not end with the comments section:\n%s", it.content)
+		t.Errorf("content does not end with the fixed comments line:\n%s", it.content)
+	}
+	if strings.Contains(it.content, "redo the conclusion") {
+		t.Errorf("unmapped comment text was staged:\n%s", it.content)
 	}
 }
 
@@ -747,6 +775,9 @@ func TestAssignmentDetail_NewTeacherCommentIsRestaged(t *testing.T) {
 	var withComment int
 	for _, it := range h.detailItems() {
 		if strings.Contains(it.content, "Retake available Thursday.") {
+			t.Error("unmapped comment text was staged")
+		}
+		if strings.Contains(it.content, "Teacher comments: 1 present") {
 			withComment++
 			if it.meta.Tags["comments_state"] != "populated" {
 				t.Errorf("comments_state = %q", it.meta.Tags["comments_state"])
@@ -814,6 +845,7 @@ func TestDetailContentHash_IgnoresVolatileFields(t *testing.T) {
 
 func TestAssignmentDetail_RefreshAtMostOncePerInterval(t *testing.T) {
 	h := newDetailHarness(t)
+	h.cfg.RefreshHours = 24
 	const id = 9100000050
 	h.details[id] = regularDetail(id, "Vocabulary", "Example Course A: Section 1")
 	row := listRow(id, "Vocabulary", "Example Course A")
@@ -950,7 +982,9 @@ func TestAssignmentDetail_DelistedRowsAreForgottenAndReturnWithoutRestaging(t *t
 
 	// It drops off the list (handed in) ...
 	h.now = h.now.Add(time.Hour)
-	h.poll(k1List())
+	for i := 0; i < detailRowGracePolls; i++ {
+		h.poll(k1List())
+	}
 	rows, _ := loadDetailRows(h.cp, "k1")
 	if len(rows) != 0 {
 		t.Errorf("row state holds %d rows for an empty list, want 0", len(rows))
@@ -978,6 +1012,7 @@ func TestAssignmentDetail_AuthStopsTheSurface(t *testing.T) {
 		rows = append(rows, listRow(id, "A", "Example Course A"))
 	}
 	h.failWith[2] = &schoologylib.Error{Code: schoologylib.ErrCodeAuth, Op: "GetAssignment", Message: "session expired"}
+	h.validateErr = schoologylib.ErrSessionExpired
 
 	staged, errs, dedup := h.poll(k1List(rows...))
 	if len(h.fetched) != 2 {
@@ -1003,6 +1038,7 @@ func TestAssignmentDetail_AuthOnCommentsPageStopsTheSurface(t *testing.T) {
 	h.details[1] = assessmentDetail(1, "A", "Example Course A")
 	h.details[2] = regularDetail(2, "B", "Example Course A")
 	h.commErr[1] = schoologylib.ErrSessionExpired
+	h.validateErr = schoologylib.ErrSessionExpired
 
 	staged, _, dedup := h.poll(k1List(listRow(1, "A", "Example Course A"), listRow(2, "B", "Example Course A")))
 	if staged != 0 || len(h.fetched) != 1 {
@@ -1158,7 +1194,7 @@ func TestAssignmentDetail_AbsentOptionalFieldsProduceNoReceipt(t *testing.T) {
 	// dates, status, description or comment block.
 	h.details[1] = &schoologylib.AssignmentDetail{ID: 1, Title: "Bare", Kind: schoologylib.AssignmentKindAssignment}
 
-	staged, errs, _ := h.poll(k1List(listRow(1, "Bare", "Example Course A")))
+	staged, errs, _ := h.poll(k1List(listRow(1, "Bare", "")))
 	if staged != 1 || errs {
 		t.Fatalf("staged=%d errs=%v, want 1,false", staged, errs)
 	}
@@ -1167,8 +1203,11 @@ func TestAssignmentDetail_AbsentOptionalFieldsProduceNoReceipt(t *testing.T) {
 		t.Fatalf("staged %d items, want 1 and no receipt", len(items))
 	}
 	it := items[0]
-	if it.meta.Sender != "Example Course A" || it.meta.Tags["course"] != "Example Course A" {
-		t.Errorf("sender=%q course=%q, want the list row's course as a fallback", it.meta.Sender, it.meta.Tags["course"])
+	if it.meta.Sender != "schoology-course" {
+		t.Errorf("sender=%q, want the placeholder when neither page nor list names a course", it.meta.Sender)
+	}
+	if _, ok := it.meta.Tags["parse_status"]; ok {
+		t.Error("an item with only absent optional fields was marked degraded")
 	}
 	if it.meta.Tags["comments_state"] != "unknown" || it.meta.Tags["has_description"] != "false" {
 		t.Errorf("tags = %v", it.meta.Tags)
@@ -1348,7 +1387,9 @@ func TestDetailRows_StayBoundedByTheListing(t *testing.T) {
 	}
 	h.poll(k1List(rows...))
 	h.now = h.now.Add(time.Hour)
-	h.poll(k1List(rows[:4]...))
+	for i := 0; i < detailRowGracePolls; i++ {
+		h.poll(k1List(rows[:4]...))
+	}
 	state, _ := loadDetailRows(h.cp, "k1")
 	if len(state) != 4 {
 		t.Errorf("row state holds %d rows, want the 4 still listed", len(state))
@@ -1455,6 +1496,7 @@ func TestConnector_AssignmentDetailAuthTakesTheRejectedSessionPath(t *testing.T)
 	h.details[11] = regularDetail(11, "K1 task", "Example Course A")
 	h.details[12] = regularDetail(12, "K1 other", "Example Course A")
 	h.failWith[11] = schoologylib.ErrSessionExpired
+	h.validateErr = schoologylib.ErrSessionExpired
 
 	client := h.client()
 	client.OverdueSubmissionsFunc = func(_ context.Context, uid int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {
@@ -1579,8 +1621,8 @@ func TestConfig_AssignmentDetailDefaults(t *testing.T) {
 	if len(d.Kids) != 0 {
 		t.Errorf("surface enabled by default for %v", d.Kids)
 	}
-	if d.MaxPerPoll != 20 || d.RefreshHours != 24 || d.RequestSpacingMS != 1500 {
-		t.Errorf("defaults = %+v, want max_per_poll 20, refresh_hours 24, request_spacing_ms 1500", d)
+	if d.MaxPerPoll != 20 || d.RefreshHours != 20 || d.RequestSpacingMS != 1500 {
+		t.Errorf("defaults = %+v, want max_per_poll 20, refresh_hours 20, request_spacing_ms 1500", d)
 	}
 	if err := ValidateConfig(&cfg); err != nil {
 		t.Errorf("default config invalid: %v", err)

@@ -17,7 +17,8 @@ import (
 //	assignment_detail:<kid>:seen  what has been staged (long memory)
 //	assignment_detail:<kid>:rows  what the list looked like last poll and
 //	                              when each detail was last read (short
-//	                              memory, pruned to what is listed now)
+//	                              memory: what is listed now, plus rows
+//	                              that left within the last few polls)
 //
 // The other surfaces keep sets of int64 IDs under "<surface>:<scope>:seen".
 // Detail keys live under their own checkpoint key, so however many of them
@@ -135,9 +136,22 @@ type detailRow struct {
 	// read. A different row means the detail is read again.
 	Fingerprint string `json:"fp"`
 	// FetchedAt is when the detail was last read, unix seconds. It drives
-	// the slow refresh.
+	// the slow refresh. Zero means never: the row is only waiting.
 	FetchedAt int64 `json:"at"`
+	// Since is when a row the per-poll cap deferred first needed reading,
+	// unix seconds, so it goes ahead of rows that turn up later. Zero once
+	// the row has been read.
+	Since int64 `json:"since,omitempty"`
+	// Missing counts consecutive successful list reads the assignment was
+	// absent from.
+	Missing int `json:"missing,omitempty"`
 }
+
+// detailRowGracePolls is how many consecutive listings an assignment must
+// be absent from before its row is forgotten. Schoology has been seen to
+// return a short or empty list for one poll; forgetting on the first
+// absence would cost a re-read of everything when the list comes back.
+const detailRowGracePolls = 3
 
 // detailRows maps an assignment id to its remembered row.
 type detailRows map[int64]detailRow
@@ -170,20 +184,32 @@ func saveDetailRows(cp connector.Checkpoint, kid string, rows detailRows) error 
 	return cp.Save(detailRowsKey(kid), string(data))
 }
 
-// pruneDetailRows drops rows for assignments Schoology no longer lists and
-// reports whether anything was dropped. This is what keeps the row map
-// small: it never holds more than one poll's listing. An assignment that
-// drops off and comes back costs one detail read and, because the seen-set
-// still holds its hash, stages nothing unless it changed.
-func pruneDetailRows(rows detailRows, listed map[int64]bool) bool {
-	pruned := false
-	for id := range rows {
-		if !listed[id] {
+// ageDetailRows notes which remembered assignments are absent from this
+// (successful) listing, forgets the ones that have been absent for
+// detailRowGracePolls listings in a row, and reports whether anything
+// changed. This is what keeps the row map small: it holds the current
+// listing plus a few polls of leavers. An assignment that is forgotten and
+// comes back costs one detail read and, because the seen-set still holds
+// its hash, stages nothing unless it changed.
+func ageDetailRows(rows detailRows, listed map[int64]bool) bool {
+	changed := false
+	for id, row := range rows {
+		switch {
+		case listed[id] && row.Missing != 0:
+			row.Missing = 0
+			rows[id] = row
+			changed = true
+		case listed[id]:
+		case row.Missing+1 >= detailRowGracePolls:
 			delete(rows, id)
-			pruned = true
+			changed = true
+		default:
+			row.Missing++
+			rows[id] = row
+			changed = true
 		}
 	}
-	return pruned
+	return changed
 }
 
 // fetchedAt returns the row's last-read time.

@@ -19,6 +19,7 @@ type fakeClient struct {
 	DownloadFunc           func(ctx context.Context, url string) (io.ReadCloser, error)
 	AssignmentFunc         func(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error)
 	CommentsFunc           func(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error)
+	ValidateFunc           func(ctx context.Context) error
 }
 
 func (f *fakeClient) GetAssignment(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error) {
@@ -33,6 +34,13 @@ func (f *fakeClient) GetAssignmentComments(ctx context.Context, assignmentID int
 		return f.CommentsFunc(ctx, assignmentID)
 	}
 	return nil, errors.New("fakeClient.GetAssignmentComments not configured")
+}
+
+func (f *fakeClient) ValidateSession(ctx context.Context) error {
+	if f.ValidateFunc != nil {
+		return f.ValidateFunc(ctx)
+	}
+	return errors.New("fakeClient.ValidateSession not configured")
 }
 
 func (f *fakeClient) GetOverdueSubmissions(ctx context.Context, childUID int64) ([]*schoologylib.Assignment, schoologylib.ParseErrors, error) {

@@ -40,8 +40,11 @@ type AssignmentDetailConfig struct {
 	MaxPerPoll int `json:"max_per_poll"`
 
 	// RefreshHours is how long a still-listed, unchanged assignment waits
-	// before its detail is read again (default 24). That re-read is how a
-	// teacher comment added later is noticed.
+	// before its detail is read again (default 20). That re-read is how a
+	// teacher comment added later is noticed. The default is 20 and not 24
+	// so that it means "once a day": each poll lands at a random time
+	// inside its window, and with 24 a poll a few minutes earlier in the
+	// day than yesterday's would find the row not yet due and skip a day.
 	RefreshHours int `json:"refresh_hours"`
 
 	// RequestSpacingMS is the pause between two detail requests (default
@@ -53,7 +56,7 @@ type AssignmentDetailConfig struct {
 const (
 	defaultDetailMaxPerPoll       = 20
 	maxDetailMaxPerPoll           = 200
-	defaultDetailRefreshHours     = 24
+	defaultDetailRefreshHours     = 20
 	defaultDetailRequestSpacingMS = 1500
 	minDetailRequestSpacingMS     = 1000
 	maxDetailRequestSpacingMS     = 60000

@@ -301,6 +301,21 @@ func (c *SchoologyConnector) checkDrift() error {
 	))
 }
 
+// windowDeadline returns the end of the poll window the current moment is
+// in, or the zero time when it is in none (a catch-up or triggered poll
+// outside the schedule). The assignment_detail surface starts no request
+// that could not finish before it.
+func (c *SchoologyConnector) windowDeadline() time.Time {
+	now := time.Now()
+	if c.now != nil {
+		now = c.now()
+	}
+	if end := windowEnd(c.cfg, now, c.tz); end.After(now) {
+		return end
+	}
+	return time.Time{}
+}
+
 // authParsers are the receipt parser labels whose "auth" observation means
 // Schoology refused the session.
 var authParsers = []string{"assignments", "feed", "messages", detailParser}
@@ -424,6 +439,7 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 			Location:   c.tz,
 			Now:        c.now,
 			Sleep:      c.sleep,
+			Deadline:   c.windowDeadline(),
 		}, kidLists)
 		itemsProduced += dCount
 		errsLogged = errsLogged || dErrs
