@@ -10,6 +10,25 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.10.1 (from 0.10.0)
+
+No required changes; the new workload is off by default.
+
+- **PowerSchool login workload (new, optional): `powerschoolAuthRefresher`.**
+  It signs in to the parent portal on a schedule and stores the session in
+  Vault for the PowerSchool connector, which never logs in itself. Before
+  enabling it, read `docs/connectors/powerschool-auth-refresher.md` in full
+  and follow its first-run checklist: the portal allows one session per
+  account, so every login ends the account owner's own browser session.
+  The workload refuses to log in between 16:00 and 21:00 America/Los_Angeles
+  (compiled in; configuration can only widen the window), submits
+  credentials at most once per run, and stops submitting altogether after a
+  rejected login or two unconfirmed ones until an operator clears its latch.
+  It needs a Vault policy and Kubernetes auth role (commands in the runbook)
+  and Kubernetes 1.27 or later for the CronJob `timeZone` field.
+- The PowerSchool connector's default session location is now
+  `glovebox/powerschool/default/session`, property `session`.
+
 ## Upgrading to 0.10.0 (from 0.9.7)
 
 No required changes; everything new is off by default.
