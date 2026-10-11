@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Schoology connector: `assignment_detail` surface.** For each assignment
+  in a child's overdue/upcoming list the connector can now read the
+  assignment's own page and stage what a parent sees there -- description,
+  grading category and period, due and posted times, an assessment's status,
+  teacher comments -- as a second item under the rule key
+  `schoology:<kid>:assignment_detail`, linked to the existing `assignment`
+  item by the `assignment_id` tag. There is no grade or score: Schoology does
+  not show a parent account one. Off by default; enabled per child with
+  `assignment_detail.kids` (chart: `schoologyConnector.assignmentDetail.kids`)
+  plus a rule for the key. Item shape and behaviour:
+  `docs/connectors/schoology.md`.
+  - A changed description, due date, status or a newly added teacher comment
+    stages a new item; an unchanged page stages nothing.
+  - The child an item belongs to comes only from the list the assignment was
+    found in. A page whose course does not match the list row is not staged
+    and produces a receipt.
+  - A page is read only when its list row is new or changed, or once it has
+    gone 24 hours unread; reads are spaced 1.5 s apart and capped at 20
+    assignments per poll (`assignment_detail.max_per_poll`, chart
+    `schoologyConnector.assignmentDetail.maxPerPoll`).
+  - New metric `schoology_assignment_detail_fetches_total{kid,outcome}`.
+
+### Changed
+
+- schoology-go v0.2.1 -> v0.3.0. The connector now passes its timezone
+  (`SCHOOLOGY_TIMEZONE`, chart `schoologyConnector.timezone`) to the library,
+  which needs it to read the wall-clock due and posted times on an assignment
+  page.
+
 ## [0.9.7] - 2026-10-09
 
 ### Fixed

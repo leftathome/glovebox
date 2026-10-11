@@ -35,8 +35,9 @@ Browserless — it only consumes the materialized session. The secret is
 provisioned in Vault and reaches the connector via an ESO `ExternalSecret`; no
 secret values live in this repo. Vault path: TBD (private ci-templates).
 
-Optional environment: `SCHOOLOGY_TIMEZONE` (scheduler timezone, default
-`America/Los_Angeles`) and `SCHOOLOGY_TRIGGER_TOKEN` (bearer token for the
+Optional environment: `SCHOOLOGY_TIMEZONE` (timezone of the poll schedule and
+of the wall-clock due/posted times Schoology prints on an assignment page,
+default `America/Los_Angeles`) and `SCHOOLOGY_TRIGGER_TOKEN` (bearer token for the
 `POST /v1/poll` trigger endpoint). The live test additionally reads
 `SCHOOLOGY_KID_UID`, a real child UID kept in env (not committed) since it is
 account-specific PII.
@@ -81,6 +82,7 @@ Connector-specific fields:
 | `trigger` | object | no | HTTP trigger endpoint. `debounce_seconds` (default 60) + `listen_port` (default 8081) |
 | `attachments` | object | no | `max_size_mb` caps per-attachment download size (default 25) |
 | `parse_failure_threshold` | int | no | consecutive parse failures tolerated before schema-drift escalation (default 10) |
+| `assignment_detail` | object | no | the assignment detail surface, off by default; see [Assignment detail](#assignment-detail). `kids` (`[]string`, labels from `kids`; empty = off), `max_per_poll` (default 20, max 200), `refresh_hours` (default 24), `request_spacing_ms` (default 1500, 1000-60000) |
 
 ```json
 {
@@ -127,6 +129,9 @@ Connector-specific fields:
 Match keys emitted by this connector:
 
 - `schoology:<kid>:assignment` — an assignment for the named kid.
+- `schoology:<kid>:assignment_detail` -- what the assignment's own page says
+  (only when the surface is enabled for that kid; see
+  [Assignment detail](#assignment-detail)).
 - `schoology:<kid>:feed` — a feed/course-update item for the named kid.
 - `schoology:<kid>:attachment` — an attachment attached to the kid's content.
 - `schoology:message` — an inbox message (account-level, not per kid).
@@ -136,6 +141,158 @@ Match keys emitted by this connector:
 Each matched rule sets the `destination` agent and, optionally,
 `data_subject` / `audience` for privacy-aware routing. Per-kid rules carry
 `data_subject` so each child's school data routes under its own subject.
+
+## Assignment detail
+
+The `assignment` item is one list row: title, course, due date, status. The
+`assignment_detail` surface reads each listed assignment's own page and
+stages what a parent can see there as a second item, linked to the first by
+the `assignment_id` tag. It is **off by default** and enabled per kid.
+
+Schoology does not show a parent account scores, grades or submission state
+on these pages, so the item has none. Grades come from the PowerSchool
+connector.
+
+### Enabling
+
+List the kid under `assignment_detail.kids` and give it its own rule, placed
+ahead of any `"*"` rule:
+
+```json
+"assignment_detail": {"kids": ["k1"], "max_per_poll": 20},
+"rules": [
+    {"match": "schoology:k1:assignment_detail", "data_subject": "e_333333", "audience": ["household"], "destination": "school"}
+]
+```
+
+`ValidateConfig` refuses to start when an enabled kid has no rule that names
+its key exactly. A wildcard rule would route the item under the config-wide
+default subject, not the child's.
+
+### Item shape
+
+| field | value |
+|-------|-------|
+| `source` | `schoology` |
+| `sender` | the course title (the detail page's, which names the section; the list row's when the page shows none) |
+| `subject` | the assignment title |
+| `content_type` | `text/plain` |
+| `data_subject`, `audience`, `destination_agent` | from the kid's `schoology:<kid>:assignment_detail` rule |
+
+Tags. Those marked optional are left out when the page does not show the
+field; they are never staged empty.
+
+| tag | value |
+|-----|-------|
+| `kind` | `assignment_detail` |
+| `assignment_id` | the Schoology assignment id (the same id the `assignment` item is for) |
+| `assignment_kind` | `assignment`, `assessment` or `unknown` |
+| `comments_state` | `populated`, `empty`, `unavailable` or `unknown` |
+| `has_description` | `true` or `false` |
+| `course` | optional; the course title |
+| `category` | optional; grading category, e.g. `Homework` |
+| `grading_period` | optional; as printed, usually a name and a date range |
+| `due_date` | optional; RFC 3339 UTC, only when the printed date was parsed |
+| `due_raw` | optional; the due date exactly as printed |
+| `posted` | optional; RFC 3339 UTC when parsed, otherwise the text as printed |
+| `assessment_status` | optional; an assessment's status line |
+| `parse_status`, `parse_error`, ... | only on an item whose page had content the library could not understand (`parse_status=degraded`) |
+
+Content is a plain-text projection (invented example):
+
+```
+Assignment: Chapter 3 questions
+Kind: assignment
+Course: Example Course A: Section 1
+Folder: Unit One
+Category: Homework
+Period: Quarter 1: 2026-09-01 - 2026-11-06
+Due: Friday, October 16, 2026 at 11:59 pm (2026-10-16T23:59:00-07:00)
+Posted: Wed Sep 16, 2026 at 9:15 am (2026-09-16T09:15:00-07:00)
+Link: /assignment/9100000001
+
+Description:
+Read pages 40-52.
+Answer the four questions on the handout.
+
+Teacher comments:
+[The comment layout is unverified: author, time and text may run together below.]
+- Teacher Example Mon Oct 12 Please redo the conclusion.
+```
+
+Lines for fields the page does not show are left out, except the due date:
+an item with none says `Due: no due date listed`. `Status:` appears for
+assessments. `Description:` is the library's plain-text rendering; the
+description's HTML is never staged and nothing is attached. `Teacher
+comments:` appears only when `comments_state=populated`. No page with a real
+comment had been seen when this was written, so the layout inside a comment
+is unmapped and the caveat line says so.
+
+### New items and changes
+
+Consumers that notice new work by item id get a **new item whenever the
+staged content changes** -- an edited description, a moved due date, a new
+status, a teacher comment that was not there before -- and nothing when it
+does not. The connector hashes everything it stages for the item (sender,
+subject, tags, content; not the staging time) and remembers, per kid and
+assignment, the hash it last staged, under a checkpoint key of the form
+`<kid>|detail|<assignment_id>|<hash>`. A page that changes and then changes
+back is staged a third time.
+
+### Attribution
+
+The assignment page is the same whichever child the session is viewing, so
+the page cannot say whose assignment it is. The kid comes only from the list
+the id was found in:
+
+- only ids from a kid's own overdue/upcoming list are ever requested;
+- an id in two kids' lists is requested once and staged once per kid, each
+  under that kid's rule;
+- if the page's course does not match the list row's course, nothing is
+  staged and a receipt (`error_class=course_mismatch`) says why. The list
+  prints a course as its name and the page as name plus section
+  (`Example Course A` / `Example Course A: Section 1`), so one title may be
+  the other followed by a `:` suffix; comparison ignores case and spacing.
+
+### Request budget
+
+A detail page is read only when:
+
+- the assignment's list row is new or changed since the last poll, or
+- it is still listed and has not been read for `refresh_hours` (default 24).
+  This is how a comment added later is noticed. The check is "at least that
+  long since the last read", so with one poll window a day and a random
+  time inside it, a refresh can slip to the following day; set
+  `refresh_hours` a little under 24 if that matters.
+
+Reads are spaced `request_spacing_ms` apart (default 1500) and capped at
+`max_per_poll` assignments per poll across all kids (default 20); new and
+changed rows go first, the rest wait for the next poll. A regular assignment
+costs one request. An assessment costs two, because its comments are on a
+separate page; a "not available" answer there is normal and is staged as
+`comments_state=unavailable`.
+
+### Failures
+
+| what happened | result |
+|---------------|--------|
+| session refused (on the page or the comments page) | the surface stops at once; the poll ends on the same rejected-session exit as the other surfaces ([AUTH-RECOVERY.md](../AUTH-RECOVERY.md)) |
+| permission denied or not found for one assignment | receipt for that assignment (`error_class=permission` / `not_found`); the rest of the poll carries on; retried after `refresh_hours` |
+| course does not match, or the page is for another id | receipt (`course_mismatch` / `id_mismatch`); not staged; retried after `refresh_hours` |
+| the id leads to some other kind of page, or to a body that is not HTML | receipt (`unexpected_page` / `parse`) for that assignment; the rest carry on; retried after `refresh_hours` |
+| page content present but not understood (e.g. an unrecognised date format) | item staged with `parse_status=degraded`, plus a `row_parse` receipt. An absent field is not an error |
+| comments page not understood | item staged with `comments_state=unknown`, plus a `comments_parse` receipt |
+| network error, rate limit or HTTP 5xx | receipt; the surface stops for this poll and tries again next poll |
+
+Receipts use the existing parse-failure receipt
+(`schoology-parse-failure:assignment_detail`, falling back to
+`schoology-parse-failure:*`) with `parser=assignment_detail`, one per kid and
+error class per poll.
+
+Metric: `schoology_assignment_detail_fetches_total{kid,outcome}` with outcome
+`staged`, `unchanged`, `rejected`, `error` or `deferred`. Spans:
+`schoology.poll.assignment_detail`, `schoology.lib.GetAssignment`,
+`schoology.lib.GetAssignmentComments`.
 
 ## Enabling in the Helm chart
 
@@ -154,6 +311,11 @@ schoologyConnector:
     tag: ""            # defaults to .Chart.AppVersion when empty
   # host: ""           # empty => read SCHOOLOGY_HOST from the refresher Secret
   timezone: America/Los_Angeles
+  # Off while kids is empty. Each kid listed here also needs a
+  # "schoology:<kid>:assignment_detail" rule below, ahead of the "*" rule.
+  assignmentDetail:
+    kids: []           # e.g. [k1, k2]
+    maxPerPoll: 20
   config:
     rules:
       - { match: "schoology:k1:assignment", destination: school, data_subject: k1, audience: [operator] }
