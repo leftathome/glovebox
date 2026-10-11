@@ -22,6 +22,12 @@
 //	POWERSCHOOL_TIMEZONE        scheduler / due-date timezone, default
 //	                            America/Los_Angeles
 //
+// With login_on_demand enabled in the config the session need not exist at
+// startup, and the pod needs its ServiceAccount token mounted
+// (KUBERNETES_SERVICE_HOST/_PORT, /var/run/secrets/kubernetes.io/serviceaccount):
+// when a poll finds the session dead the binary creates a Job from the
+// login CronJob and waits for the new session file.
+//
 // This binary never reads a username or password and never logs in; see
 // docs/connectors/powerschool.md. Fatal startup errors log one ERROR line
 // and exit non-zero.
@@ -84,42 +90,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// If the portal already refused this exact session, do not present it
-	// again: wait here, making no upstream requests, until the session
-	// source holds a different one (the login workload writes a new session
-	// and the mounted Secret is updated in place). A session delivered
-	// through the POWERSCHOOL_SESSION environment variable cannot change
-	// under a running process; there the wait lasts until the pod is
-	// replaced, which is still the right amount of upstream traffic: none.
 	stateDir := os.Getenv("GLOVEBOX_STATE_DIR")
-	rejected := connector.NewRejectedSession(stateDir)
-	// While it waits the framework's health server is not up. Answer the
-	// kubelet's probes ourselves (alive, not ready) so the pod is not
-	// restarted for waiting, and release the port before connector.Run
-	// binds it.
-	var waitHealth *powerschool.WaitHealth
-	session, err := powerschool.WaitForFreshSession(context.Background(), rejected,
-		func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
-		time.Minute,
-		func() {
-			h, err := powerschool.StartWaitHealth(healthAddr)
-			if err != nil {
-				slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
-				return
-			}
-			waitHealth = h
-		})
-	if stopErr := waitHealth.Stop(); stopErr != nil {
-		slog.Error("powerschool: could not release the health port", "error", stopErr)
-		os.Exit(1)
-	}
-	if err != nil {
-		// Missing, malformed or expired: the login job must produce a
-		// fresh session before the connector can come up.
-		slog.Error("powerschool: load session", "error", err)
-		os.Exit(1)
-	}
-	sessionFP := powerschool.SessionFingerprint(session)
+	clock := powerschool.SessionClock{Dir: stateDir}
 
 	// The session belongs to a real parent account. Every request the
 	// library makes goes through a transport pinned to this host that
@@ -128,45 +100,131 @@ func main() {
 	// assignments surface is enabled) and the portal's student-switcher
 	// form (only for the student ids configured here). No credentials are
 	// passed, so the library cannot re-authenticate.
+	//
+	// A client is built per session: when the session file changes, the
+	// gate below builds a new one. Each has its own transport and its own
+	// gateway-cookie overlay.
 	studentIDs := make([]string, 0, len(cfg.Kids))
 	for _, kid := range cfg.Kids {
 		studentIDs = append(studentIDs, kid.StudentID)
 	}
-	httpClient := powerschool.NewHTTPClient(host, cfg.AssignmentsEnabled(), studentIDs, 30*time.Second)
-	lib, err := pslib.NewClient(baseURL,
-		pslib.WithHTTPClient(httpClient),
-		pslib.WithHTTPPageFetch(),
-		pslib.WithSession(session.Cookies, session.ExpiresAt),
-		pslib.WithLogLevel(pslib.LogLevelWarn),
-	)
-	if err != nil {
-		slog.Error("powerschool: construct library client", "error", err)
-		os.Exit(1)
+	source := powerschool.SessionSource{
+		Load: func(now time.Time) (*pslib.SessionExport, bool, error) {
+			return powerschool.LoadSessionAdvisory(os.Getenv, now)
+		},
+		Build: func(session *pslib.SessionExport) (powerschool.PowerSchoolClient, powerschool.ProbeFunc, error) {
+			httpClient := powerschool.NewHTTPClient(host, cfg.AssignmentsEnabled(), studentIDs, 30*time.Second)
+			lib, err := pslib.NewClient(baseURL,
+				pslib.WithHTTPClient(httpClient),
+				pslib.WithHTTPPageFetch(),
+				pslib.WithSession(session.Cookies, session.ExpiresAt),
+				pslib.WithLogLevel(pslib.LogLevelWarn),
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			client, err := powerschool.NewProductionClient(lib)
+			if err != nil {
+				return nil, nil, err
+			}
+			return client, powerschool.NewSessionProbe(httpClient, baseURL, session), nil
+		},
+		FileAge:   func(now time.Time) (time.Duration, bool) { return powerschool.SessionFileAge(os.Getenv, now) },
+		FirstSeen: clock.FirstSeen,
 	}
 
-	client, err := powerschool.NewProductionClient(lib)
-	if err != nil {
-		slog.Error("powerschool: library cannot honour the read-only transport",
-			"library_version", libVersion, "error", err)
-		os.Exit(1)
-	}
-
-	c, err := powerschool.NewConnector(client, cfg, libVersion)
-	if err != nil {
-		slog.Error("powerschool: construct connector", "error", err)
-		os.Exit(1)
-	}
-	clock := powerschool.SessionClock{Dir: stateDir}
-	c.SessionFirstSeen = clock.FirstSeen(sessionFP, time.Now())
-	if age, ok := clock.LastRejectedAge(); ok {
-		c.PreviousRejectedAge = age
-	}
-	c.OnSessionRejected = func(age time.Duration) {
-		if err := rejected.Mark(sessionFP); err != nil {
-			slog.Error("powerschool: could not record rejected session", "error", err)
+	var c *powerschool.PowerSchoolConnector
+	if cfg.LoginOnDemand.Enabled {
+		// On-demand login: when a poll finds the session dead (or there is
+		// none yet), the connector asks for a login by creating a Job from
+		// the login CronJob and waits for the new session file. It does
+		// not log in and holds no credentials -- the Job is the login
+		// workload, with its own pod, identity and rules. So there is
+		// nothing to wait for at startup and no "rejected" marker: a dead
+		// session is simply replaced at the next poll.
+		kube, err := powerschool.NewInClusterKubeClient(os.Getenv, powerschool.ServiceAccountDir, cfg.LoginOnDemand.Namespace)
+		if err != nil {
+			slog.Error("powerschool: login_on_demand is enabled but the Kubernetes API is not usable from this pod",
+				"error", err)
+			os.Exit(1)
 		}
-		if err := clock.SaveRejectedAge(age); err != nil {
-			slog.Error("powerschool: could not record the rejected session's age", "error", err)
+		slog.Info("powerschool: on-demand login is enabled",
+			"cronjob", cfg.LoginOnDemand.CronJobName, "namespace", kube.Namespace(),
+			"wait_seconds", cfg.LoginOnDemand.WaitSeconds, "min_interval_minutes", cfg.LoginOnDemand.MinIntervalMinutes)
+		gate := powerschool.NewSessionGate(source, cfg.LoginOnDemand, kube)
+		c, err = powerschool.NewConnectorWithGate(gate, cfg, libVersion)
+		if err != nil {
+			slog.Error("powerschool: construct connector", "error", err)
+			os.Exit(1)
+		}
+		if age, ok := clock.LastRejectedAge(); ok {
+			c.PreviousRejectedAge = age
+		}
+		gateOnDead := clock.SaveRejectedAge
+		c.OnSessionAge = func(age time.Duration) {
+			if err := gateOnDead(age); err != nil {
+				slog.Error("powerschool: could not record the dead session's age", "error", err)
+			}
+		}
+	} else {
+		// Without on-demand login nobody in this process can replace a dead
+		// session. If the portal already refused this exact session, do not
+		// present it again: wait here, making no upstream requests, until
+		// the session source holds a different one (the login workload
+		// writes a new session and the mounted Secret is updated in place).
+		// A session delivered through the POWERSCHOOL_SESSION environment
+		// variable cannot change under a running process; there the wait
+		// lasts until the pod is replaced, which is still the right amount
+		// of upstream traffic: none.
+		rejected := connector.NewRejectedSession(stateDir)
+		// While it waits the framework's health server is not up. Answer
+		// the kubelet's probes ourselves (alive, not ready) so the pod is
+		// not restarted for waiting, and release the port before
+		// connector.Run binds it.
+		var waitHealth *powerschool.WaitHealth
+		_, err := powerschool.WaitForFreshSession(context.Background(), rejected,
+			func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
+			time.Minute,
+			func() {
+				h, err := powerschool.StartWaitHealth(healthAddr)
+				if err != nil {
+					slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
+					return
+				}
+				waitHealth = h
+			})
+		if stopErr := waitHealth.Stop(); stopErr != nil {
+			slog.Error("powerschool: could not release the health port", "error", stopErr)
+			os.Exit(1)
+		}
+		if err != nil {
+			// Missing, malformed or expired: the login job must produce a
+			// fresh session before the connector can come up.
+			slog.Error("powerschool: load session", "error", err)
+			os.Exit(1)
+		}
+
+		// The gate still checks the session at the start of every poll; it
+		// just cannot ask for a new one. A dead session takes the
+		// rejected-session path: mark it, exit, wait above.
+		gate := powerschool.NewSessionGate(source, powerschool.LoginOnDemandConfig{}, nil)
+		c, err = powerschool.NewConnectorWithGate(gate, cfg, libVersion)
+		if err != nil {
+			slog.Error("powerschool: construct connector", "error", err)
+			os.Exit(1)
+		}
+		if age, ok := clock.LastRejectedAge(); ok {
+			c.PreviousRejectedAge = age
+		}
+		c.OnSessionRejected = func(age time.Duration) {
+			if fp := gate.Fingerprint(); fp != "" {
+				if err := rejected.Mark(fp); err != nil {
+					slog.Error("powerschool: could not record rejected session", "error", err)
+				}
+			}
+			if err := clock.SaveRejectedAge(age); err != nil {
+				slog.Error("powerschool: could not record the rejected session's age", "error", err)
+			}
 		}
 	}
 

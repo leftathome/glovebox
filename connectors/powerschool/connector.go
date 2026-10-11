@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +71,19 @@ type PowerSchoolConnector struct {
 	// means none is known.
 	PreviousRejectedAge time.Duration
 
+	// OnSessionAge, when set, is called with the age of a session the
+	// pre-poll check found dead (time since this connector first loaded
+	// it). The binary records it so the measurement survives a restart.
+	OnSessionAge func(age time.Duration)
+
+	// Gate, when set, is consulted at the start of every poll: it checks
+	// that the session is still accepted before any kid is read and, with
+	// on-demand login enabled, gets a new one when it is not (see
+	// SessionGate). The client it returns is the one the poll uses; the
+	// `client` field is then only the fallback for a connector built
+	// without a gate (tests). Set before Run.
+	Gate *SessionGate
+
 	// Framework-provided; set by Wire().
 	wireMu  sync.Mutex
 	writer  connector.StagingBackend
@@ -116,6 +130,25 @@ func NewConnector(client PowerSchoolClient, cfg Config, libVersion string) (*Pow
 	if client == nil {
 		return nil, errors.New("powerschool: nil client")
 	}
+	return newConnector(client, cfg, libVersion)
+}
+
+// NewConnectorWithGate constructs a connector that takes its client from
+// gate at the start of each poll. With on-demand login there may be no
+// session, and so no client, when the process starts.
+func NewConnectorWithGate(gate *SessionGate, cfg Config, libVersion string) (*PowerSchoolConnector, error) {
+	if gate == nil {
+		return nil, errors.New("powerschool: nil session gate")
+	}
+	c, err := newConnector(nil, cfg, libVersion)
+	if err != nil {
+		return nil, err
+	}
+	c.Gate = gate
+	return c, nil
+}
+
+func newConnector(client PowerSchoolClient, cfg Config, libVersion string) (*PowerSchoolConnector, error) {
 	tz, err := loadTimezone(os.Getenv("POWERSCHOOL_TIMEZONE"))
 	if err != nil {
 		return nil, fmt.Errorf("powerschool: load timezone: %w", err)
@@ -310,7 +343,38 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	slog.Info("powerschool poll start",
 		"trigger_source", source, "poll_id", pollID, "kids_count", len(c.cfg.Kids))
 
-	env := Env{Client: c.client, Writer: writer, Matcher: matcher, CP: cp, Tel: tel, TZ: c.tz}
+	// Before any kid is read: is the session still accepted? A dead
+	// session is found here, by what the portal answers, and not later as
+	// a kid's page that "failed to parse".
+	client := c.client
+	if c.Gate != nil {
+		deadAge := time.Duration(-1)
+		c.Gate.OnDead = func(age time.Duration, _ string) {
+			deadAge = age
+			if age >= 0 {
+				tel.SetRejectedSessionAge(age)
+				if c.OnSessionAge != nil {
+					c.OnSessionAge(age)
+				}
+			}
+		}
+		gate := c.Gate.Ensure(ctx, cp)
+		switch gate.Outcome {
+		case GateSkip:
+			tel.RecordPollSkipped(gateSkipLabel(gate.Reason))
+			slog.Info("powerschool poll skipped",
+				"trigger_source", source, "poll_id", pollID, "skip_reason", gate.Reason)
+			return nil
+		case GateDead:
+			return c.sessionRejected(tel, nil, deadAge)
+		}
+		client = gate.Client
+	}
+	if client == nil {
+		return fmt.Errorf("powerschool: no client to poll with")
+	}
+
+	env := Env{Client: client, Writer: writer, Matcher: matcher, CP: cp, Tel: tel, TZ: c.tz}
 
 	total, kidsRead, authErr := c.pollKids(ctx, env)
 
@@ -324,28 +388,16 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	)
 
 	if authErr != nil {
-		slog.Error("powerschool session expired or rejected",
-			append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
-		// How long did this session last? The expiry in the session
-		// document is a placeholder, so this is the only measurement of
-		// the portal's real session lifetime. No identifier is logged.
-		age := time.Duration(-1)
-		if !c.SessionFirstSeen.IsZero() {
-			if age = c.now().Sub(c.SessionFirstSeen); age < 0 {
-				age = 0
-			}
-			tel.SetRejectedSessionAge(age)
-			slog.Info("powerschool session rejected: age since this connector first loaded it",
-				"session_age_seconds", int64(age/time.Second),
-				"session_age_hours", fmt.Sprintf("%.1f", age.Hours()))
+		if c.Gate.OnDemand() {
+			// The session died in the middle of the poll. With on-demand
+			// login that is not a reason to exit: the next poll's check
+			// finds it dead and asks for a new one. What was staged before
+			// it died stays staged; the rest is read next time.
+			slog.Warn("powerschool session stopped being accepted during the poll; the next poll will ask for a login",
+				append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
+			return nil
 		}
-		if c.OnSessionRejected != nil {
-			c.OnSessionRejected(age)
-		}
-		// The framework logs this error verbatim, so it carries no library
-		// text (errlog.go).
-		return connector.PermanentError(errors.New(
-			"powerschool session expired or rejected upstream (error_class=auth); a fresh session is required"))
+		return c.sessionRejected(tel, authErr, c.Gate.SessionAge())
 	}
 
 	if kidsRead > 0 {
@@ -366,6 +418,54 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		))
 	}
 	return nil
+}
+
+// sessionRejected is the path taken when the session is dead and nobody in
+// this process can replace it (on-demand login is off): report the session's
+// age, record the session as rejected, and return the PermanentError on
+// which the framework exits. The restarted process then waits, contacting
+// nothing, until the session file holds a different session.
+//
+// authErr is the library error that revealed it, or nil when the pre-poll
+// check did.
+func (c *PowerSchoolConnector) sessionRejected(tel *Telemetry, authErr error, knownAge time.Duration) error {
+	if authErr != nil {
+		slog.Error("powerschool session expired or rejected",
+			append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
+	} else {
+		slog.Error("powerschool session expired or rejected", "library_version", c.libVersion, "error_class", "auth")
+	}
+	// How long did this session last? The expiry in the session document
+	// is a placeholder, so this is the only measurement of the portal's
+	// real session lifetime. No identifier is logged.
+	age := knownAge
+	if age < 0 && !c.SessionFirstSeen.IsZero() {
+		if age = c.now().Sub(c.SessionFirstSeen); age < 0 {
+			age = 0
+		}
+	}
+	if age >= 0 {
+		tel.SetRejectedSessionAge(age)
+		slog.Info("powerschool session rejected: age since this connector first loaded it",
+			"session_age_seconds", int64(age/time.Second),
+			"session_age_hours", fmt.Sprintf("%.1f", age.Hours()))
+	}
+	if c.OnSessionRejected != nil {
+		c.OnSessionRejected(age)
+	}
+	// The framework logs this error verbatim, so it carries no library
+	// text (errlog.go).
+	return connector.PermanentError(errors.New(
+		"powerschool session expired or rejected upstream (error_class=auth); a fresh session is required"))
+}
+
+// gateSkipLabel reduces a skip reason to its bounded metric label: the
+// part before any ":" detail.
+func gateSkipLabel(reason string) string {
+	if i := strings.IndexByte(reason, ':'); i >= 0 {
+		return reason[:i]
+	}
+	return reason
 }
 
 // pollKids reads every configured kid, one at a time, in config order. It

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
+	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -374,7 +375,9 @@ func refuseWriteRedirects(req *http.Request, via []*http.Request) error {
 // the student-switch exception may post.
 //
 // The client has no cookie jar: the library attaches the session cookies to
-// each request itself, and a jar would let a response rewrite them.
+// each request itself. What a response sets is not stored either, with one
+// narrow exception that lives inside the pinned transport and dies with
+// this client: the gateway-cookie overlay below.
 func NewHTTPClient(host string, allowAssignmentLookup bool, switchStudentIDs []string, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:       timeout,
@@ -383,6 +386,11 @@ func NewHTTPClient(host string, allowAssignmentLookup bool, switchStudentIDs []s
 			Host:                  strings.ToLower(host),
 			AllowAssignmentLookup: allowAssignmentLookup,
 			SwitchStudentIDs:      append([]string(nil), switchStudentIDs...),
+			// Underneath the pin and the read-only rule: carry a cookie the
+			// access gateway renews in mid-request (see
+			// psportal.GatewayCookies). One per client, so one per stored
+			// session; nothing it collects is written anywhere.
+			Base: psportal.NewGatewayCookies(nil),
 		},
 	}
 }

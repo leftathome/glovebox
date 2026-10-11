@@ -62,6 +62,56 @@ func libraryVersionFrom(deps []*debug.Module) string {
 //
 // getenv is injected so tests need not mutate the process environment.
 func LoadSession(getenv func(string) string, now time.Time) (*pslib.SessionExport, error) {
+	raw, err := readSessionDocument(getenv)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSession(raw, now)
+}
+
+// LoadSessionAdvisory is LoadSession for the on-demand login mode, where
+// the document's expires_at is advice and not a verdict: a session past it
+// is returned with expired set, instead of being an error, so the caller
+// can ask for a new one. (The portal ends an idle session in well under an
+// hour, long before any expires_at the login job writes; what decides
+// whether a session is usable is the portal's answer.)
+//
+// A missing, unreadable or malformed document is still an error.
+func LoadSessionAdvisory(getenv func(string) string, now time.Time) (session *pslib.SessionExport, expired bool, err error) {
+	raw, err := readSessionDocument(getenv)
+	if err != nil {
+		return nil, false, err
+	}
+	s, err := parseSessionDocument(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return s, !s.ExpiresAt.After(now), nil
+}
+
+// SessionFileAge returns how long ago the session file was last written,
+// when the session is delivered as a file. ok is false when it is not, or
+// the file cannot be examined.
+func SessionFileAge(getenv func(string) string, now time.Time) (age time.Duration, ok bool) {
+	path := getenv("POWERSCHOOL_SESSION_FILE")
+	if path == "" {
+		return 0, false
+	}
+	// Stat follows the kubelet's ..data symlink to the file it last wrote.
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	age = now.Sub(info.ModTime())
+	if age < 0 {
+		age = 0
+	}
+	return age, true
+}
+
+// readSessionDocument returns the raw session document from the file or
+// the environment variable, file first.
+func readSessionDocument(getenv func(string) string) ([]byte, error) {
 	var raw []byte
 	switch {
 	case getenv("POWERSCHOOL_SESSION_FILE") != "":
@@ -75,7 +125,7 @@ func LoadSession(getenv func(string) string, now time.Time) (*pslib.SessionExpor
 	default:
 		return nil, fmt.Errorf("neither POWERSCHOOL_SESSION_FILE nor POWERSCHOOL_SESSION is set")
 	}
-	return ParseSession(raw, now)
+	return raw, nil
 }
 
 // SessionFingerprint returns a stable, non-reversible identifier for a
@@ -152,6 +202,19 @@ func WaitForFreshSession(ctx context.Context, rejected connector.RejectedSession
 // ParseSession decodes and validates a session document. Errors never
 // include the document: it is a live credential.
 func ParseSession(raw []byte, now time.Time) (*pslib.SessionExport, error) {
+	s, err := parseSessionDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !s.ExpiresAt.After(now) {
+		return nil, fmt.Errorf("session expired at %s", s.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	return s, nil
+}
+
+// parseSessionDocument decodes a session document and checks everything
+// about it except whether its expires_at has passed.
+func parseSessionDocument(raw []byte) (*pslib.SessionExport, error) {
 	var s pslib.SessionExport
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &s); err != nil {
 		return nil, fmt.Errorf("session is not valid JSON")
@@ -168,9 +231,6 @@ func ParseSession(raw []byte, now time.Time) (*pslib.SessionExport, error) {
 	}
 	if s.ExpiresAt.IsZero() {
 		return nil, fmt.Errorf("session has no expires_at")
-	}
-	if !s.ExpiresAt.After(now) {
-		return nil, fmt.Errorf("session expired at %s", s.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	return &s, nil
 }
