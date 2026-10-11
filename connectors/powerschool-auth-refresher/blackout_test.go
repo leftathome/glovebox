@@ -16,7 +16,7 @@ func mustZone(t *testing.T, name string) *time.Location {
 
 func defaultBlackout(t *testing.T) blackout {
 	t.Helper()
-	b, err := parseBlackout(defaultBlackoutStart, defaultBlackoutEnd, defaultBlackoutZone)
+	b, err := parseBlackout("", "", "", "")
 	if err != nil {
 		t.Fatalf("default blackout: %v", err)
 	}
@@ -116,44 +116,123 @@ func TestBlackoutAgainstHandComputedUTCInstants(t *testing.T) {
 	}
 }
 
-func TestBlackoutConfigurableAndWrapsMidnight(t *testing.T) {
-	b, err := parseBlackout("22:30", "02:15", "America/New_York")
-	if err != nil {
-		t.Fatal(err)
+// A login is refused when it could still be in progress inside the window:
+// from loginHeadroom (login timeout 90s + 60s margin) before the start.
+func TestBlackoutBlocksALoginThatCouldRunIntoTheWindow(t *testing.T) {
+	if loginTimeout != 90*time.Second || loginHeadroom != 150*time.Second {
+		t.Fatalf("this table assumes a 90s login timeout and 150s headroom; got %s and %s", loginTimeout, loginHeadroom)
 	}
-	ny := mustZone(t, "America/New_York")
-	for _, c := range []struct {
-		h, m, s int
-		inside  bool
-	}{
-		{22, 29, 59, false}, {22, 30, 0, true}, {23, 59, 59, true},
-		{0, 0, 0, true}, {2, 14, 59, true}, {2, 15, 0, false}, {12, 0, 0, false},
-	} {
-		at := time.Date(2026, 5, 4, c.h, c.m, c.s, 0, ny)
-		if got := b.contains(at); got != c.inside {
-			t.Errorf("%02d:%02d:%02d: contains = %v, want %v", c.h, c.m, c.s, got, c.inside)
+	b := defaultBlackout(t)
+	la := mustZone(t, "America/Los_Angeles")
+	for _, day := range blackoutDays {
+		for _, c := range []struct {
+			h, m, s int
+			blocked bool
+		}{
+			{15, 57, 29, false}, // ends 15:59:59
+			{15, 57, 30, true},  // could reach 16:00:00
+			{15, 58, 0, true},
+			{15, 58, 31, true}, // the 90s timeout alone reaches 16:00:01
+			{15, 59, 30, true},
+			{15, 59, 59, true},
+			{16, 0, 0, true},
+			{18, 30, 0, true},
+			{20, 59, 59, true},
+			{21, 0, 0, false},
+			{5, 0, 0, false},
+			{21, 5, 0, false},
+		} {
+			at := time.Date(2026, time.Month(day.month), day.day, c.h, c.m, c.s, 0, la).UTC()
+			if got := b.blocksLoginAt(at); got != c.blocked {
+				t.Errorf("%s %02d:%02d:%02d: blocksLoginAt = %v, want %v", day.name, c.h, c.m, c.s, got, c.blocked)
+			}
 		}
-	}
-	if b.String() != "22:30-02:15" {
-		t.Errorf("String() = %q", b.String())
 	}
 }
 
-func TestParseBlackoutRefusesWhatCouldSwitchTheGuardOff(t *testing.T) {
-	for _, c := range []struct{ name, start, end, zone string }{
-		{"empty window", "16:00", "16:00", "America/Los_Angeles"},
-		{"not a time", "4pm", "21:00", "America/Los_Angeles"},
-		{"hour out of range", "24:00", "21:00", "America/Los_Angeles"},
-		{"minute out of range", "16:60", "21:00", "America/Los_Angeles"},
-		{"single digit hour", "4:00", "21:00", "America/Los_Angeles"},
-		{"seconds given", "16:00:00", "21:00", "America/Los_Angeles"},
-		{"empty end", "16:00", "", "America/Los_Angeles"},
-		{"unknown zone", "16:00", "21:00", "America/Seattle"},
-		{"empty zone", "16:00", "21:00", " "},
-		{"Local zone", "16:00", "21:00", "Local"},
+func clockAt(t *testing.T, h, m int) time.Time {
+	t.Helper()
+	return time.Date(2026, 5, 4, h, m, 0, 0, mustZone(t, "America/Los_Angeles"))
+}
+
+// Configuration may widen the blackout: an earlier start, a later end, a
+// window that runs past midnight, further windows.
+func TestBlackoutCanBeWidened(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		start, end, extra string
+		inside, outside   [][2]int
+		want              string
+	}{
+		{"earlier start", "15:00", "", "", [][2]int{{15, 0}, {15, 30}, {16, 0}, {20, 59}}, [][2]int{{14, 59}, {21, 0}}, "16:00-21:00,15:00-21:00"},
+		{"later end", "", "22:30", "", [][2]int{{16, 0}, {22, 29}}, [][2]int{{15, 59}, {22, 30}}, "16:00-21:00,16:00-22:30"},
+		{"both", "14:00", "23:00", "", [][2]int{{14, 0}, {22, 59}}, [][2]int{{13, 59}, {23, 0}}, "16:00-21:00,14:00-23:00"},
+		{"past midnight", "15:00", "02:00", "", [][2]int{{15, 0}, {23, 59}, {0, 0}, {1, 59}, {18, 0}}, [][2]int{{2, 0}, {14, 59}}, "16:00-21:00,15:00-02:00"},
+		{"starting before midnight the day before", "23:00", "21:30", "", [][2]int{{23, 0}, {3, 0}, {16, 0}, {21, 29}}, [][2]int{{21, 30}, {22, 59}}, "16:00-21:00,23:00-21:30"},
+		{"extra windows", "", "", "07:30-08:30, 23:00-01:00", [][2]int{{7, 30}, {8, 29}, {23, 0}, {0, 59}, {18, 0}}, [][2]int{{7, 29}, {8, 30}, {1, 0}, {5, 0}}, "16:00-21:00,07:30-08:30,23:00-01:00"},
+		{"the floor spelled out", "16:00", "21:00", "", [][2]int{{16, 0}, {20, 59}}, [][2]int{{15, 59}, {21, 0}}, "16:00-21:00"},
+		{"nothing configured", "", "", "", nil, nil, "16:00-21:00"},
 	} {
-		if _, err := parseBlackout(c.start, c.end, c.zone); err == nil {
-			t.Errorf("%s: parseBlackout(%q, %q, %q) succeeded", c.name, c.start, c.end, c.zone)
+		b, err := parseBlackout(c.start, c.end, c.extra, "America/Los_Angeles")
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		for _, hm := range c.inside {
+			if !b.contains(clockAt(t, hm[0], hm[1])) {
+				t.Errorf("%s: %02d:%02d is not inside", c.name, hm[0], hm[1])
+			}
+		}
+		for _, hm := range c.outside {
+			if b.contains(clockAt(t, hm[0], hm[1])) {
+				t.Errorf("%s: %02d:%02d is inside", c.name, hm[0], hm[1])
+			}
+		}
+		if b.String() != c.want {
+			t.Errorf("%s: String() = %q, want %q", c.name, b.String(), c.want)
+		}
+	}
+}
+
+// Configuration cannot shorten the blackout, move it, change its zone or
+// empty it. Each attempt is a config error -- and the blackout returned
+// alongside the error still holds the floor, so no code path that ignored
+// the error could log in at 18:00.
+func TestBlackoutCannotBeWeakened(t *testing.T) {
+	la := mustZone(t, "America/Los_Angeles")
+	for _, c := range []struct{ name, start, end, extra, zone string }{
+		{"later start", "17:00", "21:00", "", ""},
+		{"earlier end", "16:00", "20:00", "", ""},
+		{"one minute short at the start", "16:01", "", "", ""},
+		{"one minute short at the end", "", "20:59", "", ""},
+		{"moved to the night", "22:00", "02:00", "", ""},
+		{"moved to the morning", "05:00", "09:00", "", ""},
+		{"inverted, leaving the afternoon out", "21:00", "16:00", "", ""},
+		{"empty window", "16:00", "16:00", "", ""},
+		{"another zone", "", "", "", "UTC"},
+		{"another zone that looks close", "", "", "", "America/Denver"},
+		{"Local zone", "", "", "", "Local"},
+		{"not a time", "4pm", "21:00", "", ""},
+		{"hour out of range", "24:00", "", "", ""},
+		{"minute out of range", "15:60", "", "", ""},
+		{"single digit hour", "4:00", "", "", ""},
+		{"seconds given", "16:00:00", "", "", ""},
+		{"malformed extra window", "", "", "0700-0800", ""},
+		{"extra window without an end", "", "", "07:00", ""},
+		{"empty extra window", "", "", "07:00-07:00", ""},
+	} {
+		b, err := parseBlackout(c.start, c.end, c.extra, c.zone)
+		if err == nil {
+			t.Errorf("%s: parseBlackout(%q, %q, %q, %q) succeeded", c.name, c.start, c.end, c.extra, c.zone)
+		}
+		if b.loc == nil || b.loc.String() != "America/Los_Angeles" {
+			t.Errorf("%s: the returned blackout is not in America/Los_Angeles", c.name)
+			continue
+		}
+		for _, hm := range [][3]int{{16, 0, 0}, {18, 30, 0}, {20, 59, 59}} {
+			if !b.contains(time.Date(2026, 5, 4, hm[0], hm[1], hm[2], 0, la)) {
+				t.Errorf("%s: the returned blackout does not cover %02d:%02d:%02d", c.name, hm[0], hm[1], hm[2])
+			}
 		}
 	}
 }

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +37,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.VaultKVMount != "secret" || cfg.VaultSessionPath != "glovebox/powerschool/default/session" {
 		t.Errorf("vault location = %q / %q", cfg.VaultKVMount, cfg.VaultSessionPath)
 	}
+	if cfg.VaultStatePath != "glovebox/powerschool/default/login-state" {
+		t.Errorf("state path = %q", cfg.VaultStatePath)
+	}
 	if cfg.Blackout.String() != "16:00-21:00" || cfg.Blackout.loc.String() != "America/Los_Angeles" {
 		t.Errorf("blackout = %s %s", cfg.Blackout, cfg.Blackout.loc)
 	}
@@ -58,7 +64,9 @@ func TestLoadConfigOverrides(t *testing.T) {
 	env["VAULT_CACERT"] = "/etc/vault-ca/tls-ca-bundle.pem"
 	env["POWERSCHOOL_BLACKOUT_START"] = "15:30"
 	env["POWERSCHOOL_BLACKOUT_END"] = "22:00"
-	env["POWERSCHOOL_BLACKOUT_TZ"] = "America/Denver"
+	env["POWERSCHOOL_BLACKOUT_EXTRA"] = "07:00-08:00"
+	env["POWERSCHOOL_BLACKOUT_TZ"] = "America/Los_Angeles"
+	env["VAULT_STATE_PATH"] = "/a/b/latch/"
 	env["POWERSCHOOL_MIN_SESSION_AGE"] = "30h"
 	env["POWERSCHOOL_SESSION_LIFETIME"] = "48h"
 	env["POWERSCHOOL_CHROME_NO_SANDBOX"] = "true"
@@ -76,7 +84,10 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.VaultCACert != "/etc/vault-ca/tls-ca-bundle.pem" {
 		t.Errorf("CA = %q", cfg.VaultCACert)
 	}
-	if cfg.Blackout.String() != "15:30-22:00" || cfg.Blackout.loc.String() != "America/Denver" {
+	if cfg.VaultStatePath != "a/b/latch" {
+		t.Errorf("state path = %q", cfg.VaultStatePath)
+	}
+	if cfg.Blackout.String() != "16:00-21:00,15:30-22:00,07:00-08:00" || cfg.Blackout.loc.String() != "America/Los_Angeles" {
 		t.Errorf("blackout = %s %s", cfg.Blackout, cfg.Blackout.loc)
 	}
 	if cfg.MinSessionAge != 30*time.Hour || cfg.SessionLifetime != 48*time.Hour || !cfg.ChromeNoSandbox {
@@ -99,6 +110,12 @@ func TestLoadConfigProblems(t *testing.T) {
 		"skip verify as 1":    {func(e map[string]string) { e["VAULT_SKIP_VERIFY"] = "1" }, "VAULT_SKIP_VERIFY"},
 		"empty blackout":      {func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_END"] = "16:00" }, "POWERSCHOOL_BLACKOUT"},
 		"bad blackout zone":   {func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_TZ"] = "Pacific" }, "POWERSCHOOL_BLACKOUT"},
+		"blackout zone moved": {func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_TZ"] = "UTC" }, "cannot be changed"},
+		"blackout shortened":  {func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_START"] = "18:00" }, "never shortened"},
+		"blackout ends early": {func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_END"] = "19:00" }, "never shortened"},
+		"state on the session": {func(e map[string]string) {
+			e["VAULT_STATE_PATH"] = "glovebox/powerschool/default/session"
+		}, "VAULT_STATE_PATH"},
 		"bad minimum age":     {func(e map[string]string) { e["POWERSCHOOL_MIN_SESSION_AGE"] = "ten hours" }, "POWERSCHOOL_MIN_SESSION_AGE"},
 		"negative min age":    {func(e map[string]string) { e["POWERSCHOOL_MIN_SESSION_AGE"] = "-1h" }, "POWERSCHOOL_MIN_SESSION_AGE"},
 		"lifetime too short":  {func(e map[string]string) { e["POWERSCHOOL_SESSION_LIFETIME"] = "5m" }, "POWERSCHOOL_SESSION_LIFETIME"},
@@ -149,5 +166,87 @@ func TestIsTruthy(t *testing.T) {
 		if got := isTruthy(v); got != want {
 			t.Errorf("isTruthy(%q) = %v, want %v", v, got, want)
 		}
+	}
+}
+
+// Whatever the blackout settings say, the configuration that comes back
+// never lets a login through at 18:00 Pacific -- even when it is reported
+// as a problem and the caller were to carry on regardless.
+func TestLoadConfigNeverYieldsABlackoutWithoutTheFloor(t *testing.T) {
+	sixPM := time.Date(2026, 10, 12, 18, 0, 0, 0, time.FixedZone("PDT", -7*3600))
+	for _, mutate := range []func(map[string]string){
+		func(e map[string]string) {},
+		func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_START"] = "19:00" },
+		func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_END"] = "17:00" },
+		func(e map[string]string) {
+			e["POWERSCHOOL_BLACKOUT_START"], e["POWERSCHOOL_BLACKOUT_END"] = "01:00", "02:00"
+		},
+		func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_TZ"] = "Asia/Tokyo" },
+		func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_START"] = "garbage" },
+		func(e map[string]string) { e["POWERSCHOOL_BLACKOUT_EXTRA"] = "garbage" },
+	} {
+		env := minimalEnv()
+		mutate(env)
+		cfg, _ := loadConfig(envOf(env))
+		if !cfg.Blackout.contains(sixPM) || !cfg.Blackout.blocksLoginAt(sixPM) {
+			t.Errorf("env %v: 18:00 Pacific is not blacked out", env)
+		}
+	}
+}
+
+// The password must not be in the environment the browser inherits.
+func TestScrubEnvironmentRemovesTheSecrets(t *testing.T) {
+	t.Setenv("POWERSCHOOL_PASSWORD", testPassword)
+	t.Setenv("POWERSCHOOL_USERNAME", testUsername)
+	t.Setenv("VAULT_TOKEN", "a-token")
+	t.Setenv("POWERSCHOOL_HOSTNAME", "portal.example.org")
+
+	cfg, _ := loadConfig(os.Getenv)
+	scrubEnvironment()
+
+	if cfg.Password != testPassword || cfg.Username != testUsername {
+		t.Fatal("the configuration lost the credentials")
+	}
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, testPassword) || strings.Contains(kv, testUsername) || strings.HasPrefix(kv, "VAULT_TOKEN=") {
+			t.Errorf("still in the environment a child process would inherit: %s", strings.SplitN(kv, "=", 2)[0])
+		}
+	}
+	// A child started now does not see them.
+	out, err := exec.Command("env").Output()
+	if err != nil {
+		t.Skipf("no env binary: %v", err)
+	}
+	if strings.Contains(string(out), testPassword) || strings.Contains(string(out), "POWERSCHOOL_USERNAME") {
+		t.Error("a child process inherited a credential")
+	}
+	if !strings.Contains(string(out), "POWERSCHOOL_HOSTNAME=portal.example.org") {
+		t.Error("the child lost the rest of the environment")
+	}
+}
+
+func TestWriteTerminationWritesOneBoundedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termination-log")
+	terminate := writeTermination(path)
+	terminate("powerschool-auth-refresher: outcome=blackout_refused exit=0: refused")
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "powerschool-auth-refresher: outcome=blackout_refused exit=0: refused\n" {
+		t.Errorf("termination log = %q, %v", got, err)
+	}
+	terminate(strings.Repeat("x", 10000))
+	if got, _ := os.ReadFile(path); len(got) > 1100 {
+		t.Errorf("termination message is %d bytes", len(got))
+	}
+	// Outside a pod the path does not exist; that must not be fatal.
+	writeTermination(filepath.Join(t.TempDir(), "no", "such", "dir", "log"))("ignored")
+}
+
+func TestRandomSaltIsRandomHex(t *testing.T) {
+	a, err := randomSalt()
+	if err != nil || len(a) != 32 {
+		t.Fatalf("randomSalt = %q, %v", a, err)
+	}
+	if b, _ := randomSalt(); a == b {
+		t.Error("two salts are equal")
 	}
 }

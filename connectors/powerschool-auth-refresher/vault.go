@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,12 +13,14 @@ import (
 	vaultk8s "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
-// vaultStore is the production sessionStore: one KV v2 path on a client
-// authenticated through the Kubernetes auth method.
+// vaultStore is the production sessionStore: two KV v2 paths (the session
+// and the login state) on a client authenticated through the Kubernetes
+// auth method.
 type vaultStore struct {
-	client *vaultapi.Client
-	mount  string
-	path   string
+	client    *vaultapi.Client
+	mount     string
+	path      string
+	statePath string
 }
 
 // newVaultStore authenticates to Vault with the pod's projected
@@ -60,36 +63,55 @@ func newVaultStore(ctx context.Context, cfg config) (*vaultStore, error) {
 	if _, err := client.Auth().Login(ctx, k8sAuth); err != nil {
 		return nil, fmt.Errorf("vault k8s login: %w", err)
 	}
-	return &vaultStore{client: client, mount: cfg.VaultKVMount, path: cfg.VaultSessionPath}, nil
+	return &vaultStore{
+		client:    client,
+		mount:     cfg.VaultKVMount,
+		path:      cfg.VaultSessionPath,
+		statePath: cfg.VaultStatePath,
+	}, nil
+}
+
+// get reads one KV v2 path. A path that does not exist returns nil data
+// and version 0; a deleted latest version returns nil data and its version.
+func (v *vaultStore) get(ctx context.Context, path string) (map[string]any, *vaultapi.KVVersionMetadata, error) {
+	secret, err := v.client.KVv2(v.mount).Get(ctx, path)
+	if err != nil {
+		if errors.Is(err, vaultapi.ErrSecretNotFound) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	if secret == nil {
+		return nil, nil, nil
+	}
+	return secret.Data, secret.VersionMetadata, nil
 }
 
 // Read implements sessionStore. A path that does not exist, a deleted
 // latest version and a secret without a session field all read as "none".
-func (v *vaultStore) Read(ctx context.Context) (*storedSession, error) {
-	secret, err := v.client.KVv2(v.mount).Get(ctx, v.path)
+func (v *vaultStore) Read(ctx context.Context) (*storedSession, int, error) {
+	data, meta, err := v.get(ctx, v.path)
 	if err != nil {
-		if errors.Is(err, vaultapi.ErrSecretNotFound) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, 0, err
 	}
-	if secret == nil || secret.Data == nil {
-		return nil, nil
+	version := 0
+	if meta != nil {
+		version = meta.Version
 	}
-	doc, _ := secret.Data["session"].(string)
+	doc, _ := data["session"].(string)
 	if strings.TrimSpace(doc) == "" {
-		return nil, nil
+		return nil, version, nil
 	}
 	stored := &storedSession{Document: doc}
-	if raw, ok := secret.Data["logged_in_at"].(string); ok {
+	if raw, ok := data["logged_in_at"].(string); ok {
 		if t, err := time.Parse(time.RFC3339, raw); err == nil {
 			stored.LoggedInAt = t
 		}
 	}
-	if stored.LoggedInAt.IsZero() && secret.VersionMetadata != nil {
-		stored.LoggedInAt = secret.VersionMetadata.CreatedTime
+	if stored.LoggedInAt.IsZero() && meta != nil {
+		stored.LoggedInAt = meta.CreatedTime
 	}
-	return stored, nil
+	return stored, version, nil
 }
 
 // CanWrite implements sessionStore by asking Vault what this token may do
@@ -115,9 +137,10 @@ func (v *vaultStore) CanWrite(ctx context.Context) (bool, error) {
 }
 
 // Write implements sessionStore. KVv2.Put adds the mount and the "/data/"
-// segment itself.
-func (v *vaultStore) Write(ctx context.Context, data map[string]any) (int, error) {
-	secret, err := v.client.KVv2(v.mount).Put(ctx, v.path, data)
+// segment itself. The write is check-and-set: Vault refuses it unless the
+// path is still at version cas (0 = must not exist yet).
+func (v *vaultStore) Write(ctx context.Context, data map[string]any, cas int) (int, error) {
+	secret, err := v.client.KVv2(v.mount).Put(ctx, v.path, data, vaultapi.WithCheckAndSet(cas))
 	if err != nil {
 		return 0, err
 	}
@@ -125,6 +148,72 @@ func (v *vaultStore) Write(ctx context.Context, data map[string]any) (int, error
 		return secret.VersionMetadata.Version, nil
 	}
 	return 0, nil
+}
+
+// Field names of the login state record. All values are strings, so the
+// record reads the same through `vault kv get` as through the API.
+const (
+	stateSalt        = "salt"
+	stateBlocked     = "login_blocked"
+	stateReason      = "blocked_reason"
+	stateBlockedAt   = "blocked_at"
+	stateFingerprint = "credential_fingerprint"
+	stateUnconfirmed = "unconfirmed_count"
+)
+
+// ReadState implements sessionStore.
+func (v *vaultStore) ReadState(ctx context.Context) (*loginState, error) {
+	data, _, err := v.get(ctx, v.statePath)
+	if err != nil {
+		return nil, err
+	}
+	state := &loginState{}
+	str := func(k string) string { s, _ := data[k].(string); return s }
+	state.Salt = str(stateSalt)
+	state.Blocked = str(stateBlocked) == "true"
+	state.BlockedReason = str(stateReason)
+	state.CredentialFingerprint = str(stateFingerprint)
+	if t, err := time.Parse(time.RFC3339, str(stateBlockedAt)); err == nil {
+		state.BlockedAt = t
+	}
+	if n, err := strconv.Atoi(str(stateUnconfirmed)); err == nil && n > 0 {
+		state.UnconfirmedCount = n
+	}
+	return state, nil
+}
+
+// WriteState implements sessionStore.
+func (v *vaultStore) WriteState(ctx context.Context, state *loginState) error {
+	data := map[string]any{
+		stateSalt:        state.Salt,
+		stateBlocked:     strconv.FormatBool(state.Blocked),
+		stateReason:      state.BlockedReason,
+		stateBlockedAt:   "",
+		stateFingerprint: state.CredentialFingerprint,
+		stateUnconfirmed: strconv.Itoa(state.UnconfirmedCount),
+	}
+	if !state.BlockedAt.IsZero() {
+		data[stateBlockedAt] = state.BlockedAt.UTC().Format(time.RFC3339)
+	}
+	_, err := v.client.KVv2(v.mount).Put(ctx, v.statePath, data)
+	return err
+}
+
+// Close revokes the Vault token, so that nothing which copied it during the
+// run (the browser runs as the same user and could read it from memory or
+// from the ServiceAccount token it was minted from) can use it afterwards.
+// Best effort, on its own short deadline: the run's context may be over.
+func (v *vaultStore) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = v.client.Auth().Token().RevokeSelfWithContext(ctx, "")
+	v.client.ClearToken()
+}
+
+// isCASMismatch reports whether a write was refused because the path was
+// no longer at the expected version.
+func isCASMismatch(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "check-and-set")
 }
 
 // isClientError reports whether a Vault error is a 4xx (the operator must

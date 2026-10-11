@@ -25,7 +25,8 @@ const (
 	testUsername    = "parent-account-7731"
 	testPassword    = "correct-horse-battery-staple-9"
 	testCookieValue = "cookie-value-5b1e7d9c4a"
-	testStudentID   = "424242"
+	testStudentID   = "sid-90817263-x"
+	testSalt        = "00112233445566778899aabbccddeeff"
 )
 
 // morning is a weekday instant well outside the blackout: 05:00 Pacific.
@@ -45,6 +46,7 @@ func testConfig(t *testing.T) config {
 		VaultK8sRole:     defaultVaultK8sRole,
 		VaultKVMount:     defaultVaultKVMount,
 		VaultSessionPath: defaultVaultSessionPath,
+		VaultStatePath:   "glovebox/powerschool/default/login-state",
 		Blackout:         defaultBlackout(t),
 		MinSessionAge:    defaultMinSessionAge,
 		SessionLifetime:  defaultSessionLifetime,
@@ -79,21 +81,36 @@ func storedAt(t *testing.T, loggedInAt time.Time) *storedSession {
 	return &storedSession{Document: data["session"].(string), LoggedInAt: loggedInAt}
 }
 
-// fakeStore is an in-memory sessionStore.
+// fakeStore is an in-memory sessionStore. It persists across runs of one
+// harness, as Vault does across runs of the job.
 type fakeStore struct {
 	stored      *storedSession
+	version     int
 	readErr     error
 	canWrite    bool
 	canWriteErr error
 	writeErrs   []error // consumed one per Write; nil entry or exhausted = success
 
-	reads, capChecks, writes int
-	written                  []map[string]any
+	state          *loginState // nil = nothing stored
+	readStateErr   error
+	writeStateErrs []error // consumed one per WriteState
+
+	// onRead, when set, runs after each Read (to simulate another run
+	// writing the path in between).
+	onRead func()
+
+	reads, capChecks, writes, stateWrites, closes int
+	written                                       []map[string]any
+	writtenCAS                                    []int
 }
 
-func (f *fakeStore) Read(context.Context) (*storedSession, error) {
+func (f *fakeStore) Read(context.Context) (*storedSession, int, error) {
 	f.reads++
-	return f.stored, f.readErr
+	stored, version := f.stored, f.version
+	if f.onRead != nil {
+		f.onRead()
+	}
+	return stored, version, f.readErr
 }
 
 func (f *fakeStore) CanWrite(context.Context) (bool, error) {
@@ -101,16 +118,48 @@ func (f *fakeStore) CanWrite(context.Context) (bool, error) {
 	return f.canWrite, f.canWriteErr
 }
 
-func (f *fakeStore) Write(_ context.Context, data map[string]any) (int, error) {
+func (f *fakeStore) Write(_ context.Context, data map[string]any, cas int) (int, error) {
 	f.writes++
 	if n := f.writes - 1; n < len(f.writeErrs) && f.writeErrs[n] != nil {
 		return 0, f.writeErrs[n]
 	}
+	if cas != f.version {
+		return 0, &vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 400,
+			Errors: []string{"check-and-set parameter did not match the current version"}}
+	}
+	f.version++
 	f.written = append(f.written, data)
-	return 7, nil
+	f.writtenCAS = append(f.writtenCAS, cas)
+	loggedInAt, _ := time.Parse(time.RFC3339, data["logged_in_at"].(string))
+	f.stored = &storedSession{Document: data["session"].(string), LoggedInAt: loggedInAt}
+	return f.version, nil
 }
 
-// harness wires run() to fakes and counts what happened.
+func (f *fakeStore) ReadState(context.Context) (*loginState, error) {
+	if f.readStateErr != nil {
+		return nil, f.readStateErr
+	}
+	if f.state == nil {
+		return &loginState{}, nil
+	}
+	copied := *f.state
+	return &copied, nil
+}
+
+func (f *fakeStore) WriteState(_ context.Context, state *loginState) error {
+	f.stateWrites++
+	if n := f.stateWrites - 1; n < len(f.writeStateErrs) && f.writeStateErrs[n] != nil {
+		return f.writeStateErrs[n]
+	}
+	copied := *state
+	f.state = &copied
+	return nil
+}
+
+func (f *fakeStore) Close() { f.closes++ }
+
+// harness wires run() to fakes and counts what happened. Counters are
+// cumulative over the harness's runs.
 type harness struct {
 	t     *testing.T
 	cfg   config
@@ -120,6 +169,10 @@ type harness struct {
 
 	connectErr error
 	connects   int
+
+	// signInErr is what the sign-in check returns.
+	signInErr    error
+	signInChecks int
 
 	// loginResults is consumed one per login; when exhausted a login
 	// succeeds. A nil entry is a success.
@@ -136,6 +189,9 @@ type harness struct {
 	onSleep func(time.Duration)
 	// onConnect, when set, runs when Vault is contacted.
 	onConnect func()
+
+	// terminations are the termination messages, one per run.
+	terminations []string
 }
 
 func newHarness(t *testing.T, at time.Time) *harness {
@@ -164,6 +220,10 @@ func (h *harness) deps() deps {
 			}
 			return h.store, nil
 		},
+		checkSignIn: func(context.Context) error {
+			h.signInChecks++
+			return h.signInErr
+		},
 		login: func(context.Context) (*pslib.SessionExport, error) {
 			h.logins++
 			if n := h.logins - 1; n < len(h.loginResults) && h.loginResults[n] != nil {
@@ -178,27 +238,34 @@ func (h *harness) deps() deps {
 			}
 			return testStudentID, nil
 		},
-		logger: slog.New(slog.NewJSONHandler(&h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		newSalt:   func() (string, error) { return testSalt, nil },
+		terminate: func(m string) { h.terminations = append(h.terminations, m) },
+		logger:    slog.New(slog.NewJSONHandler(&h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 }
 
 func (h *harness) run() int {
 	h.t.Helper()
+	before := len(h.terminations)
 	code := run(context.Background(), h.cfg, h.deps())
 	h.assertNoSecretsLogged()
+	if len(h.terminations) != before+1 {
+		h.t.Errorf("the run wrote %d termination messages, want exactly 1", len(h.terminations)-before)
+	}
 	return code
 }
 
-// assertNoSecretsLogged is applied to every run in this file.
+// assertNoSecretsLogged is applied to every run in this file: to the log
+// and to the termination messages.
 func (h *harness) assertNoSecretsLogged() {
 	h.t.Helper()
-	out := h.logs.String()
+	out := h.logs.String() + "\n" + strings.Join(h.terminations, "\n")
 	for name, secret := range map[string]string{
 		"password": testPassword, "username": testUsername,
 		"cookie value": testCookieValue, "student id": testStudentID,
 	} {
 		if strings.Contains(out, secret) {
-			h.t.Errorf("the %s appears in the log output:\n%s", name, out)
+			h.t.Errorf("the %s appears in the log or termination message:\n%s", name, out)
 		}
 	}
 }
@@ -212,11 +279,19 @@ func (h *harness) expect(code, wantCode, wantLogins, wantWrites int) {
 		h.t.Errorf("logins = %d, want %d", h.logins, wantLogins)
 	}
 	if h.store.writes != wantWrites {
-		h.t.Errorf("vault writes = %d, want %d", h.store.writes, wantWrites)
+		h.t.Errorf("vault session writes = %d, want %d", h.store.writes, wantWrites)
 	}
 }
 
 func (h *harness) logged(substr string) bool { return strings.Contains(h.logs.String(), substr) }
+
+// lastTermination is the termination message of the most recent run.
+func (h *harness) lastTermination() string {
+	if len(h.terminations) == 0 {
+		return ""
+	}
+	return h.terminations[len(h.terminations)-1]
+}
 
 var (
 	errBeforeSubmit = &loginError{kind: loginFailedBeforeSubmit, err: errors.New("page load error net::ERR_NAME_NOT_RESOLVED")}
@@ -228,29 +303,56 @@ var (
 
 // --- blackout -------------------------------------------------------------
 
-// The owner's rule, end to end through run(): a run at 16:00:00, 18:30 or
-// 20:59:59 Pacific contacts nothing and exits 0; one at 15:59:59 or 21:00:00
-// logs in. On every kind of day, both daylight-saving changes included, and
-// with the process clock in UTC as it is in the pod.
+// runClock are the instants a whole run is exercised at. A login may take
+// loginHeadroom (150s), so the last instant a run may start is 15:57:29.
+var runClock = []struct {
+	h, m, s int
+	refused bool
+}{
+	{15, 57, 29, false},
+	{15, 57, 30, true},
+	{15, 58, 0, true},
+	{15, 58, 31, true},
+	{15, 59, 30, true},
+	{15, 59, 59, true},
+	{16, 0, 0, true},
+	{18, 30, 0, true},
+	{20, 59, 59, true},
+	{21, 0, 0, false},
+	{5, 0, 0, false},
+	{21, 5, 0, false},
+	{0, 0, 0, false},
+}
+
+// The owner's rule, end to end through run(): a run that could log in
+// between 16:00:00 and 20:59:59 Pacific contacts nothing and exits 0; one
+// at 21:00:00, or early enough to be finished by 15:59:59, logs in. On
+// every kind of day, both daylight-saving changes included, and with the
+// process clock in UTC as it is in the pod.
 func TestRunRefusesInsideTheBlackoutAndProceedsOutsideIt(t *testing.T) {
 	la := mustZone(t, "America/Los_Angeles")
 	for _, day := range blackoutDays {
-		for _, c := range blackoutClock {
+		for _, c := range runClock {
 			at := time.Date(2026, time.Month(day.month), day.day, c.h, c.m, c.s, 0, la).UTC()
 			name := fmt.Sprintf("%s %02d:%02d:%02d", day.name, c.h, c.m, c.s)
 			t.Run(name, func(t *testing.T) {
 				h := newHarness(t, at)
 				code := h.run()
-				if c.inside {
+				if c.refused {
 					h.expect(code, exitSuccess, 0, 0)
-					if h.connects != 0 || h.probes != 0 {
-						t.Errorf("a refused run contacted Vault (%d) or the portal (%d)", h.connects, h.probes)
+					if h.connects != 0 || h.probes != 0 || h.signInChecks != 0 {
+						t.Errorf("a refused run contacted Vault (%d) or the portal (%d probes, %d sign-in checks)",
+							h.connects, h.probes, h.signInChecks)
 					}
 					if !h.logged(`"outcome":"blackout_refused"`) || !h.logged("refusing to log in") {
 						t.Errorf("no clear refusal line:\n%s", h.logs.String())
 					}
 					if !h.logged(`"blackout_window":"16:00-21:00"`) || !h.logged(`"blackout_timezone":"America/Los_Angeles"`) {
 						t.Errorf("the refusal does not name the window:\n%s", h.logs.String())
+					}
+					if msg := h.lastTermination(); !strings.Contains(msg, "outcome=blackout_refused exit=0") ||
+						!strings.Contains(msg, "16:00-21:00 America/Los_Angeles") {
+						t.Errorf("termination message = %q", msg)
 					}
 					return
 				}
@@ -261,11 +363,12 @@ func TestRunRefusesInsideTheBlackoutAndProceedsOutsideIt(t *testing.T) {
 }
 
 // The clock is read again immediately before the login: a run that started
-// at 15:59:50 and spent 20 seconds on Vault must not log in at 16:00:10.
+// in time and then spent 40 seconds on Vault must not start a login that
+// could run past 16:00.
 func TestRunRechecksTheBlackoutImmediatelyBeforeLoggingIn(t *testing.T) {
 	la := mustZone(t, "America/Los_Angeles")
-	h := newHarness(t, time.Date(2026, 10, 12, 15, 59, 50, 0, la))
-	h.onConnect = func() { h.clock = h.clock.Add(20 * time.Second) }
+	h := newHarness(t, time.Date(2026, 10, 12, 15, 57, 0, 0, la))
+	h.onConnect = func() { h.clock = h.clock.Add(40 * time.Second) }
 	code := h.run()
 	h.expect(code, exitSuccess, 0, 0)
 	if !h.logged(`"outcome":"blackout_refused"`) {
@@ -273,16 +376,38 @@ func TestRunRechecksTheBlackoutImmediatelyBeforeLoggingIn(t *testing.T) {
 	}
 }
 
-// The pause before the one permitted retry can carry the run into the
-// window. The second attempt is then not made.
+// The pause before the one permitted retry can carry the run to within the
+// headroom of the window. The second attempt is then not made.
 func TestRunDoesNotRetryIntoTheBlackout(t *testing.T) {
 	la := mustZone(t, "America/Los_Angeles")
-	h := newHarness(t, time.Date(2026, 10, 12, 15, 59, 55, 0, la))
+	h := newHarness(t, time.Date(2026, 10, 12, 15, 57, 25, 0, la))
 	h.loginResults = []error{errBeforeSubmit}
 	code := h.run()
 	h.expect(code, exitTransient, 1, 0)
 	if !h.logged(`"outcome":"blackout_refused"`) {
 		t.Errorf("no refusal line:\n%s", h.logs.String())
+	}
+}
+
+// A widened blackout is enforced like the floor.
+func TestRunHonoursAWidenedBlackout(t *testing.T) {
+	la := mustZone(t, "America/Los_Angeles")
+	wide, err := parseBlackout("15:00", "22:00", "06:00-07:00", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		h, m    int
+		refused bool
+	}{{14, 58, true}, {14, 50, false}, {15, 30, true}, {21, 30, true}, {22, 0, false}, {6, 30, true}, {5, 57, false}, {5, 58, true}} {
+		h := newHarness(t, time.Date(2026, 10, 12, c.h, c.m, 0, 0, la))
+		h.cfg.Blackout = wide
+		code := h.run()
+		if c.refused {
+			h.expect(code, exitSuccess, 0, 0)
+		} else {
+			h.expect(code, exitSuccess, 1, 1)
+		}
 	}
 }
 
@@ -299,11 +424,15 @@ func TestRunSkipsLoginWhenStoredSessionIsYoungAndStillAccepted(t *testing.T) {
 	if !h.logged("session still good") || !h.logged(`"outcome":"session_still_good"`) {
 		t.Errorf("no 'session still good' line:\n%s", h.logs.String())
 	}
+	if h.signInChecks != 0 || h.store.stateWrites != 0 {
+		t.Errorf("a skipped run fetched the sign-in page (%d) or wrote state (%d)", h.signInChecks, h.store.stateWrites)
+	}
 }
 
 func TestRunLogsInWhenYoungSessionIsNoLongerAccepted(t *testing.T) {
 	h := newHarness(t, morning(t))
 	h.store.stored = storedAt(t, h.clock.Add(-3*time.Hour))
+	h.store.version = 4
 	h.probeResults = []error{errSessionGone}
 	h.expect(h.run(), exitSuccess, 1, 1)
 }
@@ -448,24 +577,260 @@ func TestRunWaitsBeforeTheSingleRetry(t *testing.T) {
 	}
 }
 
-func TestRunRejectedCredentialsAreNamedAndNotRetried(t *testing.T) {
+// --- the latch: rejected credentials (I1) ----------------------------------
+
+// A rejected login sets the latch. Every later run with the same
+// credentials refuses, exit 6, without starting a browser or touching the
+// portal. A changed password lifts it.
+func TestRejectedCredentialsBlockEveryLaterRunUntilTheyChange(t *testing.T) {
 	h := newHarness(t, morning(t))
 	h.loginResults = []error{errRejected}
 	h.expect(h.run(), exitBadCredentials, 1, 0)
 	if !h.logged(`"outcome":"bad_credentials"`) {
 		t.Errorf("no bad_credentials line:\n%s", h.logs.String())
 	}
+	st := h.store.state
+	if st == nil || !st.Blocked || st.BlockedReason != blockedCredentialsRejected {
+		t.Fatalf("latch not set: %+v", st)
+	}
+	if !st.BlockedAt.Equal(h.clock.UTC()) {
+		t.Errorf("blocked_at = %s, want %s", st.BlockedAt, h.clock.UTC())
+	}
+	if st.CredentialFingerprint != credentialFingerprint(testSalt, testUsername, testPassword) {
+		t.Errorf("the latch does not carry the fingerprint of the credentials used")
+	}
+
+	// The next ten scheduled runs: none starts a browser.
+	for i := 0; i < 10; i++ {
+		h.clock = h.clock.Add(24 * time.Hour)
+		probesBefore, signInBefore := h.probes, h.signInChecks
+		code := h.run()
+		h.expect(code, exitLoginBlocked, 1, 0)
+		if h.probes != probesBefore || h.signInChecks != signInBefore {
+			t.Fatalf("a blocked run contacted the portal")
+		}
+	}
+	if !h.logged(`"outcome":"login_blocked"`) || !h.logged("login blocked") {
+		t.Errorf("no login_blocked line:\n%s", h.logs.String())
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "outcome=login_blocked exit=6") ||
+		!strings.Contains(msg, "credentials_rejected") || !strings.Contains(msg, h.cfg.VaultStatePath) {
+		t.Errorf("termination message = %q", msg)
+	}
+
+	// The operator corrects the password: the run proceeds, and a
+	// confirmed login leaves no block behind.
+	h.cfg.Password = "a-new-password-entirely-4"
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.expect(h.run(), exitSuccess, 2, 1)
+	if h.store.state.Blocked || h.store.state.UnconfirmedCount != 0 {
+		t.Errorf("state after a confirmed login: %+v", h.store.state)
+	}
+	if strings.Contains(h.logs.String(), "a-new-password-entirely-4") {
+		t.Error("the new password appears in the log")
+	}
 }
 
-// --- confirmation ---------------------------------------------------------
+// A new password that is also wrong is blocked in its turn, under its own
+// fingerprint: one submission per password, not one per run.
+func TestAChangedButStillWrongPasswordIsSubmittedOnce(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.loginResults = []error{errRejected, errRejected, errRejected}
+	h.expect(h.run(), exitBadCredentials, 1, 0)
+	h.expect(h.run(), exitLoginBlocked, 1, 0)
 
-func TestRunDoesNotStoreASessionThePortalDoesNotAccept(t *testing.T) {
+	h.cfg.Password = "second-wrong-password"
+	h.expect(h.run(), exitBadCredentials, 2, 0)
+	h.expect(h.run(), exitLoginBlocked, 2, 0)
+	h.expect(h.run(), exitLoginBlocked, 2, 0)
+}
+
+// The operator clears the latch by deleting the state record.
+func TestClearingTheStateRecordLiftsTheBlock(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.loginResults = []error{errRejected}
+	h.expect(h.run(), exitBadCredentials, 1, 0)
+	h.expect(h.run(), exitLoginBlocked, 1, 0)
+
+	h.store.state = nil // vault kv metadata delete .../login-state
+	h.expect(h.run(), exitSuccess, 2, 1)
+}
+
+// The fingerprint is salted and never contains the values.
+func TestCredentialFingerprint(t *testing.T) {
+	fp := credentialFingerprint(testSalt, testUsername, testPassword)
+	if len(fp) != 64 || strings.Contains(fp, testPassword) || strings.Contains(fp, testUsername) {
+		t.Errorf("fingerprint = %q", fp)
+	}
+	for name, other := range map[string]string{
+		"another salt":     credentialFingerprint("ffeeddccbbaa99887766554433221100", testUsername, testPassword),
+		"another password": credentialFingerprint(testSalt, testUsername, testPassword+"x"),
+		"another username": credentialFingerprint(testSalt, testUsername+"x", testPassword),
+		"shifted boundary": credentialFingerprint(testSalt, testUsername+"c", strings.TrimPrefix(testPassword, "c")),
+	} {
+		if other == fp {
+			t.Errorf("%s gives the same fingerprint", name)
+		}
+	}
+	if credentialFingerprint(testSalt, testUsername, testPassword) != fp {
+		t.Error("the fingerprint is not stable")
+	}
+}
+
+// The salt is generated once and kept.
+func TestTheSaltIsKeptAcrossRuns(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.expect(h.run(), exitSuccess, 1, 1)
+	if h.store.state == nil || h.store.state.Salt != testSalt {
+		t.Fatalf("state = %+v", h.store.state)
+	}
+	h.store.state.Salt = "a-salt-from-an-earlier-run"
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.expect(h.run(), exitSuccess, 2, 2)
+	if h.store.state.Salt != "a-salt-from-an-earlier-run" {
+		t.Errorf("the salt was replaced: %q", h.store.state.Salt)
+	}
+}
+
+// If the state record cannot be written, a rejection could not be recorded
+// either. The run stops BEFORE the login.
+func TestRunDoesNotLogInWhenTheLatchCannotBeWritten(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.store.writeStateErrs = []error{vaultStatus(403)}
+	h.expect(h.run(), exitVaultRejected, 0, 0)
+
+	h = newHarness(t, morning(t))
+	h.store.writeStateErrs = []error{vaultStatus(503), vaultStatus(503), vaultStatus(503)}
+	h.expect(h.run(), exitTransient, 0, 0)
+
+	h = newHarness(t, morning(t))
+	h.store.readStateErr = vaultStatus(403)
+	h.expect(h.run(), exitVaultRejected, 0, 0)
+	if h.store.reads != 0 {
+		t.Error("the session was read although the state could not be")
+	}
+}
+
+// --- the latch: unconfirmed logins (I2) ------------------------------------
+
+// A login that returns without a working session (a CAPTCHA, a second
+// factor, an expired password: the library sees no error notice and reports
+// success) is login_unconfirmed. Nothing is written. The second in a row
+// sets the latch, so the job stops ending the connector's session twice a
+// day without ever replacing it.
+func TestTwoUnconfirmedLoginsInARowBlockFurtherLogins(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.probeResults = []error{errSessionGone, errSessionGone}
+
+	h.expect(h.run(), exitLoginUnconfirmed, 1, 0)
+	if !h.logged(`"outcome":"login_unconfirmed"`) {
+		t.Errorf("no login_unconfirmed line:\n%s", h.logs.String())
+	}
+	if st := h.store.state; st == nil || st.Blocked || st.UnconfirmedCount != 1 {
+		t.Fatalf("after one unconfirmed login: %+v", st)
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "outcome=login_unconfirmed exit=5") {
+		t.Errorf("termination message = %q", msg)
+	}
+
+	h.clock = h.clock.Add(16 * time.Hour)
+	h.expect(h.run(), exitLoginUnconfirmed, 2, 0)
+	if st := h.store.state; !st.Blocked || st.BlockedReason != blockedLoginUnconfirmed || st.UnconfirmedCount != 2 {
+		t.Fatalf("after two unconfirmed logins: %+v", st)
+	}
+
+	for i := 0; i < 5; i++ {
+		h.clock = h.clock.Add(12 * time.Hour)
+		h.expect(h.run(), exitLoginBlocked, 2, 0)
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "login_unconfirmed") {
+		t.Errorf("termination message = %q", msg)
+	}
+	if h.store.writes != 0 {
+		t.Error("an unconfirmed session was written")
+	}
+}
+
+// Only a CONFIRMED login resets the count: unconfirmed, confirmed,
+// unconfirmed does not block.
+func TestAConfirmedLoginResetsTheUnconfirmedCount(t *testing.T) {
 	h := newHarness(t, morning(t))
 	h.probeResults = []error{errSessionGone}
 	h.expect(h.run(), exitLoginUnconfirmed, 1, 0)
-	if h.probes != 1 {
-		t.Errorf("probes = %d, want 1: a refused session is not asked about again", h.probes)
+
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.expect(h.run(), exitSuccess, 2, 1)
+	if h.store.state.UnconfirmedCount != 0 {
+		t.Fatalf("count after a confirmed login = %d", h.store.state.UnconfirmedCount)
 	}
+
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.probeResults = []error{errSessionGone, nil, errSessionGone}
+	h.expect(h.run(), exitLoginUnconfirmed, 3, 1)
+	if st := h.store.state; st.Blocked || st.UnconfirmedCount != 1 {
+		t.Fatalf("one unconfirmed login after a confirmed one: %+v", st)
+	}
+}
+
+// Runs that do not log in at all leave the count alone: a transient
+// failure, a skipped run or a blackout refusal between two unconfirmed
+// logins does not hide that they were consecutive.
+func TestRunsWithoutALoginDoNotResetTheUnconfirmedCount(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.probeResults = []error{errSessionGone}
+	h.expect(h.run(), exitLoginUnconfirmed, 1, 0)
+
+	h.clock = h.clock.Add(12 * time.Hour) // 17:00: blackout
+	h.expect(h.run(), exitSuccess, 1, 0)
+
+	h.clock = h.clock.Add(12 * time.Hour)
+	h.loginResults = []error{nil, errBeforeSubmit, errBeforeSubmit}
+	h.expect(h.run(), exitTransient, 3, 0)
+	if st := h.store.state; st.Blocked || st.UnconfirmedCount != 1 {
+		t.Fatalf("state = %+v", st)
+	}
+
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.probeResults = []error{errSessionGone, errSessionGone}
+	h.expect(h.run(), exitLoginUnconfirmed, 4, 0)
+	if !h.store.state.Blocked {
+		t.Fatalf("the second unconfirmed login did not block: %+v", h.store.state)
+	}
+}
+
+// Every way a login can come back without a usable session counts.
+func TestEveryKindOfUnconfirmedLoginCounts(t *testing.T) {
+	t.Run("the home page could not be read", func(t *testing.T) {
+		h := newHarness(t, morning(t))
+		h.probeResults = []error{errNetwork, errNetwork, errNetwork}
+		h.expect(h.run(), exitLoginUnconfirmed, 1, 0)
+		if h.probes != verifyAttempts || h.store.state.UnconfirmedCount != 1 {
+			t.Errorf("probes = %d, count = %d", h.probes, h.store.state.UnconfirmedCount)
+		}
+	})
+	t.Run("no cookies", func(t *testing.T) {
+		h := newHarness(t, morning(t))
+		d := h.deps()
+		d.login = func(context.Context) (*pslib.SessionExport, error) {
+			h.logins++
+			return &pslib.SessionExport{Cookies: []*http.Cookie{{Name: "x"}}, ExpiresAt: h.clock.Add(time.Hour)}, nil
+		}
+		code := run(context.Background(), h.cfg, d)
+		h.expect(code, exitLoginUnconfirmed, 1, 0)
+		if h.store.state.UnconfirmedCount != 1 {
+			t.Errorf("count = %d", h.store.state.UnconfirmedCount)
+		}
+	})
+	t.Run("no session at all", func(t *testing.T) {
+		h := newHarness(t, morning(t))
+		d := h.deps()
+		d.login = func(context.Context) (*pslib.SessionExport, error) { h.logins++; return nil, nil }
+		code := run(context.Background(), h.cfg, d)
+		h.expect(code, exitLoginUnconfirmed, 1, 0)
+		if h.store.state.UnconfirmedCount != 1 {
+			t.Errorf("count = %d", h.store.state.UnconfirmedCount)
+		}
+	})
 }
 
 func TestRunRetriesTheConfirmingReadButNeverTheLogin(t *testing.T) {
@@ -477,22 +842,49 @@ func TestRunRetriesTheConfirmingReadButNeverTheLogin(t *testing.T) {
 	}
 
 	h = newHarness(t, morning(t))
-	h.probeResults = []error{errNetwork, errNetwork, errNetwork, errNetwork}
+	h.probeResults = []error{errSessionGone}
 	h.expect(h.run(), exitLoginUnconfirmed, 1, 0)
-	if h.probes != verifyAttempts {
-		t.Errorf("probes = %d, want %d", h.probes, verifyAttempts)
+	if h.probes != 1 {
+		t.Errorf("probes = %d, want 1: a refused session is not asked about again", h.probes)
 	}
 }
 
-func TestRunRefusesALoginThatReturnedNoCookies(t *testing.T) {
+// --- the sign-in page check (M3) -------------------------------------------
+
+func TestRunDoesNotStartTheBrowserOnAnUnrecognisedSignInPage(t *testing.T) {
 	h := newHarness(t, morning(t))
-	d := h.deps()
-	d.login = func(context.Context) (*pslib.SessionExport, error) {
-		h.logins++
-		return &pslib.SessionExport{Cookies: []*http.Cookie{{Name: "x"}}, ExpiresAt: h.clock.Add(time.Hour)}, nil
+	h.signInErr = &signInError{reason: "form_posts_off_host"}
+	h.expect(h.run(), exitSignInUnrecognised, 0, 0)
+	if h.signInChecks != 1 {
+		t.Errorf("sign-in checks = %d, want 1: it is not retried within a run", h.signInChecks)
 	}
-	code := run(context.Background(), h.cfg, d)
-	h.expect(code, exitLoginUnconfirmed, 1, 0)
+	if !h.logged(`"outcome":"signin_page_unrecognised"`) || !h.logged(`"reason":"form_posts_off_host"`) {
+		t.Errorf("log:\n%s", h.logs.String())
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "outcome=signin_page_unrecognised exit=7") {
+		t.Errorf("termination message = %q", msg)
+	}
+	if h.store.stateWrites != 0 {
+		t.Error("state was written although no login was attempted")
+	}
+}
+
+func TestRunDoesNotStartTheBrowserWhenTheSignInPageCannotBeFetched(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.signInErr = errors.New("dial tcp: lookup portal.example.org: no such host")
+	h.expect(h.run(), exitTransient, 0, 0)
+	if h.signInChecks != 1 {
+		t.Errorf("sign-in checks = %d, want 1", h.signInChecks)
+	}
+}
+
+func TestRunChecksTheSignInPageOnceBeforeLoggingIn(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.loginResults = []error{errBeforeSubmit}
+	h.expect(h.run(), exitSuccess, 2, 1)
+	if h.signInChecks != 1 {
+		t.Errorf("sign-in checks = %d, want 1", h.signInChecks)
+	}
 }
 
 // --- vault ----------------------------------------------------------------
@@ -547,6 +939,88 @@ func TestRunDoesNotRetryARefusedWrite(t *testing.T) {
 	h.expect(h.run(), exitVaultRejected, 1, 1)
 }
 
+// The Vault token is revoked at the end of every run that obtained one.
+func TestRunRevokesTheVaultTokenOnEveryPath(t *testing.T) {
+	for name, setup := range map[string]func(h *harness){
+		"success":           func(h *harness) {},
+		"session good":      func(h *harness) { h.store.stored = storedAt(h.t, h.clock.Add(-time.Hour)) },
+		"rejected":          func(h *harness) { h.loginResults = []error{errRejected} },
+		"unconfirmed":       func(h *harness) { h.probeResults = []error{errSessionGone} },
+		"write refused":     func(h *harness) { h.store.writeErrs = []error{vaultStatus(403)} },
+		"state unreadable":  func(h *harness) { h.store.readStateErr = vaultStatus(403) },
+		"sign-in not known": func(h *harness) { h.signInErr = &signInError{reason: "no_password_form"} },
+		"blocked": func(h *harness) {
+			h.store.state = &loginState{Salt: testSalt, Blocked: true, BlockedReason: blockedCredentialsRejected,
+				CredentialFingerprint: credentialFingerprint(testSalt, testUsername, testPassword)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, morning(t))
+			setup(h)
+			h.run()
+			if h.store.closes != 1 {
+				t.Errorf("Close calls = %d, want 1", h.store.closes)
+			}
+		})
+	}
+}
+
+// --- check-and-set on the session write ------------------------------------
+
+// The write names the version read before the login.
+func TestRunWritesTheSessionCheckAndSet(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.expect(h.run(), exitSuccess, 1, 1)
+	if h.store.writtenCAS[0] != 0 {
+		t.Errorf("first write cas = %d, want 0 (must not exist yet)", h.store.writtenCAS[0])
+	}
+	h.clock = h.clock.Add(24 * time.Hour)
+	h.expect(h.run(), exitSuccess, 2, 2)
+	if h.store.writtenCAS[1] != 1 {
+		t.Errorf("second write cas = %d, want 1", h.store.writtenCAS[1])
+	}
+}
+
+// Another run (a manual Job beside the scheduled one) stored a session
+// while this one was logging in. The portal keeps only the later login.
+func TestRunDoesNotStoreASessionAnotherRunSuperseded(t *testing.T) {
+	overlap := func(h *harness) {
+		first := true
+		h.store.onRead = func() {
+			if first { // after this run's read, the other run writes
+				first = false
+				h.store.version++
+				h.store.stored = storedAt(h.t, h.clock)
+			}
+		}
+	}
+
+	t.Run("the other login was later: ours is dead and is not stored", func(t *testing.T) {
+		h := newHarness(t, morning(t))
+		overlap(h)
+		h.probeResults = []error{nil, errSessionGone} // confirmed, then refused on the re-check
+		h.expect(h.run(), exitTransient, 1, 1)
+		if len(h.store.written) != 0 || h.store.version != 1 {
+			t.Errorf("the superseded session replaced the other run's")
+		}
+		if !h.logged(`"outcome":"superseded"`) {
+			t.Errorf("log:\n%s", h.logs.String())
+		}
+	})
+
+	t.Run("the other login was earlier: ours is alive and replaces it", func(t *testing.T) {
+		h := newHarness(t, morning(t))
+		overlap(h)
+		h.expect(h.run(), exitSuccess, 1, 2)
+		if len(h.store.written) != 1 || h.store.writtenCAS[0] != 1 || h.store.version != 2 {
+			t.Errorf("written = %d, cas = %v, version = %d", len(h.store.written), h.store.writtenCAS, h.store.version)
+		}
+		if h.probes != 2 {
+			t.Errorf("probes = %d, want the confirmation and one re-check", h.probes)
+		}
+	})
+}
+
 // --- what is written ------------------------------------------------------
 
 func TestRunWritesTheSessionWithItsLoginTimeAndExpiry(t *testing.T) {
@@ -582,6 +1056,9 @@ func TestRunWritesTheSessionWithItsLoginTimeAndExpiry(t *testing.T) {
 	}
 	if len(doc.Cookies) != 2 {
 		t.Errorf("cookies = %d, want the 2 with a name and a value", len(doc.Cookies))
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "outcome=success exit=0") {
+		t.Errorf("termination message = %q", msg)
 	}
 }
 
@@ -661,6 +1138,18 @@ func TestRunRedactsCredentialsFromErrorText(t *testing.T) {
 	h = newHarness(t, morning(t))
 	h.store.writeErrs = []error{fmt.Errorf("permission denied for %s", testPassword)}
 	h.expect(h.run(), exitVaultRejected, 1, 1)
+
+	h = newHarness(t, morning(t))
+	h.signInErr = leaky
+	h.expect(h.run(), exitTransient, 0, 0)
+
+	h = newHarness(t, morning(t))
+	h.loginResults = []error{errRejected}
+	h.store.writeStateErrs = []error{nil, fmt.Errorf("permission denied for %s", testPassword)}
+	h.expect(h.run(), exitBadCredentials, 1, 0)
+	if !h.logged("COULD NOT RECORD THE LOGIN BLOCK") {
+		t.Errorf("a latch that could not be written was not reported:\n%s", h.logs.String())
+	}
 }
 
 // A portal-side error is never logged as text: its message can carry a

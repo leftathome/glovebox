@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +20,8 @@ import (
 const (
 	// exitSuccess covers every run that did what it should, including the
 	// two that deliberately do nothing: a run inside the blackout window
-	// and a run that found the stored session still good.
+	// (so the CronJob is not marked failed for obeying its rule) and a run
+	// that found the stored session still good.
 	exitSuccess = 0
 	// exitTransient: something outside the operator's control failed
 	// (browser, network, Vault unavailable). The next scheduled run is the
@@ -26,13 +29,20 @@ const (
 	exitTransient = 1
 	// exitConfigError: a required setting is missing or malformed.
 	exitConfigError = 2
-	// exitBadCredentials: the portal refused the username/password.
+	// exitBadCredentials: the portal refused the username/password. The
+	// latch is set; later runs exit exitLoginBlocked.
 	exitBadCredentials = 3
 	// exitVaultRejected: Vault refused a read or write (policy or path).
 	exitVaultRejected = 4
 	// exitLoginUnconfirmed: the browser login returned, but the session it
 	// produced did not open the signed-in home page. Nothing was written.
 	exitLoginUnconfirmed = 5
+	// exitLoginBlocked: the latch is set. No browser was started. An
+	// operator must change the credentials or clear the latch.
+	exitLoginBlocked = 6
+	// exitSignInUnrecognised: the portal's sign-in page is not one this
+	// binary will type a password into. No browser was started.
+	exitSignInUnrecognised = 7
 )
 
 const (
@@ -45,11 +55,20 @@ const (
 	// verifyAttempts bounds the read-only home-page checks after a login.
 	verifyAttempts = 3
 	verifyDelay    = 5 * time.Second
-	// writeAttempts bounds the Vault write after a login. Retrying it is
-	// safe (it is not a login) and worth it: a session that is not stored
-	// was bought with the previous session and is then thrown away.
+	// writeAttempts bounds a Vault write after a login. Retrying it is safe
+	// (it is not a login) and worth it: a session that is not stored was
+	// bought with the previous session and is then thrown away.
 	writeAttempts = 3
 	writeDelay    = 5 * time.Second
+	// maxUnconfirmedLogins is how many logins in a row may return without a
+	// working session before the latch stops further submissions.
+	maxUnconfirmedLogins = 2
+)
+
+// Reasons the latch is set (loginState.BlockedReason).
+const (
+	blockedCredentialsRejected = "credentials_rejected"
+	blockedLoginUnconfirmed    = "login_unconfirmed"
 )
 
 // loginFailure says what a failed login means for a second attempt.
@@ -87,6 +106,10 @@ func failureKind(err error) loginFailure {
 	return loginFailedUnknown
 }
 
+// errSignInUnrecognised is returned (wrapped) by a sign-in check when the
+// page it fetched is not one to type the account's password into.
+var errSignInUnrecognised = errors.New("the portal's sign-in page was not recognised")
+
 // loginFunc performs exactly one browser login and returns the session it
 // produced. It is the only code path that submits the credentials.
 type loginFunc func(ctx context.Context) (*pslib.SessionExport, error)
@@ -108,14 +131,42 @@ type storedSession struct {
 	LoggedInAt time.Time
 }
 
-// sessionStore is the Vault side: one KV v2 path.
+// loginState is the record this binary keeps next to the session, at a
+// sibling KV path the connector never reads. It is what stops a run from
+// submitting credentials the portal has already refused.
+type loginState struct {
+	// Salt is random, generated on first use and kept. It makes the
+	// fingerprint below useless for testing guesses of the password
+	// against it without also holding this record.
+	Salt string
+	// Blocked is the latch. While it is set and the configured credentials
+	// still have the fingerprint below, no run starts a browser.
+	Blocked       bool
+	BlockedReason string
+	BlockedAt     time.Time
+	// CredentialFingerprint is SHA-256 over the salt, the username and the
+	// password last submitted (or about to be). Never the values.
+	CredentialFingerprint string
+	// UnconfirmedCount is the number of logins in a row that returned
+	// without a session the portal accepts. Reset by a confirmed login.
+	UnconfirmedCount int
+}
+
+// sessionStore is the Vault side: the session path and the state path.
 type sessionStore interface {
-	// Read returns the stored session, or nil when there is none.
-	Read(ctx context.Context) (*storedSession, error)
+	// Read returns the stored session (nil when there is none) and the
+	// current KV version of the session path (0 when it does not exist).
+	Read(ctx context.Context) (stored *storedSession, version int, err error)
 	// CanWrite reports whether this token may write the session path.
 	CanWrite(ctx context.Context) (bool, error)
-	// Write stores data and returns the new KV version.
-	Write(ctx context.Context, data map[string]any) (version int, err error)
+	// Write stores data only if the path is still at version cas
+	// (check-and-set), and returns the new version.
+	Write(ctx context.Context, data map[string]any, cas int) (version int, err error)
+	// ReadState returns the login state; a zero state when none is stored.
+	ReadState(ctx context.Context) (*loginState, error)
+	WriteState(ctx context.Context, state *loginState) error
+	// Close revokes the Vault token.
+	Close()
 }
 
 // deps are the seams run needs. main wires the real ones; tests wire fakes
@@ -125,31 +176,62 @@ type deps struct {
 	now     func() time.Time
 	sleep   func(ctx context.Context, d time.Duration) error
 	connect func(ctx context.Context) (sessionStore, error)
-	login   loginFunc
-	probe   probeFunc
-	logger  *slog.Logger
+	// checkSignIn fetches the sign-in page (GET only) and returns an error
+	// wrapping errSignInUnrecognised when it is not the expected form.
+	checkSignIn func(ctx context.Context) error
+	login       loginFunc
+	probe       probeFunc
+	// newSalt returns a fresh random salt for the credential fingerprint.
+	newSalt func() (string, error)
+	// terminate records the one-line reason the container ended
+	// (/dev/termination-log), shown by kubectl describe.
+	terminate func(message string)
+	logger    *slog.Logger
 }
 
-// run is one execution of the job. In order:
+// result is how a run ended.
+type result struct {
+	code    int
+	outcome string
+	// message is the termination message: one line, no secrets.
+	message string
+}
+
+// run is one execution of the job; it returns the exit code, having
+// written the termination message.
 //
-//  1. Refuse, exit 0, when the clock is inside the blackout window. Nothing
-//     is contacted.
-//  2. Authenticate to Vault and read the session stored there.
-//  3. If that session is younger than MinSessionAge and still opens the
-//     signed-in home page, exit 0 without logging in: a login would end a
-//     session the connector is using, for nothing.
-//  4. Check the Vault token can write the session path, so a login is never
-//     spent on a session that cannot be stored.
-//  5. Log in: once, or twice when the first attempt failed before the
-//     credentials were submitted. The blackout is checked again before each.
-//  6. Confirm the new session by reading the home page (GET only).
-//  7. Write it to Vault.
+// In order:
+//
+//  1. Refuse, exit 0, when a login started now could still be running
+//     inside the blackout. Nothing is contacted.
+//  2. Authenticate to Vault and read the login state. If the latch is set
+//     for these credentials, refuse (exit 6). No browser, no portal.
+//  3. If the stored session is younger than MinSessionAge and still opens
+//     the signed-in home page, exit 0 without logging in.
+//  4. Check the Vault token can write the session path, and fetch the
+//     sign-in page (GET) to see that it is the portal's own form.
+//  5. Write the state record (this proves the latch can be written), then
+//     log in: once, or twice when the first attempt failed before the
+//     credentials were submitted. The blackout is checked before each.
+//  6. Confirm the new session by reading the home page (GET only). A login
+//     the portal rejected sets the latch; so do two unconfirmed logins in
+//     a row.
+//  7. Write the session to Vault, check-and-set against the version read
+//     in step 3.
 func run(ctx context.Context, cfg config, d deps) int {
+	r := execute(ctx, cfg, d)
+	if d.terminate != nil {
+		d.terminate(fmt.Sprintf("powerschool-auth-refresher: outcome=%s exit=%d: %s", r.outcome, r.code, r.message))
+	}
+	return r.code
+}
+
+func execute(ctx context.Context, cfg config, d deps) result {
 	log := d.logger
 
-	if cfg.Blackout.contains(d.now()) {
-		logBlackoutRefusal(log, cfg, d.now(), "the run started inside the blackout window")
-		return exitSuccess
+	if now := d.now(); cfg.Blackout.blocksLoginAt(now) {
+		logBlackoutRefusal(log, cfg, now)
+		return blackoutResult(cfg, exitSuccess)
 	}
 
 	store, err := d.connect(ctx)
@@ -158,19 +240,53 @@ func run(ctx context.Context, cfg config, d deps) int {
 			"outcome", "transient_failure",
 			"vault_role", cfg.VaultK8sRole,
 			"error", cfg.redact(err.Error()))
-		return exitTransient
+		return result{exitTransient, "transient_failure", "Vault authentication failed"}
+	}
+	defer store.Close()
+
+	state, err := store.ReadState(ctx)
+	if err != nil {
+		return vaultFailure(log, cfg, "read", cfg.VaultStatePath, err)
+	}
+	if state == nil {
+		state = &loginState{}
+	}
+	if state.Salt == "" {
+		salt, err := d.newSalt()
+		if err != nil || salt == "" {
+			log.Error("could not generate a salt for the credential fingerprint", "outcome", "transient_failure")
+			return result{exitTransient, "transient_failure", "no random salt available"}
+		}
+		state.Salt = salt
+	}
+	fingerprint := credentialFingerprint(state.Salt, cfg.Username, cfg.Password)
+	if state.Blocked {
+		if state.CredentialFingerprint == fingerprint {
+			log.Error("login blocked: an earlier login with these credentials did not produce a session, and submitting them again risks locking the account. "+
+				"Change the credentials in Vault, or clear the latch (see the runbook); not logging in",
+				"outcome", "login_blocked",
+				"blocked_reason", state.BlockedReason,
+				"blocked_at", state.BlockedAt.UTC().Format(time.RFC3339),
+				"vault_path", cfg.VaultStatePath)
+			return result{exitLoginBlocked, "login_blocked",
+				"login blocked (" + state.BlockedReason + ") since " + state.BlockedAt.UTC().Format(time.RFC3339) +
+					"; change the credentials or clear the latch at " + cfg.VaultStatePath}
+		}
+		log.Warn("the login was blocked, but the credentials have changed since; the block no longer applies",
+			"blocked_reason", state.BlockedReason)
+		state.Blocked, state.BlockedReason, state.BlockedAt, state.UnconfirmedCount = false, "", time.Time{}, 0
 	}
 
-	stored, err := store.Read(ctx)
+	stored, version, err := store.Read(ctx)
 	if err != nil {
-		return vaultFailure(log, cfg, "read", err)
+		return vaultFailure(log, cfg, "read", cfg.VaultSessionPath, err)
 	}
 
 	switch keepStored(ctx, cfg, d, stored) {
 	case keepYes:
-		return exitSuccess
+		return result{exitSuccess, "session_still_good", "the stored session is young and still accepted; no login"}
 	case keepUndetermined:
-		return exitTransient
+		return result{exitTransient, "transient_failure", "could not tell whether the stored session is still valid; no login"}
 	}
 
 	if ok, err := store.CanWrite(ctx); err != nil {
@@ -184,55 +300,106 @@ func run(ctx context.Context, cfg config, d deps) int {
 			"outcome", "secret_write_failed",
 			"vault_path", cfg.VaultSessionPath,
 			"vault_role", cfg.VaultK8sRole)
-		return exitVaultRejected
+		return result{exitVaultRejected, "secret_write_failed", "the Vault token cannot write " + cfg.VaultSessionPath}
 	}
 
-	session, code := runLogin(ctx, cfg, d)
+	// Is the page the browser is about to type the password into the
+	// portal's own sign-in form? Not retried within the run.
+	if err := d.checkSignIn(ctx); err != nil {
+		if errors.Is(err, errSignInUnrecognised) {
+			log.Error("the portal's sign-in page is not the expected form on the configured host; not starting the browser",
+				append([]any{"outcome", "signin_page_unrecognised", "reason", signInReason(err)}, powerschool.ErrorAttrs(err)...)...)
+			return result{exitSignInUnrecognised, "signin_page_unrecognised", "sign-in page not recognised: " + signInReason(err)}
+		}
+		log.Error("could not fetch the portal's sign-in page; not starting the browser",
+			append([]any{"outcome", "transient_failure"}, powerschool.ErrorAttrs(err)...)...)
+		return result{exitTransient, "transient_failure", "the sign-in page could not be fetched"}
+	}
+
+	// Written BEFORE the login, not only after a rejection: if this write
+	// is refused, a rejection could not be recorded either, and the next
+	// run would submit the same credentials again.
+	state.CredentialFingerprint = fingerprint
+	if err := writeState(ctx, d, store, state); err != nil {
+		log.Error("could not write the login state; not logging in, since a rejected login could not be recorded")
+		return vaultFailure(log, cfg, "write", cfg.VaultStatePath, err)
+	}
+
+	session, r := runLogin(ctx, cfg, d)
 	if session == nil {
-		return code
+		switch r.code {
+		case exitBadCredentials:
+			setLatch(ctx, cfg, d, store, state, blockedCredentialsRejected)
+		case exitLoginUnconfirmed:
+			return unconfirmed(ctx, cfg, d, store, state, r.message)
+		}
+		return r
 	}
 
 	loggedInAt := d.now().UTC()
 	session = normalizeSession(session, loggedInAt.Add(cfg.SessionLifetime))
 	if session == nil {
-		log.Error("the login returned no usable cookies; nothing written",
-			"outcome", "login_unconfirmed")
-		return exitLoginUnconfirmed
+		log.Error("the login returned no usable cookies; nothing written", "outcome", "login_unconfirmed")
+		return unconfirmed(ctx, cfg, d, store, state, "the login returned no usable cookies")
 	}
 
 	selected, ok := confirmSession(ctx, d, session)
 	if !ok {
-		return exitLoginUnconfirmed
+		return unconfirmed(ctx, cfg, d, store, state, "the session the login produced does not open the home page")
+	}
+
+	// Only a confirmed login clears the count.
+	if state.UnconfirmedCount != 0 {
+		state.UnconfirmedCount = 0
+		if err := writeState(ctx, d, store, state); err != nil {
+			log.Warn("could not reset the unconfirmed-login count", "vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
+		}
 	}
 
 	data, err := sessionData(session, loggedInAt, selected)
 	if err != nil {
 		log.Error("could not encode the session; nothing written", "outcome", "transient_failure")
-		return exitTransient
+		return result{exitTransient, "transient_failure", "could not encode the session"}
 	}
 
-	version, code := writeSession(ctx, cfg, d, store, data)
-	if code != exitSuccess {
-		return code
+	newVersion, r := writeSession(ctx, cfg, d, store, session, data, version)
+	if r.code != exitSuccess || r.outcome != "" {
+		return r
 	}
 
 	log.Info("refresh complete",
 		"outcome", "success",
 		"vault_path", cfg.VaultSessionPath,
-		"version", version,
+		"version", newVersion,
 		"cookies", len(session.Cookies),
 		"expires_at", session.ExpiresAt.UTC().Format(time.RFC3339))
-	return exitSuccess
+	return result{exitSuccess, "success", fmt.Sprintf("logged in and stored session version %d", newVersion)}
+}
+
+// credentialFingerprint identifies a username/password pair without
+// revealing either: SHA-256 over the salt and both values, NUL-separated so
+// ("ab","c") and ("a","bc") differ.
+func credentialFingerprint(salt, username, password string) string {
+	sum := sha256.Sum256([]byte(salt + "\x00" + username + "\x00" + password))
+	return hex.EncodeToString(sum[:])
+}
+
+// blackoutResult is the result of every blackout refusal.
+func blackoutResult(cfg config, code int) result {
+	return result{code, "blackout_refused",
+		"refused to log in: inside (or within " + loginHeadroom.String() + " of) the blackout " +
+			cfg.Blackout.String() + " " + blackoutZone}
 }
 
 // logBlackoutRefusal writes the one line an operator looks for when the job
 // "did nothing" in the afternoon.
-func logBlackoutRefusal(log *slog.Logger, cfg config, now time.Time, why string) {
-	log.Warn("refusing to log in: "+why+
-		" (a login now would sign the account's owner out of the portal)",
+func logBlackoutRefusal(log *slog.Logger, cfg config, now time.Time) {
+	log.Warn("refusing to log in: a login started now could still be in progress inside the blackout window "+
+		"(a login then would sign the account's owner out of the portal)",
 		"outcome", "blackout_refused",
 		"blackout_window", cfg.Blackout.String(),
 		"blackout_timezone", cfg.Blackout.loc.String(),
+		"login_headroom_seconds", int64(loginHeadroom/time.Second),
 		"local_time", now.In(cfg.Blackout.loc).Format("2006-01-02 15:04:05 MST"))
 }
 
@@ -300,24 +467,24 @@ func keepStored(ctx context.Context, cfg config, d deps, stored *storedSession) 
 }
 
 // runLogin performs the browser login. It returns the session, or nil and
-// the exit code.
+// how the run ends.
 //
 // The portal locks an account after repeated bad submissions, so the rule
 // is fixed here and not left to a retry policy: at most maxLoginAttempts
 // logins, and the second happens only when the first is known to have
 // failed before any credentials were submitted. A rejected login, and any
 // failure that cannot be placed before the submit, ends the run.
-func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, int) {
+func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, result) {
 	log := d.logger
 	for attempt := 1; attempt <= maxLoginAttempts; attempt++ {
-		// Checked again here: Vault and the home-page read above take time,
-		// and so does the pause before a second attempt.
-		if now := d.now(); cfg.Blackout.contains(now) {
-			logBlackoutRefusal(log, cfg, now, "the blackout window began before the login could start")
+		// Checked again here, with the same headroom: Vault and the reads
+		// above take time, and so does the pause before a second attempt.
+		if now := d.now(); cfg.Blackout.blocksLoginAt(now) {
+			logBlackoutRefusal(log, cfg, now)
 			if attempt == 1 {
-				return nil, exitSuccess
+				return nil, blackoutResult(cfg, exitSuccess)
 			}
-			return nil, exitTransient
+			return nil, blackoutResult(cfg, exitTransient)
 		}
 
 		log.Info("logging in to the portal", "attempt", attempt)
@@ -325,18 +492,18 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, in
 		if err == nil {
 			if session == nil {
 				log.Error("the login returned no session", "outcome", "login_unconfirmed")
-				return nil, exitLoginUnconfirmed
+				return nil, result{exitLoginUnconfirmed, "login_unconfirmed", "the login returned no session"}
 			}
-			return session, exitSuccess
+			return session, result{}
 		}
 
 		switch failureKind(err) {
 		case loginRejected:
 			// Never retried: repeated bad submissions lock the account.
-			log.Error("the portal rejected the credentials; correct them in Vault before the next run",
+			log.Error("the portal rejected the credentials; no further login will be attempted until they change or the latch is cleared",
 				"outcome", "bad_credentials",
 				"attempt", attempt)
-			return nil, exitBadCredentials
+			return nil, result{exitBadCredentials, "bad_credentials", "the portal rejected the credentials; the login is now blocked"}
 		case loginFailedBeforeSubmit:
 			if attempt < maxLoginAttempts {
 				log.Warn("the login failed before the credentials were submitted; trying once more",
@@ -344,7 +511,7 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, in
 					"error", cfg.redact(err.Error()))
 				if serr := d.sleep(ctx, loginRetryDelay); serr != nil {
 					log.Error("interrupted before the second login attempt", "outcome", "transient_failure")
-					return nil, exitTransient
+					return nil, result{exitTransient, "transient_failure", "interrupted before the second login attempt"}
 				}
 				continue
 			}
@@ -352,18 +519,75 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, in
 				"outcome", "transient_failure",
 				"attempt", attempt,
 				"error", cfg.redact(err.Error()))
-			return nil, exitTransient
+			return nil, result{exitTransient, "transient_failure", "the login failed before the credentials were submitted, twice"}
 		default:
 			log.Error("the login failed and the credentials may have been submitted; not retrying",
 				"outcome", "transient_failure",
 				"attempt", attempt,
 				"error", cfg.redact(err.Error()))
-			return nil, exitTransient
+			return nil, result{exitTransient, "transient_failure", "the login failed; the credentials may have been submitted"}
 		}
 	}
 	// Unreachable: every path through the loop body returns or continues
 	// with attempt < maxLoginAttempts.
-	return nil, exitTransient
+	return nil, result{exitTransient, "transient_failure", "no login attempt completed"}
+}
+
+// unconfirmed records a login that returned without a working session and
+// ends the run. The session is never written. After maxUnconfirmedLogins in
+// a row the latch is set: a sign-in page that now wants a CAPTCHA, a second
+// factor or a new password looks like this, and each further login would
+// end the connector's session again without ever replacing it.
+func unconfirmed(ctx context.Context, cfg config, d deps, store sessionStore, state *loginState, message string) result {
+	state.UnconfirmedCount++
+	if state.UnconfirmedCount >= maxUnconfirmedLogins {
+		d.logger.Error("logins keep returning without a working session; no further login will be attempted until the credentials change or the latch is cleared",
+			"outcome", "login_unconfirmed",
+			"consecutive_unconfirmed", state.UnconfirmedCount)
+		setLatch(ctx, cfg, d, store, state, blockedLoginUnconfirmed)
+		return result{exitLoginUnconfirmed, "login_unconfirmed",
+			fmt.Sprintf("%s (%d in a row); the login is now blocked", message, state.UnconfirmedCount)}
+	}
+	if err := writeState(ctx, d, store, state); err != nil {
+		d.logger.Error("could not record the unconfirmed login",
+			"vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
+	}
+	return result{exitLoginUnconfirmed, "login_unconfirmed",
+		fmt.Sprintf("%s (%d in a row)", message, state.UnconfirmedCount)}
+}
+
+// setLatch blocks further logins with the current credentials.
+func setLatch(ctx context.Context, cfg config, d deps, store sessionStore, state *loginState, reason string) {
+	state.Blocked = true
+	state.BlockedReason = reason
+	state.BlockedAt = d.now().UTC()
+	if err := writeState(ctx, d, store, state); err != nil {
+		// The pre-login write succeeded moments ago, so this is rare. Say
+		// so loudly: without the record the next run logs in again.
+		d.logger.Error("COULD NOT RECORD THE LOGIN BLOCK: the next run will submit the same credentials again. Suspend the CronJobs",
+			"blocked_reason", reason,
+			"vault_path", cfg.VaultStatePath,
+			"error", cfg.redact(err.Error()))
+		return
+	}
+	d.logger.Warn("login blocked until the credentials change or the latch is cleared",
+		"blocked_reason", reason, "vault_path", cfg.VaultStatePath)
+}
+
+// writeState stores the login state, retrying a transient failure.
+func writeState(ctx context.Context, d deps, store sessionStore, state *loginState) error {
+	var err error
+	for attempt := 1; attempt <= writeAttempts; attempt++ {
+		if err = store.WriteState(ctx, state); err == nil || isClientError(err) {
+			return err
+		}
+		if attempt < writeAttempts {
+			if serr := d.sleep(ctx, writeDelay); serr != nil {
+				break
+			}
+		}
+	}
+	return err
 }
 
 // normalizeSession drops cookies the connector would drop and sets the
@@ -442,16 +666,40 @@ func sessionData(session *pslib.SessionExport, loggedInAt time.Time, selected st
 	}, nil
 }
 
-// writeSession stores the session, retrying a transient failure. A refusal
-// (4xx) is not retried: the policy or the path is wrong.
-func writeSession(ctx context.Context, cfg config, d deps, store sessionStore, data map[string]any) (int, int) {
+// writeSession stores the session, check-and-set against the version read
+// before the login. A transient failure is retried; a refusal (4xx) is not.
+//
+// A check-and-set mismatch means another run (a manual Job beside a
+// scheduled one) wrote a session while this one was logging in. Only one of
+// the two sessions is alive -- the portal keeps the later login -- so this
+// run asks the portal about its own once more: if it is still accepted it
+// is the live one and replaces the other; if not, the other run's stays.
+func writeSession(ctx context.Context, cfg config, d deps, store sessionStore,
+	session *pslib.SessionExport, data map[string]any, cas int) (int, result) {
 	log := d.logger
 	var err error
+	rechecked := false
 	for attempt := 1; attempt <= writeAttempts; attempt++ {
 		var version int
-		version, err = store.Write(ctx, data)
+		version, err = store.Write(ctx, data, cas)
 		if err == nil {
-			return version, exitSuccess
+			return version, result{}
+		}
+		if isCASMismatch(err) && !rechecked {
+			rechecked = true
+			log.Warn("the stored session changed while this run was logging in (another run?); checking which session is alive")
+			_, current, rerr := store.Read(ctx)
+			if rerr != nil {
+				return 0, vaultFailure(log, cfg, "read", cfg.VaultSessionPath, rerr)
+			}
+			if _, perr := d.probe(ctx, session); perr != nil {
+				log.Warn("another run stored a session while this one was logging in, and the portal no longer accepts this run's; not stored",
+					append([]any{"outcome", "superseded"}, powerschool.ErrorAttrs(perr)...)...)
+				return 0, result{exitTransient, "superseded", "another run's newer login replaced this one; nothing stored"}
+			}
+			cas = current
+			attempt--
+			continue
 		}
 		if isClientError(err) {
 			break
@@ -462,24 +710,40 @@ func writeSession(ctx context.Context, cfg config, d deps, store sessionStore, d
 			}
 		}
 	}
-	return 0, vaultFailure(log, cfg, "write", err)
+	return 0, vaultFailure(log, cfg, "write", cfg.VaultSessionPath, err)
 }
 
 // vaultFailure logs a failed Vault read or write and picks the exit code.
-func vaultFailure(log *slog.Logger, cfg config, op string, err error) int {
+func vaultFailure(log *slog.Logger, cfg config, op, path string, err error) result {
 	if isClientError(err) {
 		log.Error("vault rejected the "+op,
 			"outcome", "secret_"+op+"_failed",
-			"vault_path", cfg.VaultSessionPath,
+			"vault_path", path,
 			"error", cfg.redact(err.Error()))
-		return exitVaultRejected
+		return result{exitVaultRejected, "secret_" + op + "_failed", "Vault rejected the " + op + " of " + path}
 	}
 	log.Error("vault "+op+" failed",
 		"outcome", "transient_failure",
-		"vault_path", cfg.VaultSessionPath,
+		"vault_path", path,
 		"error", cfg.redact(err.Error()))
-	return exitTransient
+	return result{exitTransient, "transient_failure", "Vault " + op + " of " + path + " failed"}
 }
+
+// signInReason is the short, closed-vocabulary reason carried by a
+// sign-in check error ("" when there is none).
+func signInReason(err error) string {
+	var se *signInError
+	if errors.As(err, &se) {
+		return se.reason
+	}
+	return "unrecognised"
+}
+
+// signInError is errSignInUnrecognised with a reason from a fixed list.
+type signInError struct{ reason string }
+
+func (e *signInError) Error() string { return errSignInUnrecognised.Error() + ": " + e.reason }
+func (e *signInError) Unwrap() error { return errSignInUnrecognised }
 
 // redact removes the account's username and password from text bound for a
 // log line, and bounds its length. Error text from a browser driver or an
