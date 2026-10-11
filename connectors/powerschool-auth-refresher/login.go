@@ -3,15 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
 	pslib "github.com/leftathome/powerschool-go"
@@ -128,14 +123,17 @@ func classifyLoginFailure(msg string) loginFailure {
 	return loginFailedUnknown
 }
 
-// probeHTTPClient is the only HTTP client this binary points at the portal.
-// base replaces the wrapped transport in tests; nil is the default one.
+// probeHTTPClient builds the client for ONE home-page read with a session.
+// base replaces the innermost transport in tests; nil is the default one.
+//
+// It is the connector's own client -- pinned to the portal host, GET and
+// HEAD only, no cookie jar -- with one addition underneath the pin: a
+// gatewayCookies overlay, so that the access gateway renewing its cookie
+// during the read does not make a good session look unreadable.
 func probeHTTPClient(cfg config, base http.RoundTripper) *http.Client {
 	client := powerschool.NewHTTPClient(cfg.Host, false, nil, probeTimeout)
-	if base != nil {
-		if t, ok := client.Transport.(*powerschool.Transport); ok {
-			t.Base = base
-		}
+	if t, ok := client.Transport.(*powerschool.Transport); ok {
+		t.Base = newGatewayCookies(base)
 	}
 	return client
 }
@@ -170,105 +168,4 @@ func realProbe(cfg config, base http.RoundTripper) probeFunc {
 		}
 		return "", nil
 	}
-}
-
-// signInPath is the page the library's browser login opens first
-// (powerschool-go internal/browser: BaseURL + "/public/").
-const signInPath = "/public/"
-
-// maxSignInBytes bounds how much of the sign-in page is read.
-const maxSignInBytes = 2 << 20
-
-// realSignInCheck returns the production sign-in check. Before any browser
-// is started it fetches the sign-in page with a plain GET, through the same
-// pinned read-only transport as the probe, and requires:
-//
-//   - the response, after redirects, came from the configured host over
-//     https (the transport refuses any other hop, so a redirect elsewhere
-//     fails here);
-//   - the page has a form with a password field, and every such form posts
-//     to that same host over https.
-//
-// Otherwise the password would be typed into a page that is not the
-// portal's sign-in form -- a maintenance page, an identity provider the
-// portal was moved behind, a hijacked redirect. The error then wraps
-// errSignInUnrecognised and no browser is started.
-//
-// What this does not close: the browser fetches the page again, and what it
-// gets could differ from what was checked here. Closing that needs the
-// check inside the browser session, which is the library's to add.
-func realSignInCheck(cfg config, base http.RoundTripper) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, probeTimeout)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+signInPath, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		resp, err := probeHTTPClient(cfg, base).Do(req)
-		if err != nil {
-			if errors.Is(err, powerschool.ErrHostBlocked) {
-				return &signInError{reason: "redirected_off_host"}
-			}
-			return fmt.Errorf("fetch sign-in page: %w", stripURL(err))
-		}
-		defer resp.Body.Close()
-
-		final := resp.Request.URL
-		if final.Scheme != "https" || !strings.EqualFold(final.Host, cfg.Host) {
-			return &signInError{reason: "redirected_off_host"}
-		}
-		if resp.StatusCode >= 500 {
-			return &pslib.HTTPStatusError{Op: "GET " + signInPath, StatusCode: resp.StatusCode}
-		}
-		if resp.StatusCode != http.StatusOK {
-			return &signInError{reason: fmt.Sprintf("http_%d", resp.StatusCode)}
-		}
-		doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxSignInBytes))
-		if err != nil {
-			return &signInError{reason: "unparseable"}
-		}
-		return checkSignInForms(doc, final, cfg.Host)
-	}
-}
-
-// checkSignInForms applies the form rule of realSignInCheck to a parsed
-// page that was served from pageURL.
-func checkSignInForms(doc *goquery.Document, pageURL *url.URL, host string) error {
-	forms := doc.Find("form").FilterFunction(func(_ int, f *goquery.Selection) bool {
-		return f.Find(`input[type="password"]`).Length() > 0
-	})
-	if forms.Length() == 0 {
-		return &signInError{reason: "no_password_form"}
-	}
-	var problem error
-	forms.EachWithBreak(func(_ int, f *goquery.Selection) bool {
-		// A missing or empty action posts to the page's own URL.
-		target := pageURL
-		if action, ok := f.Attr("action"); ok && strings.TrimSpace(action) != "" {
-			ref, err := url.Parse(strings.TrimSpace(action))
-			if err != nil {
-				problem = &signInError{reason: "form_action_unparseable"}
-				return false
-			}
-			target = pageURL.ResolveReference(ref)
-		}
-		if target.Scheme != "https" || !strings.EqualFold(target.Host, host) {
-			problem = &signInError{reason: "form_posts_off_host"}
-			return false
-		}
-		return true
-	})
-	return problem
-}
-
-// stripURL drops the URL from an http.Client error, keeping its cause.
-func stripURL(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return ue.Err
-	}
-	return err
 }

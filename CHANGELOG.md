@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **PowerSchool login workload: the sign-in check now gets through an access
+  gateway.** On its first live run the job stopped with
+  `signin_page_unrecognised: no_password_form` (exit 7, no browser, nothing
+  submitted). The portal sits behind an access gateway that hands a new
+  client a session cookie and redirects it back
+  (`/public/` -> `/my.policy` -> `/public/`); the check's HTTP client kept
+  no cookies between redirects, was refused at `/my.policy` and ended on
+  the gateway's error page (`/my.logout.php3`), which has no form. The check
+  now has a cookie jar of its own: empty at the start, used for that one
+  check only, never logged, discarded afterwards. It still goes through the
+  read-only transport pinned to the portal host.
+  - Redirects are followed only to the same host over https, at most five;
+    anything else is `signin_redirect_off_host` or `signin_redirect_loop`.
+  - Ending on the gateway's own pages is its own reason,
+    `gateway_session_refused`.
+  - "Recognised" is tighter now that the real page is known: the final page
+    must be under `/public/` (`final_page_not_under_public`) and hold a form
+    with a password field and a text field (`no_username_field`) that posts
+    to the same host. Still exit 7, no browser, no retry on anything else.
+  - The reason `redirected_off_host` is renamed `signin_redirect_off_host`.
+- PowerSchool login workload: the home-page read made with a stored session
+  (the young-session check and the post-login confirmation) now carries a
+  gateway cookie that the gateway renews in mid-request. The stored session
+  holds the gateway's cookie beside the portal's, and the two lapse
+  independently; without this a lapsed gateway cookie made a good session
+  unreadable, and the run stopped (`transient_failure`) without deciding
+  anything. Renewed cookies live for that one read and are not written back.
+
 ## [0.10.2] - 2026-10-11
 
 ### Fixed

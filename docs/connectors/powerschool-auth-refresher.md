@@ -52,7 +52,7 @@ portal locks an account after repeated bad submissions.
 | One login per run. | At most one attempt, plus one more only if the first failed before the credentials were submitted (the browser did not start; the sign-in page could not be reached: DNS, connect). Never after a submit. Nothing re-runs a failed run: `backoffLimit: 0`, `restartPolicy: Never`. |
 | Rejected credentials are submitted once. | A login the portal rejects sets a **latch** in Vault (`login_blocked`, reason `credentials_rejected`, with a salted SHA-256 fingerprint of the credentials used). Every later run refuses to start a browser (`outcome=login_blocked`, exit 6) until the credentials in Vault change or an operator clears the latch. |
 | A login that silently fails is not repeated forever. | If the login returns but its session does not open the home page (a CAPTCHA, a second factor, an expired password: the library sees no error notice), nothing is written and the run ends `login_unconfirmed` (exit 5). Two of those in a row set the latch (reason `login_unconfirmed`). Only a confirmed login resets the count. |
-| The password is typed only into the portal's own form. | Before any browser starts, the binary GETs the sign-in page through its pinned read-only transport and requires that it was served by the configured host over https and contains a password form posting to that same host. Otherwise `signin_page_unrecognised` (exit 7), no browser, no retry within the run. |
+| The password is typed only into the portal's own form. | Before any browser starts, the binary GETs the sign-in page through its pinned read-only transport and requires that every redirect stayed on the configured host over https (at most five), that the page finally served is under `/public/`, and that it holds a form with a password field and a text field posting to that same host. Otherwise `signin_page_unrecognised` (exit 7), no browser, no retry within the run. See "The access gateway and the sign-in check". |
 | After the login, only read. | One GET of `/guardian/home.html` to confirm the session, through the connector's own transport pinned to the portal host and refusing every method but GET and HEAD. The login form is the only POST. |
 | No secrets outside Vault. | Username, password, cookies and tokens never appear in arguments, log lines, error strings, the termination message or events. Portal-side errors are logged by class, not text. Nothing about a student is logged. |
 
@@ -513,9 +513,57 @@ ended. The same outcome is in the pod's termination message
 | 4 | `secret_read_failed` / `secret_write_failed` | Vault refused (policy, role binding, path). No login happens when this is detected beforehand. | Fix the policy or role. |
 | 5 | `login_unconfirmed` | The browser login returned but its session does not open the home page. Nothing was written; the previous session stays in Vault. The second in a row sets the latch. | Sign in as the owner and see what the portal now asks for. |
 | 6 | `login_blocked` | The latch is set. No browser was started, nothing was submitted. | "Clearing the latch" above. |
-| 7 | `signin_page_unrecognised` | The sign-in page is not a password form on the configured host (`reason` says which check failed). No browser was started. | Open the portal in a browser; check `POWERSCHOOL_HOSTNAME`. |
+| 7 | `signin_page_unrecognised` | The sign-in page is not a password form on the configured host (`reason` says which check failed). No browser was started. | The table of reasons below. |
 
 No run is retried by Kubernetes.
+
+## The access gateway and the sign-in check
+
+The portal sits behind an access gateway (an F5 APM on this instance).
+Seen from the public sign-in page, without credentials:
+
+- A client with no gateway cookie that asks for `/public/` is redirected to
+  `/my.policy` and handed cookies on the way (`MRHSession`,
+  `LastMRH_Session`, `F5_ST`, ...). Returning them at `/my.policy` gets it
+  redirected back to `/public/`, which now serves the real page: one
+  `form#LoginForm` posting to `/guardian/home.html`, a text input
+  `account`, password inputs `pw` and `translatorpw`, and hidden inputs.
+- A client that does **not** return the cookies is redirected to
+  `/my.logout.php3?errorcode=19`: a small page with no form.
+
+So the sign-in check keeps cookies -- in a jar created empty for that one
+check, used for nothing else, never logged and thrown away when the check
+returns. (0.10.2 did not; its first live run ended `no_password_form` on the
+gateway's error page. Nothing was submitted.)
+
+The stored session is the browser's whole cookie set for the portal host,
+so it holds the gateway's cookies beside the portal's own. They lapse
+independently. When the home-page read made with a stored session is sent
+through `/my.policy` because the gateway's cookie has lapsed, the job
+carries the renewed cookie for the rest of that one read (and does not
+write it back); the portal then answers for its own session. The
+**connector** has no such handling: its HTTP client deliberately keeps no
+cookies from responses. If the gateway's cookie lapses before the portal's
+session does, the connector's read ends on the gateway's error page. Watch
+for that in the first days (checklist step 9): it would show as connector
+polls failing with a parse/`unknown` error class rather than `auth`, with
+a session the login job still calls good.
+
+`reason` values of `signin_page_unrecognised`:
+
+| `reason` | What the check saw | What to do |
+|----------|--------------------|------------|
+| `gateway_session_refused` | Redirects ended on the gateway's own pages (`/my.logout.php3`, `/my.policy`): the gateway would not give even a cookie-keeping client a session. | Open the portal in a private browser window. If that works, the gateway is treating this client differently (source address, user agent, a new policy step); if it does not, the gateway is down or changed. |
+| `signin_redirect_off_host` | A redirect pointed at another host, another port, or plain http. Not followed. | The portal may have moved or been put behind an identity provider. Check `POWERSCHOOL_HOSTNAME` against the address a browser ends up at. |
+| `signin_redirect_loop` | More than five redirects. | As for `gateway_session_refused`. |
+| `final_page_not_under_public` | The page finally served is on the right host but not under `/public/`. | Look at where a browser lands; the sign-in page has moved. |
+| `no_password_form` | No form with a password field. A maintenance or error page. | Wait, or look at the portal in a browser. |
+| `no_username_field` | A password form, but nowhere to type an account name. A second-factor or password-change step, or a different sign-in design. | Sign in as the owner and see what the portal asks for. |
+| `form_posts_off_host` | A form with a password field posts to another host or over http. | Do not work around this. Find out why before anything else. |
+| `form_action_unparseable`, `unparseable`, `http_<status>` | The page or its form could not be read. | Look at the portal in a browser. |
+
+None of these is retried within the run, none starts a browser, and none
+counts toward the latch. The next scheduled run checks again.
 
 ## If it ran inside the blackout
 
