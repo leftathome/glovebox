@@ -95,12 +95,6 @@ func TestAssignmentFingerprint(t *testing.T) {
 	if assignmentFingerprint(x) != assignmentFingerprint(y) {
 		t.Error("flag order changed the fingerprint")
 	}
-	// A description edit is not a change (it is not in the fingerprint).
-	z := sampleAssignment("1", "Lab report")
-	z.Description = "edited"
-	if assignmentFingerprint(z) != base {
-		t.Error("description changed the fingerprint")
-	}
 }
 
 func assignmentsClient(byCourse map[string][]*pslib.Assignment) *fakeClient {
@@ -225,13 +219,14 @@ func TestProcessAssignments_ItemShape(t *testing.T) {
 		"due_day": "2026-10-08", "due_date": "2026-10-08T00:00:00-07:00",
 		"missing": "false", "late": "false", "incomplete": "false",
 		"exempt": "false", "collected": "false", "absent": "false",
+		"has_teacher_comment": "false",
 	}
 	for k, v := range want {
 		if meta.Tags[k] != v {
 			t.Errorf("tag %s = %q, want %q", k, meta.Tags[k], v)
 		}
 	}
-	for _, absent := range []string{"score", "percent", "letter_grade", "flags"} {
+	for _, absent := range []string{"score", "percent", "letter_grade", "flags", "teacher_comment_truncated"} {
 		if _, ok := meta.Tags[absent]; ok {
 			t.Errorf("tag %s present, want absent", absent)
 		}
@@ -240,7 +235,7 @@ func TestProcessAssignments_ItemShape(t *testing.T) {
 		t.Errorf("%d tags exceeds the staging limit of 32", len(meta.Tags))
 	}
 	wantBody := "Assignment: Lab report\nCourse: Example Science 7\nCategory: Classwork\nDue: 2026-10-08\n" +
-		"Status: pending\nPoints possible: 10\n\nWrite up the density lab.\n"
+		"Status: pending\nPoints possible: 10\n\nAssignment description:\n  Write up the density lab.\n"
 	if items[0].Body != wantBody {
 		t.Errorf("body = %q, want %q", items[0].Body, wantBody)
 	}

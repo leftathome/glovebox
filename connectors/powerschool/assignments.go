@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -95,9 +97,101 @@ func withinLookback(a *pslib.Assignment, now time.Time, tz *time.Location, lookb
 	return !start.Before(cutoff)
 }
 
-// assignmentFingerprint hashes every field whose change should stage the
-// assignment again: a new score, a cleared missing flag, a moved due date.
-func assignmentFingerprint(a *pslib.Assignment) string {
+// maxTextBlockBytes bounds each teacher-authored text block of an
+// assignment item's body (the teacher's comment, the assignment description
+// and the category description), each on its own. A longer block is cut at
+// a UTF-8 boundary and followed by truncationMarker.
+const maxTextBlockBytes = 4 << 10
+
+// truncationMarker follows a text block that was cut, here or by the
+// library (Assignment.TeacherCommentTruncated).
+const truncationMarker = "[truncated]"
+
+// textBlockIndent prefixes every line of a teacher-authored text block.
+// The connector's own labels start in column one, so nothing a teacher
+// types can pass for one of them.
+const textBlockIndent = "  "
+
+// assignmentText is the teacher-authored free text of one assignment, as
+// the item's body shows it. All of it is untrusted third-party text: it is
+// carried as plain text, bounded, and never interpreted.
+type assignmentText struct {
+	// comment is the note the teacher left on this student's score, from
+	// the library's plain-text field. The HTML form
+	// (Assignment.TeacherCommentHTML) is never read by this connector.
+	comment string
+	// description is the assignment's description.
+	description string
+	// categoryDescription is the description of the assignment's category;
+	// empty when it says the same as description.
+	categoryDescription string
+
+	commentCut, descriptionCut, categoryCut bool
+}
+
+// textOf collects the assignment's free text, cleaned and bounded.
+func textOf(a *pslib.Assignment) assignmentText {
+	var t assignmentText
+	if a.HasTeacherComment {
+		t.comment, t.commentCut = boundText(a.TeacherComment)
+		if t.comment != "" && a.TeacherCommentTruncated {
+			t.commentCut = true
+		}
+	}
+	t.description, t.descriptionCut = boundText(a.Description)
+	if normaliseText(a.CategoryDescription) != normaliseText(a.Description) {
+		t.categoryDescription, t.categoryCut = boundText(a.CategoryDescription)
+	}
+	return t
+}
+
+// hasComment reports whether there is a teacher comment with text to show.
+func (t assignmentText) hasComment() bool { return t.comment != "" }
+
+// cleanText prepares free text for a text/plain body: line ends become
+// "\n", tabs become spaces, other control characters are dropped, trailing
+// space is removed from each line, and blank lines at either end go. The
+// words are not touched: no markup is parsed and nothing is decoded.
+func cleanText(s string) string {
+	s = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\t", " ").Replace(s)
+	s = strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRightFunc(line, unicode.IsSpace)
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
+}
+
+// boundText cleans s and cuts it to maxTextBlockBytes without splitting a
+// character. cut reports whether anything was removed.
+func boundText(s string) (text string, cut bool) {
+	text = cleanText(strings.ToValidUTF8(s, ""))
+	if len(text) <= maxTextBlockBytes {
+		return text, false
+	}
+	n := maxTextBlockBytes
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return strings.TrimRightFunc(text[:n], unicode.IsSpace), true
+}
+
+// normaliseText is the form free text is fingerprinted in: runs of
+// whitespace (line breaks and non-breaking spaces included) are one space
+// and the ends are trimmed, so re-wrapping or re-indenting a text is not a
+// change. Case and punctuation are kept.
+func normaliseText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// recordFields is the canonical form of the gradebook facts of an
+// assignment: everything but its free text.
+func recordFields(a *pslib.Assignment) []string {
 	flags := make([]string, 0, len(a.Flags))
 	for _, f := range a.Flags {
 		flags = append(flags, string(f))
@@ -111,7 +205,7 @@ func assignmentFingerprint(a *pslib.Assignment) string {
 	if a.Percentage != nil {
 		percent = formatFloat(*a.Percentage)
 	}
-	canonical := strings.Join([]string{
+	return []string{
 		a.Title,
 		a.DueDate.UTC().Format("2006-01-02"),
 		a.Category,
@@ -121,9 +215,47 @@ func assignmentFingerprint(a *pslib.Assignment) string {
 		formatFloat(a.MaxScore),
 		percent,
 		a.LetterGrade,
-	}, "\x1f")
-	sum := sha256.Sum256([]byte(canonical))
+	}
+}
+
+func hashFields(fields []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\x1f")))
 	return hex.EncodeToString(sum[:8])
+}
+
+// assignmentFingerprint hashes every field whose change should stage the
+// assignment again: a new score, a cleared missing flag, a moved due date,
+// and the free text -- the teacher's comment, the assignment description
+// and the category description, each normalised (normaliseText) so that a
+// whitespace-only difference is not a change.
+//
+// A staged item's id is minted fresh each time, and downstream notices new
+// items by id; this fingerprint is therefore the whole of an assignment's
+// identity: same fingerprint, no new item; different fingerprint, exactly
+// one.
+//
+// The comment is hashed in full (as the library returns it, up to its own
+// bound), not as cut for the body: an edit past maxTextBlockBytes is still
+// an edit.
+func assignmentFingerprint(a *pslib.Assignment) string {
+	comment := ""
+	if a.HasTeacherComment {
+		comment = normaliseText(a.TeacherComment)
+	}
+	return hashFields(append(recordFields(a),
+		"text/v2",
+		comment,
+		normaliseText(a.Description),
+		normaliseText(a.CategoryDescription),
+	))
+}
+
+// legacyAssignmentFingerprint is the fingerprint this connector saved
+// before the free text was part of it (gradebook facts only). It exists so
+// that the first poll after the upgrade does not stage every assignment
+// already checkpointed: see stageAssignments.
+func legacyAssignmentFingerprint(a *pslib.Assignment) string {
+	return hashFields(recordFields(a))
 }
 
 // courseRead is one course's assignment lookup: the grade row it was read
@@ -238,7 +370,9 @@ func getScoresTraced(ctx context.Context, e Env, kid Kid, g *pslib.Grade) (*psli
 }
 
 // stageAssignments is the write half: it stages every assignment in reads
-// that is new or has changed.
+// that is new or has changed. A teacher's comment travels on the
+// assignment's own item, built from this kid's rule like the rest of it, so
+// it has that kid's data subject and audience and no other.
 //
 // First-sight backlog: an assignment seen for the first time that is due
 // before the lookback window and carries no missing/late/incomplete flag
@@ -268,8 +402,21 @@ func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, c
 			}
 			key := courseKey(g) + ":" + id
 			fp := assignmentFingerprint(a)
-			change, _ := Compare(e.CP, assignmentSurface, kid.Name, key, fp)
+			change, prev := Compare(e.CP, assignmentSurface, kid.Name, key, fp)
 			if change == ChangeNone {
+				continue
+			}
+			text := textOf(a)
+			if change == ChangeUpdated && prev == legacyAssignmentFingerprint(a) && !text.hasComment() {
+				// The stored fingerprint is the pre-text form and the
+				// gradebook facts it covers have not moved: nothing
+				// happened to this assignment, the fingerprint just grew.
+				// Re-baseline without staging. An assignment that already
+				// carries a teacher comment does stage (once): the comment
+				// has never been delivered.
+				if err := SaveFingerprint(e.CP, assignmentSurface, kid.Name, key, fp); err != nil {
+					slog.Error("powerschool assignment fingerprint upgrade save failed", "kid", kid.Name, "error", err)
+				}
 				continue
 			}
 			if change == ChangeNew && !withinLookback(a, e.now(), e.tz(), cfg.LookbackDays) && !needsAttention(a) {
@@ -283,9 +430,9 @@ func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, c
 			if subject == "" {
 				subject = "(untitled assignment)"
 			}
-			opts := itemOptions(e, rule, kid, assignmentSurface, change, g.CourseName, subject, assignmentTags(a, g, e.tz()))
+			opts := itemOptions(e, rule, kid, assignmentSurface, change, g.CourseName, subject, assignmentTags(a, g, text, e.tz()))
 
-			if err := stage(ctx, e, assignmentSurface, opts, buildAssignmentBody(a, g, e.tz())); err != nil {
+			if err := stage(ctx, e, assignmentSurface, opts, buildAssignmentBody(a, g, text, e.tz())); err != nil {
 				slog.Warn("powerschool assignment stage failed", "kid", kid.Name, "error", err)
 				res.Failed++
 				continue
@@ -329,12 +476,20 @@ func getAssignmentsTraced(ctx context.Context, e Env, kid Kid, g *pslib.Grade) (
 
 // assignmentTags builds the tag set of spec 16 section 7.2. Every flag is
 // present as "true" or "false"; optional facts are absent when unknown.
-func assignmentTags(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) map[string]string {
+//
+// has_teacher_comment is always present; teacher_comment_truncated is
+// present (as "true") only when the comment in the body is not the whole
+// comment.
+func assignmentTags(a *pslib.Assignment, g *pslib.Grade, text assignmentText, tz *time.Location) map[string]string {
 	flags := flagSet(a)
 	tags := map[string]string{
-		"status":      string(a.Status),
-		"outstanding": formatBool(isOutstanding(a)),
-		"scored":      formatBool(isScored(a)),
+		"status":              string(a.Status),
+		"outstanding":         formatBool(isOutstanding(a)),
+		"scored":              formatBool(isScored(a)),
+		"has_teacher_comment": formatBool(text.hasComment()),
+	}
+	if text.hasComment() && text.commentCut {
+		tags["teacher_comment_truncated"] = "true"
 	}
 	var set []string
 	for _, f := range assignmentFlags {
@@ -365,10 +520,15 @@ func assignmentTags(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) map[
 	return tags
 }
 
-// buildAssignmentBody synthesizes the plaintext content.raw body. The
-// teacher-authored title and description are the untrusted part the
-// scanner is here for.
-func buildAssignmentBody(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) string {
+// buildAssignmentBody synthesizes the plaintext content.raw body: the
+// gradebook facts as "Label: value" lines, then up to three labelled text
+// blocks -- "Teacher comment:", "Assignment description:" and "Category
+// description:" -- each present only when there is text for it.
+//
+// The title and the three blocks are teacher-authored and untrusted; they
+// are what the scanner is here for. A block's lines are indented
+// (textBlockIndent) and a cut block ends with truncationMarker.
+func buildAssignmentBody(a *pslib.Assignment, g *pslib.Grade, text assignmentText, tz *time.Location) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Assignment: %s\n", a.Title)
 	if g.CourseName != "" {
@@ -402,10 +562,32 @@ func buildAssignmentBody(a *pslib.Assignment, g *pslib.Grade, tz *time.Location)
 	if a.LetterGrade != "" {
 		fmt.Fprintf(&b, "Grade: %s\n", a.LetterGrade)
 	}
-	if d := strings.TrimSpace(a.Description); d != "" {
-		fmt.Fprintf(&b, "\n%s\n", d)
-	}
+	writeTextBlock(&b, "Teacher comment", text.comment, text.commentCut)
+	writeTextBlock(&b, "Assignment description", text.description, text.descriptionCut)
+	writeTextBlock(&b, "Category description", text.categoryDescription, text.categoryCut)
 	return b.String()
+}
+
+// writeTextBlock appends one labelled block of free text, or nothing when
+// text is empty.
+func writeTextBlock(b *strings.Builder, label, text string, cut bool) {
+	if text == "" {
+		return
+	}
+	fmt.Fprintf(b, "\n%s:\n", label)
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(textBlockIndent)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if cut {
+		b.WriteString(truncationMarker)
+		b.WriteString("\n")
+	}
 }
 
 // sleep waits for d or until ctx is done.
