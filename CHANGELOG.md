@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-11
+
+### Fixed
+
+- **PowerSchool login workload image: pending Debian security updates are
+  applied at build time.** The base image is pinned by digest and carried
+  three fixed CRITICAL vulnerabilities in `perl-base`; the 0.10.1 image scan
+  gate failed on them, so `glovebox-powerschool-auth-refresher:0.10.1` was
+  never published. 0.10.2 is the first release that ships the image.
+
 ## [0.10.1] - 2026-10-11
 
 ### Added
