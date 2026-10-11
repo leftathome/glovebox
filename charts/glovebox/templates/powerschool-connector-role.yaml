@@ -2,22 +2,17 @@
 {{- $lod := $conn.loginOnDemand | default dict }}
 {{- if and $conn.enabled $lod.enabled }}
 # Everything the PowerSchool connector may do through the Kubernetes API,
-# for on-demand login (connectors.powerschool.loginOnDemand):
+# for on-demand login (connectors.powerschool.loginOnDemand): read and
+# write ONE ConfigMap, named here.
 #
-#   get     the one login CronJob, by name -- to copy its jobTemplate
-#   create  Jobs                           -- to start the login workload
-#   get     Jobs                           -- to see how its Job ended
-#   list    Jobs                           -- to see whether a login Job
-#                                             (scheduled or on demand) is
-#                                             already running, so it never
-#                                             starts a second one
-#
-# Kubernetes cannot restrict `create` or `list` to a resource name, so those
-# two are namespace-wide for Jobs. Nothing else is granted: no pods, no
-# secrets, no update or delete of anything. The Job this lets the connector
-# create runs under the login workload's own ServiceAccount, which the
-# connector cannot use; the connector gains no access to the account's
-# credentials or to Vault by creating it.
+# The connector parses pages from the portal and has to be assumed
+# compromisable. So it is given no way to start anything: no Jobs, no
+# CronJobs, no pods, no Secrets, no create or delete of any kind. It can
+# put a login request into that ConfigMap (patch; update and get are
+# granted for the same object and add nothing to its reach). The login
+# workload reads the request and decides, by rules the connector cannot
+# influence -- the blackout, the latch, at most one login per 20 minutes --
+# whether to act on it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -27,12 +22,9 @@ metadata:
     app.kubernetes.io/component: connector
     glovebox.io/connector: powerschool
 rules:
-  - apiGroups: ["batch"]
-    resources: ["cronjobs"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
     resourceNames:
-      - {{ printf "%s-powerschool-login-%s" (include "glovebox.fullname" .) ($lod.schedule | default "morning") | quote }}
-    verbs: ["get"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "get", "list"]
+      - {{ printf "%s-powerschool-login-request" (include "glovebox.fullname" .) | quote }}
+    verbs: ["get", "update", "patch"]
 {{- end }}

@@ -1,0 +1,19 @@
+{{- $r := .Values.powerschoolAuthRefresher }}
+{{- if and $r.enabled ($r.onRequest | default dict).enabled }}
+# Binds the request-reader Role to the login workload's ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-request-reader
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: powerschool-auth-refresher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-request-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "glovebox.fullname" . }}-powerschool-auth-refresher
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,19 @@
+{{- $r := .Values.powerschoolAuthRefresher }}
+{{- if and $r.enabled ($r.onRequest | default dict).enabled }}
+# The login workload may read the one ConfigMap the connector writes its
+# login request to. Read only: it never writes there (what it has served is
+# recorded in its own Vault state, which the connector cannot reach).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-request-reader
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: powerschool-auth-refresher
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ printf "%s-powerschool-login-request" (include "glovebox.fullname" .) | quote }}
+    verbs: ["get"]
+{{- end }}
