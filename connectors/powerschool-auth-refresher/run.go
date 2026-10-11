@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -150,6 +151,14 @@ type loginState struct {
 	// UnconfirmedCount is the number of logins in a row that returned
 	// without a session the portal accepts. Reset by a confirmed login.
 	UnconfirmedCount int
+	// ServedRequest is the last login request (the connector's, verbatim)
+	// this workload acted on: the one it logged in for, or answered by
+	// finding the stored session good. A request is acted on once.
+	ServedRequest string
+	// RequestLoginAt is when this workload last started a login because of
+	// a request. The minimum interval between such logins is measured
+	// from it.
+	RequestLoginAt time.Time
 }
 
 // sessionStore is the Vault side: the session path and the state path.
@@ -181,6 +190,10 @@ type deps struct {
 	checkSignIn func(ctx context.Context) error
 	login       loginFunc
 	probe       probeFunc
+	// readRequest returns the connector's login request field ("" when it
+	// is empty). Only called in request mode. It talks to the Kubernetes
+	// API, never to the portal.
+	readRequest func(ctx context.Context) (string, error)
 	// newSalt returns a fresh random salt for the credential fingerprint.
 	newSalt func() (string, error)
 	// terminate records the one-line reason the container ended
@@ -234,6 +247,22 @@ func execute(ctx context.Context, cfg config, d deps) result {
 		return blackoutResult(cfg, exitSuccess)
 	}
 
+	// Request mode: this run exists only to answer the connector. Its
+	// first step -- before Vault, and before anything is sent to the
+	// portal -- is to see whether the connector has asked. If it has not,
+	// the run ends here. A run without a pending request makes no request
+	// to the portal at all: not a login, not a check of the stored
+	// session. Checking a session nobody is waiting for would be the
+	// keepalive the account's owner has refused.
+	var request *pendingRequest
+	if cfg.requestMode() {
+		pending, res := readPendingRequest(ctx, cfg, d)
+		if pending == nil {
+			return res
+		}
+		request = pending
+	}
+
 	store, err := d.connect(ctx)
 	if err != nil {
 		log.Error("vault authentication failed",
@@ -277,13 +306,51 @@ func execute(ctx context.Context, cfg config, d deps) result {
 		state.Blocked, state.BlockedReason, state.BlockedAt, state.UnconfirmedCount = false, "", time.Time{}, 0
 	}
 
+	if request != nil {
+		// Each request is acted on once, and logins made for requests keep
+		// a minimum distance from each other, whatever the connector
+		// writes. Both are decided here, from this workload's own record
+		// in Vault, which the connector cannot touch.
+		if state.ServedRequest == request.raw {
+			return noLoginRequested(log, "the pending request has already been acted on")
+		}
+		if !state.RequestLoginAt.IsZero() {
+			since := d.now().Sub(state.RequestLoginAt)
+			if since < cfg.RequestMinInterval {
+				log.Warn("a login was made for a request too recently; this request waits",
+					"outcome", "login_request_too_soon",
+					"last_request_login_seconds_ago", int64(since/time.Second),
+					"min_interval_seconds", int64(cfg.RequestMinInterval/time.Second))
+				return result{exitSuccess, "login_request_too_soon",
+					fmt.Sprintf("a login was made for a request %s ago; the minimum interval is %s",
+						since.Round(time.Second), cfg.RequestMinInterval)}
+			}
+		}
+	}
+
 	stored, version, err := store.Read(ctx)
 	if err != nil {
 		return vaultFailure(log, cfg, "read", cfg.VaultSessionPath, err)
 	}
 
-	switch keepStored(ctx, cfg, d, stored) {
+	if request != nil && stored != nil && !stored.LoggedInAt.IsZero() && !stored.LoggedInAt.Before(request.At) {
+		// A login newer than the request is already in Vault (a manual
+		// run, or the answer to this very request on its way to the
+		// connector). Nothing to do, and nothing to ask the portal.
+		return noLoginRequested(log, "a login newer than the pending request has already been made")
+	}
+
+	switch keepStoredFor(ctx, cfg, d, stored, request) {
 	case keepYes:
+		if request != nil {
+			// Answered without a login. Record it, so the next run does
+			// not ask the portal about this same request again.
+			state.ServedRequest = request.raw
+			if err := writeState(ctx, d, store, state); err != nil {
+				log.Warn("could not record that the request was answered; the next run will check the session again",
+					"vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
+			}
+		}
 		return result{exitSuccess, "session_still_good", "the stored session is young and still accepted; no login"}
 	case keepUndetermined:
 		return result{exitTransient, "transient_failure", "could not tell whether the stored session is still valid; no login"}
@@ -320,6 +387,12 @@ func execute(ctx context.Context, cfg config, d deps) result {
 	// is refused, a rejection could not be recorded either, and the next
 	// run would submit the same credentials again.
 	state.CredentialFingerprint = fingerprint
+	if request != nil {
+		// Also before the login: whatever comes of it, this request has
+		// had its one login, and the interval to the next starts now.
+		state.ServedRequest = request.raw
+		state.RequestLoginAt = d.now().UTC()
+	}
 	if err := writeState(ctx, d, store, state); err != nil {
 		log.Error("could not write the login state; not logging in, since a rejected login could not be recorded")
 		return vaultFailure(log, cfg, "write", cfg.VaultStatePath, err)
@@ -415,6 +488,79 @@ const (
 	// run stops.
 	keepUndetermined
 )
+
+// pendingRequest is a login request that is present, well-formed and
+// fresh.
+type pendingRequest struct {
+	psportal.LoginRequest
+	// raw is the field exactly as read; it is what "served" is recorded
+	// and compared as.
+	raw string
+}
+
+// requestClockSkew is how far in the future a request's time may be and
+// still count. Beyond it the request is not believed.
+const requestClockSkew = 2 * time.Minute
+
+// noLoginRequested ends a request-mode run that has nothing to do.
+func noLoginRequested(log *slog.Logger, why string) result {
+	log.Info("no login requested: "+why+"; nothing sent to the portal", "outcome", "no_login_requested")
+	return result{exitSuccess, "no_login_requested", why}
+}
+
+// readPendingRequest reads the connector's request. It returns nil and the
+// result to end the run with when there is nothing to act on: no request,
+// one that is not exactly a request, one from the future, or one older
+// than RequestMaxAge (the poll that made it has long stopped waiting; a
+// login now would be for nobody).
+//
+// The field is written by the connector, which parses untrusted pages. It
+// is treated as data of that kind: validated for size and shape
+// (psportal.ParseLoginRequest), never echoed into a log line, and able to
+// cause exactly one thing -- this workload going on to its ordinary flow.
+func readPendingRequest(ctx context.Context, cfg config, d deps) (*pendingRequest, result) {
+	log := d.logger
+	raw, err := d.readRequest(ctx)
+	if err != nil {
+		log.Error("could not read the login request; not logging in",
+			"outcome", "transient_failure",
+			"configmap", cfg.RequestConfigMap,
+			"error", cfg.redact(err.Error()))
+		return nil, result{exitTransient, "transient_failure", "the login request could not be read"}
+	}
+	parsed, err := psportal.ParseLoginRequest(raw)
+	if errors.Is(err, psportal.ErrNoLoginRequest) {
+		return nil, noLoginRequested(log, "the request field is empty")
+	}
+	if err != nil {
+		log.Warn("the login request field does not hold a request; ignoring it", "problem", err.Error())
+		return nil, noLoginRequested(log, "the request field is malformed")
+	}
+	now := d.now()
+	switch age := now.Sub(parsed.At); {
+	case age < -requestClockSkew:
+		log.Warn("the login request is dated in the future; ignoring it",
+			"seconds_ahead", int64(-age/time.Second))
+		return nil, noLoginRequested(log, "the request is dated in the future")
+	case age > cfg.RequestMaxAge:
+		return nil, noLoginRequested(log, fmt.Sprintf("the last request is %s old; nobody is waiting for it", age.Round(time.Second)))
+	}
+	return &pendingRequest{LoginRequest: parsed, raw: raw}, result{}
+}
+
+// keepStoredFor is keepStored, with one shortcut in request mode: when the
+// stored session is the very one the connector reported dead, there is
+// nothing to ask the portal -- the connector has just asked.
+func keepStoredFor(ctx context.Context, cfg config, d deps, stored *storedSession, request *pendingRequest) keepDecision {
+	if request != nil && stored != nil && request.Fingerprint != psportal.NoSessionFingerprint {
+		if session, err := powerschool.ParseSession([]byte(stored.Document), d.now()); err == nil &&
+			psportal.RequestFingerprint(powerschool.SessionFingerprint(session)) == request.Fingerprint {
+			d.logger.Info("the stored session is the one the connector found dead; logging in")
+			return keepNo
+		}
+	}
+	return keepStored(ctx, cfg, d, stored)
+}
 
 // keepStored decides whether the session already in Vault makes a login
 // unnecessary. Only a session that is BOTH younger than MinSessionAge and

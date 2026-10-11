@@ -49,6 +49,21 @@
 //	POWERSCHOOL_CHROME_NO_SANDBOX true to start Chromium with --no-sandbox
 //	                              (the image sets it; see the Dockerfile)
 //
+// Request mode (set on the on-request CronJobs by the chart): the run acts
+// only when the connector has asked for a login, and otherwise sends
+// nothing to the portal.
+//
+//	POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP     the ConfigMap the connector
+//	                                        writes its request to; setting
+//	                                        it turns request mode on
+//	POWERSCHOOL_LOGIN_REQUEST_NAMESPACE     default: the pod's own
+//	POWERSCHOOL_LOGIN_REQUEST_MAX_AGE       older requests are ignored;
+//	                                        default 15m
+//	POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL  least time between logins made
+//	                                        for requests; 20m or more
+//	POWERSCHOOL_LOGIN_REQUEST_BYPASS        true: a manual run that ignores
+//	                                        the request and that interval
+//
 // No secret is taken from, or written to, the command line, a log line, an
 // error string, the termination message or a Kubernetes event. See
 // docs/connectors/powerschool-auth-refresher.md.
@@ -72,6 +87,8 @@ import (
 	_ "time/tzdata"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/kubecm"
+	"github.com/leftathome/glovebox/internal/psportal"
 )
 
 // runTimeout caps the whole run: Vault, at most two logins, the home-page
@@ -84,7 +101,13 @@ const (
 	defaultVaultSessionPath = "glovebox/powerschool/default/session"
 	stateLeaf               = "login-state"
 	defaultMinSessionAge    = 10 * time.Hour
-	defaultSessionLifetime  = 36 * time.Hour
+	// defaultRequestMaxAge: a request older than this is for a poll that
+	// has stopped waiting (the connector waits 10 minutes by default).
+	defaultRequestMaxAge = 15 * time.Minute
+	// minRequestInterval: the least time between two logins made because
+	// the connector asked. Default and floor.
+	minRequestInterval     = 20 * time.Minute
+	defaultSessionLifetime = 36 * time.Hour
 	// terminationLogPath is where Kubernetes reads a container's
 	// termination message from (terminationMessagePath's default).
 	terminationLogPath = "/dev/termination-log"
@@ -113,6 +136,15 @@ type config struct {
 	VaultSessionPath  string
 	VaultStatePath    string
 	VaultK8sTokenPath string
+
+	// Request mode (see requestMode): the ConfigMap the connector writes
+	// its login request to, and the limits this binary puts on acting on
+	// one.
+	RequestConfigMap   string
+	RequestNamespace   string
+	RequestMaxAge      time.Duration
+	RequestMinInterval time.Duration
+	RequestBypass      bool
 
 	Blackout        blackout
 	MinSessionAge   time.Duration
@@ -196,7 +228,31 @@ func loadConfig(getenv func(string) string) (cfg config, problems []string) {
 	cfg.SessionLifetime = durationSetting(getenv, "POWERSCHOOL_SESSION_LIFETIME", defaultSessionLifetime, time.Hour, bad)
 
 	cfg.ChromeNoSandbox = isTruthy(getenv("POWERSCHOOL_CHROME_NO_SANDBOX"))
+
+	cfg.RequestConfigMap = strings.TrimSpace(getenv("POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP"))
+	cfg.RequestNamespace = strings.TrimSpace(getenv("POWERSCHOOL_LOGIN_REQUEST_NAMESPACE"))
+	if strings.ContainsAny(cfg.RequestConfigMap, "/ \t") || strings.ContainsAny(cfg.RequestNamespace, "/ \t") {
+		bad("POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP / _NAMESPACE must be plain Kubernetes names")
+	}
+	cfg.RequestMaxAge = durationSetting(getenv, "POWERSCHOOL_LOGIN_REQUEST_MAX_AGE", defaultRequestMaxAge, time.Minute, bad)
+	// A floor, not a default that can be configured away: this is the
+	// bound on how often a connector that has been taken over can cause a
+	// login.
+	cfg.RequestMinInterval = durationSetting(getenv, "POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL", minRequestInterval, minRequestInterval, bad)
+	cfg.RequestBypass = isTruthy(getenv("POWERSCHOOL_LOGIN_REQUEST_BYPASS"))
 	return cfg, problems
+}
+
+// requestMode reports whether this run only acts on a login request from
+// the connector. It does when a request ConfigMap is configured -- the
+// chart sets that on the on-request CronJobs -- unless
+// POWERSCHOOL_LOGIN_REQUEST_BYPASS is true. The bypass is for an operator's
+// manual run (it is an environment variable on the Job, which the connector
+// has no permission to create or change): such a run behaves like a
+// scheduled one and ignores the request and the interval between
+// request-driven logins. Every other rule still applies to it.
+func (c config) requestMode() bool {
+	return c.RequestConfigMap != "" && !c.RequestBypass
 }
 
 // durationSetting reads a Go duration that must be at least min.
@@ -292,6 +348,16 @@ func main() {
 				return nil, err
 			}
 			return store, nil
+		},
+		readRequest: func(ctx context.Context) (string, error) {
+			// A client that can read ConfigMaps and nothing else, pinned
+			// to the API server. Built only when a request is to be read.
+			kube, err := kubecm.NewInCluster(os.Getenv, kubecm.ServiceAccountDir, cfg.RequestNamespace)
+			if err != nil {
+				return "", err
+			}
+			value, _, err := kube.GetField(ctx, cfg.RequestConfigMap, psportal.LoginRequestKey)
+			return value, err
 		},
 		checkSignIn: realSignInCheck(cfg, nil),
 		login:       realLogin(cfg),
