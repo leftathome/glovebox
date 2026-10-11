@@ -13,23 +13,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in a child's overdue/upcoming list the connector can now read the
   assignment's own page and stage what a parent sees there -- description,
   grading category and period, due and posted times, an assessment's status,
-  teacher comments -- as a second item under the rule key
-  `schoology:<kid>:assignment_detail`, linked to the existing `assignment`
-  item by the `assignment_id` tag. There is no grade or score: Schoology does
-  not show a parent account one. Off by default; enabled per child with
-  `assignment_detail.kids` (chart: `schoologyConnector.assignmentDetail.kids`)
-  plus a rule for the key. Item shape and behaviour:
-  `docs/connectors/schoology.md`.
-  - A changed description, due date, status or a newly added teacher comment
-    stages a new item; an unchanged page stages nothing.
+  whether and how many teacher comments there are -- as a second item under
+  the rule key `schoology:<kid>:assignment_detail`, linked to the existing
+  `assignment` item by the `assignment_id` tag. There is no grade or score:
+  Schoology does not show a parent account one. Off by default; enabled per
+  child with `assignment_detail.kids` (chart:
+  `schoologyConnector.assignmentDetail.kids`) plus a rule for the key. Item
+  shape and behaviour: `docs/connectors/schoology.md`.
+  - A changed description, due date, status or comment count stages a new
+    item; an unchanged page stages nothing.
   - The child an item belongs to comes only from the list the assignment was
-    found in. A page whose course does not match the list row is not staged
-    and produces a receipt.
+    found in. A page whose course or title does not match the list row is
+    not staged and produces a receipt.
+  - Teacher-authored text cannot pass for the connector's own lines: the
+    description is framed and every line of it prefixed `| `; single-line
+    values have line breaks removed.
+  - Comment text is not staged yet. The layout inside a comment has not been
+    mapped, so the item carries `comments_state` and `comment_count` only.
   - A page is read only when its list row is new or changed, or once it has
-    gone 24 hours unread; reads are spaced 1.5 s apart and capped at 20
-    assignments per poll (`assignment_detail.max_per_poll`, chart
-    `schoologyConnector.assignmentDetail.maxPerPoll`).
+    gone 20 hours unread; reads are spaced 1.5 s apart, capped at 20
+    assignments per poll with the children taking turns, and stop at the end
+    of the poll window. Chart: `schoologyConnector.assignmentDetail`
+    `.maxPerPoll`, `.refreshHours`, `.requestSpacingMs`.
+  - An auth answer for one assignment is confirmed with a separate session
+    check before the session is treated as rejected.
   - New metric `schoology_assignment_detail_fetches_total{kid,outcome}`.
+  - `scripts/test-chart-schoology-detail.sh` pins the rendered config block.
 
 ### Changed
 
