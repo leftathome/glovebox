@@ -628,6 +628,9 @@ type fakePortal struct {
 	// extra serves further guardian pages: path -> body for the student
 	// selected at that moment and the request's raw query.
 	extra map[string]func(selected, rawQuery string) string
+	// lookup, when set, is the assignment-lookup body for the student
+	// selected at that moment; nil serves syntheticLookupResponse.
+	lookup func(selected string) string
 
 	posts []string // switcher form bodies, in order
 }
@@ -677,7 +680,11 @@ func (p *fakePortal) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPost && r.URL.Path == AssignmentLookupPath:
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(syntheticLookupResponse))
+		body := syntheticLookupResponse
+		if p.lookup != nil {
+			body = p.lookup(p.selected)
+		}
+		_, _ = w.Write([]byte(body))
 	default:
 		if render, ok := p.extra[r.URL.Path]; ok && r.Method == http.MethodGet {
 			_, _ = w.Write([]byte(render(p.selected, r.URL.RawQuery)))

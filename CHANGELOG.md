@@ -40,12 +40,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New metric `schoology_assignment_detail_fetches_total{kid,outcome}`.
   - `scripts/test-chart-schoology-detail.sh` pins the rendered config block.
 
+- **PowerSchool connector: per-assignment teacher comments and
+  descriptions** (glovebox-wekc.12). An `assignment` item's body now carries
+  up to three labelled plain-text blocks -- `Teacher comment:` (the note a
+  teacher left on that student's score), `Assignment description:` and
+  `Category description:` -- and the tags `has_teacher_comment`
+  (`true`/`false`) and `teacher_comment_truncated` (when cut). The comment
+  comes from the assignment lookup the connector already makes; no new
+  request. It travels on the assignment's own item, so it has that kid's
+  `data_subject` and the audience of the kid's `assignment` rule: the child
+  and the guardians (owner decision, 2026-10-11). Term-level teacher
+  comments stay guardians-only.
+- PowerSchool connector: an assignment staged for a change carries a
+  `changed` tag naming what moved (`details`, `due_date`, `status`, `flags`,
+  `score`, `teacher_comment`, `description`).
+- PowerSchool connector: the binary refuses to start unless the linked
+  `powerschool-go` is exactly the reviewed version (`v0.4.0`); a replaced
+  module or a binary without build information is refused too. A test
+  fails when `go.mod` and the reviewed version disagree.
+
 ### Changed
 
 - schoology-go v0.2.1 -> v0.3.0. The connector now passes its timezone
   (`SCHOOLOGY_TIMEZONE`, chart `schoologyConnector.timezone`) to the library,
   which needs it to read the wall-clock due and posted times on an assignment
   page.
+- **PowerSchool connector: a new or edited teacher comment or description
+  stages the assignment again.** The assignment fingerprint now covers the
+  teacher comment and the assignment description, as shown in the item, in
+  addition to the score, flags and dates it already covered. Previously a
+  description edit was ignored. Not staged again: an edit that changes
+  nothing visible; an edit to a category's description (it would re-send
+  every assignment in the category); and an edit to nothing but the
+  description of an assignment outside the lookback window. A teacher
+  comment always is. Checkpoints from before the change are recognised and
+  re-baselined without re-staging every assignment; one that already
+  carries a teacher comment is staged once.
+- `powerschool-go` v0.3.0 -> v0.4.0, reviewed for the connector's read-only
+  guarantee: response decoding only -- no new request, POST path or form
+  field.
+
+### Security
+
+- **PowerSchool connector: text from the portal can no longer forge the
+  layout of an item.** A title, course name or category containing a line
+  break could start a line of its own in the body (`Grade: A+`, or a whole
+  fake `Teacher comment:` block). On every surface, every fact line of the
+  body (grade cells, attendance codes and their legend text, course, period
+  and teacher names included), every tag value, the subject and the sender
+  is now one cleaned line, cut at 256 bytes; free-text blocks -- the
+  per-assignment texts and the term-level teacher comment, now under a
+  `Comment:` label and cut at 4 KiB with a `[truncated]` line -- are
+  indented line by line; LF, CR, VT, FF, NEL and the Unicode line and
+  paragraph separators all count as line breaks; bidirectional controls,
+  zero-width characters and other control characters are removed. The
+  assignment description in the body moved under an
+  `Assignment description:` label. Checkpoint keys and fingerprints of the
+  grade, attendance, attendance-day, term-grade and term-comment surfaces
+  are unchanged (still taken over the text as read), so nothing already
+  delivered is staged again; a test holds them to the values the first
+  release wrote.
 
 ## [0.9.7] - 2026-10-09
 

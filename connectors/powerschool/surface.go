@@ -121,10 +121,24 @@ func stage(ctx context.Context, e Env, surface string, opts connector.ItemOption
 // itemOptions fills the fields every powerschool item shares. tags must
 // already carry the surface-specific keys; the common `kid`, `surface` and
 // `change` keys are added here.
+//
+// The sender, the subject and every tag value are made one cleaned,
+// bounded line here (oneLine), for every surface: they come from the
+// portal's pages, and a line break or an invisible format character in a
+// course name must not reach the metadata. A tag whose value has nothing
+// visible in it is dropped, like any other unknown fact.
 func itemOptions(e Env, rule connector.MatchResult, kid Kid, surface string, change Change, sender, subject string, tags map[string]string) connector.ItemOptions {
-	if strings.TrimSpace(sender) == "" {
+	sender, subject = oneLine(sender), oneLine(subject)
+	if sender == "" {
 		// Staging validation rejects an empty Sender.
 		sender = "powerschool-course"
+	}
+	for k, v := range tags {
+		if clean := oneLine(v); clean == "" {
+			delete(tags, k)
+		} else {
+			tags[k] = clean
+		}
 	}
 	tags["kid"] = kid.Name
 	tags["surface"] = surface

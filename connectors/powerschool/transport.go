@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -275,22 +276,80 @@ func closeBody(req *http.Request) {
 	}
 }
 
+// reviewedLibraryVersion is the one powerschool-go version this connector
+// may run on: the version whose source was read for requests, POST paths
+// and form fields before it was allowed near a real parent account.
+//
+// Raising the go.mod requirement is not enough to change the library: the
+// binary refuses to start (CheckLibrary) until this constant says the same
+// version, and TestReviewedLibraryVersion fails CI. Change it only after
+// reading the library diff between the two versions; say what was checked
+// in the commit that changes it.
+const reviewedLibraryVersion = "v0.4.0"
+
 // ErrLibraryDrift is returned by CheckLibrary when the linked library's
 // POST endpoints are not the approved ones.
 var ErrLibraryDrift = errors.New("powerschool: linked powerschool-go posts to a path or form field " +
 	"other than the two this connector's transport was approved for")
 
+// ErrLibraryVersion is returned by CheckLibrary when the linked library is
+// not, or cannot be shown to be, reviewedLibraryVersion.
+var ErrLibraryVersion = errors.New("powerschool: linked powerschool-go is not the reviewed version " + reviewedLibraryVersion)
+
+// readBuildInfo is debug.ReadBuildInfo. It is a variable only so that
+// tests can present other build information to checkLibraryVersion; no
+// production code assigns it, and there is no environment variable or
+// flag that relaxes the check.
+var readBuildInfo = debug.ReadBuildInfo
+
 // CheckLibrary verifies, at startup, the assumptions this package makes
-// about the linked powerschool-go that the compiler cannot: the library
-// must POST where, and what, the allowlist expects. If it does not, the
-// library is asking for an exception nobody approved.
+// about the linked powerschool-go that the compiler cannot:
+//
+//   - it is exactly reviewedLibraryVersion (checkLibraryVersion);
+//   - it POSTs where, and what, the allowlist expects. If it does not, the
+//     library is asking for an exception nobody approved.
 func CheckLibrary() error {
+	if err := checkLibraryVersion(readBuildInfo()); err != nil {
+		return err
+	}
 	if pslib.AssignmentLookupPath != AssignmentLookupPath ||
 		pslib.SwitchStudentPath != SwitchStudentPath ||
 		pslib.SwitchStudentField != SwitchStudentField {
 		return ErrLibraryDrift
 	}
 	return nil
+}
+
+// checkLibraryVersion compares the powerschool-go recorded in the binary's
+// build information with reviewedLibraryVersion. It fails closed: anything
+// it cannot positively identify as the reviewed release is refused.
+//
+//   - No build information (ok is false: a binary built without module
+//     support), or build information that does not list the library:
+//     refused. `go build`, `go run` and `go test` in this module all
+//     record it, so a normal build is never in this case.
+//   - The module is replaced (a `replace` directive, to a directory or to
+//     another module or version): refused, whatever version the
+//     replacement claims. A replacement is by definition not the reviewed
+//     tag.
+//   - Any other version, pseudo-versions and "(devel)" included: refused.
+func checkLibraryVersion(bi *debug.BuildInfo, ok bool) error {
+	if !ok || bi == nil {
+		return fmt.Errorf("%w: the binary carries no build information, so the linked version cannot be verified", ErrLibraryVersion)
+	}
+	for _, dep := range bi.Deps {
+		if dep == nil || dep.Path != libraryModule {
+			continue
+		}
+		if dep.Replace != nil {
+			return fmt.Errorf("%w: go.mod replaces the module (with %q %q)", ErrLibraryVersion, dep.Replace.Path, dep.Replace.Version)
+		}
+		if dep.Version != reviewedLibraryVersion {
+			return fmt.Errorf("%w: linked version is %q", ErrLibraryVersion, dep.Version)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: the build information does not list %s", ErrLibraryVersion, libraryModule)
 }
 
 // refuseWriteRedirects is the client's CheckRedirect. A redirect that the

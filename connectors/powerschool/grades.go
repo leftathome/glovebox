@@ -156,22 +156,27 @@ func ProcessGrades(ctx context.Context, e Env, kid Kid, grades []*pslib.Grade) R
 // buildGradeBody synthesizes the plaintext content.raw body for a course
 // grade. Everything a summariser needs is in the tags; the body is the
 // same facts for a reader and for the scanner.
+//
+// Every value is page text and is written as one cleaned line (oneLine): a
+// grade cell or course name with a line break in it cannot start a line of
+// its own. The fingerprint is NOT taken from these cleaned values; it stays
+// over the raw cells (gradeFingerprint).
 func buildGradeBody(g *pslib.Grade, terms map[string]string, term, current, previous string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Course: %s\n", g.CourseName)
+	fmt.Fprintf(&b, "Course: %s\n", oneLine(g.CourseName))
 	if g.Period != "" {
-		fmt.Fprintf(&b, "Period: %s\n", g.Period)
+		fmt.Fprintf(&b, "Period: %s\n", oneLine(g.Period))
 	}
 	if g.Teacher != "" {
-		fmt.Fprintf(&b, "Teacher: %s\n", g.Teacher)
+		fmt.Fprintf(&b, "Teacher: %s\n", oneLine(g.Teacher))
 	}
-	fmt.Fprintf(&b, "Current grade (%s): %s\n", term, displayGrade(current))
+	fmt.Fprintf(&b, "Current grade (%s): %s\n", term, oneLine(displayGrade(current)))
 	if previous != "" && previous != current {
-		fmt.Fprintf(&b, "Previous grade: %s\n", displayGrade(previous))
+		fmt.Fprintf(&b, "Previous grade: %s\n", oneLine(displayGrade(previous)))
 	}
 	for _, t := range termOrder {
 		if terms[t] != "" {
-			fmt.Fprintf(&b, "%s: %s\n", t, displayGrade(terms[t]))
+			fmt.Fprintf(&b, "%s: %s\n", t, oneLine(displayGrade(terms[t])))
 		}
 	}
 	return b.String()

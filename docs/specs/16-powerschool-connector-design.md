@@ -472,6 +472,45 @@ A course with no posted grade stages nothing.
 | `scored` | a score has been entered |
 | `outstanding` | still wants work: missing or incomplete, or neither scored nor collected; never when exempt |
 | `score`, `max_score`, `percent`, `letter_grade` | when present |
+| `has_teacher_comment` | always present, `true` / `false`: the teacher left a note with text on this student's score |
+| `teacher_comment_truncated` | `true` when the comment in the body is not the whole comment; absent otherwise |
+| `changed` | on `change=updated`: the parts that moved, comma-joined, from `details`, `due_date`, `status`, `flags`, `score`, `teacher_comment`, `description` (section 9); `record` for an old-format checkpoint that cannot say |
+
+**Free text.** After the fact lines the body carries up to three labelled
+blocks, each only when non-empty: `Teacher comment:` (the note on this
+student's score, `Assignment.TeacherComment`, from the same lookup response
+as the score -- powerschool-go v0.4.0), `Assignment description:` and
+`Category description:` (omitted when it equals the assignment
+description).
+
+**Untrusted text and layout.** Every string from the portal is untrusted,
+and the item's layout must be the connector's own:
+
+- a fact -- on every surface each `Label: value` line of the body (grade
+  cells, attendance codes and legend text included), each tag value, the
+  subject and the sender -- is reduced to ONE line (`oneLine`): all line breaks and runs of whitespace
+  become one space, bounded at 256 bytes;
+- a text block -- the three above, and the body of the term-level
+  `teacher_comment` item under a `Comment:` label -- is plain text only
+  (the library's `TeacherCommentHTML` is never read), cleaned per line (`cleanText`), every line indented two
+  spaces, bounded at 4 KiB with a `[truncated]` line after a cut block,
+  never in a tag;
+- in both, LF, CR, VT, FF, NEL (U+0085) and the Unicode line and paragraph
+  separators (Zl, Zp) all count as line breaks; format characters (Cf:
+  bidirectional controls, zero-width characters, BOM) and the remaining
+  C0/C1 controls are dropped. Nothing is decoded or interpreted.
+
+The only lines of a body that start in column one are therefore the
+connector's own labels, each at most once. Cleaning applies to what is
+rendered; the keys and fingerprints of the other five surfaces (section 9)
+are still computed over the text as read, so it re-stages nothing.
+
+**Audience (owner decision, 2026-10-11).** The per-assignment comment is
+not a surface of its own. It rides on the assignment's item and so has that
+item's `data_subject` and `audience` (section 6): per-assignment teacher
+feedback goes to the child who did the work and to the guardians, i.e. the
+`assignment` rule's audience. The guardians-only rule of section 7.4
+applies to the term-level `teacher_comment` surface and is unchanged.
 
 Counting without parsing prose: *missing* is `missing=true`; *due tomorrow*
 is `outstanding=true` and `due_day` = tomorrow; *past due* is
@@ -724,8 +763,29 @@ records are edited in place, so each record has its own checkpoint entry,
 - grade: every term's cell, readable (`Q1=B+88|Q2=|...`), so the previous
   grade can be reported;
 - attendance: `absences=N|tardies=M`;
-- assignment: a hash over title, due date, category, status, flags, score,
-  points possible, percent and letter. The description is not included.
+- assignment: `a3:` and one short hash per part -- `details` (title,
+  category name), `due_date`, `status`, `flags`, `score` (score, points
+  possible, percent, letter), `teacher_comment`, `description` -- so that a
+  changed record can say which parts moved (the `changed` tag). Each part
+  is hashed over what the item shows: facts as their cleaned line, the two
+  texts as cleaned and cut for the body, plus whether the block ends in
+  the truncation marker. An edit that changes nothing in the staged item
+  stages nothing. The category description is not included: it belongs to
+  the category, and one edit would stage every assignment in it.
+
+A staged item's id is minted per item, so for a consumer that notices new
+items by id the fingerprint is the record's identity: an unchanged record
+yields no item, a changed one at most one. Two changes are recorded without
+an item, both for an assignment outside the lookback window with no
+missing / late / incomplete flag: first sight (section 7.2), and a change
+to nothing but the description. A teacher-comment change always stages.
+
+Assignment fingerprints in the first release's format (one hash over the
+raw gradebook facts, no text) are recognised by recomputing that hash,
+which a test holds to literal values: such a record is re-baselined without
+staging, unless it carries a teacher comment, which stages once
+(`changed=teacher_comment`). If the old hash no longer matches, the record
+stages with `changed=record`.
 
 An unchanged fingerprint stages nothing; a new or different one stages one
 item and is saved after `Commit()`. A failed save is logged with
@@ -793,11 +853,13 @@ registered on the framework's own meter provider, the one behind
 2. **A supervised first run** with `student_api_id` either configured or
    read back from the checkpoint and then configured (section 6.2).
 
-3. **A powerschool-go release** containing the three page parsers
-   (proposed 0.3.0). Until then `go.mod` replaces the module with a
-   pseudo-version served from the private GitLab, marked TEMPORARY, which
-   CI and the image build cannot fetch. Before merge: drop the `replace`
-   and require the tag.
+3. **A powerschool-go release** containing the three page parsers. Done:
+   `go.mod` requires the released v0.4.0 (v0.3.0 brought the page parsers,
+   v0.4.0 the per-assignment teacher comment and category description).
+   The binary refuses to start on any other version
+   (`reviewedLibraryVersion`, checked by `CheckLibrary` against the build
+   information; a replaced module or missing build information is refused
+   too).
 4. **A supervised first run of the three page surfaces** (section 11.2)
    before any of them is left switched on.
 

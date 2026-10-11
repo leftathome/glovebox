@@ -95,35 +95,199 @@ func withinLookback(a *pslib.Assignment, now time.Time, tz *time.Location, lookb
 	return !start.Before(cutoff)
 }
 
-// assignmentFingerprint hashes every field whose change should stage the
-// assignment again: a new score, a cleared missing flag, a moved due date.
-func assignmentFingerprint(a *pslib.Assignment) string {
+// assignmentText is the teacher-authored free text of one assignment, as
+// the item's body shows it. All of it is untrusted third-party text: it is
+// carried as plain text, bounded, and never interpreted (text.go).
+type assignmentText struct {
+	// comment is the note the teacher left on this student's score, from
+	// the library's plain-text field. The HTML form
+	// (Assignment.TeacherCommentHTML) is never read by this connector.
+	comment string
+	// description is the assignment's description.
+	description string
+	// categoryDescription is the description of the assignment's category;
+	// empty when it says the same as description.
+	categoryDescription string
+
+	commentCut, descriptionCut, categoryCut bool
+}
+
+// textOf collects the assignment's free text, cleaned and bounded.
+func textOf(a *pslib.Assignment) assignmentText {
+	var t assignmentText
+	if a.HasTeacherComment {
+		t.comment, t.commentCut = boundText(a.TeacherComment)
+		if t.comment != "" && a.TeacherCommentTruncated {
+			t.commentCut = true
+		}
+	}
+	t.description, t.descriptionCut = boundText(a.Description)
+	t.categoryDescription, t.categoryCut = boundText(a.CategoryDescription)
+	if t.categoryDescription == t.description {
+		t.categoryDescription, t.categoryCut = "", false
+	}
+	return t
+}
+
+// hasComment reports whether there is a teacher comment with text to show.
+func (t assignmentText) hasComment() bool { return t.comment != "" }
+
+// assignmentTitle is the title as one cleaned line, or a placeholder.
+func assignmentTitle(a *pslib.Assignment) string {
+	if title := oneLine(a.Title); title != "" {
+		return title
+	}
+	return "(untitled assignment)"
+}
+
+// The parts of an assignment that are fingerprinted separately, in the
+// order the `changed` tag lists them. The names are tag values and so are
+// stable across releases.
+const (
+	partDetails        = "details"         // title, category
+	partDueDate        = "due_date"        // due date
+	partStatus         = "status"          // the library's status
+	partFlags          = "flags"           // missing, late, ...
+	partScore          = "score"           // score, points possible, percent, letter
+	partTeacherComment = "teacher_comment" // the teacher's note on the score
+	partDescription    = "description"     // the assignment description
+)
+
+var fingerprintParts = []string{partDetails, partDueDate, partStatus, partFlags, partScore, partTeacherComment, partDescription}
+
+// changedRecord is the `changed` value for an assignment whose stored
+// fingerprint is the old single hash and no longer matches: the gradebook
+// record moved, and the old form cannot say which part.
+const changedRecord = "record"
+
+// fingerprintPrefix marks the per-part fingerprint format.
+const fingerprintPrefix = "a3"
+
+func hashFields(n int, fields ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\x1f")))
+	return hex.EncodeToString(sum[:n])
+}
+
+func sortedFlags(a *pslib.Assignment) string {
 	flags := make([]string, 0, len(a.Flags))
 	for _, f := range a.Flags {
 		flags = append(flags, string(f))
 	}
 	sort.Strings(flags)
+	return strings.Join(flags, ",")
+}
 
-	score, percent := "", ""
+func scoreFields(a *pslib.Assignment) (score, percent string) {
 	if a.Score != nil {
 		score = formatFloat(*a.Score)
 	}
 	if a.Percentage != nil {
 		percent = formatFloat(*a.Percentage)
 	}
-	canonical := strings.Join([]string{
+	return score, percent
+}
+
+// assignmentFingerprint is the identity of an assignment as staged. A
+// staged item's id is minted fresh each time and downstream notices new
+// items by id, so this value alone decides whether there is a new item:
+// same fingerprint, none; different fingerprint, at most one (see
+// stageAssignments for the two cases that are recorded without staging).
+//
+// It is "a3:" followed by one short hash per part of fingerprintParts, so
+// that a later comparison can say which part moved (changedParts). Every
+// part is taken over what the item shows, not over the raw input:
+//
+//   - the gradebook facts, the title and category as their one cleaned
+//     line;
+//   - the teacher's comment and the assignment description as cleaned and
+//     cut for the body (textOf), with whether the block ends in the
+//     truncation marker. An edit that changes nothing in the staged block
+//     -- invisible characters, trailing space, text beyond the cut, the
+//     comment's markup -- therefore does not stage an identical item.
+//
+// The category description is deliberately NOT part of it: it belongs to
+// the category, and one edit by a teacher would otherwise stage every
+// assignment in that category again. It is still shown in the body
+// whenever the assignment is staged for a reason of its own.
+func assignmentFingerprint(a *pslib.Assignment, text assignmentText) string {
+	score, percent := scoreFields(a)
+	cut := func(c bool) string {
+		if c {
+			return "cut"
+		}
+		return ""
+	}
+	hashes := map[string]string{
+		partDetails:        hashFields(6, oneLine(a.Title), oneLine(a.Category)),
+		partDueDate:        hashFields(6, a.DueDate.UTC().Format("2006-01-02")),
+		partStatus:         hashFields(6, string(a.Status)),
+		partFlags:          hashFields(6, sortedFlags(a)),
+		partScore:          hashFields(6, score, formatFloat(a.MaxScore), percent, oneLine(a.LetterGrade)),
+		partTeacherComment: hashFields(6, text.comment, cut(text.commentCut)),
+		partDescription:    hashFields(6, text.description, cut(text.descriptionCut)),
+	}
+	out := make([]string, 0, len(fingerprintParts)+1)
+	out = append(out, fingerprintPrefix)
+	for _, part := range fingerprintParts {
+		out = append(out, hashes[part])
+	}
+	return strings.Join(out, ":")
+}
+
+// legacyAssignmentFingerprint is the fingerprint the connector saved when
+// it was first merged: one hash over the gradebook facts, raw, with no
+// free text. It is recomputed only to recognise such a checkpoint
+// (changedParts); its fields and their order must never change, and
+// TestLegacyAssignmentFingerprint_Golden holds it to literal values.
+func legacyAssignmentFingerprint(a *pslib.Assignment) string {
+	score, percent := scoreFields(a)
+	return hashFields(8,
 		a.Title,
 		a.DueDate.UTC().Format("2006-01-02"),
 		a.Category,
 		string(a.Status),
-		strings.Join(flags, ","),
+		sortedFlags(a),
 		score,
 		formatFloat(a.MaxScore),
 		percent,
 		a.LetterGrade,
-	}, "\x1f")
-	sum := sha256.Sum256([]byte(canonical))
-	return hex.EncodeToString(sum[:8])
+	)
+}
+
+// changedParts names the parts of an assignment that differ between the
+// stored fingerprint prev and the current one cur (prev != cur).
+//
+// A stored value in the old single-hash form cannot be compared part by
+// part. If it still equals the old hash of the current record, the
+// gradebook facts have not moved and the only thing never delivered is a
+// teacher comment, if there is one; nothing at all is returned otherwise
+// and the caller re-baselines without staging. If it does not, the record
+// changed in a way the old form cannot name: changedRecord.
+func changedParts(prev, cur string, a *pslib.Assignment, text assignmentText) []string {
+	was, now := strings.Split(prev, ":"), strings.Split(cur, ":")
+	if len(was) == len(fingerprintParts)+1 && len(now) == len(was) && was[0] == fingerprintPrefix {
+		var changed []string
+		for i, part := range fingerprintParts {
+			if was[i+1] != now[i+1] {
+				changed = append(changed, part)
+			}
+		}
+		return changed
+	}
+	var changed []string
+	if prev != legacyAssignmentFingerprint(a) {
+		changed = append(changed, changedRecord)
+	}
+	if text.hasComment() {
+		changed = append(changed, partTeacherComment)
+	}
+	return changed
+}
+
+// descriptionOnly reports whether the description is the only part that
+// changed.
+func descriptionOnly(changed []string) bool {
+	return len(changed) == 1 && changed[0] == partDescription
 }
 
 // courseRead is one course's assignment lookup: the grade row it was read
@@ -238,13 +402,20 @@ func getScoresTraced(ctx context.Context, e Env, kid Kid, g *pslib.Grade) (*psli
 }
 
 // stageAssignments is the write half: it stages every assignment in reads
-// that is new or has changed.
+// that is new or has changed. A teacher's comment travels on the
+// assignment's own item, built from this kid's rule like the rest of it, so
+// it has that kid's data subject and audience and no other.
 //
 // First-sight backlog: an assignment seen for the first time that is due
 // before the lookback window and carries no missing/late/incomplete flag
 // is checkpointed without being staged, so enabling the connector
 // mid-year does not stage the whole year's gradebook. If such an
-// assignment later changes it stages like any other.
+// assignment later changes it stages like any other -- except that an edit
+// to nothing but its description is checkpointed without being staged
+// too.
+//
+// An item staged for a change carries a `changed` tag naming the parts
+// that moved (fingerprintParts, or changedRecord).
 func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, cfg AssignmentsConfig) Result {
 	var res Result
 	rule, ok := matchRule(e, kid, assignmentSurface)
@@ -267,25 +438,46 @@ func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, c
 				id = fmt.Sprintf("%s#%d", id, n)
 			}
 			key := courseKey(g) + ":" + id
-			fp := assignmentFingerprint(a)
-			change, _ := Compare(e.CP, assignmentSurface, kid.Name, key, fp)
-			if change == ChangeNone {
+			text := textOf(a)
+			fp := assignmentFingerprint(a, text)
+			prev, seenBefore := e.CP.Load(CheckpointKey(assignmentSurface, kid.Name, key))
+			if seenBefore && prev == fp {
 				continue
 			}
-			if change == ChangeNew && !withinLookback(a, e.now(), e.tz(), cfg.LookbackDays) && !needsAttention(a) {
+			baseline := func(why string) {
 				if err := SaveFingerprint(e.CP, assignmentSurface, kid.Name, key, fp); err != nil {
-					slog.Error("powerschool assignment baseline save failed", "kid", kid.Name, "error", err)
+					slog.Error("powerschool assignment baseline save failed", "kid", kid.Name, "reason", why, "error", err)
 				}
+			}
+			change := ChangeNew
+			var changed []string
+			if seenBefore {
+				change = ChangeUpdated
+				changed = changedParts(prev, fp, a, text)
+				if len(changed) == 0 {
+					// An old-format checkpoint of a record that has not
+					// moved and has no comment: the fingerprint changed
+					// shape, the assignment did not.
+					baseline("fingerprint_format")
+					continue
+				}
+			}
+			// Outside the lookback window, with no flag that makes it
+			// worth attention: not staged on first sight, and not staged
+			// again for an edit to nothing but its description. Anything
+			// else -- a score, a flag, a date, a teacher comment above all
+			// -- stages however old the assignment is.
+			if (change == ChangeNew || descriptionOnly(changed)) &&
+				!withinLookback(a, e.now(), e.tz(), cfg.LookbackDays) && !needsAttention(a) {
+				baseline("outside_lookback")
 				continue
 			}
 
-			subject := strings.TrimSpace(a.Title)
-			if subject == "" {
-				subject = "(untitled assignment)"
-			}
-			opts := itemOptions(e, rule, kid, assignmentSurface, change, g.CourseName, subject, assignmentTags(a, g, e.tz()))
+			tags := assignmentTags(a, g, text, e.tz())
+			setTag(tags, "changed", strings.Join(changed, ","))
+			opts := itemOptions(e, rule, kid, assignmentSurface, change, g.CourseName, assignmentTitle(a), tags)
 
-			if err := stage(ctx, e, assignmentSurface, opts, buildAssignmentBody(a, g, e.tz())); err != nil {
+			if err := stage(ctx, e, assignmentSurface, opts, buildAssignmentBody(a, g, text, e.tz())); err != nil {
 				slog.Warn("powerschool assignment stage failed", "kid", kid.Name, "error", err)
 				res.Failed++
 				continue
@@ -329,12 +521,21 @@ func getAssignmentsTraced(ctx context.Context, e Env, kid Kid, g *pslib.Grade) (
 
 // assignmentTags builds the tag set of spec 16 section 7.2. Every flag is
 // present as "true" or "false"; optional facts are absent when unknown.
-func assignmentTags(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) map[string]string {
+//
+// has_teacher_comment is always present; teacher_comment_truncated is
+// present (as "true") only when the comment in the body is not the whole
+// comment. stageAssignments adds `changed`; itemOptions makes every value
+// one cleaned line.
+func assignmentTags(a *pslib.Assignment, g *pslib.Grade, text assignmentText, tz *time.Location) map[string]string {
 	flags := flagSet(a)
 	tags := map[string]string{
-		"status":      string(a.Status),
-		"outstanding": formatBool(isOutstanding(a)),
-		"scored":      formatBool(isScored(a)),
+		"status":              string(a.Status),
+		"outstanding":         formatBool(isOutstanding(a)),
+		"scored":              formatBool(isScored(a)),
+		"has_teacher_comment": formatBool(text.hasComment()),
+	}
+	if text.hasComment() && text.commentCut {
+		tags["teacher_comment_truncated"] = "true"
 	}
 	var set []string
 	for _, f := range assignmentFlags {
@@ -365,46 +566,54 @@ func assignmentTags(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) map[
 	return tags
 }
 
-// buildAssignmentBody synthesizes the plaintext content.raw body. The
-// teacher-authored title and description are the untrusted part the
-// scanner is here for.
-func buildAssignmentBody(a *pslib.Assignment, g *pslib.Grade, tz *time.Location) string {
+// buildAssignmentBody synthesizes the plaintext content.raw body: the
+// gradebook facts as "Label: value" lines, then up to three labelled text
+// blocks -- "Teacher comment:", "Assignment description:" and "Category
+// description:" -- each present only when there is text for it.
+//
+// Every value is untrusted text from the portal; it is what the scanner is
+// here for. A fact is one cleaned line (oneLine) however many line breaks
+// its source carries, so the only lines that start in column one are the
+// connector's own labels. A block's lines are indented (textBlockIndent)
+// and a cut block ends with truncationMarker.
+func buildAssignmentBody(a *pslib.Assignment, g *pslib.Grade, text assignmentText, tz *time.Location) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Assignment: %s\n", a.Title)
-	if g.CourseName != "" {
-		fmt.Fprintf(&b, "Course: %s\n", g.CourseName)
+	// fact writes one "Label: value" line. The value is made one line
+	// first, whatever it is, so it cannot start a line of its own.
+	fact := func(label, value string) {
+		if v := oneLine(value); v != "" {
+			b.WriteString(label + ": " + v + "\n")
+		}
 	}
-	if a.Category != "" {
-		fmt.Fprintf(&b, "Category: %s\n", a.Category)
-	}
+	fact("Assignment", assignmentTitle(a))
+	fact("Course", g.CourseName)
+	fact("Category", a.Category)
 	if day, _, ok := dueDay(a, tz); ok {
-		fmt.Fprintf(&b, "Due: %s\n", day)
+		fact("Due", day)
 	}
-	fmt.Fprintf(&b, "Status: %s\n", a.Status)
+	fact("Status", string(a.Status))
 	if len(a.Flags) > 0 {
 		flags := make([]string, 0, len(a.Flags))
 		for _, f := range a.Flags {
 			flags = append(flags, string(f))
 		}
-		fmt.Fprintf(&b, "Flags: %s\n", strings.Join(flags, ", "))
+		fact("Flags", strings.Join(flags, ", "))
 	}
 	switch {
 	case a.Score != nil && a.MaxScore > 0:
-		fmt.Fprintf(&b, "Score: %s/%s\n", formatFloat(*a.Score), formatFloat(a.MaxScore))
+		fact("Score", formatFloat(*a.Score)+"/"+formatFloat(a.MaxScore))
 	case a.Score != nil:
-		fmt.Fprintf(&b, "Score: %s\n", formatFloat(*a.Score))
+		fact("Score", formatFloat(*a.Score))
 	case a.MaxScore > 0:
-		fmt.Fprintf(&b, "Points possible: %s\n", formatFloat(a.MaxScore))
+		fact("Points possible", formatFloat(a.MaxScore))
 	}
 	if a.Percentage != nil {
-		fmt.Fprintf(&b, "Percent: %s\n", formatFloat(*a.Percentage))
+		fact("Percent", formatFloat(*a.Percentage))
 	}
-	if a.LetterGrade != "" {
-		fmt.Fprintf(&b, "Grade: %s\n", a.LetterGrade)
-	}
-	if d := strings.TrimSpace(a.Description); d != "" {
-		fmt.Fprintf(&b, "\n%s\n", d)
-	}
+	fact("Grade", a.LetterGrade)
+	writeTextBlock(&b, "Teacher comment", text.comment, text.commentCut)
+	writeTextBlock(&b, "Assignment description", text.description, text.descriptionCut)
+	writeTextBlock(&b, "Category description", text.categoryDescription, text.categoryCut)
 	return b.String()
 }
 

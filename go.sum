@@ -127,8 +127,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80 h1:6Yzfa6GP0rIo/kULo2bwGEkFvCePZ3qHDDTC3/J9Swo=
 github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80/go.mod h1:imJHygn/1yfhB7XSJJKlFZKl/J+dCPAknuiaGOshXAs=
-github.com/leftathome/powerschool-go v0.3.0 h1:YiGdSUBr16QMsj85JjChZQkW1yCsJt8zxB30Zxr4fEg=
-github.com/leftathome/powerschool-go v0.3.0/go.mod h1:rMe6GO0Yn6+45TkANUDvAA6Dm/Yk01ySGr2KvikH4v0=
+github.com/leftathome/powerschool-go v0.4.0 h1:gqQarivgsoBDWhl0b3CLIIaP1vhmkSvqPmqgY7M3C6U=
+github.com/leftathome/powerschool-go v0.4.0/go.mod h1:4+wHNJU/i7cH5CYduUTXTRxOKzZ4TskZIlCpwFg/0Eg=
 github.com/leftathome/schoology-go v0.3.0 h1:fu1D84GoD1ViNoas6LFpcTaogiNFxCnFFBfxNPAK7dc=
 github.com/leftathome/schoology-go v0.3.0/go.mod h1:kT/1k2ZHmQpICCTnwRo1rhwlqztozYZ6TVR7UYzR5cc=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
