@@ -50,13 +50,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PowerSchool connector: text from the portal can no longer forge the
   layout of an item.** A title, course name or category containing a line
   break could start a line of its own in the body (`Grade: A+`, or a whole
-  fake `Teacher comment:` block). Every fact line of the assignment item,
-  and every tag value, subject and sender on every surface, is now one
-  cleaned line; free-text blocks are indented line by line; LF, CR, VT, FF, NEL and the Unicode line and
+  fake `Teacher comment:` block). On every surface, every fact line of the
+  body (grade cells, attendance codes and their legend text, course, period
+  and teacher names included), every tag value, the subject and the sender
+  is now one cleaned line, cut at 256 bytes; free-text blocks -- the
+  per-assignment texts and the term-level teacher comment, now under a
+  `Comment:` label and cut at 4 KiB with a `[truncated]` line -- are
+  indented line by line; LF, CR, VT, FF, NEL and the Unicode line and
   paragraph separators all count as line breaks; bidirectional controls,
   zero-width characters and other control characters are removed. The
   assignment description in the body moved under an
-  `Assignment description:` label.
+  `Assignment description:` label. Checkpoint keys and fingerprints of the
+  grade, attendance, attendance-day, term-grade and term-comment surfaces
+  are unchanged (still taken over the text as read), so nothing already
+  delivered is staged again; a test holds them to the values the first
+  release wrote.
 
 ## [0.9.7] - 2026-10-09
 

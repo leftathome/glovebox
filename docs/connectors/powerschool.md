@@ -259,13 +259,16 @@ change (below). The text itself is never in a tag.
 party. Nothing is decoded, expanded or acted on, and the layout is the
 connector's, not the text's:
 
-- A *fact* (title, course, category, letter grade, and every tag value, the
-  subject and the sender, on every surface) is reduced to one line: every
+- A *fact* -- on every surface: each `Label: value` line of the body
+  (titles, course, period and teacher names, grade cells, attendance codes
+  and their legend text), every tag value, the subject and the sender -- is
+  reduced to one line: every
   kind of line break becomes a space, runs of whitespace become one space,
   and the value is cut at 256 bytes. A title containing a line break
   followed by `Grade: A+` stays on the `Assignment:` line.
-- A *text block* (the three above) is the library's plain-text form -- the
-  comment's HTML form is never read -- with each line trimmed, runs of
+- A *text block* (the three above, and the term-level teacher comment,
+  which is under a `Comment:` label) is the library's plain-text form --
+  the comment's HTML form is never read -- with each line trimmed, runs of
   whitespace inside a line made one space, and blank lines at the ends
   dropped. Every line is indented by two spaces, and the connector's own
   labels are the only lines that start in column one, so text a teacher
@@ -317,6 +320,12 @@ feedback goes to the child and the guardians; term-level teacher comments
 (the `teacher_comment` surface below) stay guardians-only. There is no
 separate switch for the per-assignment comment; it follows the kid's
 `assignment` rule.
+
+This cleaning is applied to what is rendered only. The checkpoint keys
+and fingerprints of the `grade`, `attendance`, `attendance_day`,
+`term_grade` and `teacher_comment` surfaces are still taken over the text
+as read, exactly as before, so the change stages nothing that was already
+delivered.
 
 **Upgrading.** Checkpoints in the first release's format (one hash, no
 text) are recognised: on the first poll after the upgrade an assignment

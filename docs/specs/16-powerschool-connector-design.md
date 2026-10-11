@@ -486,12 +486,13 @@ description).
 **Untrusted text and layout.** Every string from the portal is untrusted,
 and the item's layout must be the connector's own:
 
-- a fact -- the title, course, category and letter-grade lines of the body,
-  and on every surface each tag value, the subject and the sender -- is
-  reduced to ONE line (`oneLine`): all line breaks and runs of whitespace
+- a fact -- on every surface each `Label: value` line of the body (grade
+  cells, attendance codes and legend text included), each tag value, the
+  subject and the sender -- is reduced to ONE line (`oneLine`): all line breaks and runs of whitespace
   become one space, bounded at 256 bytes;
-- a text block is plain text only (the library's `TeacherCommentHTML` is
-  never read), cleaned per line (`cleanText`), every line indented two
+- a text block -- the three above, and the body of the term-level
+  `teacher_comment` item under a `Comment:` label -- is plain text only
+  (the library's `TeacherCommentHTML` is never read), cleaned per line (`cleanText`), every line indented two
   spaces, bounded at 4 KiB with a `[truncated]` line after a cut block,
   never in a tag;
 - in both, LF, CR, VT, FF, NEL (U+0085) and the Unicode line and paragraph
@@ -499,8 +500,10 @@ and the item's layout must be the connector's own:
   bidirectional controls, zero-width characters, BOM) and the remaining
   C0/C1 controls are dropped. Nothing is decoded or interpreted.
 
-The only lines of an assignment body that start in column one are
-therefore the connector's own labels, each at most once.
+The only lines of a body that start in column one are therefore the
+connector's own labels, each at most once. Cleaning applies to what is
+rendered; the keys and fingerprints of the other five surfaces (section 9)
+are still computed over the text as read, so it re-stages nothing.
 
 **Audience (owner decision, 2026-10-11).** The per-assignment comment is
 not a surface of its own. It rides on the assignment's item and so has that

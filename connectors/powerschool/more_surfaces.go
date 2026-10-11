@@ -492,7 +492,7 @@ func ProcessAttendanceDays(ctx context.Context, e Env, kid Kid, page *pslib.Atte
 			}
 			fmt.Fprintf(&b, "Kind: %s\n", kind)
 			if p := strings.TrimPrefix(prev, "code="); p != "" && p != day.Code {
-				fmt.Fprintf(&b, "Previously: %s\n", p)
+				fmt.Fprintf(&b, "Previously: %s\n", oneLine(p))
 			}
 
 			if err := stage(ctx, e, attendanceDaySurface, opts, b.String()); err != nil {
@@ -620,7 +620,7 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 		fmt.Fprintf(&b, "Completed: %s\n", oneLine(term))
 		fmt.Fprintf(&b, "Final grade: %s\n", oneLine(g.LetterGrade))
 		if previous != "" && previous != g.LetterGrade {
-			fmt.Fprintf(&b, "Previously recorded: %s\n", previous)
+			fmt.Fprintf(&b, "Previously recorded: %s\n", oneLine(previous))
 		}
 		fmt.Fprintf(&b, "Credit: %s earned of %s attempted\n", formatFloat(g.CreditEarned), formatFloat(g.CreditAttempted))
 		if !g.IncludedInGPA {
@@ -653,6 +653,11 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 // These items are for the parents only: the rule that routes them must not
 // name the child in its audience (ValidateConfig enforces it). The
 // teacher's name goes in the body, never in a tag.
+//
+// The body is the fact lines, each one cleaned line, then the comment as a
+// "Comment:" block: every line indented, cut at maxTextBlockBytes with the
+// truncation marker (writeTextBlock). Nothing a teacher types starts a
+// line in column one.
 //
 // The term is half of the item's identity. The portal marks the term a
 // comments page shows (the selected option of its term selector), and the
@@ -687,7 +692,15 @@ func ProcessTeacherComments(ctx context.Context, e Env, kid Kid, page *pslib.Tea
 
 	seen := map[string]int{}
 	for _, cm := range page.Comments {
-		if cm == nil || strings.TrimSpace(cm.Comment) == "" {
+		if cm == nil {
+			continue
+		}
+		// The comment as it will be shown: cleaned, bounded, untrusted
+		// (text.go). A comment with nothing visible in it is no comment.
+		// The fingerprint below stays over the raw text and teacher, as
+		// it always was, so cleaning the body re-stages nothing.
+		comment, commentCut := boundText(cm.Comment)
+		if comment == "" {
 			continue
 		}
 		course := cm.CourseNumber
@@ -726,7 +739,7 @@ func ProcessTeacherComments(ctx context.Context, e Env, kid Kid, page *pslib.Tea
 		if cm.Teacher != "" {
 			fmt.Fprintf(&b, "Teacher: %s\n", oneLine(cm.Teacher))
 		}
-		fmt.Fprintf(&b, "\n%s\n", cm.Comment)
+		writeTextBlock(&b, "Comment", comment, commentCut)
 
 		if err := stage(ctx, e, teacherCommentSurface, opts, b.String()); err != nil {
 			slog.Warn("powerschool teacher comment stage failed", "kid", kid.Name, "error", err)
