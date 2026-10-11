@@ -47,7 +47,14 @@ FROM docker.io/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c
 # release tag, or when the base digest above is bumped. The CI job
 # `powerschool-auth-refresher-image` (GitHub) scans the built image with
 # Trivy and starts the browser in it before any image is published.
+# apt-get upgrade: the base is pinned by digest, so it does not pick up
+# Debian security updates published after that digest was built. Without
+# the upgrade the image shipped fixed CRITICALs in perl-base (0.10.1's
+# Trivy gate caught CVE-2026-13221, CVE-2026-42496 and CVE-2026-8376 and
+# the image was never published). Same approach as
+# Dockerfile.enricher-runtime.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         chromium \
         ca-certificates \

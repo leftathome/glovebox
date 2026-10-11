@@ -10,6 +10,12 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.10.2 (from 0.10.1)
+
+No required changes. 0.10.1 did not publish the
+`glovebox-powerschool-auth-refresher` image (its vulnerability gate failed);
+use 0.10.2 or later for the PowerSchool login workload.
+
 ## Upgrading to 0.10.1 (from 0.10.0)
 
 No required changes; the new workload is off by default.
