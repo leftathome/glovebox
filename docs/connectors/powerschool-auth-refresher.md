@@ -90,6 +90,49 @@ connector will go on presenting a session. The portal ends a session by
 refusing it, and the connector reports the age at which that happens
 (`powerschool_rejected_session_age_seconds`).
 
+## Logins on demand (no schedule)
+
+**Finding, 2026-10-11:** the portal ends an idle session in well under an
+hour (stored 19:23:51Z, never used, refused at 20:27Z). A login at 05:00 is
+dead by the 06:00 poll, so scheduled logins cannot serve this portal, and
+`sessionLifetime` (36h) is only an upper bound. Sessions are not kept alive
+artificially (owner decision).
+
+Instead the connector asks for a login when a poll finds its session dead
+(`connectors.powerschool.loginOnDemand`; described in
+[powerschool.md](powerschool.md#idle-sessions-the-pre-poll-check-and-login-on-demand)).
+For this workload that means:
+
+- Set `powerschoolAuthRefresher.suspendSchedules: true`. Every CronJob gets
+  `spec.suspend: true` and nothing runs on a clock.
+- **Keep the `morning` entry.** It is the template: the connector creates
+  Jobs from `$FULLNAME-powerschool-login-morning` (the entry named by
+  `loginOnDemand.schedule`), exactly as
+  `kubectl create job --from=cronjob/...` does. The `evening` entry may be
+  removed (`schedules.evening: null`) or left suspended.
+- Jobs made that way are named `<cronjob>-ondemand-<unix time>`, carry
+  `glovebox.io/powerschool-login-trigger=on-demand`, are owned by the
+  CronJob and are removed an hour after they finish.
+- Every rule of this workload applies to them unchanged: the blackout (the
+  connector does not even ask between 15:57:30 and 21:00 Pacific), the
+  latch, the sign-in check, one login per run. An on-demand Job runs with
+  the template's `minSessionAge` (10h): it reads the stored session, finds
+  the portal refusing it, and logs in. If it instead finds the stored
+  session good -- newer than the connector's copy -- it does nothing, and
+  the connector picks that session up when it syncs.
+- Expected rhythm: one login shortly after each poll window opens
+  (06:00-06:30, 15:00-15:30, 21:30-22:00 on weekdays), about three a day,
+  and none in between.
+
+```bash
+kubectl -n "$NS" get jobs -l glovebox.io/powerschool-login=true \
+  -L glovebox.io/powerschool-login-trigger --sort-by=.metadata.creationTimestamp
+```
+
+The connector can create these Jobs and nothing else: its Role grants
+`get` on this one CronJob and `create`/`get`/`list` on Jobs. It cannot read
+this workload's Secret, use its ServiceAccount or reach Vault.
+
 ## Vault: what to create
 
 Two KV v2 paths, one policy, one Kubernetes auth role. If you change a name,
@@ -262,7 +305,9 @@ connectors:
 | `blackout.start` / `.end` | `16:00` / `21:00` | The main no-login window. `start` may be earlier, `end` later; never the reverse. |
 | `blackout.extraWindows` | `[]` | Further daily windows, `{start, end}`. |
 | `blackout.timeZone` | `America/Los_Angeles` | Fixed. |
-| `sessionLifetime` | `36h` | `expires_at` = login time + this. |
+| `suspendSchedules` | `false` | Suspend every CronJob; they remain as templates. Use with `connectors.powerschool.loginOnDemand`. |
+| `schedules.<name>.suspend` | unset | Suspend one CronJob. |
+| `sessionLifetime` | `36h` | `expires_at` = login time + this. An upper bound only: the portal ends an idle session in under an hour. |
 | `credentials.existingSecret` | `""` | Existing Secret with the account; empty renders an ExternalSecret. |
 | `credentials.keys.*` | `POWERSCHOOL_HOSTNAME` / `_USERNAME` / `_PASSWORD` | Key names in that Secret. |
 | `vault.addr` | `https://vault.vault.svc.cluster.local:8200` | https only. |
@@ -542,12 +587,10 @@ independently. When the home-page read made with a stored session is sent
 through `/my.policy` because the gateway's cookie has lapsed, the job
 carries the renewed cookie for the rest of that one read (and does not
 write it back); the portal then answers for its own session. The
-**connector** has no such handling: its HTTP client deliberately keeps no
-cookies from responses. If the gateway's cookie lapses before the portal's
-session does, the connector's read ends on the gateway's error page. Watch
-for that in the first days (checklist step 9): it would show as connector
-polls failing with a parse/`unknown` error class rather than `auth`, with
-a session the login job still calls good.
+connector's client does the same (the code is shared,
+`internal/psportal`). Before it did -- 0.10.3 -- a dead session behind the
+gateway ended on the gateway's error page and was logged by the connector
+as `kid skipped ... error_class=parse` instead of as a refused session.
 
 `reason` values of `signin_page_unrecognised`:
 

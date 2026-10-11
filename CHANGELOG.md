@@ -7,7 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PowerSchool: login on demand** (`connectors.powerschool.loginOnDemand`,
+  config `login_on_demand`; off by default). The portal ends an idle session
+  in well under an hour (measured 2026-10-11), so a login scheduled ahead of
+  a poll is dead by the time it is wanted. With this on, a poll that finds
+  its session dead asks for a login -- it creates a Job from the login
+  CronJob's template, as `kubectl create job --from=cronjob/...` does -- and
+  waits up to `waitSeconds` (360) for the new session file before polling.
+  There is deliberately no keepalive. The connector still never logs in and
+  never holds a credential: the Job is the login workload, with its own pod,
+  identity and rules.
+  - Limits: one request per poll; one per 20 minutes across restarts; none
+    between 15:57:30 and 21:00 Pacific; none while a login Job is running;
+    none when the session file is under two minutes old.
+  - Chart: a ServiceAccount for the PowerSchool connector alone, with a Role
+    granting exactly `get` on the one login CronJob and
+    `create`/`get`/`list` on Jobs. Requires `powerschoolAuthRefresher.enabled`.
+  - `powerschoolAuthRefresher.suspendSchedules` and
+    `schedules.<name>.suspend`: the CronJobs can exist purely as templates.
+    Login Jobs now carry the label `glovebox.io/powerschool-login=true`.
+  - The Kubernetes API is reached with a separate HTTP client pinned to the
+    API server; it cannot reach the portal, and the portal's read-only
+    client cannot reach the API server.
+- PowerSchool connector: `powerschool_polls_skipped_total{reason}`.
+
+### Fixed
+
+- **PowerSchool connector: a dead session is recognised as one.** At the
+  start of every poll, before any child is read, the connector asks the
+  portal with one GET whether the session is still accepted, and classifies
+  the answer as live, dead or unknown by where the redirects ended and what
+  page came back. A dead session is logged as `powerschool session is no
+  longer accepted`, with its age. In 0.10.3 an idle-dead session failed the
+  poll in 305 ms with `kid skipped: could not select and confirm this kid's
+  student ... error_class=parse` and never took the rejected-session path.
+  An unknown answer skips the poll and changes nothing.
+- PowerSchool connector: its reads now carry a cookie the access gateway
+  renews in mid-request, as the login workload's already did (the helper
+  moved to `internal/psportal`, shared by both). Without it a lapsed gateway
+  cookie ended every read on the gateway's error page.
+
 ### Changed
+
+- PowerSchool connector: with login on demand, a session document past its
+  `expires_at`, or no session file at all, is no longer a startup error; it
+  leads to a login request at the next poll. `sessionLifetime` is documented
+  as the upper bound it is.
+- Chart: `connectors.powerschool.externalSecret.refreshInterval` default
+  `5m` -> `1m`, so a new session reaches the connector while a poll is
+  waiting for it.
 
 - Dependencies: `golang.org/x/time` v0.15.0 -> v0.16.0 and
   `github.com/getkin/kin-openapi` v0.148.0 -> v0.149.0.
