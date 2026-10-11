@@ -485,6 +485,80 @@ Word docs, images). A Glovebox-scanner-side string-extraction capability
 is deferred (§17.2) and applies uniformly to all connectors when it
 lands.
 
+### 7.5 Assignment Detail
+
+Added after v1 (schoology-go v0.3.0). Off by default; enabled per kid with
+`assignment_detail.kids`. The operator-facing description, including the
+full tag list, an example and the failure table, is in
+`docs/connectors/schoology.md` ("Assignment detail"). This section records
+the design.
+
+Library calls: `GetAssignment(id)` and, for assessments only,
+`GetAssignmentComments(id)`. Neither is child-scoped.
+
+Per-item staging shape:
+
+| Field | Value |
+|---|---|
+| `Source` | `"schoology"` |
+| `Sender` | course title |
+| `Subject` | assignment title |
+| `Timestamp` | `now()` |
+| `DestinationAgent`, `DataSubject`, `Audience` | from the kid's rule |
+| `ContentType` | `"text/plain"` |
+| `content.raw` | plain-text projection: title, kind, course, folder, category, period, due, posted, status, link, then the description in a framed block with every line prefixed `\| `, then one line giving the number of teacher comments. Capped at 96 KiB |
+| `Tags` | `kind: "assignment_detail"`, `assignment_id`, `assignment_kind`, `comments_state`, `comment_count`, `has_description`, and when present `course`, `category`, `grading_period`, `due_date`, `due_raw`, `posted`, `assessment_status`; `course_unverified`, `metadata_truncated` when they apply |
+
+Match key: `schoology:<kid>:assignment_detail`. The description HTML is not
+staged and there are no attachments. There is no grade or score: a parent
+account is not shown one.
+
+Design rules:
+
+1. **Attribution comes from the list, never from the page.** The work list
+   is built only from the rows `GetOverdueSubmissions(uid)` returned for a
+   kid in this poll. An id in two kids' lists is fetched once and staged
+   once per kid. A page whose course cannot be the list row's course, or
+   whose title is not the list row's title, is not staged (receipts
+   `course_mismatch`, `title_mismatch`). On the live site the page's course
+   is the list's course plus a `:` section suffix and the titles are
+   identical, so those are the two comparisons. A page that shows no course
+   at all is staged but flagged (`course_unverified`).
+2. **Identity is content.** A consumer notices new work by item id, so a
+   change must be a new item and no change must be no item. The connector
+   hashes what it stages (sender, subject, tags, content) and keeps the hash
+   last staged per kid and assignment.
+3. **Requests are budgeted.** A page is read when its list row is new or
+   changed, or after `refresh_hours` (default 20, so that with one randomly
+   timed poll a day it still means daily); reads are spaced
+   (`request_spacing_ms`, default 1500), capped per poll (`max_per_poll`,
+   default 20) and not started when they could not finish inside the poll
+   window. Under the cap the kids take turns, a deferred row keeps its place
+   ahead of later arrivals, and a long-overdue refresh is promoted, so no
+   assignment waits indefinitely.
+4. **A dead session stops the surface, but only a dead session.** The
+   library reports auth for any answer that ends on the front, home, parent
+   or user page. One assignment redirecting there is indistinguishable from
+   an expired session, so an auth answer is confirmed with
+   `ValidateSession` before the §11.1 exit is taken; if the session is fine
+   the assignment gets an `unexpected_page` receipt. The surface does not
+   start at all when another surface saw the session refused earlier in the
+   poll. Permission or not-found on one assignment is a receipt for that
+   assignment only and does not feed the §11.4 drift counter -- unless every
+   detail handled in the poll (three or more) failed, which is reported
+   once (`surface_degraded`) and does.
+5. **Teacher-authored text is framed.** Nothing a teacher types may start a
+   line at column zero in the content: single-line values have line breaks
+   removed and the description is written between BEGIN/END lines with
+   every line prefixed `| `.
+6. **Unmapped comment text is not staged.** Until the layout inside a
+   comment has been mapped (the library's `LayoutUnmapped`), only the state
+   and the number of entries are staged and hashed.
+7. **Staging failures do not spend requests.** A transient staging failure
+   stops the surface and marks nothing seen. A permanent rejection is
+   remembered with a `stage_rejected` receipt; metadata is fitted to the
+   staging limits beforehand so an over-long title cannot cause one.
+
 ## 8. Checkpoint and Dedup
 
 ### 8.1 Checkpoint Keys
@@ -523,6 +597,34 @@ identical bytes.
 returns an ID below the threshold; metric
 `schoology_items_dropped_total{reason="below_checkpoint"}`. If observed
 in practice, upgrade to a hybrid (last_id + recent-set of last N IDs).
+
+### 8.3 Assignment Detail State
+
+The assignment_detail surface (§7.5) keeps two checkpoint keys per kid, both
+separate from the keys above, so no number of detail entries can evict an
+assignment, feed or message ID from another surface's set.
+
+| Key | Value | Purpose |
+|---|---|---|
+| `assignment_detail:<kid>:seen` | JSON list of `<kid>\|detail\|<assignment_id>\|<content-hash>` | The hash last staged per assignment. At most one entry per assignment; bounded at the same 5000 entries as the other seen-sets |
+| `assignment_detail:<kid>:rows` | JSON map of assignment id to `{fp, at, since, missing}` | The list row's fingerprint when its detail was last read, and when; for a row the cap deferred, since when it has been waiting; and how many listings in a row it has been absent from. Holds what is listed now plus rows that left within the last three listings |
+| `assignment_detail:turn` | integer | Which kid goes first under the per-poll cap; advances every poll |
+
+Eviction from `seen` when it overflows: entries for assignments that are not
+in the kid's current list go first, smallest ID first; an entry for a listed
+assignment goes only if the listed set alone exceeds the bound. The other
+surfaces drop their smallest IDs unconditionally, which is safe for them
+because an evicted ID is only consulted again if Schoology lists that item
+again. A detail entry is consulted at every refresh for as long as the
+assignment is listed, so evicting one would stage the same content again at
+every refresh.
+
+`rows` is aged only when the kid's list call succeeded; a failed list call
+leaves it alone. A row is forgotten after its assignment has been absent
+from three successful listings in a row, so one short or empty answer does
+not cost a re-read of everything. An assignment that is forgotten and
+returns costs one read and, because `seen` still holds its hash, stages
+nothing unless the page changed.
 
 ## 9. Audience and Rule Configuration
 
@@ -716,6 +818,8 @@ plan executes. Tracked separately so it can be reviewed in isolation.
 - `schoology_attachments_skipped_total{reason}` (`too_large`, `auth_expired_html`)
 - `schoology_trigger_requests_total{outcome}` (`accepted`, `debounced`, `unauthorized`)
 - `schoology_view_child_switches_total{kid}`
+- `schoology_assignment_detail_fetches_total{kid, outcome}` (`staged`,
+  `unchanged`, `rejected`, `error`, `deferred`) -- §7.5
 
 ### 13.2 Traces (OpenTelemetry)
 
@@ -734,6 +838,11 @@ Span structure per `pollNow()`:
     - `schoology.staging.commit` (per item) -- attributes: `item_id`,
       `destination`, `data_subject`, `parse_status`
   - `schoology.lib.GetInbox` -- parent-level
+  - `schoology.poll.assignment_detail` (when there is detail work) --
+    attributes: `candidates`, `max_per_poll`, `staged`
+    - `schoology.lib.GetAssignment` -- attribute: `assignment_id`
+    - `schoology.lib.GetAssignmentComments` -- attribute: `assignment_id`
+    - `schoology.staging.commit` (per item)
 - `schoology.trigger.handle` -- root span for trigger HTTP handler;
   attributes: `outcome`, `client_addr`
 

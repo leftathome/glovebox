@@ -129,8 +129,8 @@ github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80 h1:6Yzfa6GP0rIo/kUL
 github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80/go.mod h1:imJHygn/1yfhB7XSJJKlFZKl/J+dCPAknuiaGOshXAs=
 github.com/leftathome/powerschool-go v0.4.0 h1:gqQarivgsoBDWhl0b3CLIIaP1vhmkSvqPmqgY7M3C6U=
 github.com/leftathome/powerschool-go v0.4.0/go.mod h1:4+wHNJU/i7cH5CYduUTXTRxOKzZ4TskZIlCpwFg/0Eg=
-github.com/leftathome/schoology-go v0.2.1 h1:k8wzvyltEaR71aszTTWfUY7MgbADFWMtK1FDP/KSM0w=
-github.com/leftathome/schoology-go v0.2.1/go.mod h1:DDPg9QF3FpV3TNwqvN2vdhcA+LgHgaxCJ88IPxgnvaA=
+github.com/leftathome/schoology-go v0.3.0 h1:fu1D84GoD1ViNoas6LFpcTaogiNFxCnFFBfxNPAK7dc=
+github.com/leftathome/schoology-go v0.3.0/go.mod h1:kT/1k2ZHmQpICCTnwRo1rhwlqztozYZ6TVR7UYzR5cc=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=

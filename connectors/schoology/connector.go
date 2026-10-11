@@ -57,6 +57,12 @@ type SchoologyConnector struct {
 	// caughtUp is set by the first Poll; see Poll.
 	caughtUp atomic.Bool
 
+	// now and sleep are the clock and the between-request wait used by the
+	// assignment_detail surface. nil means the real ones; tests replace
+	// them. Set before the first poll.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
+
 	// OnSessionRejected, when set, is called once Schoology has refused the
 	// session, just before the PermanentError that exits the process. The
 	// binary uses it to record the rejected session so the restarted
@@ -295,8 +301,39 @@ func (c *SchoologyConnector) checkDrift() error {
 	))
 }
 
-// pollNow runs one poll across all three surfaces (assignments per kid,
-// feed per kid, messages once) and updates the schema-drift counter.
+// windowDeadline returns the end of the poll window the current moment is
+// in, or the zero time when it is in none (a catch-up or triggered poll
+// outside the schedule). The assignment_detail surface starts no request
+// that could not finish before it.
+func (c *SchoologyConnector) windowDeadline() time.Time {
+	now := time.Now()
+	if c.now != nil {
+		now = c.now()
+	}
+	if end := windowEnd(c.cfg, now, c.tz); end.After(now) {
+		return end
+	}
+	return time.Time{}
+}
+
+// authParsers are the receipt parser labels whose "auth" observation means
+// Schoology refused the session.
+var authParsers = []string{"assignments", "feed", "messages", detailParser}
+
+// sessionRefused reports whether any surface has seen the session refused
+// in this poll.
+func sessionRefused(dedup *ReceiptDedup) bool {
+	for _, parser := range authParsers {
+		if dedup.AffectedCount(parser, "auth") > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// pollNow runs one poll across all the surfaces (assignments per kid, feed
+// per kid, messages once, then assignment details for the kids that have
+// them enabled) and updates the schema-drift counter.
 //
 // pollNow is shared by Poll(), Watch()'s scheduled path, and the trigger
 // signal path. The pollMu serializes overlapping entries; the trigger's
@@ -355,6 +392,9 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	dedup := NewReceiptDedup()
 	var itemsProduced int
 	var errsLogged bool
+	// kidLists is each kid's overdue/upcoming listing from this poll: the
+	// only source of work for the assignment_detail surface.
+	var kidLists []KidAssignments
 
 	for _, kid := range c.cfg.Kids {
 		kidCtx, kidSpan := tel.StartSpan(ctx, "schoology.poll.kid",
@@ -365,9 +405,12 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 		// switch), not the underlying HTTP request.
 		tel.RecordViewChildSwitch(kid.Name)
 
-		aCount, aErrs := ProcessAssignments(kidCtx, c.client, writer, matcher, cp, dedup, tel, kid, c.libVersion)
+		aCount, aErrs, rows, listed := processAssignments(kidCtx, c.client, writer, matcher, cp, dedup, tel, kid, c.libVersion)
 		itemsProduced += aCount
 		errsLogged = errsLogged || aErrs
+		if listed {
+			kidLists = append(kidLists, KidAssignments{Kid: kid, Rows: rows})
+		}
 
 		fCount, fAttach, fErrs := ProcessFeed(kidCtx, c.client, writer, matcher, cp, tel, dedup, kid, c.cfg.Attachments.MaxSizeMB, c.libVersion)
 		itemsProduced += fCount + fAttach
@@ -379,6 +422,28 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	mCount, mErrs := ProcessMessages(ctx, c.client, writer, matcher, cp, dedup, tel, c.libVersion)
 	itemsProduced += mCount
 	errsLogged = errsLogged || mErrs
+
+	// Assignment details run last and only with a session no other surface
+	// has just seen refused: they are the most requests the poll makes, and
+	// none of them should be spent on a dead cookie.
+	if !sessionRefused(dedup) {
+		dCount, dErrs := ProcessAssignmentDetails(ctx, DetailDeps{
+			Client:     c.client,
+			Writer:     writer,
+			Matcher:    matcher,
+			Checkpoint: cp,
+			Dedup:      dedup,
+			Tel:        tel,
+			LibVersion: c.libVersion,
+			Config:     c.cfg.AssignmentDetail,
+			Location:   c.tz,
+			Now:        c.now,
+			Sleep:      c.sleep,
+			Deadline:   c.windowDeadline(),
+		}, kidLists)
+		itemsProduced += dCount
+		errsLogged = errsLogged || dErrs
+	}
 
 	c.driftCounter.RecordPoll(itemsProduced, errsLogged)
 
@@ -397,7 +462,7 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	// poll observed at least one auth failure on any surface, we treat
 	// the credential file as expired and return a PermanentError so the
 	// framework exits the process and the operator runbook kicks in.
-	for _, parser := range []string{"assignments", "feed", "messages"} {
+	for _, parser := range authParsers {
 		if dedup.AffectedCount(parser, "auth") > 0 {
 			slog.Error("schoology session expired",
 				"parser", parser,

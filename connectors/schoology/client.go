@@ -33,6 +33,19 @@ type SchoologyClient interface {
 	GetFeed(ctx context.Context, childUID int64) ([]*schoologylib.Post, schoologylib.ParseErrors, error)
 	GetInbox(ctx context.Context) ([]*schoologylib.MessageThread, schoologylib.ParseErrors, error)
 	DownloadAttachment(ctx context.Context, url string) (io.ReadCloser, error)
+
+	// GetAssignment and GetAssignmentComments read one assignment's own
+	// page. Neither takes a child: the page is the same whichever child the
+	// session is viewing, so the connector -- not the library -- decides
+	// whose item the result is (see assignment_detail.go).
+	GetAssignment(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error)
+	GetAssignmentComments(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error)
+
+	// ValidateSession asks Schoology whether the session is still good
+	// with a request that involves no assignment. It returns an auth error
+	// when the session is refused. The detail surface uses it to tell a
+	// dead session from one assignment that redirects to the home page.
+	ValidateSession(ctx context.Context) error
 }
 
 // productionClient is the real SchoologyClient backed by schoology-go.
@@ -59,4 +72,16 @@ func (p *productionClient) GetInbox(ctx context.Context) ([]*schoologylib.Messag
 
 func (p *productionClient) DownloadAttachment(ctx context.Context, url string) (io.ReadCloser, error) {
 	return p.lib.DownloadAttachment(ctx, url)
+}
+
+func (p *productionClient) GetAssignment(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error) {
+	return p.lib.GetAssignment(ctx, assignmentID)
+}
+
+func (p *productionClient) GetAssignmentComments(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error) {
+	return p.lib.GetAssignmentComments(ctx, assignmentID)
+}
+
+func (p *productionClient) ValidateSession(ctx context.Context) error {
+	return p.lib.ValidateSession(ctx)
 }
