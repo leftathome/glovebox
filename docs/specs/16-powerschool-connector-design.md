@@ -176,14 +176,35 @@ mapped into the connector. The chart comments say so.
 by the chart's `powerschoolAuthRefresher` block. Operator runbook:
 `docs/connectors/powerschool-auth-refresher.md`. It follows
 `schoology-auth-refresher` (spec 06 section 12) in layout, Vault wiring
-(Kubernetes auth, one KV v2 path) and exit codes 0-4. What section 4.1 adds:
+(Kubernetes auth, KV v2) and exit codes 0-4. What section 4.1 adds:
 
 - **Blackout in the binary.** No login between 16:00 and 21:00
   `America/Los_Angeles`, evaluated against the real clock in that zone at
   start and again immediately before each login; such a run exits 0 having
-  contacted nothing. The chart additionally refuses to render a schedule
-  that can fire inside the window or within `startingDeadlineSeconds`
-  before it. The schedule is a convenience; the binary is the guarantee.
+  contacted nothing. A login may take up to 90s, so one is started only when
+  the next 150s are clear of the window. The window is a constant:
+  configuration can widen it, never shorten it or change its zone. The
+  chart additionally refuses to render a schedule that can fire inside the
+  window or within `startingDeadlineSeconds` plus three minutes before it.
+  The schedule is a convenience; the binary is the guarantee.
+- **A latch against lockout.** A sibling KV path, `.../login-state`, holds
+  the job's own record. A login the portal rejects sets `login_blocked`
+  there with a salted SHA-256 fingerprint of the credentials used; every
+  later run refuses to start a browser (exit 6) until the fingerprint of
+  the configured credentials differs or an operator deletes the record. The
+  record is written before each login, so a rejection can always be
+  recorded; if that write fails there is no login.
+- **Unconfirmed logins.** The library reports success whenever the portal
+  shows no error notice, so a CAPTCHA, a second factor or an expired
+  password looks like a login. Such a login -- returned, but its session
+  does not open the home page -- is `login_unconfirmed` (exit 5), is never
+  written, and is counted in the state record; two in a row set the latch.
+  Only a confirmed login resets the count.
+- **Sign-in page check.** Before the browser starts, one GET of the sign-in
+  page through section 5's transport must show a password form served by,
+  and posting to, the configured host over https; otherwise exit 7 and no
+  browser. The browser fetches the page again, so this is not atomic;
+  closing that belongs in `powerschool-go`.
 - **No needless login.** The job reads the stored session first. If it is
   younger than a minimum age and one GET of the home page with it returns
   the signed-in page, the job exits 0. A young session whose state cannot be
@@ -198,8 +219,9 @@ by the chart's `powerschoolAuthRefresher` block. Operator runbook:
   enabled. An unconfirmed session is not written (exit 5), so a login the
   library wrongly reported as successful cannot replace a working session.
 - **Schedules.** 05:00 Monday-Friday (minimum age 10h: logs in daily) and
-  21:30 Sunday-Thursday (minimum age 30h: logs in only when the day's
-  session is gone), as two CronJobs in `America/Los_Angeles`.
+  21:05 Sunday-Thursday (minimum age 30h: logs in only when the day's
+  session is gone; after the blackout, before the 21:30 poll), as two
+  CronJobs in `America/Los_Angeles`.
 - **`expires_at`.** The library's value is the latest cookie expiry or a
   four-hour guess, neither of which describes the portal's session. The job
   writes login time + 36h; section 4.3's measurement is what will replace
@@ -207,10 +229,13 @@ by the chart's `powerschoolAuthRefresher` block. Operator runbook:
 - **Vault secret.** `secret/glovebox/powerschool/default/session`, fields
   `session` (the JSON above, as a string; the property the connector's
   `externalSecret.files` reads), `logged_in_at`, `expires_at`,
-  `selected_student_id`. Policy: `create`, `read`, `update` on that one
-  path -- `read` because of the young-session check.
+  `selected_student_id`, written check-and-set. Policy: `create`, `read`,
+  `update` on that path and on the state path -- `read` because of the
+  young-session check and the latch. The token is revoked at exit.
 - **Browser.** `powerschool-go` v0.4.0 can only start a local Chromium, so
-  the image bundles one (`debian:bookworm-slim`, uid 65532, `--no-sandbox`).
+  the image bundles one (`debian:bookworm-slim` pinned by digest, uid 65532,
+  `--no-sandbox`). The pod has a read-only root and memory-backed `/tmp`,
+  `$HOME` and `/dev/shm`; the profile directory is removed after each login.
 
 ## 5. Read-only guarantee
 
