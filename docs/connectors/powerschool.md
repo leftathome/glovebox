@@ -19,8 +19,9 @@ on has been verified live with the library. It builds against the released
 `powerschool-go` v0.4.0 (see "The library version" below). What is missing
 before it can be enabled:
 
-1. The **login job** that produces the session (below). Not built yet;
-   tracked separately.
+1. The **login job** that produces the session
+   ([powerschool-auth-refresher.md](powerschool-auth-refresher.md)) enabled
+   alongside it. Built; not yet run against the live portal.
 2. A supervised first run, to bind each kid to its scores-page student id
    (see "One child at a time").
 
@@ -40,8 +41,11 @@ password and has no way to authenticate. At startup
   The file wins if both are set. It is the JSON form of `powerschool-go`'s
   `SessionExport`: `{"cookies":[...],"expires_at":"..."}`.
 
-The session is produced by a separate, scheduled **login job** that holds
-the credentials, drives the browser login and calls `Client.ExportSession`.
+The session is produced by a separate, scheduled **login job**,
+`powerschool-auth-refresher`, that holds the credentials, drives the browser
+login, calls `Client.ExportSession` and writes the result to Vault; ESO syncs
+it into the mounted Secret. Its runbook, with the Vault policy and the
+schedules, is [powerschool-auth-refresher.md](powerschool-auth-refresher.md).
 A missing, malformed or expired session is a startup error.
 
 ### One account, one session
@@ -451,11 +455,17 @@ connectors:
       files:                      # mounted, not env: updated in place
         mountPath: /etc/powerschool
         data:
-          session.json: { key: eso/glovebox-powerschool-session, property: session }
+          session.json: { key: glovebox/powerschool/default/session, property: session }
 ```
 
 `POWERSCHOOL_SESSION_FILE=/etc/powerschool/session.json` is set by the
 chart's default `env`.
+
+The `session.json` reference is the chart's default and must be the path
+the login job writes (`powerschoolAuthRefresher.vault.sessionPath`, property
+`session`); with both enabled the chart refuses to render if they differ.
+Enable the login job in the same change:
+[powerschool-auth-refresher.md](powerschool-auth-refresher.md#values).
 
 The remote keys and property names are yours to change. Do **not** map the
 account's username or password into this connector. The rule destinations

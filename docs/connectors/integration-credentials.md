@@ -36,6 +36,10 @@ later only where artifact/runtime verification is justified).
 
 - **`schoology-auth-refresher`** — an auth *helper* (refreshes the schoology
   session via Browserless), **not** a source connector. No integration test.
+- **`powerschool-auth-refresher`** -- an auth *helper* (logs in to the
+  PowerSchool portal with a bundled Chromium and stores the session), **not**
+  a source connector. No integration test, and there must never be a
+  scheduled one: every login ends the account owner's own session.
 - **Importers** (`apple`, `mbox`, `walhelm`) — file-driven (read a local
   archive; no live credentials). They can reuse the `connector/integrationtest`
   stage-and-readback harness against a committed fixture archive; tracked
