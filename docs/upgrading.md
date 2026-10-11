@@ -10,6 +10,32 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.10.0 (from 0.9.7)
+
+No required changes; everything new is off by default.
+
+- **Schoology session refresher schedule.** The chart default
+  (`0 6 */12 * *`) assumes a session lasts about two weeks. On at least one
+  tenant a session was valid 6.6 hours after login and a login page 32 hours
+  after, so with the default the connector meets a rejected session within a
+  day or two and stages nothing until the next refresh. If you run the
+  Schoology connector, set `schoologyAuthRefresher.schedule` so a refresh
+  runs shortly before each poll window (the CronJob has no `timeZone`; the
+  schedule is UTC).
+- **Schoology `assignment_detail` surface (new, optional).** Enable it per
+  kid with `schoologyConnector.assignmentDetail.kids` and add an exact
+  `schoology:<kid>:assignment_detail` rule ahead of any wildcard; the chart
+  refuses to render, and the connector to start, for a kid enabled without
+  one. It costs one or two extra GETs per listed assignment, at most
+  `maxPerPoll` (20) assignments per poll. Grades are not available to parent
+  accounts and are not staged.
+- **PowerSchool connector (first release, optional).** It never logs in: it
+  needs a portal session written by a separate login workload, which is not
+  part of this release. Do not enable it until that workload is deployed.
+  Per-assignment teacher comments are staged on the `assignment` item and
+  therefore follow that rule's audience; term-level teacher comments are a
+  separate, guardians-only surface.
+
 ## Upgrading to 0.9.7 (from 0.9.6)
 
 No required changes. If you run the Schoology connector, set
