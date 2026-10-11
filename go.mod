@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/getkin/kin-openapi v0.148.0
+	github.com/getkin/kin-openapi v0.149.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
@@ -22,7 +22,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/net v0.60.0
 	golang.org/x/text v0.42.0
-	golang.org/x/time v0.15.0
+	golang.org/x/time v0.16.0
 )
 
 require (
