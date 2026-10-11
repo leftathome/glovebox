@@ -203,3 +203,146 @@ the cost of being tight is a failed import.
 {{- define "glovebox.tmpSizeLimit" -}}
 {{- (.workload).tmpSizeLimit | default (.root.Values.readOnlyRootFilesystem | default dict).tmpSizeLimit | default "1Gi" -}}
 {{- end }}
+
+{{/*
+Expand one numeric cron field into the values it matches, comma-joined.
+`.field` is the field text, `.lo`/`.hi` its legal range, `.what` a label for
+error messages.
+
+Understands what the chart has to be able to reason about: `*`, a number, a
+range `a-b`, a step on any of those (star-slash-n, `a-b/n`, `a/n` meaning
+"from a"), and comma lists of them. (The star-slash form cannot be written
+out here: it would end this template comment.) Anything else -- names, `?`, `L`, a macro -- fails
+the render: a schedule the chart cannot evaluate is a schedule it cannot
+check, and the caller exists to check one.
+*/}}
+{{- define "glovebox.cronFieldValues" -}}
+{{- $lo := int .lo -}}
+{{- $hi := int .hi -}}
+{{- $what := .what -}}
+{{- $out := list -}}
+{{- range $part := splitList "," .field -}}
+  {{- $step := 1 -}}
+  {{- $base := $part -}}
+  {{- $stepped := false -}}
+  {{- if contains "/" $part -}}
+    {{- $bits := splitList "/" $part -}}
+    {{- if or (ne (len $bits) 2) (not (regexMatch "^[0-9]+$" (index $bits 1))) -}}
+      {{- fail (printf "%s: cannot evaluate %q" $what $part) -}}
+    {{- end -}}
+    {{- $base = index $bits 0 -}}
+    {{- $step = atoi (index $bits 1) -}}
+    {{- $stepped = true -}}
+    {{- if lt $step 1 -}}
+      {{- fail (printf "%s: step in %q must be at least 1" $what $part) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $from := $lo -}}
+  {{- $to := $hi -}}
+  {{- if eq $base "*" -}}
+  {{- else if regexMatch "^[0-9]+$" $base -}}
+    {{- $from = atoi $base -}}
+    {{- if not $stepped -}}
+      {{- $to = $from -}}
+    {{- end -}}
+  {{- else if regexMatch "^[0-9]+-[0-9]+$" $base -}}
+    {{- $ends := splitList "-" $base -}}
+    {{- $from = atoi (index $ends 0) -}}
+    {{- $to = atoi (index $ends 1) -}}
+  {{- else -}}
+    {{- fail (printf "%s: cannot evaluate %q (use numbers, lists, ranges and steps)" $what $part) -}}
+  {{- end -}}
+  {{- if or (lt $from $lo) (gt $to $hi) (gt $from $to) -}}
+    {{- fail (printf "%s: %q is outside %d-%d" $what $part $lo $hi) -}}
+  {{- end -}}
+  {{- range $v := untilStep $from (int (add $to 1)) $step -}}
+    {{- $out = append $out $v -}}
+  {{- end -}}
+{{- end -}}
+{{- $out | uniq | join "," -}}
+{{- end }}
+
+{{/*
+"HH:MM" as minutes since midnight, or a failed render. `.value` is the text,
+`.what` a label for the error message.
+*/}}
+{{- define "glovebox.clockMinutes" -}}
+{{- $v := toString .value -}}
+{{- if not (regexMatch "^([01][0-9]|2[0-3]):[0-5][0-9]$" $v) -}}
+  {{- fail (printf "%s must be HH:MM (00:00-23:59), got %q" .what $v) -}}
+{{- end -}}
+{{- add (mul (atoi (substr 0 2 $v)) 60) (atoi (substr 3 5 $v)) -}}
+{{- end }}
+
+{{/*
+Refuse a PowerSchool login schedule that can start a run inside the blackout.
+
+The account behind the job is its owner's own, and the portal keeps one live
+session per account: a login inside the window signs the owner out. The
+binary refuses to log in there whatever started it; this is the earlier,
+louder check, at render time, so a bad schedule never reaches the cluster.
+
+`.name` is the schedules key, `.schedule` its cron expression, `.root` the
+chart root. Every (hour, minute) the expression matches is tested, on every
+day (the window is daily, so the day fields do not matter), together with the
+catch-up span after it: a run may start up to startingDeadlineSeconds late.
+
+Renders nothing; fails the render on a violation.
+*/}}
+{{- define "glovebox.powerschoolScheduleCheck" -}}
+{{- $r := .root.Values.powerschoolAuthRefresher -}}
+{{- $schedule := toString .schedule -}}
+{{- $where := printf "powerschoolAuthRefresher.schedules.%s" .name -}}
+{{- if ne (toString $r.timeZone) (toString $r.blackout.timeZone) -}}
+  {{- fail (printf "powerschoolAuthRefresher.timeZone (%q) must equal powerschoolAuthRefresher.blackout.timeZone (%q): a schedule can only be checked against the login blackout when both are in the same zone" (toString $r.timeZone) (toString $r.blackout.timeZone)) -}}
+{{- end -}}
+{{- $fields := regexSplit "\\s+" (trim $schedule) -1 -}}
+{{- if ne (len $fields) 5 -}}
+  {{- fail (printf "%s.schedule %q must be a five-field cron expression (no @macros): the chart has to check it against the login blackout" $where $schedule) -}}
+{{- end -}}
+{{- $start := int (include "glovebox.clockMinutes" (dict "value" $r.blackout.start "what" "powerschoolAuthRefresher.blackout.start")) -}}
+{{- $end := int (include "glovebox.clockMinutes" (dict "value" $r.blackout.end "what" "powerschoolAuthRefresher.blackout.end")) -}}
+{{- if eq $start $end -}}
+  {{- fail "powerschoolAuthRefresher.blackout.start and .end are equal: the window cannot be empty" -}}
+{{- end -}}
+{{- $deadline := int ($r.startingDeadlineSeconds | default 0) -}}
+{{- if lt $deadline 10 -}}
+  {{- fail "powerschoolAuthRefresher.startingDeadlineSeconds must be set (10 or more): without it a missed run can start at any later time, including inside the login blackout" -}}
+{{- end -}}
+{{- $late := int (div (add $deadline 59) 60) -}}
+{{- $window := printf "%s-%s %s" (toString $r.blackout.start) (toString $r.blackout.end) (toString $r.blackout.timeZone) -}}
+{{- $minutes := splitList "," (include "glovebox.cronFieldValues" (dict "field" (index $fields 0) "lo" 0 "hi" 59 "what" (printf "%s.schedule minute field" $where))) -}}
+{{- $hours := splitList "," (include "glovebox.cronFieldValues" (dict "field" (index $fields 1) "lo" 0 "hi" 23 "what" (printf "%s.schedule hour field" $where))) -}}
+{{- range $h := $hours -}}
+  {{- range $m := $minutes -}}
+    {{- $t := int (add (mul (atoi $h) 60) (atoi $m)) -}}
+    {{- $inside := false -}}
+    {{- if lt $start $end -}}
+      {{- $inside = and (ge $t $start) (lt $t $end) -}}
+    {{- else -}}
+      {{- $inside = or (ge $t $start) (lt $t $end) -}}
+    {{- end -}}
+    {{- if $inside -}}
+      {{- fail (printf "%s.schedule %q fires at %02d:%02d, inside the login blackout %s: a login then signs the account's owner out of the portal. Move the schedule outside the window" $where $schedule (atoi $h) (atoi $m) $window) -}}
+    {{- end -}}
+    {{- $untilStart := int (mod (add (sub $start $t) 1440) 1440) -}}
+    {{- if le $untilStart $late -}}
+      {{- fail (printf "%s.schedule %q fires at %02d:%02d, %d minute(s) before the login blackout %s, and a missed run may start up to %d minute(s) late (startingDeadlineSeconds: %d). Move the schedule earlier or shorten the deadline" $where $schedule (atoi $h) (atoi $m) $untilStart $window $late $deadline) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding the PowerSchool account's hostname, username and
+password for the login job: the operator's existing one, or the one the
+chart's own ExternalSecret produces.
+*/}}
+{{- define "glovebox.powerschoolRefresherCredentialsSecret" -}}
+{{- $c := .Values.powerschoolAuthRefresher.credentials | default dict -}}
+{{- if $c.existingSecret -}}
+{{- $c.existingSecret -}}
+{{- else -}}
+{{- include "glovebox.fullname" . }}-powerschool-refresher-credentials
+{{- end -}}
+{{- end }}

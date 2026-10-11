@@ -1,0 +1,70 @@
+{{- $r := .Values.powerschoolAuthRefresher }}
+{{- if and $r.enabled .Values.networkPolicy.enabled ($r.networkPolicy | default dict).enabled }}
+# Egress for the PowerSchool login job's pods, which hold a parent account's
+# username and password: cluster DNS, Vault, and the portal over https.
+# Nothing may connect to them.
+#
+# The chart has no such policy for the Schoology refresher (its pods fall
+# under no NetworkPolicy of this chart at all). This is new with this job,
+# not a copy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-auth-refresher
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: powerschool-auth-refresher
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "glovebox.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: powerschool-auth-refresher
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress: []
+  egress:
+    {{- with .Values.networkPolicy.dns }}
+    {{- if .enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          {{- with .podLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- if .Values.networkPolicy.vault.namespace }}
+    # Vault (Kubernetes auth login, session read and write). A Vault outside
+    # the cluster: set networkPolicy.vault.namespace to "" and allow it
+    # through powerschoolAuthRefresher.networkPolicy.extraEgress.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.vault.namespace }}
+      ports:
+        - port: {{ .Values.networkPolicy.vault.port }}
+          protocol: TCP
+    {{- end }}
+    # The portal, https only. A NetworkPolicy selects addresses, not names.
+    - to:
+        {{- range $r.networkPolicy.portalCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- with $r.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

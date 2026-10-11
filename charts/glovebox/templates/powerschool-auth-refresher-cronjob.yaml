@@ -1,0 +1,183 @@
+{{- if .Values.powerschoolAuthRefresher.enabled }}
+{{- /*
+PowerSchool session login job (spec 16 section 4).
+
+One CronJob per entry of powerschoolAuthRefresher.schedules, all running the
+same image with the same settings bar the schedule and POWERSCHOOL_MIN_SESSION_AGE.
+Each run logs in to the parent portal at most once and writes the session to
+Vault KV v2; ESO syncs it into the Secret the PowerSchool connector mounts.
+
+The account is its owner's own and the portal keeps one live session per
+account, so a login ends whatever session existed. Hence, on top of what the
+binary enforces by itself (no login inside the blackout; no login while the
+stored session is young and still accepted; one login per run):
+
+  - the render fails for a schedule that can fire inside the blackout
+    (glovebox.powerschoolScheduleCheck);
+  - startingDeadlineSeconds keeps a missed run from starting hours late;
+  - backoffLimit 0 and restartPolicy Never: a failed run is not repeated.
+    The next scheduled run is the retry. (schoology-auth-refresher retries
+    three times; that account is not shared with a person.)
+  - concurrencyPolicy Forbid.
+*/}}
+{{- $r := .Values.powerschoolAuthRefresher }}
+{{- $fullname := include "glovebox.fullname" . }}
+{{- if not (hasPrefix "https://" (lower (toString $r.vault.addr))) }}
+{{- fail "powerschoolAuthRefresher.vault.addr must be an https URL: the login job sends the session and its ServiceAccount token to Vault and refuses a plaintext address" }}
+{{- end }}
+{{- $active := dict }}
+{{- range $name, $entry := $r.schedules }}
+{{- if $entry }}
+{{- $_ := set $active $name $entry }}
+{{- end }}
+{{- end }}
+{{- if not $active }}
+{{- fail "powerschoolAuthRefresher.enabled is true but powerschoolAuthRefresher.schedules is empty" }}
+{{- end }}
+{{- /*
+The connector must be handed the session this job writes. When both are
+enabled and the connector takes its session from an ExternalSecret, the two
+paths have to be the same one.
+*/}}
+{{- $conn := (.Values.connectors | default dict).powerschool | default dict }}
+{{- $connES := $conn.externalSecret | default dict }}
+{{- if and $conn.enabled $connES.enabled }}
+{{- $sessionRef := index (($connES.files | default dict).data | default dict) "session.json" | default dict }}
+{{- if $sessionRef }}
+{{- if or (ne (toString $sessionRef.key) (toString $r.vault.sessionPath)) (ne (toString $sessionRef.property) "session") }}
+{{- fail (printf "connectors.powerschool.externalSecret.files.data.\"session.json\" reads %q property %q, but the login job writes powerschoolAuthRefresher.vault.sessionPath %q property \"session\": the connector would never receive the session" (toString $sessionRef.key) (toString $sessionRef.property) (toString $r.vault.sessionPath)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name, $entry := $active }}
+{{- include "glovebox.powerschoolScheduleCheck" (dict "name" $name "schedule" $entry.schedule "root" $) }}
+{{- $cronName := printf "%s-powerschool-login-%s" $fullname $name }}
+{{- if gt (len $cronName) 52 }}
+{{- fail (printf "CronJob name %q is %d characters; the limit is 52. Shorten the schedules key %q or set fullnameOverride" $cronName (len $cronName) $name) }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $cronName }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: powerschool-auth-refresher
+    glovebox.io/powerschool-login-schedule: {{ $name | quote }}
+spec:
+  schedule: {{ $entry.schedule | quote }}
+  # Kubernetes 1.27+. Without it the schedule would be read in the
+  # controller's zone (usually UTC) and "0 5" would be 21:00 or 22:00 Pacific.
+  timeZone: {{ $r.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ int $r.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # Never retried: every pod is a login to a real parent account.
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 259200
+      template:
+        metadata:
+          labels:
+            {{- include "glovebox.labels" $ | nindent 12 }}
+            app.kubernetes.io/component: powerschool-auth-refresher
+        spec:
+          serviceAccountName: {{ $fullname }}-powerschool-auth-refresher
+          restartPolicy: Never
+          {{- with (include "glovebox.runtimeClassName" (dict "workload" $r "root" $)) }}
+          runtimeClassName: {{ . | quote }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            {{- with (include "glovebox.seccompProfile" $) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          containers:
+            - name: refresher
+              image: "{{ $r.image.repository }}:{{ $r.image.tag | default $.Chart.AppVersion }}"
+              imagePullPolicy: {{ $r.image.pullPolicy | default "IfNotPresent" }}
+              securityContext:
+                # readOnlyRootFilesystem is intentionally OFF, as it was for
+                # the Schoology refresher while that image bundled a
+                # browser: Chromium writes its profile under $HOME and /tmp.
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                # The account. Taken key by key, not envFrom, so nothing else
+                # in that Secret reaches the process.
+                - name: POWERSCHOOL_HOSTNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "glovebox.powerschoolRefresherCredentialsSecret" $ | quote }}
+                      key: {{ $r.credentials.keys.hostname | quote }}
+                - name: POWERSCHOOL_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "glovebox.powerschoolRefresherCredentialsSecret" $ | quote }}
+                      key: {{ $r.credentials.keys.username | quote }}
+                - name: POWERSCHOOL_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "glovebox.powerschoolRefresherCredentialsSecret" $ | quote }}
+                      key: {{ $r.credentials.keys.password | quote }}
+                - name: VAULT_ADDR
+                  value: {{ $r.vault.addr | quote }}
+                - name: VAULT_K8S_ROLE
+                  value: {{ $r.vault.k8sRole | quote }}
+                - name: VAULT_KV_MOUNT
+                  value: {{ $r.vault.kvMount | default "secret" | quote }}
+                - name: VAULT_SESSION_PATH
+                  value: {{ $r.vault.sessionPath | quote }}
+                {{- with $r.vault.caConfigMap }}
+                {{- if .name }}
+                - name: VAULT_CACERT
+                  value: /etc/vault-ca/{{ .key | default "ca.crt" }}
+                {{- end }}
+                {{- end }}
+                # Enforced by the binary against the real clock in this zone.
+                - name: POWERSCHOOL_BLACKOUT_START
+                  value: {{ $r.blackout.start | quote }}
+                - name: POWERSCHOOL_BLACKOUT_END
+                  value: {{ $r.blackout.end | quote }}
+                - name: POWERSCHOOL_BLACKOUT_TZ
+                  value: {{ $r.blackout.timeZone | quote }}
+                - name: POWERSCHOOL_MIN_SESSION_AGE
+                  value: {{ required (printf "powerschoolAuthRefresher.schedules.%s.minSessionAge is required" $name) $entry.minSessionAge | quote }}
+                - name: POWERSCHOOL_SESSION_LIFETIME
+                  value: {{ $r.sessionLifetime | quote }}
+              resources:
+                {{- toYaml $r.resources | nindent 16 }}
+              volumeMounts:
+                - name: dshm
+                  mountPath: /dev/shm
+                {{- with $r.vault.caConfigMap }}
+                {{- if .name }}
+                - name: vault-ca
+                  mountPath: /etc/vault-ca
+                  readOnly: true
+                {{- end }}
+                {{- end }}
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: {{ $r.shmSizeLimit | default "256Mi" }}
+            {{- with $r.vault.caConfigMap }}
+            {{- if .name }}
+            - name: vault-ca
+              configMap:
+                name: {{ .name | quote }}
+            {{- end }}
+            {{- end }}
+{{- end }}
+{{- end }}
