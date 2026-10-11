@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies: `golang.org/x/time` v0.15.0 -> v0.16.0 and
+  `github.com/getkin/kin-openapi` v0.148.0 -> v0.149.0.
+
 ## [0.10.3] - 2026-10-11
 
 ### Fixed
