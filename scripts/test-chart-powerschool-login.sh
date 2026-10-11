@@ -106,8 +106,8 @@ check "enabled: two CronJobs, a ServiceAccount, a credentials ExternalSecret, a 
              "ServiceAccount/glovebox-glovebox-powerschool-auth-refresher"]' \
   "${ON[@]}"
 
-check "default schedules: 05:00 Mon-Fri and 21:30 Sun-Thu" \
-  'crons["morning"]["spec"]["schedule"] == "0 5 * * 1-5" and crons["evening"]["spec"]["schedule"] == "30 21 * * 0-4"' \
+check "default schedules: 05:00 Mon-Fri and 21:05 Sun-Thu" \
+  'crons["morning"]["spec"]["schedule"] == "0 5 * * 1-5" and crons["evening"]["spec"]["schedule"] == "5 21 * * 0-4"' \
   "${ON[@]}"
 
 check "every CronJob carries the Pacific time zone" \
@@ -129,6 +129,10 @@ check "a failed run is never retried: backoffLimit 0, restartPolicy Never" \
 check "the blackout is handed to the binary" \
   'all(e["POWERSCHOOL_BLACKOUT_START"] == "16:00" and e["POWERSCHOOL_BLACKOUT_END"] == "21:00"
        and e["POWERSCHOOL_BLACKOUT_TZ"] == "America/Los_Angeles" for e in env.values())' \
+  "${ON[@]}"
+
+check "by default no extra windows and no state path override are rendered" \
+  'all("POWERSCHOOL_BLACKOUT_EXTRA" not in e and "VAULT_STATE_PATH" not in e for e in env.values())' \
   "${ON[@]}"
 
 check "minimum session age: 10h in the morning, 30h in the evening" \
@@ -174,6 +178,41 @@ check "the pod runs as the dedicated ServiceAccount, non-root, without privilege
        and container(c)["securityContext"]["capabilities"]["drop"] == ["ALL"] for c in crons.values())' \
   "${ON[@]}"
 
+check "read-only root filesystem, seccomp RuntimeDefault" \
+  'all(container(c)["securityContext"]["readOnlyRootFilesystem"] is True
+       and pod(c)["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"} for c in crons.values())' \
+  "${ON[@]}"
+
+check "seccomp stays RuntimeDefault for this job when the chart-wide profile is switched off" \
+  'all(pod(c)["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"} for c in crons.values())' \
+  "${ON[@]}" --set seccompProfile.type=
+
+check "/tmp, HOME and /dev/shm are memory-backed, size-capped emptyDirs" \
+  'all([v for v in pod(c)["volumes"] if v["name"] in ("tmp", "home", "dshm")] ==
+       [{"name": "tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}},
+        {"name": "home", "emptyDir": {"medium": "Memory", "sizeLimit": "64Mi"}},
+        {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}}]
+       and [(m["name"], m["mountPath"]) for m in container(c)["volumeMounts"]] ==
+           [("tmp", "/tmp"), ("home", "/home/refresher"), ("dshm", "/dev/shm")]
+       and env[k]["TMPDIR"] == "/tmp" and env[k]["HOME"] == "/home/refresher"
+       for k, c in crons.items())' \
+  "${ON[@]}"
+
+check "no volume is backed by the node's disk" \
+  'all(set(v) - {"name"} <= {"emptyDir", "configMap"} and v.get("emptyDir", {"medium": "Memory"}).get("medium") == "Memory"
+       for c in crons.values() for v in pod(c)["volumes"])' \
+  "${ON[@]}" --set powerschoolAuthRefresher.vault.caConfigMap.name=vault-ca-bundle
+
+check "finished pods are removed after an hour; the termination message is read from the file" \
+  'all(c["spec"]["jobTemplate"]["spec"]["ttlSecondsAfterFinished"] == 3600
+       and container(c)["terminationMessagePath"] == "/dev/termination-log"
+       and container(c)["terminationMessagePolicy"] == "File" for c in crons.values())' \
+  "${ON[@]}"
+
+check "the state path can be set" \
+  'all(e["VAULT_STATE_PATH"] == "glovebox/powerschool/default/latch" for e in env.values())' \
+  "${ON[@]}" --set powerschoolAuthRefresher.vault.statePath=glovebox/powerschool/default/latch
+
 check "the Vault CA bundle is mounted and named when configured" \
   'all(e["VAULT_CACERT"] == "/etc/vault-ca/tls-ca-bundle.pem" for e in env.values())
    and all({"name": "vault-ca", "configMap": {"name": "vault-ca-bundle"}} in pod(c)["volumes"]
@@ -209,9 +248,27 @@ check "network policy: no ingress; egress to DNS, Vault 8200 and https only" \
    and sorted(p[\"port\"] for rule in $NP[\"spec\"][\"egress\"] for p in rule[\"ports\"]) == [53, 53, 443, 8200]" \
   "${ON[@]}"
 
-check "network policy: Vault is reached in its own namespace only" \
-  "[rule[\"to\"] for rule in $NP[\"spec\"][\"egress\"] if rule[\"ports\"][0][\"port\"] == 8200] ==
-   [[{\"namespaceSelector\": {\"matchLabels\": {\"kubernetes.io/metadata.name\": \"vault\"}}}]]" \
+check "network policy: Vault egress is the Vault pods in the Vault namespace on the Vault port" \
+  "[rule for rule in $NP[\"spec\"][\"egress\"] if rule[\"ports\"][0][\"port\"] == 8200] ==
+   [{\"to\": [{\"namespaceSelector\": {\"matchLabels\": {\"kubernetes.io/metadata.name\": \"vault\"}},
+              \"podSelector\": {\"matchLabels\": {\"app.kubernetes.io/name\": \"vault\"}}}],
+     \"ports\": [{\"port\": 8200, \"protocol\": \"TCP\"}]}]" \
+  "${ON[@]}"
+
+check "network policy: the Vault pod labels can be changed" \
+  "[rule[\"to\"][0][\"podSelector\"] for rule in $NP[\"spec\"][\"egress\"] if rule[\"ports\"][0][\"port\"] == 8200] ==
+   [{\"matchLabels\": {\"app.kubernetes.io/name\": \"vault\", \"component\": \"server\"}}]" \
+  "${ON[@]}" --set powerschoolAuthRefresher.networkPolicy.vaultPodLabels.component=server
+
+check "network policy: 443 excludes private, CGNAT and link-local ranges (pod and service CIDRs, the LAN)" \
+  "[rule for rule in $NP[\"spec\"][\"egress\"] if rule[\"ports\"][0][\"port\"] == 443] ==
+   [{\"to\": [{\"ipBlock\": {\"cidr\": \"0.0.0.0/0\", \"except\":
+       [\"10.0.0.0/8\", \"172.16.0.0/12\", \"192.168.0.0/16\", \"100.64.0.0/10\", \"169.254.0.0/16\"]}}],
+     \"ports\": [{\"port\": 443, \"protocol\": \"TCP\"}]}]" \
+  "${ON[@]}"
+
+check "network policy: nothing but DNS, Vault and 443 is allowed out" \
+  "len($NP[\"spec\"][\"egress\"]) == 3" \
   "${ON[@]}"
 
 check "network policy: the portal range can be narrowed" \
@@ -325,28 +382,72 @@ refuse "a name too long for a CronJob" "the limit is 52" \
 # --- schedules the render accepts -------------------------------------------
 
 accept "21:00 exactly (the window is half-open)" "${ON[@]}" --set-string "$(morning '0 21 * * *')"
-accept "15:29 with a 30-minute deadline"         "${ON[@]}" --set-string "$(morning '29 15 * * *')"
-accept "15:55 with a 2-minute deadline"          "${ON[@]}" --set-string "$(morning '55 15 * * *')" \
+accept "15:26 with a 30-minute deadline (34 minutes; 33 are needed)" "${ON[@]}" --set-string "$(morning '26 15 * * *')"
+refuse "15:27 with a 30-minute deadline (33 minutes)" "before the login blackout" \
+  "${ON[@]}" --set-string "$(morning '27 15 * * *')"
+refuse "15:55 with a 2-minute deadline (a login needs 3 more)" "before the login blackout" \
+  "${ON[@]}" --set-string "$(morning '55 15 * * *')" --set powerschoolAuthRefresher.startingDeadlineSeconds=120
+accept "15:54 with a 2-minute deadline"          "${ON[@]}" --set-string "$(morning '54 15 * * *')" \
   --set powerschoolAuthRefresher.startingDeadlineSeconds=120
 accept "day-of-week names (not evaluated)"       "${ON[@]}" --set-string "$(morning '0 5 * * MON-FRI')"
 accept "several safe hours"                      "${ON[@]}" --set-string "$(morning '0 5\,6\,22 * * *')"
 
-# A moved window moves the check with it, and may wrap past midnight.
-cat >"$TMP/night-window.yaml" <<'YAML'
+# --- the blackout can be widened, never weakened ------------------------------
+
+WIDEN="may only be widened"
+
+refuse "a later start"              "$WIDEN" "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.start=17:00
+refuse "a start one minute late"    "$WIDEN" "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.start=16:01
+refuse "an earlier end"             "$WIDEN" "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.end=20:00
+refuse "an end one minute early"    "$WIDEN" "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.end=20:59
+refuse "a window moved to the night" "$WIDEN" "${ON[@]}" \
+  --set-string powerschoolAuthRefresher.blackout.start=22:00 --set-string powerschoolAuthRefresher.blackout.end=02:00
+refuse "a window inverted to leave the afternoon out" "$WIDEN" "${ON[@]}" \
+  --set-string powerschoolAuthRefresher.blackout.start=21:00 --set-string powerschoolAuthRefresher.blackout.end=16:00
+refuse "another blackout zone" "never moved to another zone" \
+  "${ON[@]}" --set powerschoolAuthRefresher.blackout.timeZone=UTC --set powerschoolAuthRefresher.timeZone=UTC
+refuse "another blackout zone, schedules left alone" "never moved to another zone" \
+  "${ON[@]}" --set powerschoolAuthRefresher.blackout.timeZone=America/Denver
+refuse "a state path equal to the session path" "must not be the session path" \
+  "${ON[@]}" --set powerschoolAuthRefresher.vault.statePath=glovebox/powerschool/default/session
+
+cat >"$TMP/wide.yaml" <<'YAML'
 powerschoolAuthRefresher:
   enabled: true
   blackout:
-    start: "22:00"
-    end: "02:00"
+    start: "15:00"
+    end: "21:00"
+    extraWindows:
+      - {start: "07:30", end: "08:30"}
+      - {start: "23:00", end: "01:00"}
 YAML
-refuse "a wrapped window: 23:30 is inside" "$INSIDE" -f "$TMP/night-window.yaml" \
-  --set-string 'powerschoolAuthRefresher.schedules.evening.schedule=30 23 * * *'
-refuse "a wrapped window: 01:00 is inside" "$INSIDE" -f "$TMP/night-window.yaml" \
-  --set-string 'powerschoolAuthRefresher.schedules.evening.schedule=0 1 * * *'
-refuse "a wrapped window: the default 21:30 run is now too close to it" "before the login blackout" \
-  -f "$TMP/night-window.yaml"
-accept "a wrapped window: 17:00, inside the default window, is now fine" -f "$TMP/night-window.yaml" \
-  --set-string 'powerschoolAuthRefresher.schedules.evening.schedule=0 17 * * *'
+
+check "a widened blackout and its extra windows reach the binary" \
+  'all(e["POWERSCHOOL_BLACKOUT_START"] == "15:00" and e["POWERSCHOOL_BLACKOUT_END"] == "21:00"
+       and e["POWERSCHOOL_BLACKOUT_EXTRA"] == "07:30-08:30,23:00-01:00" for e in env.values())' \
+  -f "$TMP/wide.yaml"
+refuse "widened start: 15:20, fine by the floor, is now inside" "$INSIDE" -f "$TMP/wide.yaml" \
+  --set-string "$(morning '20 15 * * *')"
+refuse "widened start: 14:40 is now too close" "before the login blackout" -f "$TMP/wide.yaml" \
+  --set-string "$(morning '40 14 * * *')"
+refuse "extra window: 08:00 is inside" "$INSIDE" -f "$TMP/wide.yaml" --set-string "$(morning '0 8 * * *')"
+refuse "extra window past midnight: 00:30 is inside" "$INSIDE" -f "$TMP/wide.yaml" --set-string "$(morning '30 0 * * *')"
+refuse "extra window: 07:00 is too close to it" "before the login blackout" -f "$TMP/wide.yaml" \
+  --set-string "$(morning '0 7 * * *')"
+refuse "the floor still applies beside a widened window" "$INSIDE" -f "$TMP/wide.yaml" \
+  --set-string "$(morning '0 18 * * *')"
+refuse "a later end catches the default evening run" "$INSIDE" \
+  "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.end=21:30
+accept "a later end with the evening run moved after it" \
+  "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.end=21:30 \
+  --set-string 'powerschoolAuthRefresher.schedules.evening.schedule=35 21 * * 0-4'
+accept "a window widened past midnight" \
+  "${ON[@]}" --set-string powerschoolAuthRefresher.blackout.start=15:00 --set-string powerschoolAuthRefresher.blackout.end=02:00 \
+  --set powerschoolAuthRefresher.schedules.evening=null
+refuse "a malformed extra window" "must be HH:MM" \
+  "${ON[@]}" --set-json 'powerschoolAuthRefresher.blackout.extraWindows=[{"start":"7am","end":"08:00"}]'
+refuse "an empty extra window" "a window cannot be empty" \
+  "${ON[@]}" --set-json 'powerschoolAuthRefresher.blackout.extraWindows=[{"start":"07:00","end":"07:00"}]'
 
 if [ "$FAILED" -ne 0 ]; then
   echo "test-chart-powerschool-login: FAILED"

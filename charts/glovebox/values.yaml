@@ -1757,12 +1757,16 @@ schoologyAuthRefresher:
 #     minSessionAge AND still accepted by the portal exits 0 without
 #     logging in.
 #   - One login per run; nothing retries a run (backoffLimit 0).
+#   - A login the portal rejected, or two logins in a row that produced no
+#     working session, set a latch in Vault (vault.statePath). Every later
+#     run then refuses to log in (exit 6) until the credentials change or
+#     an operator clears the latch: a wrong password is submitted once, not
+#     twice a day until the account locks.
 powerschoolAuthRefresher:
   enabled: false
   # Zone the schedules are written in (CronJob spec.timeZone, Kubernetes
-  # 1.27+). It must equal blackout.timeZone: the chart can only check a
-  # schedule against the blackout when both are in the same zone, and
-  # refuses to render otherwise.
+  # 1.27+). Fixed: it must be America/Los_Angeles, the zone of the blackout,
+  # and the chart refuses to render otherwise.
   timeZone: America/Los_Angeles
   # One CronJob per entry, named <fullname>-powerschool-login-<key>. A map,
   # so one entry can be changed or added from an overlay without restating
@@ -1780,34 +1784,53 @@ powerschoolAuthRefresher:
   #   morning  05:00 Monday-Friday. By then yesterday's 05:00 session is
   #            24h old, so this run logs in: one login per school day,
   #            an hour before the connector's first poll.
-  #   evening  21:30 Sunday-Thursday, half an hour after the blackout ends.
-  #            With minSessionAge 30h it finds the morning's session young
-  #            and, if the portal still accepts it, does nothing. It logs in
-  #            only when that session is gone -- the owner signed in during
-  #            the afternoon, or (Sunday) the last login was on Friday -- so
-  #            the connector's 21:30-22:00 and next-morning polls have a
-  #            session. A day on which the owner signs in costs the
-  #            connector that afternoon, not the next day too.
+  #   evening  21:05 Sunday-Thursday. Why 21:05: it has to be after the
+  #            blackout ends (21:00) and before the connector's evening poll
+  #            window opens (21:30), with room for the login (a minute or
+  #            two) and for ESO to sync the new session into the connector's
+  #            mounted file (connectors.powerschool.externalSecret
+  #            .refreshInterval, 5m) -- so that poll runs on the new session
+  #            instead of finding the old one dead. With minSessionAge 30h
+  #            the run finds the morning's session young and, if the portal
+  #            still accepts it, does nothing. It logs in only when that
+  #            session is gone -- the owner signed in during the afternoon,
+  #            or (Sunday) the last login was on Friday. A day on which the
+  #            owner signs in costs the connector that afternoon, not the
+  #            evening and the next day too.
   schedules:
     morning:
       schedule: "0 5 * * 1-5"
       minSessionAge: 10h
     evening:
-      schedule: "30 21 * * 0-4"
+      schedule: "5 21 * * 0-4"
       minSessionAge: 30h
   # How late a missed run may still start. Small on purpose: a 05:00 run
   # missed because the control plane was down must not fire at 16:30. The
-  # chart also checks that schedule + this deadline stays out of the
-  # blackout. (The binary would refuse such a run anyway.)
+  # chart also checks that schedule + this deadline + the three minutes a
+  # login may take stays out of the blackout. (The binary would refuse such
+  # a run anyway.)
   startingDeadlineSeconds: 1800
-  # The span in which no login may happen: [start, end) on the wall clock of
-  # timeZone, every day, daylight-saving changes included. Owner decision
-  # (2026-10-09): 16:00-21:00 Pacific. Passed to the binary, which enforces
-  # it against the real clock.
+  # The spans in which no login may happen, on the wall clock of
+  # America/Los_Angeles, every day, daylight-saving changes included.
+  #
+  # 16:00-21:00 is the FLOOR (owner decision, 2026-10-09) and is compiled
+  # into the binary: nothing here can shorten it, move it or change its
+  # zone. These values can only WIDEN the blackout -- an earlier start, a
+  # later end, further windows -- and the chart refuses to render anything
+  # else (as does the binary, which would still enforce the floor).
+  #
+  # The binary also keeps clear of each window's start by the time a login
+  # may take (150s): the last moment a run may start a login is 15:57:29.
   blackout:
+    # "16:00" or earlier.
     start: "16:00"
+    # "21:00" or later. (Moving it past 21:05 means moving the evening
+    # schedule too; the chart will say so.)
     end: "21:00"
+    # Fixed. Present so that the zone is visible next to the hours.
     timeZone: America/Los_Angeles
+    # Further daily windows, each {start: "HH:MM", end: "HH:MM"}.
+    extraWindows: []
   # expires_at written into the session: login time + this. An upper bound
   # on how long the connector will present a session, not a claim about the
   # portal (which says when a session ends by refusing it). 36h carries a
@@ -1836,12 +1859,20 @@ powerschoolAuthRefresher:
     addr: "https://vault.vault.svc.cluster.local:8200"
     # Kubernetes auth role bound to this job's ServiceAccount
     # (<fullname>-powerschool-auth-refresher) with read/create/update on the
-    # one session path. Exact policy and role: the runbook.
+    # session path and the state path, nothing else. Exact policy and role:
+    # the runbook.
     k8sRole: "glovebox-powerschool-refresher"
     kvMount: "secret"
     # KV v2 path (inside kvMount) the session is written to. The connector's
     # externalSecret.files.data."session.json".key must be the same path.
     sessionPath: "glovebox/powerschool/default/session"
+    # KV v2 path of the job's own record: the latch that blocks further
+    # logins after a rejection, the count of unconfirmed logins, and a
+    # salted fingerprint of the credentials last submitted (never the
+    # values). Empty: "login-state" beside the session
+    # (glovebox/powerschool/default/login-state). Never the session path
+    # itself. To clear a latch: delete this secret (runbook).
+    statePath: ""
     # ConfigMap holding the CA bundle that signed Vault's certificate. When
     # name is set it is mounted read-only and exported as VAULT_CACERT.
     # Leave name empty only if Vault's certificate chains to a public root.
@@ -1861,21 +1892,47 @@ powerschoolAuthRefresher:
       kind: ClusterSecretStore
       name: vault-default
   # Egress for the job's pods, rendered when networkPolicy.enabled (top
-  # level) is also true: cluster DNS (networkPolicy.dns), Vault
-  # (networkPolicy.vault namespace and port) and the portal on 443. No
-  # ingress. The Schoology refresher has no such policy; this job holds a
-  # parent account's password and gets one.
+  # level) is also true: cluster DNS (networkPolicy.dns), the Vault pods on
+  # the Vault port, and the portal on 443 -- which means "443 on the public
+  # internet", not "443 anywhere". No ingress. The Schoology refresher has
+  # no such policy; this job holds a parent account's password and runs a
+  # browser, and gets one.
   networkPolicy:
     enabled: true
-    # A NetworkPolicy cannot name a host. Narrow this to the portal's
-    # address range if it is stable; the default allows 443 anywhere.
+    # Pods Vault egress is limited to, inside networkPolicy.vault.namespace
+    # on networkPolicy.vault.port. The default matches the official Vault
+    # Helm chart's server pods. {} admits every pod in that namespace.
+    vaultPodLabels:
+      app.kubernetes.io/name: vault
+    # Where port 443 may be reached. A NetworkPolicy cannot name a host;
+    # narrow this to the portal's address range if it is stable.
     portalCIDRs:
       - 0.0.0.0/0
+    # Carved out of every portalCIDRs entry that is 0.0.0.0/0, so that the
+    # browser cannot reach in-cluster or LAN services on 443: the private
+    # ranges (which hold the pod and service CIDRs of any ordinary cluster),
+    # carrier-grade NAT space and link-local (cloud metadata). ADD your
+    # cluster's pod and service CIDRs here if they lie outside these.
+    portalExceptCIDRs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 169.254.0.0/16
     # Further egress rules, verbatim (for a Vault outside the cluster, say).
     extraEgress: []
-  # Chromium keeps shared memory in /dev/shm; the container default (64Mi)
-  # is too small for it. A memory-backed emptyDir, counted against the
-  # memory limit below.
+  # The container's root filesystem is read-only. What Chromium and the
+  # binary write goes to three memory-backed emptyDirs, so nothing of the
+  # browser profile (which holds the session cookies) ever touches a node's
+  # disk, and all of it is gone with the pod. Counted against the memory
+  # limit below.
+  #   /tmp            the browser profile (removed by the binary on every
+  #                   exit path as well) and temp files
+  #   /home/refresher $HOME: Chromium's config and crash state
+  #   /dev/shm        Chromium's shared memory; the container default (64Mi)
+  #                   is too small for it
+  tmpSizeLimit: 256Mi
+  homeSizeLimit: 64Mi
   shmSizeLimit: 256Mi
   resources:
     requests:
@@ -1883,7 +1940,7 @@ powerschoolAuthRefresher:
       memory: 384Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 1536Mi
 
 # Schoology CONNECTOR (spec 12). Disabled by default; opt-in by setting
 # schoologyConnector.enabled=true. When enabled the chart renders a

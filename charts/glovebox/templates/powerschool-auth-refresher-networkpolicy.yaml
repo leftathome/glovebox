@@ -44,22 +44,36 @@ spec:
     {{- end }}
     {{- end }}
     {{- if .Values.networkPolicy.vault.namespace }}
-    # Vault (Kubernetes auth login, session read and write). A Vault outside
+    # Vault (Kubernetes auth login, session and state read and write): the
+    # Vault pods and port only, not the whole namespace. A Vault outside
     # the cluster: set networkPolicy.vault.namespace to "" and allow it
     # through powerschoolAuthRefresher.networkPolicy.extraEgress.
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.vault.namespace }}
+          {{- with $r.networkPolicy.vaultPodLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
       ports:
         - port: {{ .Values.networkPolicy.vault.port }}
           protocol: TCP
     {{- end }}
-    # The portal, https only. A NetworkPolicy selects addresses, not names.
+    # The portal, https only. A NetworkPolicy selects addresses, not names,
+    # so this is "the public internet on 443": private, CGNAT and link-local
+    # ranges -- where the cluster's own pods and services and the LAN live --
+    # are carved out of the catch-all, so the browser cannot be pointed at
+    # an in-cluster https service.
     - to:
         {{- range $r.networkPolicy.portalCIDRs }}
         - ipBlock:
             cidr: {{ . | quote }}
+            {{- if and (eq (toString .) "0.0.0.0/0") $r.networkPolicy.portalExceptCIDRs }}
+            except:
+              {{- toYaml $r.networkPolicy.portalExceptCIDRs | nindent 14 }}
+            {{- end }}
         {{- end }}
       ports:
         - port: 443

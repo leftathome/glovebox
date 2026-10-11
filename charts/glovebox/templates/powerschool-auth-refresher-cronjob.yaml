@@ -22,6 +22,9 @@ stored session is young and still accepted; one login per run):
 */}}
 {{- $r := .Values.powerschoolAuthRefresher }}
 {{- $fullname := include "glovebox.fullname" . }}
+{{- if and $r.vault.statePath (eq (trimAll "/" (toString $r.vault.statePath)) (trimAll "/" (toString $r.vault.sessionPath))) }}
+{{- fail "powerschoolAuthRefresher.vault.statePath must not be the session path: the session secret is what ESO copies to the connector" }}
+{{- end }}
 {{- if not (hasPrefix "https://" (lower (toString $r.vault.addr))) }}
 {{- fail "powerschoolAuthRefresher.vault.addr must be an https URL: the login job sends the session and its ServiceAccount token to Vault and refuses a plaintext address" }}
 {{- end }}
@@ -78,7 +81,9 @@ spec:
       # Never retried: every pod is a login to a real parent account.
       backoffLimit: 0
       activeDeadlineSeconds: 600
-      ttlSecondsAfterFinished: 259200
+      # An hour, not days: a finished pod is of no further use once its log
+      # has been shipped, and its termination message says how it ended.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:
@@ -97,22 +102,37 @@ spec:
             fsGroup: 65532
             {{- with (include "glovebox.seccompProfile" $) }}
             {{- . | nindent 12 }}
+            {{- else }}
+            # The chart-wide profile was switched off. This pod runs a
+            # browser and is not left unconfined on that account.
+            seccompProfile:
+              type: RuntimeDefault
             {{- end }}
           containers:
             - name: refresher
               image: "{{ $r.image.repository }}:{{ $r.image.tag | default $.Chart.AppVersion }}"
               imagePullPolicy: {{ $r.image.pullPolicy | default "IfNotPresent" }}
               securityContext:
-                # readOnlyRootFilesystem is intentionally OFF, as it was for
-                # the Schoology refresher while that image bundled a
-                # browser: Chromium writes its profile under $HOME and /tmp.
+                # Read-only root. Everything Chromium and the binary write
+                # goes to the three memory-backed emptyDirs below (/tmp,
+                # $HOME, /dev/shm), so the browser profile -- which holds
+                # the session cookies -- never reaches a node's disk.
+                readOnlyRootFilesystem: true
                 allowPrivilegeEscalation: false
                 runAsNonRoot: true
                 runAsUser: 65532
                 capabilities:
                   drop:
                     - ALL
+              # The binary writes one line here on every exit: the outcome
+              # and why. `kubectl describe pod` shows it.
+              terminationMessagePath: /dev/termination-log
+              terminationMessagePolicy: File
               env:
+                - name: TMPDIR
+                  value: /tmp
+                - name: HOME
+                  value: /home/refresher
                 # The account. Taken key by key, not envFrom, so nothing else
                 # in that Secret reaches the process.
                 - name: POWERSCHOOL_HOSTNAME
@@ -138,19 +158,33 @@ spec:
                   value: {{ $r.vault.kvMount | default "secret" | quote }}
                 - name: VAULT_SESSION_PATH
                   value: {{ $r.vault.sessionPath | quote }}
+                {{- with $r.vault.statePath }}
+                - name: VAULT_STATE_PATH
+                  value: {{ . | quote }}
+                {{- end }}
                 {{- with $r.vault.caConfigMap }}
                 {{- if .name }}
                 - name: VAULT_CACERT
                   value: /etc/vault-ca/{{ .key | default "ca.crt" }}
                 {{- end }}
                 {{- end }}
-                # Enforced by the binary against the real clock in this zone.
+                # Enforced by the binary against the real clock. These can
+                # only widen its built-in 16:00-21:00 America/Los_Angeles;
+                # it refuses to start on anything else.
                 - name: POWERSCHOOL_BLACKOUT_START
                   value: {{ $r.blackout.start | quote }}
                 - name: POWERSCHOOL_BLACKOUT_END
                   value: {{ $r.blackout.end | quote }}
                 - name: POWERSCHOOL_BLACKOUT_TZ
                   value: {{ $r.blackout.timeZone | quote }}
+                {{- if $r.blackout.extraWindows }}
+                {{- $extra := list }}
+                {{- range $r.blackout.extraWindows }}
+                {{- $extra = append $extra (printf "%s-%s" (toString .start) (toString .end)) }}
+                {{- end }}
+                - name: POWERSCHOOL_BLACKOUT_EXTRA
+                  value: {{ join "," $extra | quote }}
+                {{- end }}
                 - name: POWERSCHOOL_MIN_SESSION_AGE
                   value: {{ required (printf "powerschoolAuthRefresher.schedules.%s.minSessionAge is required" $name) $entry.minSessionAge | quote }}
                 - name: POWERSCHOOL_SESSION_LIFETIME
@@ -158,6 +192,10 @@ spec:
               resources:
                 {{- toYaml $r.resources | nindent 16 }}
               volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: home
+                  mountPath: /home/refresher
                 - name: dshm
                   mountPath: /dev/shm
                 {{- with $r.vault.caConfigMap }}
@@ -168,6 +206,15 @@ spec:
                 {{- end }}
                 {{- end }}
           volumes:
+            # Memory-backed, size-capped, gone with the pod.
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: {{ $r.tmpSizeLimit | default "256Mi" }}
+            - name: home
+              emptyDir:
+                medium: Memory
+                sizeLimit: {{ $r.homeSizeLimit | default "64Mi" }}
             - name: dshm
               emptyDir:
                 medium: Memory

@@ -293,41 +293,76 @@ Renders nothing; fails the render on a violation.
 {{- $r := .root.Values.powerschoolAuthRefresher -}}
 {{- $schedule := toString .schedule -}}
 {{- $where := printf "powerschoolAuthRefresher.schedules.%s" .name -}}
-{{- if ne (toString $r.timeZone) (toString $r.blackout.timeZone) -}}
-  {{- fail (printf "powerschoolAuthRefresher.timeZone (%q) must equal powerschoolAuthRefresher.blackout.timeZone (%q): a schedule can only be checked against the login blackout when both are in the same zone" (toString $r.timeZone) (toString $r.blackout.timeZone)) -}}
+{{- $zone := "America/Los_Angeles" -}}
+{{- if ne (toString $r.blackout.timeZone) $zone -}}
+  {{- fail (printf "powerschoolAuthRefresher.blackout.timeZone is fixed at %s (got %q): the login blackout may be widened, never moved to another zone" $zone (toString $r.blackout.timeZone)) -}}
+{{- end -}}
+{{- if ne (toString $r.timeZone) $zone -}}
+  {{- fail (printf "powerschoolAuthRefresher.timeZone (%q) must equal powerschoolAuthRefresher.blackout.timeZone (%q): a schedule can only be checked against the login blackout when both are in the same zone" (toString $r.timeZone) $zone) -}}
 {{- end -}}
 {{- $fields := regexSplit "\\s+" (trim $schedule) -1 -}}
 {{- if ne (len $fields) 5 -}}
   {{- fail (printf "%s.schedule %q must be a five-field cron expression (no @macros): the chart has to check it against the login blackout" $where $schedule) -}}
 {{- end -}}
+{{- /* The floor, in minutes since midnight: 16:00 and 21:00. */ -}}
+{{- $floorStart := 960 -}}
+{{- $floorEnd := 1260 -}}
 {{- $start := int (include "glovebox.clockMinutes" (dict "value" $r.blackout.start "what" "powerschoolAuthRefresher.blackout.start")) -}}
 {{- $end := int (include "glovebox.clockMinutes" (dict "value" $r.blackout.end "what" "powerschoolAuthRefresher.blackout.end")) -}}
 {{- if eq $start $end -}}
   {{- fail "powerschoolAuthRefresher.blackout.start and .end are equal: the window cannot be empty" -}}
 {{- end -}}
+{{- $covers := false -}}
+{{- if lt $start $end -}}
+  {{- $covers = and (le $start $floorStart) (ge $end $floorEnd) -}}
+{{- else -}}
+  {{- $covers = or (le $start $floorStart) (ge $end $floorEnd) -}}
+{{- end -}}
+{{- if not $covers -}}
+  {{- fail (printf "powerschoolAuthRefresher.blackout %s-%s does not contain 16:00-21:00: the login blackout may only be widened (an earlier start, a later end, extraWindows), never shortened or moved. The binary enforces 16:00-21:00 %s whatever is configured" (toString $r.blackout.start) (toString $r.blackout.end) $zone) -}}
+{{- end -}}
+{{- $windows := list (dict "s" $floorStart "e" $floorEnd "label" "16:00-21:00") -}}
+{{- $windows = append $windows (dict "s" $start "e" $end "label" (printf "%s-%s" (toString $r.blackout.start) (toString $r.blackout.end))) -}}
+{{- range $i, $w := ($r.blackout.extraWindows | default list) -}}
+  {{- $ws := int (include "glovebox.clockMinutes" (dict "value" $w.start "what" (printf "powerschoolAuthRefresher.blackout.extraWindows[%d].start" $i))) -}}
+  {{- $we := int (include "glovebox.clockMinutes" (dict "value" $w.end "what" (printf "powerschoolAuthRefresher.blackout.extraWindows[%d].end" $i))) -}}
+  {{- if eq $ws $we -}}
+    {{- fail (printf "powerschoolAuthRefresher.blackout.extraWindows[%d]: start and end are equal: a window cannot be empty" $i) -}}
+  {{- end -}}
+  {{- $windows = append $windows (dict "s" $ws "e" $we "label" (printf "%s-%s" (toString $w.start) (toString $w.end))) -}}
+{{- end -}}
 {{- $deadline := int ($r.startingDeadlineSeconds | default 0) -}}
 {{- if lt $deadline 10 -}}
   {{- fail "powerschoolAuthRefresher.startingDeadlineSeconds must be set (10 or more): without it a missed run can start at any later time, including inside the login blackout" -}}
 {{- end -}}
-{{- $late := int (div (add $deadline 59) 60) -}}
-{{- $window := printf "%s-%s %s" (toString $r.blackout.start) (toString $r.blackout.end) (toString $r.blackout.timeZone) -}}
+{{- /*
+A run may start up to the deadline late, and the binary refuses a login that
+could still be in progress when a window begins: its login timeout (90s) plus
+a margin (60s), 150s, rounded up here to 3 minutes.
+*/ -}}
+{{- $headroom := 3 -}}
+{{- $late := int (add (div (add $deadline 59) 60) $headroom) -}}
 {{- $minutes := splitList "," (include "glovebox.cronFieldValues" (dict "field" (index $fields 0) "lo" 0 "hi" 59 "what" (printf "%s.schedule minute field" $where))) -}}
 {{- $hours := splitList "," (include "glovebox.cronFieldValues" (dict "field" (index $fields 1) "lo" 0 "hi" 23 "what" (printf "%s.schedule hour field" $where))) -}}
 {{- range $h := $hours -}}
   {{- range $m := $minutes -}}
     {{- $t := int (add (mul (atoi $h) 60) (atoi $m)) -}}
-    {{- $inside := false -}}
-    {{- if lt $start $end -}}
-      {{- $inside = and (ge $t $start) (lt $t $end) -}}
-    {{- else -}}
-      {{- $inside = or (ge $t $start) (lt $t $end) -}}
-    {{- end -}}
-    {{- if $inside -}}
-      {{- fail (printf "%s.schedule %q fires at %02d:%02d, inside the login blackout %s: a login then signs the account's owner out of the portal. Move the schedule outside the window" $where $schedule (atoi $h) (atoi $m) $window) -}}
-    {{- end -}}
-    {{- $untilStart := int (mod (add (sub $start $t) 1440) 1440) -}}
-    {{- if le $untilStart $late -}}
-      {{- fail (printf "%s.schedule %q fires at %02d:%02d, %d minute(s) before the login blackout %s, and a missed run may start up to %d minute(s) late (startingDeadlineSeconds: %d). Move the schedule earlier or shorten the deadline" $where $schedule (atoi $h) (atoi $m) $untilStart $window $late $deadline) -}}
+    {{- range $w := $windows -}}
+      {{- $ws := int $w.s -}}
+      {{- $we := int $w.e -}}
+      {{- $inside := false -}}
+      {{- if lt $ws $we -}}
+        {{- $inside = and (ge $t $ws) (lt $t $we) -}}
+      {{- else -}}
+        {{- $inside = or (ge $t $ws) (lt $t $we) -}}
+      {{- end -}}
+      {{- if $inside -}}
+        {{- fail (printf "%s.schedule %q fires at %02d:%02d, inside the login blackout %s %s: a login then signs the account's owner out of the portal. Move the schedule outside the window" $where $schedule (atoi $h) (atoi $m) $w.label $zone) -}}
+      {{- end -}}
+      {{- $untilStart := int (mod (add (sub $ws $t) 1440) 1440) -}}
+      {{- if le $untilStart $late -}}
+        {{- fail (printf "%s.schedule %q fires at %02d:%02d, %d minute(s) before the login blackout %s %s; a missed run may start up to startingDeadlineSeconds (%d) late and a login needs %d minutes of clear time, %d minutes in all. Move the schedule earlier or shorten the deadline" $where $schedule (atoi $h) (atoi $m) $untilStart $w.label $zone $deadline $headroom $late) -}}
+      {{- end -}}
     {{- end -}}
   {{- end -}}
 {{- end -}}
