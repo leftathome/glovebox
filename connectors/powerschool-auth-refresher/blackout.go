@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/leftathome/glovebox/internal/psportal"
 )
 
 // The floor: the span in which this binary never logs in, whatever it is
@@ -17,10 +19,13 @@ import (
 // larger -- an earlier start, a later end, further windows -- and cannot
 // make it smaller or move it to another zone. A values typo, or an operator
 // in a hurry, must not be able to switch the guard off.
+//
+// The values live in internal/psportal, which the connector imports too: it
+// must not ask for a login in the hours this binary would refuse one.
 const (
-	floorBlackoutStart = "16:00"
-	floorBlackoutEnd   = "21:00"
-	blackoutZone       = "America/Los_Angeles"
+	floorBlackoutStart = psportal.FloorStart
+	floorBlackoutEnd   = psportal.FloorEnd
+	blackoutZone       = psportal.FloorZone
 )
 
 // loginHeadroom is how far ahead of a login the blackout is checked. A
@@ -29,8 +34,8 @@ const (
 // 16:00:30. No login starts unless the whole span from now to now +
 // loginTimeout + loginMargin is clear of every window.
 const (
-	loginMargin   = 60 * time.Second
-	loginHeadroom = loginTimeout + loginMargin
+	loginMargin   = psportal.LoginMargin
+	loginHeadroom = psportal.LoginHeadroom
 )
 
 // window is one daily span [start, end) in seconds since local midnight. A

@@ -1,4 +1,11 @@
-package main
+// Package psportal holds what the PowerSchool connector and the PowerSchool
+// login job (connectors/powerschool-auth-refresher) must agree on about the
+// portal they both talk to: the access gateway in front of it, and the
+// hours in which nobody may log in to the account.
+//
+// Both binaries import it so that neither can drift from the other. It
+// holds no credentials and makes no requests of its own.
+package psportal
 
 import (
 	"net/http"
@@ -6,49 +13,66 @@ import (
 	"sync"
 )
 
-// gatewayCookies lets one home-page read survive the access gateway
-// renewing its own session cookie in mid-request.
+// gatewayPaths are where the access gateway in front of the portal (an F5
+// APM on the reference instance) leaves a client it will not, or cannot,
+// give a session: its policy endpoint and its logout/error page.
+var gatewayPaths = []string{"/my.policy", "/my.logout.php3"}
+
+// IsGatewayPath reports whether path is one of the access gateway's own
+// pages rather than a page of the portal.
+func IsGatewayPath(path string) bool {
+	for _, p := range gatewayPaths {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// GatewayCookies lets a read made with a stored session survive the access
+// gateway renewing its own session cookie in mid-request.
 //
 // The stored session is the browser's whole cookie set for the portal host:
 // the portal's session cookie AND the gateway's (MRHSession and friends on
 // the reference instance). The two expire independently. When the gateway's
 // has lapsed while the portal's is still good, the gateway answers a request
 // with a redirect to its policy endpoint, sets a fresh cookie there, and
-// redirects back. The library attaches the stored cookies itself, as one
+// redirects back. powerschool-go attaches the stored cookies itself, as one
 // fixed Cookie header, and the HTTP client deliberately has no jar -- so the
 // fresh cookie would be dropped, the request would arrive back with the
 // lapsed one, and the read would end on the gateway's error page. A good
-// portal session would then look unreadable (the run stops without logging
-// in) for as long as it stays young.
+// portal session would then look unreadable, and a dead one would look like
+// a page that failed to parse instead of a session that was refused.
 //
-// This RoundTripper is the narrowest thing that fixes that. It sits inside
-// the pinned, read-only transport (so it only ever sees https requests to
-// the portal host), remembers the Set-Cookie values of the responses it
-// passes, and overlays them on the Cookie header of the following requests:
-// a renewed cookie replaces the stored one of the same name, a new one is
-// added, a deleted one is dropped.
+// This RoundTripper is the narrowest thing that fixes that. It is meant to
+// sit INSIDE the pinned, read-only transport (so it only ever sees https
+// requests to the portal host), remembers the Set-Cookie values of the
+// responses it passes, and overlays them on the Cookie header of the
+// following requests: a renewed cookie replaces the stored one of the same
+// name, a new one is added, a deleted one is dropped.
 //
-// One is created per probe and thrown away with it. What it collects is
-// never written to Vault, never handed to the connector and never logged.
-type gatewayCookies struct {
+// Create one per stored session (or per single read) and throw it away with
+// it. What it collects is never written anywhere and never logged.
+type GatewayCookies struct {
 	base http.RoundTripper
 
 	mu      sync.Mutex
 	overlay map[string]*string // name -> value; nil = deleted by the server
 }
 
-// maxOverlayCookies bounds what a server can make this hold.
+// maxOverlayCookies bounds what a server can make a GatewayCookies hold.
 const maxOverlayCookies = 64
 
-func newGatewayCookies(base http.RoundTripper) *gatewayCookies {
+// NewGatewayCookies wraps base (nil means http.DefaultTransport).
+func NewGatewayCookies(base http.RoundTripper) *GatewayCookies {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &gatewayCookies{base: base, overlay: map[string]*string{}}
+	return &GatewayCookies{base: base, overlay: map[string]*string{}}
 }
 
 // RoundTrip implements http.RoundTripper.
-func (g *gatewayCookies) RoundTrip(req *http.Request) (*http.Response, error) {
+func (g *GatewayCookies) RoundTrip(req *http.Request) (*http.Response, error) {
 	g.mu.Lock()
 	pending := len(g.overlay) > 0
 	g.mu.Unlock()
@@ -67,7 +91,7 @@ func (g *gatewayCookies) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // apply rewrites req's Cookie header with the overlay.
-func (g *gatewayCookies) apply(req *http.Request) {
+func (g *GatewayCookies) apply(req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -100,7 +124,7 @@ func (g *gatewayCookies) apply(req *http.Request) {
 }
 
 // collect records the cookies resp sets or deletes.
-func (g *gatewayCookies) collect(resp *http.Response) {
+func (g *GatewayCookies) collect(resp *http.Response) {
 	cookies := resp.Cookies()
 	if len(cookies) == 0 {
 		return
