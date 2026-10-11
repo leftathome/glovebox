@@ -74,9 +74,25 @@ spec:
   timeZone: {{ $r.timeZone | quote }}
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: {{ int $r.startingDeadlineSeconds }}
+  {{- if or $r.suspendSchedules $entry.suspend }}
+  # No scheduled runs. The CronJob remains as the template Jobs are made
+  # from: by the connector (connectors.powerschool.loginOnDemand) or by
+  # hand (kubectl create job --from=cronjob/...).
+  suspend: true
+  {{- end }}
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5
   jobTemplate:
+    metadata:
+      labels:
+        # On every login Job, however it was started: the controller copies
+        # these to scheduled Jobs, kubectl and the connector to theirs. The
+        # connector lists Jobs by this label to see whether a login is
+        # already running before it asks for one.
+        glovebox.io/powerschool-login: "true"
+        app.kubernetes.io/name: {{ include "glovebox.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: powerschool-auth-refresher
     spec:
       # Never retried: every pod is a login to a real parent account.
       backoffLimit: 0

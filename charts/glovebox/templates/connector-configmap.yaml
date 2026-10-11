@@ -10,7 +10,38 @@ metadata:
     app.kubernetes.io/component: connector
     glovebox.io/connector: {{ $name }}
 data:
+  {{- $config := $connector.config }}
+  {{- $lod := $connector.loginOnDemand | default dict }}
+  {{- if and (eq $name "powerschool") $lod.enabled }}
+  {{- /*
+  On-demand login (connectors.powerschool.loginOnDemand): tell the connector
+  which CronJob to make its login Job from. The name is derived here, from
+  the same expression the CronJob template uses, so the two cannot differ.
+  */}}
+  {{- $refresher := $.Values.powerschoolAuthRefresher }}
+  {{- if not $refresher.enabled }}
+  {{- fail "connectors.powerschool.loginOnDemand.enabled requires powerschoolAuthRefresher.enabled: the login Job is made from that workload's CronJob" }}
+  {{- end }}
+  {{- $schedule := $lod.schedule | default "morning" }}
+  {{- if not (get ($refresher.schedules | default dict) $schedule) }}
+  {{- fail (printf "connectors.powerschool.loginOnDemand.schedule %q is not an entry of powerschoolAuthRefresher.schedules: there would be no CronJob to make the login Job from" $schedule) }}
+  {{- end }}
+  {{- $wait := int ($lod.waitSeconds | default 360) }}
+  {{- if or (lt $wait 30) (gt $wait 1800) }}
+  {{- fail "connectors.powerschool.loginOnDemand.waitSeconds must be between 30 and 1800" }}
+  {{- end }}
+  {{- $interval := int ($lod.minIntervalMinutes | default 20) }}
+  {{- if lt $interval 20 }}
+  {{- fail "connectors.powerschool.loginOnDemand.minIntervalMinutes must be at least 20" }}
+  {{- end }}
+  {{- $config = mustMergeOverwrite (deepCopy $connector.config) (dict "login_on_demand" (dict
+        "enabled" true
+        "cronjob_name" (printf "%s-powerschool-login-%s" (include "glovebox.fullname" $) $schedule)
+        "namespace" $.Release.Namespace
+        "wait_seconds" $wait
+        "min_interval_minutes" $interval)) }}
+  {{- end }}
   config.json: |
-    {{- $connector.config | toJson | nindent 4 }}
+    {{- $config | toJson | nindent 4 }}
 {{- end }}
 {{- end }}

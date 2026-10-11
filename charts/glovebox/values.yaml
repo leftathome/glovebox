@@ -1631,9 +1631,55 @@ connectors:
     # to change; the env var name POWERSCHOOL_HOST and the file name
     # session.json (which POWERSCHOOL_SESSION_FILE above points at) are
     # fixed.
+    # Log in on demand (off by default). The portal ends an IDLE session in
+    # well under an hour (measured 2026-10-11), so with three polls a day
+    # every poll finds the previous session dead, and a login scheduled an
+    # hour ahead of a poll is an hour too early. With this on, the connector
+    # checks its session at the start of each poll and, when the portal no
+    # longer accepts it, ASKS for a login: it creates a Job from the login
+    # CronJob's template and waits for the new session file. There is
+    # deliberately no keepalive: the session is not kept alive with requests
+    # nobody needs (owner decision).
+    #
+    # The connector still never logs in and never sees the username or the
+    # password. The Job it creates is the login workload
+    # (powerschoolAuthRefresher), in its own pod, with its own
+    # ServiceAccount and Vault role and all of its own rules: the blackout,
+    # the latch, the sign-in check.
+    #
+    # Enabling it:
+    #   - requires powerschoolAuthRefresher.enabled (the chart refuses to
+    #     render otherwise);
+    #   - gives this connector a ServiceAccount of its own, with its token
+    #     mounted, and a Role granting exactly: get on that one CronJob,
+    #     create/get/list on Jobs in the namespace (list, to see whether a
+    #     login is already running; create cannot be narrowed to a name);
+    #   - needs egress from the connector to the Kubernetes API server. The
+    #     chart's own connector NetworkPolicy already allows all egress; in
+    #     a namespace whose policies are managed elsewhere, add the rule in
+    #     docs/connectors/powerschool.md.
+    # Then set powerschoolAuthRefresher.suspendSchedules: true so that no
+    # login runs on a clock at all.
+    loginOnDemand:
+      enabled: false
+      # Which entry of powerschoolAuthRefresher.schedules is the template.
+      # Its CronJob must exist (it may be suspended); the Job runs with that
+      # entry's minSessionAge.
+      schedule: morning
+      # How long a poll waits for the new session to reach the mounted file
+      # after asking: the login (1-2 min), ESO's sync (refreshInterval
+      # below) and the kubelet's update of the mounted Secret (up to about
+      # a minute). 30-1800.
+      waitSeconds: 360
+      # Least time between two requests by this connector, across restarts.
+      # 20 is also the minimum.
+      minIntervalMinutes: 20
     externalSecret:
       enabled: false
-      refreshInterval: "5m"
+      # One minute, where other connectors use an hour: this is how quickly
+      # a new session reaches the connector, and with loginOnDemand a poll
+      # is waiting for it.
+      refreshInterval: "1m"
       secretStoreRef:
         kind: ClusterSecretStore
         name: ""
@@ -1768,6 +1814,17 @@ powerschoolAuthRefresher:
   # 1.27+). Fixed: it must be America/Los_Angeles, the zone of the blackout,
   # and the chart refuses to render otherwise.
   timeZone: America/Los_Angeles
+  # Suspend every CronJob below (spec.suspend: true): no login runs on a
+  # clock. Use it with connectors.powerschool.loginOnDemand, which logs in
+  # when a poll needs a session instead. A suspended CronJob still exists
+  # and still serves as the template that on-demand Jobs -- and
+  # `kubectl create job --from=cronjob/...` -- are made from.
+  #
+  # Why: the portal ends an idle session in well under an hour (measured
+  # 2026-10-11), so a login at 05:00 for a 06:00 poll produces a session
+  # that is dead by the time it is wanted. Scheduled logins only make sense
+  # for a portal whose sessions survive the gap.
+  suspendSchedules: false
   # One CronJob per entry, named <fullname>-powerschool-login-<key>. A map,
   # so one entry can be changed or added from an overlay without restating
   # the others; set an entry to null to remove it.
@@ -1778,6 +1835,10 @@ powerschoolAuthRefresher:
   #   minSessionAge  Go duration. The run logs in only if the stored
   #                  session is at least this old, or the portal no longer
   #                  accepts it.
+  #   suspend        optional; true suspends this one CronJob. Keep the
+  #                  entry loginOnDemand.schedule names (morning): it is the
+  #                  template on-demand Jobs are made from. The others can
+  #                  be removed (null) or left suspended.
   #
   # Defaults, and why there are two:
   #
@@ -1831,10 +1892,14 @@ powerschoolAuthRefresher:
     timeZone: America/Los_Angeles
     # Further daily windows, each {start: "HH:MM", end: "HH:MM"}.
     extraWindows: []
-  # expires_at written into the session: login time + this. An upper bound
-  # on how long the connector will present a session, not a claim about the
-  # portal (which says when a session ends by refusing it). 36h carries a
-  # morning session through the next morning's login.
+  # expires_at written into the session: login time + this. It is an UPPER
+  # BOUND and nothing more. It says nothing about how long the portal keeps
+  # a session: an idle one is ended in well under an hour (measured
+  # 2026-10-11), whatever is written here. What decides whether a session
+  # is usable is the portal's answer, which the connector asks for at the
+  # start of every poll. With loginOnDemand the connector treats a session
+  # past this time like a dead one (it asks for a login); without it, it
+  # refuses to start on one.
   sessionLifetime: 36h
   image:
     repository: ghcr.io/leftathome/glovebox-powerschool-auth-refresher

@@ -1,0 +1,21 @@
+{{- $conn := (.Values.connectors | default dict).powerschool | default dict }}
+{{- if and $conn.enabled ($conn.loginOnDemand | default dict).enabled }}
+# Binds the on-demand login Role to the PowerSchool connector's own
+# ServiceAccount, and to nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-on-demand
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: powerschool
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-on-demand
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "glovebox.fullname" . }}-powerschool
+    namespace: {{ .Release.Namespace }}
+{{- end }}
