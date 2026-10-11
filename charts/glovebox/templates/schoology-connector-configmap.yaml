@@ -3,6 +3,28 @@
 # .Values.schoologyConnector.config into config.json and mounted at
 # /etc/connector/config.json. Operators MUST replace the placeholder
 # schoology_uid values for each kid before enabling the connector.
+#
+# .Values.schoologyConnector.assignmentDetail is rendered into the
+# assignment_detail block. The surface is off while its kids list is empty.
+# Each kid listed there needs its own "schoology:<kid>:assignment_detail"
+# rule in config.rules; the render fails without one, because the "*" rule
+# would otherwise route a child's assignment text under the default subject
+# (the connector refuses to start for the same reason).
+{{- $cfg := deepCopy .Values.schoologyConnector.config }}
+{{- $detail := .Values.schoologyConnector.assignmentDetail | default dict }}
+{{- if $detail.kids }}
+{{- range $kid := $detail.kids }}
+{{- $key := printf "schoology:%s:assignment_detail" $kid }}
+{{- $found := false }}
+{{- range $rule := ($cfg.rules | default list) }}
+{{- if eq ($rule.match | toString) $key }}{{- $found = true }}{{- end }}
+{{- end }}
+{{- if not $found }}
+{{- fail (printf "schoologyConnector.assignmentDetail.kids lists %q but schoologyConnector.config.rules has no rule matching %q" $kid $key) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $cfg "assignment_detail" (dict "kids" $detail.kids "max_per_poll" (int ($detail.maxPerPoll | default 20))) }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,5 +35,5 @@ metadata:
     glovebox.io/connector: schoology
 data:
   config.json: |
-    {{- .Values.schoologyConnector.config | toJson | nindent 4 }}
+    {{- $cfg | toJson | nindent 4 }}
 {{- end }}
