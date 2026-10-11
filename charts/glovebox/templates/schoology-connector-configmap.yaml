@@ -5,25 +5,45 @@
 # schoology_uid values for each kid before enabling the connector.
 #
 # .Values.schoologyConnector.assignmentDetail is rendered into the
-# assignment_detail block. The surface is off while its kids list is empty.
-# Each kid listed there needs its own "schoology:<kid>:assignment_detail"
-# rule in config.rules; the render fails without one, because the "*" rule
-# would otherwise route a child's assignment text under the default subject
-# (the connector refuses to start for the same reason).
+# assignment_detail block. An assignment_detail block written directly in
+# .Values.schoologyConnector.config is kept, and wins key by key; the chart
+# values fill in whatever it leaves out. The surface is off, and no block is
+# rendered, while neither names a kid.
+#
+# Each enabled kid needs its own "schoology:<kid>:assignment_detail" rule in
+# config.rules, placed before any "*" rule (rules are first-match-wins). The
+# render fails otherwise, because the "*" rule would route a child's
+# assignment text under the default subject. The connector refuses to start
+# for the same reason.
 {{- $cfg := deepCopy .Values.schoologyConnector.config }}
 {{- $detail := .Values.schoologyConnector.assignmentDetail | default dict }}
-{{- if $detail.kids }}
-{{- range $kid := $detail.kids }}
+{{- $user := $cfg.assignment_detail | default dict }}
+{{- $ad := dict }}
+{{- if $detail.kids }}{{- $_ := set $ad "kids" $detail.kids }}{{- end }}
+{{- if $detail.maxPerPoll }}{{- $_ := set $ad "max_per_poll" (int $detail.maxPerPoll) }}{{- end }}
+{{- if $detail.refreshHours }}{{- $_ := set $ad "refresh_hours" (int $detail.refreshHours) }}{{- end }}
+{{- if $detail.requestSpacingMs }}{{- $_ := set $ad "request_spacing_ms" (int $detail.requestSpacingMs) }}{{- end }}
+{{- $ad = mergeOverwrite $ad (deepCopy $user) }}
+{{- if or $ad.kids $user }}
+{{- range $kid := ($ad.kids | default list) }}
 {{- $key := printf "schoology:%s:assignment_detail" $kid }}
-{{- $found := false }}
+{{- $state := "none" }}
 {{- range $rule := ($cfg.rules | default list) }}
-{{- if eq ($rule.match | toString) $key }}{{- $found = true }}{{- end }}
+{{- if eq $state "none" }}
+{{- if eq ($rule.match | toString) $key }}
+{{- $state = "exact" }}
+{{- else if eq ($rule.match | toString) "*" }}
+{{- $state = "wildcard" }}
 {{- end }}
-{{- if not $found }}
-{{- fail (printf "schoologyConnector.assignmentDetail.kids lists %q but schoologyConnector.config.rules has no rule matching %q" $kid $key) }}
 {{- end }}
 {{- end }}
-{{- $_ := set $cfg "assignment_detail" (dict "kids" $detail.kids "max_per_poll" (int ($detail.maxPerPoll | default 20))) }}
+{{- if eq $state "wildcard" }}
+{{- fail (printf "schoologyConnector: assignment_detail is enabled for %q but a wildcard rule comes before any rule matching %q in schoologyConnector.config.rules" $kid $key) }}
+{{- else if ne $state "exact" }}
+{{- fail (printf "schoologyConnector: assignment_detail is enabled for %q but schoologyConnector.config.rules has no rule matching %q" $kid $key) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $cfg "assignment_detail" $ad }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
