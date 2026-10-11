@@ -33,6 +33,13 @@ func errAttrs(err error) []any {
 	}
 }
 
+// ErrorAttrs is errAttrs for the login workload
+// (connectors/powerschool-auth-refresher), which reads the same portal
+// pages and must hold its log lines to the same rule.
+func ErrorAttrs(err error) []any {
+	return errAttrs(err)
+}
+
 // describeErr renders err's chain as a list of kinds, outermost first, for
 // example "powerschool-go:NETWORK_ERROR > url:Post > http:500(1832b)". Each
 // element is a library error code, an HTTP status, a known sentinel's name
