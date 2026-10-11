@@ -16,7 +16,13 @@ import (
 // gatewayPaths are where the access gateway in front of the portal (an F5
 // APM on the reference instance) leaves a client it will not, or cannot,
 // give a session: its policy endpoint and its logout/error page.
-var gatewayPaths = []string{"/my.policy", "/my.logout.php3"}
+var gatewayPaths = []string{"/my.policy", GatewayLogoutPath}
+
+// GatewayLogoutPath is the gateway's "your session could not be
+// established / has ended" page. Being sent there with the session's
+// cookies attached is the gateway refusing the session; being left at the
+// policy endpoint is not an answer at all.
+const GatewayLogoutPath = "/my.logout.php3"
 
 // IsGatewayPath reports whether path is one of the access gateway's own
 // pages rather than a page of the portal.
@@ -49,15 +55,21 @@ func IsGatewayPath(path string) bool {
 // requests to the portal host), remembers the Set-Cookie values of the
 // responses it passes, and overlays them on the Cookie header of the
 // following requests: a renewed cookie replaces the stored one of the same
-// name, a new one is added, a deleted one is dropped.
+// name and a new one is added.
 //
-// Create one per stored session (or per single read) and throw it away with
-// it. What it collects is never written anywhere and never logged.
+// A response can only ADD to or REPLACE what is sent. A Set-Cookie that
+// deletes a cookie is ignored: honouring it would let any response -- an
+// error page, a page this code does not understand -- strip the session
+// from the requests that follow, and turn "could not tell" into "dead".
+//
+// What it holds must not outlive the work it was made for: create one per
+// single read, or call Reset at the start of each poll. What it collects is
+// never written anywhere and never logged.
 type GatewayCookies struct {
 	base http.RoundTripper
 
 	mu      sync.Mutex
-	overlay map[string]*string // name -> value; nil = deleted by the server
+	overlay map[string]string // name -> value set by a response
 }
 
 // maxOverlayCookies bounds what a server can make a GatewayCookies hold.
@@ -68,7 +80,15 @@ func NewGatewayCookies(base http.RoundTripper) *GatewayCookies {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &GatewayCookies{base: base, overlay: map[string]*string{}}
+	return &GatewayCookies{base: base, overlay: map[string]string{}}
+}
+
+// Reset forgets everything collected so far. The next request goes out
+// with exactly the cookies its caller attached.
+func (g *GatewayCookies) Reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.overlay = map[string]string{}
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -103,17 +123,14 @@ func (g *GatewayCookies) apply(req *http.Request) {
 		}
 		seen[c.Name] = true
 		if v, ok := g.overlay[c.Name]; ok {
-			if v == nil {
-				continue // deleted
-			}
-			pairs = append(pairs, c.Name+"="+*v)
+			pairs = append(pairs, c.Name+"="+v)
 			continue
 		}
 		pairs = append(pairs, c.Name+"="+c.Value)
 	}
 	for name, v := range g.overlay {
-		if v != nil && !seen[name] {
-			pairs = append(pairs, name+"="+*v)
+		if !seen[name] {
+			pairs = append(pairs, name+"="+v)
 		}
 	}
 	if len(pairs) == 0 {
@@ -123,7 +140,8 @@ func (g *GatewayCookies) apply(req *http.Request) {
 	req.Header.Set("Cookie", strings.Join(pairs, "; "))
 }
 
-// collect records the cookies resp sets or deletes.
+// collect records the cookies resp sets. Deletions are ignored (see the
+// type's comment).
 func (g *GatewayCookies) collect(resp *http.Response) {
 	cookies := resp.Cookies()
 	if len(cookies) == 0 {
@@ -138,13 +156,11 @@ func (g *GatewayCookies) collect(resp *http.Response) {
 		if _, known := g.overlay[c.Name]; !known && len(g.overlay) >= maxOverlayCookies {
 			continue
 		}
-		// Deleted: Max-Age <= 0 as sent, an empty value, or the customary
-		// expiry at the epoch.
+		// A deletion: Max-Age <= 0 as sent, an empty value, or the customary
+		// expiry at the epoch. Not applied.
 		if c.MaxAge < 0 || c.Value == "" || (!c.Expires.IsZero() && c.Expires.Unix() <= 86400) {
-			g.overlay[c.Name] = nil
 			continue
 		}
-		value := c.Value
-		g.overlay[c.Name] = &value
+		g.overlay[c.Name] = c.Value
 	}
 }

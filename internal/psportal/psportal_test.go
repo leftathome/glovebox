@@ -16,7 +16,8 @@ func TestGatewayCookiesOverlay(t *testing.T) {
 	var seen []string
 	responses := [][]string{
 		{"MRHSession=new; Path=/", "F5_ST=st; Path=/", "gone=; Max-Age=0; Path=/"},
-		{"epoch=x; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/"},
+		{"epoch=x; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/", "JSESSIONID=; Path=/"},
+		nil,
 		nil,
 	}
 	call := 0
@@ -31,7 +32,7 @@ func TestGatewayCookiesOverlay(t *testing.T) {
 	}))
 
 	original := "JSESSIONID=keep; MRHSession=old; gone=was-here; epoch=was-here"
-	for i := 0; i < 3; i++ {
+	send := func() {
 		req, _ := http.NewRequest(http.MethodGet, "https://portal.example.org/guardian/home.html", nil)
 		req.Header.Set("Cookie", original)
 		if _, err := g.RoundTrip(req); err != nil {
@@ -41,21 +42,33 @@ func TestGatewayCookiesOverlay(t *testing.T) {
 			t.Fatalf("the caller's request was modified: %q", req.Header.Get("Cookie"))
 		}
 	}
+	send()
+	send()
+	send()
 
 	if seen[0] != original {
 		t.Errorf("first request = %q, want the stored cookies untouched", seen[0])
 	}
-	second := "; " + seen[1] + ";"
-	for _, want := range []string{"; JSESSIONID=keep;", "; MRHSession=new;", "; F5_ST=st;", "; epoch=was-here;"} {
-		if !strings.Contains(second, want) {
-			t.Errorf("second request %q lacks %q", seen[1], want)
+	// A renewed cookie replaces the stored one; a new one is added. No
+	// response can take a cookie away: not by Max-Age, not by an empty
+	// value, not by an expiry at the epoch.
+	for i, got := range seen[1:3] {
+		padded := "; " + got + ";"
+		for _, want := range []string{"; JSESSIONID=keep;", "; MRHSession=new;", "; F5_ST=st;", "; gone=was-here;", "; epoch=was-here;"} {
+			if !strings.Contains(padded, want) {
+				t.Errorf("request %d %q lacks %q", i+2, got, want)
+			}
+		}
+		if strings.Contains(got, "MRHSession=old") {
+			t.Errorf("request %d %q still carries the replaced cookie", i+2, got)
 		}
 	}
-	if strings.Contains(seen[1], "MRHSession=old") || strings.Contains(seen[1], "gone=") {
-		t.Errorf("second request %q still carries a replaced or deleted cookie", seen[1])
-	}
-	if strings.Contains(seen[2], "epoch=") {
-		t.Errorf("third request %q still carries a cookie expired at the epoch", seen[2])
+
+	// Reset forgets what was collected: the stored cookies go out as given.
+	g.Reset()
+	send()
+	if seen[3] != original {
+		t.Errorf("after Reset the request = %q, want %q", seen[3], original)
 	}
 }
 
@@ -128,5 +141,61 @@ func TestFloor(t *testing.T) {
 	}
 	if !InFloor(time.Date(2026, 7, 15, 23, 0, 0, 0, time.UTC)) { // 16:00 PDT
 		t.Error("23:00 UTC in July is 16:00 PDT and must be inside")
+	}
+}
+
+func TestLoginRequestRoundTrip(t *testing.T) {
+	at := time.Date(2026, 10, 12, 13, 5, 9, 0, time.UTC)
+	full := "5f2a9c0e11d24b7a8c3e5f2a9c0e11d24b7a8c3e5f2a9c0e11d24b7a8c3e0000"
+	raw := FormatLoginRequest(at, full)
+	if raw != "2026-10-12T13:05:09Z 5f2a9c0e11d24b7a" {
+		t.Fatalf("FormatLoginRequest = %q", raw)
+	}
+	req, err := ParseLoginRequest(raw)
+	if err != nil || !req.At.Equal(at) || req.Fingerprint != RequestFingerprint(full) {
+		t.Errorf("ParseLoginRequest = %+v, %v", req, err)
+	}
+	none := FormatLoginRequest(at.In(time.FixedZone("x", -7*3600)), "")
+	if none != "2026-10-12T13:05:09Z none" {
+		t.Errorf("no session: %q", none)
+	}
+	if req, err := ParseLoginRequest(none); err != nil || req.Fingerprint != NoSessionFingerprint {
+		t.Errorf("ParseLoginRequest(none) = %+v, %v", req, err)
+	}
+}
+
+// The field is written by a process that parses untrusted pages. Whatever
+// is not exactly a request is refused, and the refusal does not quote it.
+func TestParseLoginRequestRefusesEverythingElse(t *testing.T) {
+	if _, err := ParseLoginRequest(""); err != ErrNoLoginRequest {
+		t.Errorf("empty: err = %v, want ErrNoLoginRequest", err)
+	}
+	if _, err := ParseLoginRequest("  \n"); err != ErrNoLoginRequest {
+		t.Errorf("blank: err = %v, want ErrNoLoginRequest", err)
+	}
+	const marker = "SECRETMARKER"
+	for _, raw := range []string{
+		"2026-10-12T13:05:09Z",
+		"2026-10-12T13:05:09Z 5f2a9c0e11d24b7a extra",
+		"2026-10-12T13:05:09Z  5f2a9c0e11d24b7a",
+		"2026-10-12 13:05:09 5f2a9c0e11d24b7a",
+		"yesterday 5f2a9c0e11d24b7a",
+		"2026-10-12T13:05:09Z 5F2A9C0E11D24B7A",
+		"2026-10-12T13:05:09Z 5f2a9c0e11d24b7",
+		"2026-10-12T13:05:09Z 5f2a9c0e11d24b7a0",
+		"2026-10-12T13:05:09Z " + marker + "zzzz",
+		"2026-10-12T13:05:09Z NONE",
+		"2026-10-12T13:05:09Z 5f2a9c0e11d24b7a\n",
+		"{\"request\":\"now\"}",
+		marker + strings.Repeat("x", 5000),
+	} {
+		_, err := ParseLoginRequest(raw)
+		if err == nil || err == ErrNoLoginRequest {
+			t.Errorf("ParseLoginRequest(%.40q) = %v, want a refusal", raw, err)
+			continue
+		}
+		if strings.Contains(err.Error(), marker) {
+			t.Errorf("the error quotes the value: %v", err)
+		}
 	}
 }
