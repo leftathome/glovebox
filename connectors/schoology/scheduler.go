@@ -3,6 +3,7 @@ package schoology
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -113,6 +114,14 @@ func parseHHMM(s string) (int, int) {
 	hh, _ := strconv.Atoi(parts[0])
 	mm, _ := strconv.Atoi(parts[1])
 	return hh, mm
+}
+
+// Timezone returns the connector's timezone from SCHOOLOGY_TIMEZONE
+// (default America/Los_Angeles). The binary passes it to the schoology-go
+// client (WithLocation) so the wall-clock due and posted times Schoology
+// prints are read in the same zone the poll schedule uses.
+func Timezone() (*time.Location, error) {
+	return loadTimezone(os.Getenv("SCHOOLOGY_TIMEZONE"))
 }
 
 // loadTimezone returns the timezone for the scheduler. Empty input
