@@ -96,30 +96,37 @@ Optional: `POWERSCHOOL_TIMEZONE` (scheduler and due-date timezone, default
 
 **Finding (2026-10-11).** The portal ends an *idle* session in well under an
 hour. A session stored at 19:23:51Z and never used was refused at 20:27Z by
-the connector and at 20:28Z by the login job; the exact timeout is still
-being measured. A session that is being used works: a catch-up poll on a
-4-minute-old session read both children in 24 s (238 items, no failures).
-So with three polls a day, every poll finds the previous poll's session
-dead, and a login scheduled an hour before a poll is an hour too early.
-`sessionLifetime` / `expires_at` (36h) is an upper bound on how long a
-session is presented, not a statement about the portal.
+the connector and at 20:28Z by the login job; measured since: an idle
+session is dead at 30 minutes and at 45, and alive at 4. A session that is
+being used works: a catch-up poll on a 4-minute-old session read both
+children in 24 s (238 items, no failures). So with three polls a day, every
+poll finds the previous poll's session dead, and a login scheduled an hour
+before a poll is an hour too early. `sessionLifetime` / `expires_at` (36h)
+is an upper bound on how long a session is presented, not a statement about
+the portal.
 
-**There is deliberately no keepalive.** Requesting pages nobody needs, to
-look like a person who is still there, is not something this connector does
-(owner decision). A session is obtained when a poll needs one.
+**There is no keepalive, by decision.** Requesting pages nobody needs, to
+look like a person who is still there, is not something this system does
+(owner decision). That rules out two things, not one: the connector does
+not touch the portal between polls, and the login workload does not check
+the stored session unless somebody is waiting for the answer. A session is
+obtained when a poll needs one.
 
 ### The check at the start of every poll
 
 Before any child is read, scheduled poll or catch-up, the connector makes
 one GET of the home page through its pinned read-only transport and
-classifies the answer by where the redirects ended and what kind of page
-came back:
+classifies the answer by its status, where the redirects ended and what
+kind of page came back. The status is looked at first.
 
 | State | When | What happens |
 |-------|------|--------------|
-| live | the page has the student switcher | the poll runs |
-| dead | the final page is under `/public/` (the sign-in page), or is the access gateway's `/my.logout.php3` or `/my.policy`, or carries a password form, or the status is 401/403 | see below |
-| unknown | a network error, a 5xx, a page that is neither | the poll is skipped; nothing is changed and no login is asked for |
+| live | 200, and the page has the student switcher | the poll runs |
+| dead | 200 under `/public/` **with a password form** (the portal's own sign-in page, positively identified); or 200 at the access gateway's `/my.logout.php3` (reached with the session's cookies attached) | see below |
+| unknown | everything else: a network error; any status but 200, 401 and 403 included; the gateway's `/my.policy`; a page under `/public/` without a password form; any other page | the poll is skipped; nothing is changed and no login is asked for |
+
+Dead is a strong claim -- it leads to a login request -- so only a
+positive identification earns it.
 
 A dead session is logged as `powerschool session is no longer accepted`
 (INFO, with `reason` and `session_age_seconds` since the connector first
@@ -129,81 +136,115 @@ access gateway answers a lapsed cookie with a redirect through
 `/my.policy` and a new cookie, the connector's HTTP client dropped the new
 cookie, and the read ended on the gateway's error page, which the library
 could only call unparseable. The connector's client now carries a cookie
-the gateway renews, inside the pinned transport and for the life of that
-client only (`internal/psportal`, shared with the login job), so the portal
-itself gets to answer.
-
-A skipped poll is not a failed poll: it does not count toward
-`failure_threshold`, and it is counted in
-`powerschool_polls_skipped_total{reason}`.
+the gateway renews (`internal/psportal`, shared with the login job), so
+the portal itself gets to answer. That overlay sits inside the pinned
+transport, can add or replace a cookie but never remove one, and is emptied
+at the start of every poll.
 
 ### Login on demand (`login_on_demand`, chart: `loginOnDemand`)
 
 Off by default. With it on, a dead session (or no session file yet, or one
-past its `expires_at`) makes the connector **ask** for a login and wait:
+past its `expires_at`) makes the connector **ask** for a login and wait.
 
-1. The poll's check finds the session dead.
-2. The connector lists the login Jobs (label
-   `glovebox.io/powerschool-login=true`). If one is running -- scheduled,
-   manual or on demand -- it creates nothing and waits for that one.
-3. Otherwise it reads the login CronJob and creates a Job from its
-   `jobTemplate`, named `<cronjob>-ondemand-<unix time>`: the template's
-   spec unchanged, an ownerReference to the CronJob (its history limits and
-   the template's `ttlSecondsAfterFinished` clean it up), the label
-   `glovebox.io/powerschool-login-trigger=on-demand`. This is what
-   `kubectl create job --from=cronjob/...` does.
-4. The Job is the login workload: its own pod, ServiceAccount, Vault role
-   and rules (blackout, latch, sign-in check). It logs in and writes the
-   session to Vault; ESO syncs it; the kubelet updates the mounted file.
-5. The connector re-reads the session file every 5 s, for up to
-   `wait_seconds` (default 360). It contacts the portal for nothing while
-   it waits.
-6. When a different session appears it is checked once (the GET above). If
-   live, the poll runs on it. If not, the poll is skipped.
+```
+connector (poll starts)            login workload (every 3 min in its windows)
+----------------------             -------------------------------------------
+GET home page -> dead
+PATCH ConfigMap  request =
+  "<time> <fingerprint prefix>" -> run starts: blackout? no
+re-read session file every 5 s     read ConfigMap: a request, fresh, not served
+  (no portal traffic)              Vault: latch clear, interval respected
+                                   stored session = the dead one -> no check
+                                   sign-in page check, ONE login, confirm
+                                   write session + "served" to Vault
+                         ESO syncs the Secret; the kubelet updates the file
+new session in the file
+GET home page -> live
+poll (once)
+```
 
-**The connector still never logs in and never holds a credential.** It
-cannot: it has no username, no password, no browser, and its portal
-transport refuses the sign-in POST. What it gains is the right to say "now"
-to the workload that can.
+Runs of the login workload that find no pending request -- nearly all of
+them -- exit at their first step having sent nothing to the portal.
 
-Limits, all enforced in the connector:
+**What the connector can and cannot do.** It parses pages from the portal
+and is treated as the component most likely to be taken over. Its entire
+reach towards a login is one `PATCH` of one key of one ConfigMap,
+`<fullname>-powerschool-login-request`, holding a time and sixteen hex
+digits. It cannot create a Job, a pod or any other object, cannot read a
+Secret, has no username, password or browser, and its portal transport
+refuses the sign-in POST. The login workload validates the field's size and
+shape, never echoes it, and acts on it only under its own rules. **A
+connector under an attacker's control can therefore cause at most:**
 
-- at most one request per poll;
+- logins only inside the login workload's on-request windows (a chart
+  value, checked against the blackout at render time) and never between
+  15:57:30 and 21:00 Pacific -- the blackout is compiled into the login
+  binary;
+- at most one login per 20 minutes (enforced in the login binary from its
+  own record in Vault, which the connector cannot write) -- three an hour;
+- no login at all while the latch is set, and none with credentials it
+  could choose: it supplies no input to the login beyond "now";
+- no read of, and no influence over, what is done with the session.
+
+Each such login would sign the account's owner out if he were signed in at
+the time, outside the hours he uses the portal. That is the whole of the
+damage, and it is the damage an honest connector does three times a day.
+
+Limits the connector also keeps on itself (they make an honest connector
+quiet; they are not what a compromised one is held by):
+
+- at most one request per poll, and a poll happens once per window: there
+  is never a second request in the same window, also not after a restart;
 - at most one per 20 minutes overall (`min_interval_minutes`; the time of
-  the last request is in the checkpoint, so it holds across restarts);
-- never between 15:57:30 and 21:00 Pacific -- the same floor the login
-  workload enforces, from the same shared code, so no Job is even created
-  in the hours the owner may be signed in;
-- never while another login Job is active;
-- never when the session file is less than 2 minutes old (a login has just
-  happened; if the portal already refuses that session another login will
-  not help).
+  the last request is in the checkpoint, and a recorded time in the future
+  counts as "just now");
+- never between 15:57:30 and 21:00 Pacific;
+- never when the session file is less than 2 minutes old;
+- **backoff:** after 2 requests in a row that did not lead to a session
+  the portal accepts, it stops asking and raises its permanent-failure
+  path (below), until the session file changes or an operator resets it.
+
+**Waiting.** After asking, the connector re-reads the session file every
+5 s for up to `wait_seconds` (default 600) and contacts the portal for
+nothing. Worst case from request to session-in-pod, added up: the login
+workload's next run (up to 3 min, plus ~20 s for the pod), the login (up to
+~100 s), ESO (1 min), the kubelet's update of the mounted Secret (up to
+~90 s) -- about 7.5 minutes. When a different session appears it is checked
+once; if live, the poll runs then, even if the window's nominal end has
+passed. The wait bounds how late that one attempt can be.
 
 What an operator sees:
 
-| Log line (`skip_reason`) | Meaning | Look at |
+| Log line / `skip_reason` | Meaning | Look at |
 |--------------------------|---------|---------|
 | `asked for a login; waiting for the new session` then `a new session is in place and accepted; polling` | the normal case | nothing |
-| `blackout` | the session was dead between 15:57:30 and 21:00 Pacific; nothing was asked for | nothing; the 21:30 poll asks |
-| `no_new_session`, `job_state=succeeded` | the Job ran and no new session reached the pod in time: it declined to log in (a session it considers good, `login_blocked`, `signin_page_unrecognised`, its own blackout), or the Secret had not synced yet | `kubectl logs job/<job>` and its termination message; the ExternalSecret's status; raise `waitSeconds` if it was only slow |
-| `login_job_failed` (`job_state=failed:...`) | the login workload failed | its log: [powerschool-auth-refresher.md](powerschool-auth-refresher.md#outcomes) |
-| `login_request_failed` | the Job could not be listed or created (403: the Role or its binding; 404: the CronJob name; connection refused: a NetworkPolicy) | the error in the line; RBAC and policy below |
-| `login_requested_recently` | a request was made less than 20 minutes ago and produced nothing | the earlier poll's lines |
-| `new_session_not_accepted` | a new session arrived and the portal refuses it too | the login workload's log; sign in by hand to see the portal |
-| `session_file_fresh` | the file is under 2 minutes old and already refused | as above |
-| `session_state_unknown:<reason>` | the check could not tell (network, 5xx); nothing was asked for | the portal |
+| `session_state_unknown:<reason>` | the check could not tell; nothing was asked for; not a failure | the portal, if it repeats |
+| `blackout` | the session was dead between 15:57:30 and 21:00 Pacific; nothing was asked for; not a failure | nothing; the 21:30 poll asks |
+| `login_requested_recently`, `session_file_fresh` | a request or a login was just made; not asking again; not a failure | the earlier lines |
+| `no_new_session` (ERROR, `poll failed`) | asked, and no new session reached the pod within the wait | the login workload's runs in that window: `no_login_requested` means it did not see the request (RBAC, the ConfigMap name); `login_request_too_soon`, `login_blocked`, `signin_page_unrecognised`, `blackout_refused` say why it declined; none at all means no run was due (its windows vs. the poll windows). Then the ExternalSecret's status |
+| `new_session_not_accepted` (ERROR) | a new session arrived and the portal refuses it too | the login workload's log; sign in by hand to see the portal |
+| `login_request_failed` (ERROR) | the request could not be written (403: the Role or its binding; 404: the ConfigMap; a timeout: a NetworkPolicy) | the error in the line; RBAC and network below |
+| `login_backoff`, and the process exits with `N login requests in a row produced no session the portal accepts` | the connector has stopped asking | below |
 
-The connector reads the Job's state (`succeeded`, `failed:<reason>`,
-`running`) but not its pod's termination message: that would need
-permission to read pods, which the Role does not grant. The Job's name is
-in the line; `kubectl describe pod -l job-name=<job>` shows the message.
+The three ERROR rows are failed polls: they count toward
+`failure_threshold` and in `powerschool_polls_skipped_total{reason}`.
+
+**When the connector stops asking.** Two unanswered requests in a row mean
+something is wrong that another login will not fix, and every login risks
+signing the owner out. The connector exits with a permanent error (the
+restart is the alert); every later poll does the same without asking. It
+resumes by itself when the session file changes -- so the usual fix is to
+find the cause in the login workload's log, then run the login once by
+hand ([runbook](powerschool-auth-refresher.md#running-it-once-by-hand)).
+To make it ask again without that, set the connector's environment
+variable `POWERSCHOOL_LOGIN_BACKOFF_RESET` to any value it has not seen
+before (`connectors.powerschool.env`); it is honoured once.
 
 RBAC (rendered by the chart with `loginOnDemand.enabled`): a ServiceAccount
 for this connector alone, with its token mounted, and a Role granting
-exactly `get` on the one login CronJob, and `create`, `get` and `list` on
-Jobs in the namespace. `list` is what the "is a login already running?"
-check needs; Kubernetes cannot narrow `create` or `list` to a name.
-Nothing else: no pods, no secrets, no update or delete.
+exactly `get`, `update` and `patch` on the one ConfigMap
+`<fullname>-powerschool-login-request`. Nothing on Jobs, CronJobs, pods or
+Secrets, and no create or delete of anything.
 
 Network: the connector must reach the Kubernetes API server. The chart's
 own connector NetworkPolicy allows all egress. In a namespace whose policies
@@ -216,13 +257,15 @@ is not enough):
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: powerschool-connector-to-apiserver
+  name: powerschool-to-apiserver
   namespace: openclaw
 spec:
   podSelector:
-    matchLabels:
-      app.kubernetes.io/component: connector
-      glovebox.io/connector: powerschool
+    matchExpressions:
+      # the connector, and the login workload's on-request runs
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [connector, powerschool-auth-refresher]
   policyTypes: [Egress]
   egress:
     - to:
@@ -240,13 +283,18 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-With Cilium the equivalent is a CiliumNetworkPolicy with
-`toEntities: [kube-apiserver]`.
+(Narrow the selector to `glovebox.io/connector: powerschool` if other
+connectors must not reach the API.) With Cilium the equivalent is a
+CiliumNetworkPolicy with `toEntities: [kube-apiserver]`. The login
+workload's own chart NetworkPolicy needs the same addresses in
+`powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs`; the chart
+refuses to render without them.
 
-Two HTTP clients exist in the process and neither can reach the other's
+Two HTTP clients exist in the connector and neither can reach the other's
 host: the portal client (session cookie; portal host; read-only) and the
-Kubernetes client (ServiceAccount token; API server host; four batch/v1
-calls). A test proves both directions.
+Kubernetes client (ServiceAccount token; API server host; get and patch of
+ConfigMaps and nothing else -- `internal/kubecm`). A test proves both
+directions.
 
 ## Read-only guarantee
 
