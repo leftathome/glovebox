@@ -52,6 +52,7 @@ images-markdown` and paste; CI fails if it drifts from what is built.
 | `connectors/imap` | `ghcr.io/leftathome/glovebox-imap` |
 | `connectors/jira` | `ghcr.io/leftathome/glovebox-jira` |
 | `connectors/linkedin` | `ghcr.io/leftathome/glovebox-linkedin` |
+| `connectors/login-broker` | `ghcr.io/leftathome/glovebox-login-broker` |
 | `importers/mbox` | `ghcr.io/leftathome/glovebox-mbox-importer` |
 | `connectors/meta` | `ghcr.io/leftathome/glovebox-meta` |
 | `connectors/notion` | `ghcr.io/leftathome/glovebox-notion` |

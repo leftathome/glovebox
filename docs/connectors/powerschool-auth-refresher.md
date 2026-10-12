@@ -250,13 +250,19 @@ State path:
 | Field | Content |
 |-------|---------|
 | `login_blocked` | `"true"` while the latch is set. |
-| `blocked_reason` | `credentials_rejected` or `login_unconfirmed`. |
+| `blocked_reason` | `credentials_rejected` or `login_unconfirmed`; `consecutive_failures` when the login broker set it. |
 | `blocked_at` | When it was set. |
 | `credential_fingerprint` | SHA-256 over `salt`, username and password of the credentials last submitted. Never the values. |
 | `salt` | 16 random bytes, generated on first use and kept for the install. |
 | `served_request` | The last connector request acted on, verbatim (a time and a fingerprint prefix). A request is acted on once. |
 | `request_login_at` | When a login was last started for a request; the 20-minute interval is measured from it. |
 | `unconfirmed_count` | Logins in a row that returned without a working session. |
+| `attempt_started_at` | Written by the login broker only: set immediately before a login, cleared when its outcome is recorded. This job carries it through unchanged. |
+
+The login broker (`loginBrokers.powerschool`, see
+`internal/loginbroker/DESIGN.md`) reads and writes this same record when it
+is deployed for the same account: a latch set by either workload stops
+both, and a login made by either counts for the other's interval.
 
 ### Clearing the latch
 

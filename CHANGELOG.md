@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Login broker** (`loginBrokers.<name>`, `connectors.powerschool.loginBroker`;
+  both off by default): a small always-on service that holds one site's
+  account credentials and logs in when that site's connector reports its
+  session dead. It is a second, synchronous way to log in on demand and an
+  alternative to the request mailbox below (`loginOnDemand` with
+  `powerschoolAuthRefresher.onRequest`), which stays as it is; the chart
+  refuses to render both for one connector. Design note:
+  `internal/loginbroker/DESIGN.md`.
+  - `POST /v1/session/refresh` answers with an outcome -- `refreshed`,
+    `current`, `deferred` (with the time a login may be made), `latched`,
+    `inconclusive`, `failed` -- and, with the first two, the session, which
+    is also written to the Vault path the scheduled login job writes.
+  - Enforced in the broker, not the caller: one login at a time (concurrent
+    requests share it); the stored session is probed first and a live one is
+    returned, never logged in over; a minimum interval between logins (20
+    minutes for PowerSchool), counted from the last login by anybody;
+    blackout windows on the wall clock of a named time zone (16:00-21:00
+    America/Los_Angeles is compiled into the PowerSchool driver); a latch
+    set by ANY rejected login or by two failed ones in a row, cleared only
+    by a person; one credential submission per attempt; nothing sent to the
+    site without a request. The latch and the last login are kept in Vault
+    and survive a restart; the scheduled login job shares them.
+  - Callers present a ServiceAccount token minted for the broker's own
+    audience, verified by TokenReview, from an allow-listed ServiceAccount.
+    The connector's pod holds only that token (its API token is not mounted)
+    and has no Role. A NetworkPolicy admits only the connector's pods to the
+    broker's port, and limits the broker's egress to DNS, Vault, the API
+    server and the site.
+  - One instance per site: same image (`glovebox-login-broker`), separate
+    Deployment (1 replica, `Recreate`), ServiceAccount, Vault role,
+    credentials Secret, token audience and NetworkPolicy. The site-specific
+    part is a driver (`loginbroker.Driver`); PowerSchool's is the scheduled
+    login job's own login code, moved to `internal/pslogin` and shared.
+  - PowerSchool connector, with a broker: a dead session at the start of a
+    poll is replaced from the broker's answer with no wait; a session that
+    dies in the middle of a poll is replaced and the poll retried once; a
+    session whose state cannot be established for three polls in a row is
+    a failed poll (the mailbox path is unchanged in this respect).
+  - New Vault state field `attempt_started_at` (set before a login, cleared
+    when its outcome is recorded) and latch reason `consecutive_failures`.
+    The scheduled login job preserves both.
 - **PowerSchool: login on demand** (`connectors.powerschool.loginOnDemand`
   with `powerschoolAuthRefresher.onRequest`; both off by default). The
   portal ends an idle session in well under an hour (measured 2026-10-11:

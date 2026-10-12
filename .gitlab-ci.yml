@@ -289,6 +289,11 @@ build:
         DOCKERFILE: ./connectors/jira/Dockerfile
       - IMAGE: glovebox-linkedin
         DOCKERFILE: ./connectors/linkedin/Dockerfile
+      # The login broker: debian:bookworm-slim + Chromium like the
+      # PowerSchool login job below, and for the same reason (see the
+      # Dockerfile). One image for every site.
+      - IMAGE: glovebox-login-broker
+        DOCKERFILE: ./connectors/login-broker/Dockerfile
       - IMAGE: glovebox-meta
         DOCKERFILE: ./connectors/meta/Dockerfile
       - IMAGE: glovebox-notion

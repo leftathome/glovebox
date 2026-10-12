@@ -296,6 +296,49 @@ Kubernetes client (ServiceAccount token; API server host; get and patch of
 ConfigMaps and nothing else -- `internal/kubecm`). A test proves both
 directions.
 
+### The login broker (`login_on_demand.broker`, chart: `loginBroker`)
+
+The other way of asking, and an alternative to the request above: instead
+of leaving a note in a ConfigMap for a CronJob that looks every three
+minutes, the connector calls a small always-on service that holds the
+credentials and gets the outcome -- and, when there is one, the session --
+in the answer. Design, policy and threat model:
+[`internal/loginbroker/DESIGN.md`](../../internal/loginbroker/DESIGN.md).
+
+```json
+"login_on_demand": {
+  "enabled": true,
+  "broker": {
+    "url": "http://glovebox-glovebox-login-broker-powerschool.glovebox.svc:8080",
+    "token_file": "/var/run/secrets/login-broker/token",
+    "timeout_seconds": 420
+  }
+}
+```
+
+The chart writes this block from `connectors.powerschool.loginBroker.enabled`
+and `loginBrokers.powerschool`; `configmap_name` and `broker.url` together
+are refused, by the binary and by the chart. What differs from the mailbox
+on the connector's side:
+
+- Nothing is waited for. The session in the answer is put into use at once
+  and checked once; the mounted session file receives the same session
+  through Vault and ESO a little later, and until then does not displace it.
+- The connector applies no blackout and no interval of its own: the broker
+  enforces both and says `deferred` (a skipped poll, not a failed one). A
+  latch on the broker's side ends in the permanent-failure path with its own
+  message.
+- A session that dies in the middle of a poll is replaced and the poll is
+  run again on the new one, once.
+- A session whose state cannot be established for three polls in a row is a
+  failed poll and counts toward `failure_threshold`.
+- The count of requests that led nowhere, and
+  `POWERSCHOOL_LOGIN_BACKOFF_RESET`, work as above, but only a session that
+  was delivered and then refused counts.
+- The pod needs no access to the Kubernetes API. It presents a
+  ServiceAccount token projected for the broker's audience, to the broker's
+  address only.
+
 ## Read-only guarantee
 
 The session belongs to a real parent account. Every request goes through
