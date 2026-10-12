@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-12
+
+### Upgrade notes
+
+No chart value has to be added or changed. Two things change for an
+existing PowerSchool deployment as soon as its images are 0.11.0, with
+nothing new enabled:
+
+- The connector re-reads its session file before every poll and checks the
+  session with one GET, so a session written by the login job is used
+  without a pod restart and a dead one is reported as `error_class=auth`.
+- The scheduled login job writes an attempt marker. A run killed in the
+  middle of a login is counted as an unconfirmed login by the next run, and
+  **two in a row set the latch** (`login_unconfirmed`, exit 6). New
+  outcomes: `login_in_progress` (exit 0) and `login_state_conflict`
+  (exit 8, the Job shows as failed).
+
+`connectors.powerschool.loginOnDemand` and `loginBrokers` are new, off by
+default, and not recommended yet: `docs/upgrading.md` lists the known
+defects of the first and the preconditions of the second.
+
 ### Added
 
 - **Login broker** (`loginBrokers.<name>`, `connectors.powerschool.loginBroker`;

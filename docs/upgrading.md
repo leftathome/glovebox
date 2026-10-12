@@ -10,6 +10,120 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.11.0 (from 0.10.3)
+
+No required changes: no chart value has to be added or changed, and a
+0.10.3 values file renders with 0.11.0. With nothing new enabled the only
+rendered difference besides the chart version label is a set of labels on
+the Jobs the PowerSchool login CronJobs create
+(`glovebox.io/powerschool-login=true` among them). Everything below
+concerns the PowerSchool connector and its login workload; if you run
+neither, there is nothing to read.
+
+If your values pin image tags, the behaviour described here arrives with
+the 0.11.0 `glovebox-powerschool` and `glovebox-powerschool-auth-refresher`
+images, not with the chart. The 0.11.0 chart renders the same workloads for
+0.10.3 images.
+
+- **The fix this release is for: a replaced session is picked up, and a
+  dead one is recognised.** Up to 0.10.3 the connector read its session
+  file once, at start. A session written later by the scheduled login job
+  was not used until the pod restarted, and the portal's answer for the
+  session it had ended was classified `error_class=parse` ("could not
+  select and confirm this kid's student"), not `auth`, so the
+  rejected-session path was never taken. Seen in production on 2026-10-12:
+  login at 05:52, the poll at 06:05 failed. From 0.11.0 the connector
+  re-reads the session file before every poll and adopts a changed session
+  without a restart, then makes one GET of the home page
+  (`/guardian/home.html`) before any child is read:
+  - live: the poll runs;
+  - dead (the portal's sign-in page or the access gateway's logout page,
+    with status 200): in the default mode the session is marked rejected
+    and the process exits with a permanent error (`error_class=auth`); the
+    restarted process waits, sending nothing to the portal, until the
+    session file holds a different session;
+  - anything else is unknown: the poll is skipped and nothing is changed
+    (`powerschool_polls_skipped_total{reason}`).
+
+  This is one extra request per poll with the account's session.
+
+- **The scheduled login job behaves differently, with nothing new
+  enabled.**
+  - It writes an attempt marker (`attempt_started_at`) to its Vault state
+    record before each login and clears it when the outcome is recorded.
+  - A run that finds a marker under ten minutes old does not log in:
+    `login_in_progress`, exit 0.
+  - A run that finds an older marker -- the earlier run was killed in the
+    middle of a login (node drain, OOM, the Job's deadline) -- counts that
+    login as an unconfirmed one. **Two unconfirmed logins in a row set the
+    latch** (`blocked_reason=login_unconfirmed`; every later run exits 6
+    without starting a browser). Before, a killed run left no trace. The
+    count is the one an ordinary `login_unconfirmed` run (exit 5) adds to,
+    and only a confirmed login resets it.
+  - Every write of the state record is check-and-set. A run that finds the
+    record changed under it does not log in and exits 8
+    (`login_state_conflict`); the Job shows as failed. If you alert on
+    failed login Jobs, this is a new way to get one.
+  - Each login is counted into `login_day` / `login_day_count`. The
+    scheduled job only counts; it is not stopped by the daily budget, which
+    the login broker applies to itself.
+  - **Clearing the latch** is done as before. Find out why it was set first
+    (`blocked_reason` in the state record; sign in to the portal in a
+    browser and see what it asks for). Then, with an operator token (the
+    job's policy cannot delete), run
+    `vault kv metadata delete -mount="$KV" "$STATE"` on the login-state
+    path; the next run starts from an empty record. For
+    `credentials_rejected`, changing the credentials is enough and nothing
+    needs clearing. See "Clearing the latch" in
+    `docs/connectors/powerschool-auth-refresher.md`.
+  - Login Jobs are labelled `glovebox.io/powerschool-login=true`.
+    `powerschoolAuthRefresher.suspendSchedules` and
+    `schedules.<name>.suspend` (new, off) keep a CronJob as a template for
+    a manual run.
+
+- **Login on demand through a ConfigMap mailbox (new, off by default; do
+  not enable it yet):** `connectors.powerschool.loginOnDemand` with
+  `powerschoolAuthRefresher.onRequest`. It was merged with four known
+  defects, all consequences of a polled mailbox:
+  1. a request made outside the answering CronJobs' windows (a catch-up
+     poll) is not answered in time and still counts toward the two
+     unanswered requests after which the connector stops asking and exits;
+  2. a session whose state stays unknown is never escalated: polls are
+     skipped for as long as it lasts and no login is asked for;
+  3. a request stays valid for 15 minutes but the connector waits only 10,
+     so a login can be made -- ending the account owner's own browser
+     session -- for a poll that has already given up;
+  4. a login that fails before the credentials are submitted still uses up
+     the request and the 20-minute interval.
+
+- **Login broker (new, off by default; do not enable it yet):**
+  `loginBrokers.<name>` and `connectors.powerschool.loginBroker`. Nothing
+  is rendered while it is disabled. Before enabling an instance
+  (`internal/loginbroker/DESIGN.md`, "Deploying an instance"):
+  - a Vault policy and Kubernetes auth role bound to that instance's
+    ServiceAccount (`<fullname>-login-broker-<name>`) and to no other, with
+    `create`/`read`/`update` on the session path and the login-state path;
+  - `networkPolicy.kubernetesAPICIDRs` for the instance (the render fails
+    without them), and its NetworkPolicy left on;
+  - the scheduled login CronJobs for the same session suspended (the chart
+    refuses live schedules beside a broker unless
+    `acknowledgeScheduledLogins` is set), and neither `loginOnDemand` nor
+    `powerschoolAuthRefresher.onRequest` set for it;
+  - `metrics.prometheusRule.enabled` on and its alerts routed: with a
+    broker nothing restarts when a session cannot be had, so the alert is
+    the only signal;
+  - the account owner's agreement that a login can end their browser
+    session at any time outside the 16:00-21:00 America/Los_Angeles
+    blackout, up to 6 times a day;
+  - acceptance of the residual that the browser process in the broker's
+    pod can reach that account's two Vault paths;
+  - the `glovebox-login-broker` image for the release actually published
+    (its vulnerability gate passed).
+
+- **Chart default.** `connectors.powerschool.externalSecret.refreshInterval`
+  `5m` -> `1m`. Nothing to do; set it explicitly if you relied on the old
+  default.
+
 ## Upgrading to 0.10.3 (from 0.10.2)
 
 No required changes. If you run the PowerSchool login workload behind an
