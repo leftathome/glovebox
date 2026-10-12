@@ -369,12 +369,33 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 			}
 			// A login was asked for and no usable session came of it.
 			// That is a failed poll like any other that read nobody: it
-			// is logged as one and counts toward failure_threshold.
+			// is logged as one.
 			slog.Error("powerschool poll failed: no live session could be had",
 				"trigger_source", source, "poll_id", pollID, "skip_reason", gate.Reason)
+			if c.Gate.Synchronous() {
+				// With a login broker the process does NOT exit over it,
+				// however often it happens. An exit is a restart, and a
+				// restart loop is a loop of polls: with a dead session and
+				// a broker that cannot log in it would put a request to
+				// the portal on a timer, round the clock, the owner's
+				// hours included. The connector stays up, skips, and asks
+				// the broker once per poll window. The alert is this line,
+				// powerschool_polls_skipped_total and the broker's own
+				// metrics.
+				return nil
+			}
 			return c.countFailedPoll("no live session (" + gateSkipLabel(gate.Reason) + ")")
 		case GateBlocked:
 			tel.RecordPollSkipped(gateSkipLabel(gate.Reason))
+			if c.Gate.Synchronous() {
+				// Same reasoning: no exit. The gate has already said why
+				// (the broker's latch, or sessions that keep being refused
+				// here) and what clears it; while it lasts, a poll sends
+				// the portal nothing.
+				slog.Error("powerschool poll failed: logins are stopped; staying up and sending the portal nothing until that changes",
+					"trigger_source", source, "poll_id", pollID, "skip_reason", gate.Reason)
+				return nil
+			}
 			// The framework logs this verbatim and exits the process; the
 			// restart is the alert. Every later poll lands here again
 			// until the session file changes or the backoff is reset.
@@ -395,6 +416,26 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	env := Env{Client: client, Writer: writer, Matcher: matcher, CP: cp, Tel: tel, TZ: c.tz}
 
 	total, kidsRead, authErr := c.pollKids(ctx, env)
+	if authErr != nil && c.Gate.Synchronous() {
+		// The session stopped being accepted in the middle of the poll.
+		// With a login broker there is no need to leave the rest for the
+		// next window: ask for a session now and run the poll again on it
+		// -- ONCE. A second refusal is not answered with a second request.
+		// Whatever the first pass staged is not staged twice: every record
+		// is checkpointed by fingerprint as it is staged.
+		slog.Warn("powerschool session stopped being accepted during the poll; asking the login broker and retrying the poll once",
+			append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
+		renewed := c.Gate.Renew(ctx, cp)
+		if renewed.Outcome == GateLive && renewed.Client != nil {
+			env.Client = renewed.Client
+			again, read, err := c.pollKids(ctx, env)
+			total.add(again)
+			kidsRead += read
+			authErr = err
+		} else {
+			tel.RecordPollSkipped(gateSkipLabel(renewed.Reason))
+		}
+	}
 
 	slog.Info("powerschool poll complete",
 		"trigger_source", source,

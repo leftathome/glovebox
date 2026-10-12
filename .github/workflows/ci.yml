@@ -254,11 +254,11 @@ jobs:
     # base instead of racing it and pulling a stale :latest. On PRs
     # build-enricher-runtime does not push, so this ordering only affects push
     # events -- which is exactly where the stale-:latest race would occur.
-    # powerschool-auth-refresher-image gates the matrix as well: that image
-    # bundles a browser and is scanned and started there first, so a
-    # finding stops it (and, since the matrix is one job, everything else)
-    # from being published.
-    needs: [discover-targets, test, build-enricher-runtime, powerschool-auth-refresher-image]
+    # powerschool-auth-refresher-image and login-broker-image gate the
+    # matrix as well: those two images bundle a browser and are scanned and
+    # started there first, so a finding stops them (and, since the matrix is
+    # one job, everything else) from being published.
+    needs: [discover-targets, test, build-enricher-runtime, powerschool-auth-refresher-image, login-broker-image]
     strategy:
       fail-fast: false
       # Every component with a Dockerfile, discovered by
@@ -399,6 +399,95 @@ jobs:
             echo '```'
             if [ -s trivy-powerschool-auth-refresher.txt ]; then
               cat trivy-powerschool-auth-refresher.txt
+            else
+              echo '(no HIGH/CRITICAL findings, or the scan did not produce a report)'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  login-broker-image:
+    # The login broker's image is the PowerSchool login job's image with
+    # another binary in it: the same digest-pinned debian:bookworm-slim, the
+    # same apt Chromium. It gets the same two checks before the build-docker
+    # matrix may publish anything, for the same reasons (see the job above):
+    #
+    #   1. scripts/test-login-broker-image.sh starts the binary and Chromium
+    #      inside the image as uid 65532 with every capability dropped and a
+    #      read-only root. No portal, no credential.
+    #   2. Trivy scans the image's Debian packages, Chromium included, with
+    #      the same two-step gate/report.
+    name: Docker test + scan (glovebox-login-broker)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.base_ref == 'main'
+    permissions:
+      contents: read
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build for local test (amd64 only, load into daemon)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./connectors/login-broker/Dockerfile
+          push: false
+          load: true
+          tags: glovebox-login-broker:test
+          platforms: linux/amd64
+          cache-from: type=gha,scope=glovebox-login-broker
+          cache-to: type=gha,scope=glovebox-login-broker,mode=max
+
+      - name: Test built image (browser starts as nonroot, read-only root)
+        env:
+          LOGIN_BROKER_SKIP_BUILD: "1"
+        run: bash scripts/test-login-broker-image.sh
+
+      - name: Trivy image scan (gate -- fixed CRITICALs only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'glovebox-login-broker:test'
+          scanners: 'vuln'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Trivy image scan (report -- HIGH+CRITICAL, unfixed included)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'glovebox-login-broker:test'
+          scanners: 'vuln'
+          vuln-type: 'os,library'
+          ignore-unfixed: false
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-login-broker.txt'
+
+      - name: Publish login-broker vulnerability report
+        if: always()
+        run: |
+          {
+            echo '## glovebox-login-broker: HIGH/CRITICAL vulnerabilities'
+            echo
+            echo 'Includes vulnerabilities with no fix available. The build gate'
+            echo 'above only fails on CRITICALs Debian has already fixed.'
+            echo
+            echo '```'
+            if [ -s trivy-login-broker.txt ]; then
+              cat trivy-login-broker.txt
             else
               echo '(no HIGH/CRITICAL findings, or the scan did not produce a report)'
             fi

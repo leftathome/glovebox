@@ -76,3 +76,7 @@ covers apple, mbox, and walhelm.
   not source connectors, so they have no sample config or integration test.
   The PowerSchool one has a runbook:
   [powerschool-auth-refresher.md](powerschool-auth-refresher.md).
+- `login-broker` is not a source connector either: it is the always-on
+  service that logs in when a connector asks, one instance per site. Its
+  design note is
+  [`internal/loginbroker/DESIGN.md`](../../internal/loginbroker/DESIGN.md).

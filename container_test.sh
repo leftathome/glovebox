@@ -211,9 +211,9 @@ else
     # Distroless connectors per the actual repo state on this branch.
     # Verified via `grep -E "^FROM " connectors/*/Dockerfile | tail`.
     # schoology-auth-refresher is distroless but an auth helper, and
-    # powerschool-auth-refresher is debian:bookworm-slim + Chromium (not
-    # distroless, not enricher-runtime); both are excluded from both
-    # checks. trello and youtube are distroless/static per current repo
+    # powerschool-auth-refresher and login-broker are debian:bookworm-slim
+    # + Chromium (not distroless, not enricher-runtime); all three are
+    # excluded from both checks. trello and youtube are distroless/static per current repo
     # state; included.
     DISTROLESS_CONNECTORS=(
         "rss:connectors/rss/Dockerfile"

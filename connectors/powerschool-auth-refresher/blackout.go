@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/leftathome/glovebox/internal/dailywindow"
 	"github.com/leftathome/glovebox/internal/psportal"
 )
 
@@ -38,33 +38,9 @@ const (
 	loginHeadroom = psportal.LoginHeadroom
 )
 
-// window is one daily span [start, end) in seconds since local midnight. A
-// span whose start is later than its end wraps past midnight (22:00-02:00).
-type window struct {
-	start, end int
-}
-
-func (w window) containsSecond(sec int) bool {
-	if w.start < w.end {
-		return sec >= w.start && sec < w.end
-	}
-	return sec >= w.start || sec < w.end
-}
-
-func (w window) String() string {
-	return clockString(w.start) + "-" + clockString(w.end)
-}
-
-// covers reports whether w contains every second of other.
-func (w window) covers(other window) bool {
-	for sec := other.start; sec != other.end; sec = (sec + 60) % 86400 {
-		if !w.containsSecond(sec) {
-			return false
-		}
-	}
-	// The last second before other.end.
-	return w.containsSecond((other.end + 86400 - 1) % 86400)
-}
+// window is one daily span on a wall clock; see internal/dailywindow, which
+// the login broker builds its blackout from as well.
+type window = dailywindow.Window
 
 // blackout is the set of daily windows, all on the wall clock of one zone,
 // during which no login may happen. It always includes the floor.
@@ -79,9 +55,9 @@ type blackout struct {
 
 // floorWindow is 16:00-21:00.
 func floorWindow() window {
-	s, _ := parseClock(floorBlackoutStart)
-	e, _ := parseClock(floorBlackoutEnd)
-	return window{start: s, end: e}
+	s, _ := dailywindow.ParseClock(floorBlackoutStart)
+	e, _ := dailywindow.ParseClock(floorBlackoutEnd)
+	return window{Start: s, End: e}
 }
 
 // parseBlackout builds the blackout.
@@ -115,7 +91,7 @@ func parseBlackout(start, end, extra, zone string) (blackout, error) {
 	if err != nil {
 		return b, err
 	}
-	if !main.covers(floorWindow()) {
+	if !main.Covers(floorWindow()) {
 		return b, fmt.Errorf("the blackout %s does not contain %s-%s: it may be widened, never shortened or moved",
 			main, floorBlackoutStart, floorBlackoutEnd)
 	}
@@ -144,71 +120,25 @@ func parseBlackout(start, end, extra, zone string) (blackout, error) {
 // parseWindow reads one window. Equal bounds are refused: they could mean
 // "never" or "always".
 func parseWindow(start, end string) (window, error) {
-	s, err := parseClock(start)
+	w, err := dailywindow.Parse(start, end)
 	if err != nil {
-		return window{}, fmt.Errorf("blackout start: %w", err)
+		return window{}, fmt.Errorf("blackout %w", err)
 	}
-	e, err := parseClock(end)
-	if err != nil {
-		return window{}, fmt.Errorf("blackout end: %w", err)
-	}
-	if s == e {
-		return window{}, fmt.Errorf("blackout start and end are both %s: a window cannot be empty", strings.TrimSpace(start))
-	}
-	return window{start: s, end: e}, nil
+	return w, nil
 }
 
-// parseClock reads "HH:MM" (00:00 through 23:59) as seconds since midnight.
-func parseClock(v string) (int, error) {
-	parts := strings.Split(strings.TrimSpace(v), ":")
-	if len(parts) != 2 || len(parts[0]) != 2 || len(parts[1]) != 2 {
-		return 0, fmt.Errorf("%q is not HH:MM", v)
-	}
-	h, err := strconv.Atoi(parts[0])
-	if err != nil || h < 0 || h > 23 {
-		return 0, fmt.Errorf("%q is not HH:MM", v)
-	}
-	m, err := strconv.Atoi(parts[1])
-	if err != nil || m < 0 || m > 59 {
-		return 0, fmt.Errorf("%q is not HH:MM", v)
-	}
-	return h*3600 + m*60, nil
+// set is the blackout as the shared arithmetic sees it.
+func (b blackout) set() dailywindow.Set {
+	return dailywindow.Set{Windows: b.windows, Loc: b.loc}
 }
 
 // contains reports whether the instant t falls inside any window.
-func (b blackout) contains(t time.Time) bool {
-	h, m, s := t.In(b.loc).Clock()
-	sec := h*3600 + m*60 + s
-	for _, w := range b.windows {
-		if w.containsSecond(sec) {
-			return true
-		}
-	}
-	return false
-}
+func (b blackout) contains(t time.Time) bool { return b.set().Contains(t) }
 
 // blocksLoginAt reports whether a login started at t could still be in
 // progress inside a window: whether any instant from t to t + loginHeadroom
 // is inside one. This, not contains, is what gates a login.
-func (b blackout) blocksLoginAt(t time.Time) bool {
-	const step = 15 * time.Second
-	for d := time.Duration(0); d < loginHeadroom; d += step {
-		if b.contains(t.Add(d)) {
-			return true
-		}
-	}
-	return b.contains(t.Add(loginHeadroom))
-}
+func (b blackout) blocksLoginAt(t time.Time) bool { return b.set().BlocksAt(t, loginHeadroom) }
 
 // String renders the windows for a log line, e.g. "16:00-21:00".
-func (b blackout) String() string {
-	parts := make([]string, 0, len(b.windows))
-	for _, w := range b.windows {
-		parts = append(parts, w.String())
-	}
-	return strings.Join(parts, ",")
-}
-
-func clockString(sec int) string {
-	return fmt.Sprintf("%02d:%02d", sec/3600, sec%3600/60)
-}
+func (b blackout) String() string { return b.set().String() }

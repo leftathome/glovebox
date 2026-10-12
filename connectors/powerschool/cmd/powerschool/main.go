@@ -27,6 +27,10 @@
 // (KUBERNETES_SERVICE_HOST/_PORT, /var/run/secrets/kubernetes.io/serviceaccount):
 // when a poll finds the session dead the binary writes a login request
 // into one field of one ConfigMap and waits for the new session file.
+// With login_on_demand.broker.url set it asks the login broker instead
+// (connectors/login-broker), presenting the token at broker.token_file, and
+// polls on the session in the answer; it then needs no access to the
+// Kubernetes API.
 // POWERSCHOOL_LOGIN_BACKOFF_RESET (any new value) clears the count of
 // requests that led nowhere, after which the connector asks again.
 //
@@ -45,6 +49,7 @@ import (
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connectors/powerschool"
 	"github.com/leftathome/glovebox/internal/kubecm"
+	"github.com/leftathome/glovebox/internal/loginbroker/brokerapi"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -146,19 +151,41 @@ func main() {
 		// no credentials and cannot start a workload. So there is nothing
 		// to wait for at startup and no "rejected" marker: a dead session
 		// is simply replaced at the next poll.
-		kube, err := kubecm.NewInCluster(os.Getenv, kubecm.ServiceAccountDir, cfg.LoginOnDemand.Namespace)
-		if err != nil {
-			slog.Error("powerschool: login_on_demand is enabled but the Kubernetes API is not usable from this pod",
-				"error", err)
-			os.Exit(1)
+		//
+		// With login_on_demand.broker.url set it asks the login broker
+		// instead of the ConfigMap: one authenticated call, answered with
+		// the outcome and the session. The token it presents is projected
+		// for the broker's audience only, and the client sends it to the
+		// broker's address and nowhere else. The pod then needs no access
+		// to the Kubernetes API at all.
+		var gate *powerschool.SessionGate
+		if cfg.LoginOnDemand.UsesBroker() {
+			broker, err := brokerapi.NewClient(cfg.LoginOnDemand.Broker.URL,
+				brokerapi.TokenFile(cfg.LoginOnDemand.Broker.TokenFile), cfg.LoginOnDemand.BrokerTimeout(), nil)
+			if err != nil {
+				slog.Error("powerschool: login_on_demand.broker is not usable", "error", err)
+				os.Exit(1)
+			}
+			slog.Info("powerschool: on-demand login through the login broker is enabled",
+				"broker", cfg.LoginOnDemand.Broker.URL,
+				"timeout_seconds", int64(cfg.LoginOnDemand.BrokerTimeout()/time.Second))
+			gate = powerschool.NewBrokerSessionGate(source, cfg.LoginOnDemand, broker)
+		} else {
+			kube, err := kubecm.NewInCluster(os.Getenv, kubecm.ServiceAccountDir, cfg.LoginOnDemand.Namespace)
+			if err != nil {
+				slog.Error("powerschool: login_on_demand is enabled but the Kubernetes API is not usable from this pod",
+					"error", err)
+				os.Exit(1)
+			}
+			slog.Info("powerschool: on-demand login is enabled",
+				"configmap", cfg.LoginOnDemand.ConfigMapName, "namespace", kube.Namespace(),
+				"wait_seconds", cfg.LoginOnDemand.WaitSeconds, "min_interval_minutes", cfg.LoginOnDemand.MinIntervalMinutes)
+			requester := powerschool.ConfigMapRequester{Client: kube, ConfigMap: cfg.LoginOnDemand.ConfigMapName}
+			gate = powerschool.NewSessionGate(source, cfg.LoginOnDemand, requester)
 		}
-		slog.Info("powerschool: on-demand login is enabled",
-			"configmap", cfg.LoginOnDemand.ConfigMapName, "namespace", kube.Namespace(),
-			"wait_seconds", cfg.LoginOnDemand.WaitSeconds, "min_interval_minutes", cfg.LoginOnDemand.MinIntervalMinutes)
-		requester := powerschool.ConfigMapRequester{Client: kube, ConfigMap: cfg.LoginOnDemand.ConfigMapName}
-		gate := powerschool.NewSessionGate(source, cfg.LoginOnDemand, requester)
 		// An operator's "try again" after the connector stopped asking.
 		gate.BackoffResetToken = os.Getenv("POWERSCHOOL_LOGIN_BACKOFF_RESET")
+		var err error
 		c, err = powerschool.NewConnectorWithGate(gate, cfg, libVersion)
 		if err != nil {
 			slog.Error("powerschool: construct connector", "error", err)

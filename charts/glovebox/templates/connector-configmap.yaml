@@ -12,6 +12,44 @@ metadata:
 data:
   {{- $config := $connector.config }}
   {{- $lod := $connector.loginOnDemand | default dict }}
+  {{- $lb := $connector.loginBroker | default dict }}
+  {{- if and (eq $name "powerschool") $lod.enabled $lb.enabled }}
+  {{- fail "connectors.powerschool.loginOnDemand and connectors.powerschool.loginBroker are both enabled: they are two ways of asking for a login, and with both a dead session would be answered twice -- once by the broker, and again later by the request mailbox, over the session the broker had just made. Enable exactly one" }}
+  {{- end }}
+  {{- if and (eq $name "powerschool") $lb.enabled }}
+  {{- /*
+  Login broker (connectors.powerschool.loginBroker): tell the connector
+  where its broker is and which token to present. Both are derived here,
+  from the same expressions the broker's Service and Deployment use.
+  */}}
+  {{- $brokerKey := $lb.name | default "powerschool" }}
+  {{- $broker := index ($.Values.loginBrokers | default dict) $brokerKey }}
+  {{- if not (and $broker $broker.enabled) }}
+  {{- fail (printf "connectors.powerschool.loginBroker.enabled requires loginBrokers.%s.enabled: there would be nothing to ask" $brokerKey) }}
+  {{- end }}
+  {{- if ne (toString $broker.connector) "powerschool" }}
+  {{- fail (printf "connectors.powerschool.loginBroker names loginBrokers.%s, whose connector is %q: that broker would refuse this connector's ServiceAccount and its NetworkPolicy would not admit this pod" $brokerKey (toString $broker.connector)) }}
+  {{- end }}
+  {{- $timeout := int ($lb.timeoutSeconds | default 420) }}
+  {{- if or (lt $timeout 60) (gt $timeout 900) }}
+  {{- fail "connectors.powerschool.loginBroker.timeoutSeconds must be between 60 and 900" }}
+  {{- end }}
+  {{- /* The session the broker writes must be the one this connector is handed. */}}
+  {{- $connES := $connector.externalSecret | default dict }}
+  {{- if $connES.enabled }}
+  {{- $sessionRef := index (($connES.files | default dict).data | default dict) "session.json" | default dict }}
+  {{- if and $sessionRef (or (ne (toString $sessionRef.key) (toString $broker.vault.sessionPath)) (ne (toString $sessionRef.property) "session")) }}
+  {{- fail (printf "connectors.powerschool.externalSecret.files.data.\"session.json\" reads %q property %q, but the login broker writes loginBrokers.%s.vault.sessionPath %q property \"session\": a restarted connector would start from a session nobody refreshes" (toString $sessionRef.key) (toString $sessionRef.property) $brokerKey (toString $broker.vault.sessionPath)) }}
+  {{- end }}
+  {{- end }}
+  {{- $ctx := dict "name" $brokerKey "broker" $broker "root" $ }}
+  {{- $config = mustMergeOverwrite (deepCopy $connector.config) (dict "login_on_demand" (dict
+        "enabled" true
+        "broker" (dict
+          "url" (printf "http://%s.%s.svc:%d" (include "glovebox.loginBrokerName" $ctx) $.Release.Namespace (int ($broker.port | default 8080)))
+          "token_file" "/var/run/secrets/login-broker/token"
+          "timeout_seconds" $timeout))) }}
+  {{- end }}
   {{- if and (eq $name "powerschool") $lod.enabled }}
   {{- /*
   On-demand login (connectors.powerschool.loginOnDemand): tell the connector

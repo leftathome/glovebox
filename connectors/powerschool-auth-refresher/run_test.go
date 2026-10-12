@@ -95,6 +95,10 @@ type fakeStore struct {
 	state          *loginState // nil = nothing stored
 	readStateErr   error
 	writeStateErrs []error // consumed one per WriteState
+	// applyStateThenFail lists WriteState calls (1-based) that are STORED
+	// and then answered with a 5xx.
+	applyStateThenFail map[int]bool
+	stateVersion       int
 
 	// onRead, when set, runs after each Read (to simulate another run
 	// writing the path in between).
@@ -141,9 +145,10 @@ func (f *fakeStore) ReadState(context.Context) (*loginState, error) {
 		return nil, f.readStateErr
 	}
 	if f.state == nil {
-		return &loginState{}, nil
+		return &loginState{Version: f.stateVersion}, nil
 	}
 	copied := *f.state
+	copied.Version = f.stateVersion
 	return &copied, nil
 }
 
@@ -152,8 +157,18 @@ func (f *fakeStore) WriteState(_ context.Context, state *loginState) error {
 	if n := f.stateWrites - 1; n < len(f.writeStateErrs) && f.writeStateErrs[n] != nil {
 		return f.writeStateErrs[n]
 	}
+	if state.Version != f.stateVersion {
+		return &vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 400,
+			Errors: []string{"check-and-set parameter did not match the current version"}}
+	}
+	f.stateVersion++
 	copied := *state
+	copied.Version = f.stateVersion
 	f.state = &copied
+	if f.applyStateThenFail[f.stateWrites] {
+		return &vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 500, Errors: []string{"internal error"}}
+	}
+	state.Version = f.stateVersion
 	return nil
 }
 
@@ -179,6 +194,8 @@ type harness struct {
 	// succeeds. A nil entry is a success.
 	loginResults []error
 	logins       int
+	// onLogin, when set, runs at the start of every login.
+	onLogin func()
 
 	// probeResults is consumed one per probe; when exhausted a probe
 	// succeeds.
@@ -251,6 +268,9 @@ func (h *harness) deps() deps {
 		},
 		login: func(context.Context) (*pslib.SessionExport, error) {
 			h.logins++
+			if h.onLogin != nil {
+				h.onLogin()
+			}
 			if n := h.logins - 1; n < len(h.loginResults) && h.loginResults[n] != nil {
 				return nil, h.loginResults[n]
 			}
@@ -882,7 +902,7 @@ func TestRunRetriesTheConfirmingReadButNeverTheLogin(t *testing.T) {
 
 func TestRunDoesNotStartTheBrowserOnAnUnrecognisedSignInPage(t *testing.T) {
 	h := newHarness(t, morning(t))
-	h.signInErr = &signInError{reason: "form_posts_off_host"}
+	h.signInErr = &signInError{Reason: "form_posts_off_host"}
 	h.expect(h.run(), exitSignInUnrecognised, 0, 0)
 	if h.signInChecks != 1 {
 		t.Errorf("sign-in checks = %d, want 1: it is not retried within a run", h.signInChecks)
@@ -977,7 +997,7 @@ func TestRunRevokesTheVaultTokenOnEveryPath(t *testing.T) {
 		"unconfirmed":       func(h *harness) { h.probeResults = []error{errSessionGone} },
 		"write refused":     func(h *harness) { h.store.writeErrs = []error{vaultStatus(403)} },
 		"state unreadable":  func(h *harness) { h.store.readStateErr = vaultStatus(403) },
-		"sign-in not known": func(h *harness) { h.signInErr = &signInError{reason: "no_password_form"} },
+		"sign-in not known": func(h *harness) { h.signInErr = &signInError{Reason: "no_password_form"} },
 		"blocked": func(h *harness) {
 			h.store.state = &loginState{Salt: testSalt, Blocked: true, BlockedReason: blockedCredentialsRejected,
 				CredentialFingerprint: credentialFingerprint(testSalt, testUsername, testPassword)}

@@ -79,6 +79,14 @@ spec:
       # do) and, unlike every other connector, its token mounted.
       serviceAccountName: {{ include "glovebox.fullname" $ }}-powerschool
       automountServiceAccountToken: true
+      {{- else if and (eq $name "powerschool") ($connector.loginBroker | default dict).enabled }}
+      # Login broker: this connector proves who it is to its broker with a
+      # ServiceAccount token, so it has a ServiceAccount of its own -- with
+      # no Role at all. The API token is NOT mounted: the only token in the
+      # pod is the one projected below, minted for the broker's audience,
+      # which the Kubernetes API itself would refuse.
+      serviceAccountName: {{ include "glovebox.fullname" $ }}-powerschool
+      automountServiceAccountToken: false
       {{- else }}
       serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
       {{- end }}
@@ -207,6 +215,11 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- end }}
+            {{- if and (eq $name "powerschool") ($connector.loginBroker | default dict).enabled }}
+            - name: login-broker-token
+              mountPath: /var/run/secrets/login-broker
+              readOnly: true
+            {{- end }}
       {{- with ($connector.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -241,6 +254,22 @@ spec:
         - name: ingest-tls
           secret:
             secretName: {{ include "glovebox.fullname" $ }}-{{ $name }}-ingest-client-tls
+        {{- end }}
+        {{- if and (eq $name "powerschool") ($connector.loginBroker | default dict).enabled }}
+        {{- $brokerKey := ($connector.loginBroker).name | default "powerschool" }}
+        {{- $broker := index ($.Values.loginBrokers | default dict) $brokerKey | default dict }}
+        # A token for the login broker and for nothing else: the audience
+        # is that broker's own, so neither the Kubernetes API nor another
+        # broker accepts it. Short-lived; the kubelet rotates it and the
+        # connector re-reads the file for every call.
+        - name: login-broker-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "glovebox.loginBrokerAudience" (dict "name" $brokerKey "broker" $broker "root" $) | quote }}
+                  expirationSeconds: 600
+                  path: token
         {{- end }}
         {{- if $roRoot }}
         # sizeLimit, not the unbounded emptyDir default: a document that

@@ -1,0 +1,27 @@
+{{- range $name, $b := .Values.loginBrokers }}
+{{- if and $b $b.enabled (ne (toString (($b.rbac | default dict).create)) "false") }}
+{{- $ctx := dict "name" $name "broker" $b "root" $ }}
+---
+# Everything a login broker may do through the Kubernetes API: ask the API
+# server whether a token is genuine (TokenReview), which is how it knows who
+# is calling. TokenReview is cluster-scoped, hence a ClusterRole; it grants
+# no read of any object. This is narrower than the built-in
+# system:auth-delegator, which also allows SubjectAccessReviews.
+#
+# Named with the namespace: cluster-scoped objects of two releases must not
+# collide. Set loginBrokers.<name>.rbac.create=false to manage this and the
+# binding outside the chart (a deployer without cluster-scoped rights).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-%s-tokenreview" $.Release.Namespace (include "glovebox.loginBrokerName" $ctx) | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: login-broker
+    glovebox.io/login-broker: {{ $name }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+{{- end }}
+{{- end }}
