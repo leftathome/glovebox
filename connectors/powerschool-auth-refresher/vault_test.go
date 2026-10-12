@@ -339,8 +339,19 @@ func TestVaultStoreLoginStateRoundTrip(t *testing.T) {
 		t.Errorf("ReadState = (%+v, %v), want %+v", got, err, want)
 	}
 
+	// The record is written check-and-set against the version it was read
+	// at: a write on top of a read that somebody else has since written
+	// over is refused, and stores nothing.
+	stale := loginState{Salt: "written-on-a-stale-read"}
+	if err := store.WriteState(ctx, &stale); !isCASMismatch(err) {
+		t.Fatalf("a state write on a stale version: %v, want a check-and-set refusal", err)
+	}
+	if again, _ := store.ReadState(ctx); again.Salt != testSalt {
+		t.Fatal("a refused state write was stored")
+	}
+
 	// Cleared state reads back unblocked.
-	if err := store.WriteState(ctx, &loginState{Salt: testSalt}); err != nil {
+	if err := store.WriteState(ctx, &loginState{Salt: testSalt, Version: got.Version}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.ReadState(ctx); got.Blocked || !got.BlockedAt.IsZero() || got.UnconfirmedCount != 0 {

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,7 +116,7 @@ func Login(cfg Config) func(ctx context.Context) (*pslib.SessionExport, error) {
 		// succeeds. It gets a directory of its own (under TMPDIR, which the
 		// chart backs with memory) that is removed on every way out of this
 		// function, instead of being left to the browser to clean up.
-		profile, err := os.MkdirTemp("", "ps-login-profile-")
+		profile, err := os.MkdirTemp("", profilePrefix)
 		if err != nil {
 			return nil, &LoginError{Kind: FailedUnknown, Err: errors.New("could not create a browser profile directory")}
 		}
@@ -131,6 +132,42 @@ func Login(cfg Config) func(ctx context.Context) (*pslib.SessionExport, error) {
 		}
 		return session, nil
 	}
+}
+
+// profilePrefix names the browser profile directories Login creates under
+// the temporary directory.
+const profilePrefix = "ps-login-profile-"
+
+// leftoverPatterns are what a browser login can leave in the temporary
+// directory when the process, or the browser, dies in the middle: the
+// profile (session cookies), Chromium's own scratch directories, and
+// chromedp's.
+var leftoverPatterns = []string{profilePrefix + "*", ".org.chromium.Chromium.*", ".com.google.Chrome.*", "chromedp-runner*"}
+
+// SweepBrowserLeftovers removes every browser profile and browser scratch
+// directory from the temporary directory, and returns how many entries it
+// removed. A login workload calls it at startup and after every attempt:
+// each login gets a profile of its own and removes it itself, so anything
+// found here belongs to a login that did not end normally, and what it
+// holds is session cookies.
+//
+// It must only run in a process that owns its temporary directory (the
+// chart gives each pod a memory-backed one) and is not in the middle of a
+// login.
+func SweepBrowserLeftovers() int {
+	removed := 0
+	for _, pattern := range leftoverPatterns {
+		matches, err := filepath.Glob(filepath.Join(os.TempDir(), pattern))
+		if err != nil {
+			continue
+		}
+		for _, m := range matches {
+			if os.RemoveAll(m) == nil {
+				removed++
+			}
+		}
+	}
+	return removed
 }
 
 // browserStartMarkers identify a browser that never came up. They are

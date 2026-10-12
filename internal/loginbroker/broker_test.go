@@ -33,6 +33,13 @@ type backing struct {
 	fields  map[string]any
 	version int
 	state   *loginvault.State
+	// stateVersion is the KV version of the state record; writes are
+	// check-and-set against it, as in Vault.
+	stateVersion int
+	// onStateWrite, when set, runs before each state write is applied (to
+	// let "somebody else" write in between).
+	onStateWrite       func(n int)
+	stateWriteAttempts int
 
 	sessionWrites, stateWrites int
 	failSessionWrites          int   // this many session writes fail (5xx-like)
@@ -82,22 +89,47 @@ func (s memStore) ReadState(context.Context) (*loginvault.State, error) {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 	if s.b.state == nil {
-		return &loginvault.State{}, nil
+		return &loginvault.State{Version: s.b.stateVersion}, nil
 	}
 	c := *s.b.state
+	c.Version = s.b.stateVersion
 	return &c, nil
 }
 
 func (s memStore) WriteState(_ context.Context, state *loginvault.State) error {
 	s.b.mu.Lock()
+	s.b.stateWriteAttempts++
+	hook, n := s.b.onStateWrite, s.b.stateWriteAttempts
+	s.b.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
+	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 	if s.b.failStateWrites != nil {
 		return s.b.failStateWrites
 	}
+	if state.Version != s.b.stateVersion {
+		return errors.New("check-and-set parameter did not match the current version")
+	}
+	s.b.stateVersion++
+	state.Version = s.b.stateVersion
 	c := *state
 	s.b.state = &c
 	s.b.stateWrites++
 	return nil
+}
+
+// otherWriter changes the state record as another workload would: a write
+// of its own, which moves the version on.
+func (b *backing) otherWriter(change func(s *loginvault.State)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == nil {
+		b.state = &loginvault.State{}
+	}
+	change(b.state)
+	b.stateVersion++
 }
 
 func (s memStore) Close() {
@@ -119,11 +151,17 @@ type fakeDriver struct {
 	probeCalls []string
 	seenCreds  []Credentials
 	limits     *Constraints
+	// onProbe and onLogin run at the start of each call (to let time pass).
+	onProbe func(id string)
+	onLogin func(ctx context.Context)
 }
 
 func (d *fakeDriver) Site() string { return "testsite" }
 
-func (d *fakeDriver) Login(_ context.Context, creds Credentials) (Session, error) {
+func (d *fakeDriver) Login(ctx context.Context, creds Credentials) (Session, error) {
+	if d.onLogin != nil {
+		d.onLogin(ctx)
+	}
 	d.mu.Lock()
 	d.loginCalls++
 	d.seenCreds = append(d.seenCreds, creds)
@@ -139,6 +177,9 @@ func (d *fakeDriver) Login(_ context.Context, creds Credentials) (Session, error
 }
 
 func (d *fakeDriver) Probe(_ context.Context, s Session) ProbeResult {
+	if d.onProbe != nil {
+		d.onProbe(s.(*fakeSession).id)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	fs := s.(*fakeSession)
@@ -971,17 +1012,18 @@ func TestNoLoginWhenTheRecordCannotBeWritten(t *testing.T) {
 	}
 }
 
-// A process that died in the middle of a login left its marker. The next
-// request counts that login as made and failed: it is inside the interval,
-// and it is a strike.
+// A process that died in the middle of a login left its marker. Once the
+// marker is too old to be a login in flight, the next request counts that
+// login as made and failed: it is inside the interval, and it is a strike.
 func TestAnAttemptThatNeverRecordedItsOutcomeCountsAsAFailedLogin(t *testing.T) {
 	r := newRig(t, nil)
 	r.store("old", ProbeDead, 9*time.Hour)
-	r.back.state = &loginvault.State{Salt: "salt-for-tests", AttemptStartedAt: morning().Add(-4 * time.Minute)}
+	died := morning().Add(-15 * time.Minute)
+	r.back.state = &loginvault.State{Salt: "salt-for-tests", AttemptStartedAt: died}
 
 	r.want(r.ask(fp("old")), brokerapi.OutcomeDeferred, brokerapi.CodeMinInterval)
 	st := r.back.state
-	if st.UnconfirmedCount != 1 || !st.AttemptStartedAt.IsZero() || !st.RequestLoginAt.Equal(morning().Add(-4*time.Minute)) {
+	if st.UnconfirmedCount != 1 || !st.AttemptStartedAt.IsZero() || !st.RequestLoginAt.Equal(died) || st.LoginDayCount != 1 {
 		t.Errorf("state = %+v", st)
 	}
 	if r.driver.loginCalls != 0 {

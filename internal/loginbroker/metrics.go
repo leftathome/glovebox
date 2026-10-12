@@ -24,6 +24,7 @@ type Metrics struct {
 	probes       *prometheus.CounterVec
 	latched      prometheus.Gauge
 	lastLoginAt  prometheus.Gauge
+	today        prometheus.Gauge
 }
 
 // NewMetrics builds the series for one site.
@@ -72,7 +73,12 @@ func NewMetrics(site string) *Metrics {
 			ConstLabels: labels,
 		}),
 	}
-	m.registry.MustRegister(m.requests, m.joins, m.authFailures, m.logins, m.submissions, m.probes, m.latched, m.lastLoginAt)
+	m.today = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "login_broker_logins_today",
+		Help:        "Logins counted against the daily budget for the current local day, by every workload sharing the account's record, as of the last refresh. A refresh answered budget_exhausted is counted in login_broker_refresh_total{outcome=\"budget_exhausted\"}.",
+		ConstLabels: labels,
+	})
+	m.registry.MustRegister(m.requests, m.joins, m.authFailures, m.logins, m.submissions, m.probes, m.latched, m.lastLoginAt, m.today)
 	return m
 }
 
@@ -134,5 +140,11 @@ func (m *Metrics) setLatched(on bool) {
 func (m *Metrics) lastLogin(at time.Time) {
 	if m != nil {
 		m.lastLoginAt.Set(float64(at.Unix()))
+	}
+}
+
+func (m *Metrics) loginsToday(n int) {
+	if m != nil {
+		m.today.Set(float64(n))
 	}
 }

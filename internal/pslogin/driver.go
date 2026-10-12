@@ -46,12 +46,19 @@ type Driver struct {
 	signIn func(cfg Config) func(ctx context.Context) error
 	login  func(cfg Config) func(ctx context.Context) (*pslib.SessionExport, error)
 	now    func() time.Time
+	sweep  bool
 }
 
 // DriverOptions are the driver's settings beyond where the portal is.
 type DriverOptions struct {
 	// SessionLifetime; zero means DefaultSessionLifetime.
 	SessionLifetime time.Duration
+	// OwnsTempDir says the process has the temporary directory to itself
+	// (a pod's own memory-backed /tmp). The driver then removes browser
+	// profiles and browser scratch directories from it at startup and
+	// after every login attempt. Never set it where the directory is
+	// shared: it would remove another program's browser profile.
+	OwnsTempDir bool
 	// Base, Login and Now are for tests.
 	Base  http.RoundTripper
 	Login func(cfg Config) func(ctx context.Context) (*pslib.SessionExport, error)
@@ -86,6 +93,12 @@ func NewDriver(cfg Config, opts DriverOptions) (*Driver, error) {
 	if d.now == nil {
 		d.now = time.Now
 	}
+	d.sweep = opts.OwnsTempDir
+	if d.sweep {
+		// Whatever an earlier process left behind -- one that was killed
+		// in the middle of a login -- goes before anything else is done.
+		SweepBrowserLeftovers()
+	}
 	return d, nil
 }
 
@@ -110,14 +123,30 @@ func (d *Driver) Constraints() loginbroker.Constraints {
 			Loc:     psportal.FloorLocation(),
 		}},
 		MinInterval:   MinRequestInterval,
-		LoginHeadroom: psportal.LoginHeadroom,
+		LoginHeadroom: LoginHeadroom,
+		Location:      psportal.FloorLocation(),
 	}
 }
+
+// LoginHeadroom is how far ahead of one call of Driver.Login the blackout
+// must be clear: everything the call does before the credentials are
+// submitted, plus a margin. That is the plain-GET check of the sign-in page
+// (up to ProbeTimeout) AND the browser login (up to LoginTimeout) --
+// psportal.LoginHeadroom alone covers only the second, which is right for
+// the scheduled job (it checks the blackout between the two) and too short
+// here. The last instant a broker login may start before 16:00 is 15:56:59.
+const LoginHeadroom = ProbeTimeout + psportal.LoginHeadroom
 
 // Login implements loginbroker.Driver. The credentials are submitted by the
 // browser, at most once: the library types them into the sign-in form and
 // submits it one time, and nothing here calls it twice.
 func (d *Driver) Login(ctx context.Context, creds loginbroker.Credentials) (loginbroker.Session, error) {
+	// A browser profile holds the session cookies. The login removes its
+	// own on every way out; this also removes what a browser that crashed
+	// or was cancelled left beside it.
+	if d.sweep {
+		defer SweepBrowserLeftovers()
+	}
 	// Is the page the browser is about to type the password into the
 	// portal's own sign-in form? A plain GET, before any browser exists.
 	// This check needs no credentials and is not given any.

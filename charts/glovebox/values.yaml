@@ -2134,11 +2134,18 @@ powerschoolAuthRefresher:
 # To clear a latch, delete the secret at vault.statePath (or change the
 # credentials, which lifts a latch set for the old ones).
 #
+#   - at most dailyLoginBudget logins per local calendar day (6 at most),
+#     whoever asks and whatever keeps ending the sessions.
+#
 # A broker is an ALTERNATIVE to powerschoolAuthRefresher.onRequest (the
 # ConfigMap request mailbox); the chart refuses to render both for the same
 # session. The scheduled CronJobs of powerschoolAuthRefresher.schedules may
-# stay, suspended or not, as the template for a manual login: they write the
-# same Vault paths and share the latch.
+# stay as templates for a manual login when SUSPENDED
+# (powerschoolAuthRefresher.suspendSchedules); live schedules beside a
+# broker are refused unless acknowledgeScheduledLogins is set. The job and
+# the broker write the same Vault paths and share one record: the latch, the
+# day's count, and a marker that keeps either from logging in while the
+# other's login is in flight.
 #
 # Outside this chart (see the design note): the Vault policy and Kubernetes
 # auth role for each instance, bound to that instance's ServiceAccount
@@ -2175,13 +2182,22 @@ loginBrokers:
     minInterval: 20m
     # Failed logins in a row before the latch is set. 1-5.
     maxFailures: 2
+    # Logins per local calendar day (the owner's zone for PowerSchool),
+    # counted in the Vault record across restarts and shared with every
+    # other workload that logs in for the account. 6 -- three poll windows
+    # with one retry each -- is compiled into the broker as the ceiling:
+    # this can lower it, never raise it. Over budget the broker answers
+    # `budget_exhausted` with the next local midnight.
+    dailyLoginBudget: 6
     # Daily windows with no login, on the wall clock of timeZone (daylight
     # saving included). For PowerSchool, 16:00-21:00 America/Los_Angeles is
     # ALSO compiled into the driver -- the account's owner uses the portal
     # then, and a login would sign them out -- so nothing here can shorten
     # that span, move it or change its zone; these values can only add to
-    # it. The broker also keeps clear of each window's start by the time a
-    # login may take (150s): the last moment a login may start is 15:57:29.
+    # it. The broker also keeps clear of each window's start by the time one
+    # whole login attempt may take -- the sign-in page check, the browser
+    # and a margin, 180s for PowerSchool -- checked on the clock immediately
+    # before every attempt: the last moment a login may start is 15:56:59.
     blackout:
       timeZone: America/Los_Angeles
       windows:
@@ -2249,8 +2265,12 @@ loginBrokers:
     # Ingress and egress of this instance's pods, rendered when
     # networkPolicy.enabled (top level) is also true. The broker speaks
     # plain HTTP inside the cluster; this policy -- admitting only the
-    # connector's pods to the API port -- is what makes that acceptable. If
-    # you turn it off, put an equivalent policy in its place.
+    # connector's pods to the API port -- is what makes that acceptable.
+    #
+    # The chart REFUSES to render an enabled broker without it (this switch
+    # off, or the chart-wide one) unless acknowledgeNoNetworkPolicy below is
+    # true: set that only when an equivalent policy exists outside the
+    # chart.
     networkPolicy:
       enabled: true
       # Further ingress rules, verbatim (for extraAllowedCallers).
@@ -2282,6 +2302,15 @@ loginBrokers:
       # Further egress rules, verbatim (a Vault outside the cluster; a
       # remote browser a site's driver uses).
       extraEgress: []
+    # "I provide the NetworkPolicy for this broker myself": lets the chart
+    # render the instance with no policy of its own. See networkPolicy.
+    acknowledgeNoNetworkPolicy: false
+    # "I want scheduled logins as well": lets the chart render this broker
+    # beside LIVE powerschoolAuthRefresher.schedules for the same session.
+    # Without it the render fails unless those schedules are suspended or
+    # removed: a scheduled login ends the session the broker made and
+    # spends one of the day's logins.
+    acknowledgeScheduledLogins: false
     # A login in flight is finished before the process exits.
     terminationGracePeriodSeconds: 420
     # The container's root filesystem is read-only. What Chromium and the

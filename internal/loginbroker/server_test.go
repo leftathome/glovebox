@@ -3,6 +3,7 @@ package loginbroker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,8 @@ func newTestServer(t *testing.T, r *rig) (*httptest.Server, *fakeAuth, *Server) 
 	}
 	// Tests other than the one about the limiter send more requests in a
 	// burst than a connector does in a week.
-	srv.limiter = rate.NewLimiter(rate.Inf, 1)
+	srv.sources = newSourceLimits(rate.Inf, 1)
+	srv.callers = rate.NewLimiter(rate.Inf, 1)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, auth, srv
@@ -162,21 +164,84 @@ func TestOnlyPOSTIsAcceptedOnTheRefreshPath(t *testing.T) {
 	}
 }
 
-// Reviews of tokens are rate limited whoever sends them: a flood of bad
-// tokens cannot be turned into a flood of TokenReviews.
-func TestTokenReviewsAreRateLimited(t *testing.T) {
+// A pod that can reach the port and floods it with junk tokens uses up its
+// OWN allowance of token reviews. It cannot turn that into a 429 for the
+// connector: before authentication the only limit is per source address,
+// and the shared limit is behind authentication, where only an allow-listed
+// caller can spend it.
+func TestAnUnauthenticatedFloodCannotLockTheConnectorOut(t *testing.T) {
 	r := newRig(t, nil)
-	ts, auth, srv := newTestServer(t, r)
-	srv.limiter = rate.NewLimiter(rate.Limit(1), 10) // the production setting
+	r.store("s1", ProbeAlive, time.Hour)
+	_, auth, srv := newTestServer(t, r)
+	srv.sources = newSourceLimits(rate.Limit(1), 10) // the production settings
+	srv.callers = rate.NewLimiter(rate.Limit(1), 10)
+	h := srv.Handler()
+
+	send := func(remote, token string) int {
+		req := httptest.NewRequest(http.MethodPost, brokerapi.RefreshPath, strings.NewReader(goodBody))
+		req.RemoteAddr = remote
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	limited := 0
+	for i := 0; i < 500; i++ {
+		switch send("10.42.0.66:40000", "junk") {
+		case http.StatusTooManyRequests:
+			limited++
+		case http.StatusUnauthorized:
+		default:
+			t.Fatal("a junk token got an answer other than 401 or 429")
+		}
+	}
+	if limited < 480 || len(auth.seen) > 15 {
+		t.Errorf("500 junk requests from one address: %d limited, %d sent for review", limited, len(auth.seen))
+	}
+	// The connector, from its own address, is served as if nothing happened.
+	for i := 0; i < 3; i++ {
+		if code := send("10.42.0.7:51000", goodToken); code != http.StatusOK {
+			t.Fatalf("the connector's request %d during the flood: HTTP %d", i+1, code)
+		}
+	}
+	// A flood from very many addresses does not grow the table without
+	// bound, and still does not touch the shared limit.
+	for i := 0; i < 3*maxSources; i++ {
+		send(fmt.Sprintf("10.%d.%d.%d:4000", i>>16&255, i>>8&255, i&255), "junk")
+	}
+	srv.sources.mu.Lock()
+	n := len(srv.sources.byIP)
+	srv.sources.mu.Unlock()
+	if n > maxSources {
+		t.Errorf("the per-source table holds %d entries, over its bound of %d", n, maxSources)
+	}
+	if code := send("10.42.0.7:51000", goodToken); code != http.StatusOK {
+		t.Errorf("the connector after the wide flood: HTTP %d", code)
+	}
+}
+
+// An allow-listed caller is itself limited -- after authentication.
+func TestAnAuthenticatedCallerIsRateLimited(t *testing.T) {
+	r := newRig(t, nil)
+	r.store("s1", ProbeAlive, time.Hour)
+	_, _, srv := newTestServer(t, r)
+	srv.callers = rate.NewLimiter(rate.Limit(1), 10)
+	h := srv.Handler()
 	limited := 0
 	for i := 0; i < 40; i++ {
-		resp, _ := post(t, ts.URL, "junk", "application/json", goodBody)
-		if resp.StatusCode == http.StatusTooManyRequests {
+		req := httptest.NewRequest(http.MethodPost, brokerapi.RefreshPath, strings.NewReader(goodBody))
+		req.Header.Set("Authorization", "Bearer "+goodToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
 			limited++
 		}
 	}
-	if limited == 0 || len(auth.seen) > 15 {
-		t.Errorf("40 requests: %d limited, %d reviewed", limited, len(auth.seen))
+	if limited < 25 || len(r.driver.probeCalls) > 12 {
+		t.Errorf("40 requests in a burst: %d limited, %d reached the site", limited, len(r.driver.probeCalls))
 	}
 }
 

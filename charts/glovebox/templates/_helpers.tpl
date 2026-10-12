@@ -463,6 +463,20 @@ template, so they run exactly once per broker.
 {{- if or (not (hasKey $cred "LOGIN_BROKER_USERNAME")) (not (hasKey $cred "LOGIN_BROKER_PASSWORD")) -}}
 {{- fail (printf "%s.credentials.env must map LOGIN_BROKER_USERNAME and LOGIN_BROKER_PASSWORD to keys of the credentials Secret" $where) -}}
 {{- end -}}
+{{- $budget := int ($b.dailyLoginBudget | default 6) -}}
+{{- if or (lt $budget 1) (gt $budget 6) -}}
+{{- fail (printf "%s.dailyLoginBudget must be between 1 and 6: six logins a day is compiled into the broker as the ceiling, and this value can only lower it" $where) -}}
+{{- end -}}
+{{- /*
+The broker speaks plain HTTP. Without a NetworkPolicy every pod in the
+cluster can reach its port, and the token check is the only lock. That is
+not rendered by accident: not by the chart-wide switch, not by the
+instance's own.
+*/ -}}
+{{- $np := $b.networkPolicy | default dict -}}
+{{- if and (not (and .root.Values.networkPolicy.enabled $np.enabled)) (not $b.acknowledgeNoNetworkPolicy) -}}
+{{- fail (printf "%s would be rendered WITHOUT its NetworkPolicy (networkPolicy.enabled or %s.networkPolicy.enabled is false). The broker speaks plain HTTP inside the cluster and holds an account's password; the policy that admits only its connector's pods is what makes that acceptable. If an equivalent policy is provided outside this chart, say so with %s.acknowledgeNoNetworkPolicy=true" $where $where $where) -}}
+{{- end -}}
 {{- /*
 Two brokers must never share an account's record or a Vault role: the first
 would make them log in over each other, the second would let one site's
@@ -484,6 +498,21 @@ the same session are two login workloads answering the same dead session.
 */ -}}
 {{- $r := .root.Values.powerschoolAuthRefresher -}}
 {{- if and $r.enabled ($r.onRequest | default dict).enabled (eq (trimAll "/" (toString $r.vault.sessionPath)) (trimAll "/" (toString $b.vault.sessionPath))) -}}
-{{- fail (printf "%s and powerschoolAuthRefresher.onRequest are both enabled for the session at %q: choose one way to log in on demand. (The scheduled CronJobs of powerschoolAuthRefresher.schedules may stay, suspended or not: they share the broker's latch.)" $where (toString $b.vault.sessionPath)) -}}
+{{- fail (printf "%s and powerschoolAuthRefresher.onRequest are both enabled for the session at %q: choose one way to log in on demand" $where (toString $b.vault.sessionPath)) -}}
+{{- end -}}
+{{- /*
+Scheduled logins beside a broker for the same account are a second writer
+on a clock: every one of them ends the session the broker made, and spends
+one of the day's logins. The two do coordinate through the shared record
+(neither logs in while the other's login is in flight), but that makes it
+safe, not sensible. Suspended CronJobs are fine: they are templates for a
+manual run.
+*/ -}}
+{{- if and $r.enabled (eq (trimAll "/" (toString $r.vault.sessionPath)) (trimAll "/" (toString $b.vault.sessionPath))) (not $b.acknowledgeScheduledLogins) -}}
+{{- range $sname, $entry := $r.schedules -}}
+{{- if and $entry (not (or $r.suspendSchedules $entry.suspend)) -}}
+{{- fail (printf "%s is enabled and powerschoolAuthRefresher.schedules.%s is a live schedule for the same session (%q): a scheduled login ends the session the broker made and spends one of the day's logins. Suspend the schedules (powerschoolAuthRefresher.suspendSchedules=true keeps them as templates for a manual run), remove them, or, if both are really wanted, set %s.acknowledgeScheduledLogins=true" $where $sname (toString $b.vault.sessionPath) $where) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end }}

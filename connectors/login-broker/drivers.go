@@ -53,7 +53,14 @@ func newPowerSchoolDriver(getenv func(string) string) (loginbroker.Driver, []str
 		cfg.ChromeNoSandbox = b
 	}
 
+	// In the image the temporary directory is the process's own (the chart
+	// mounts a memory-backed emptyDir), so the driver may clear browser
+	// leftovers out of it. The image says so; a binary run by hand on a
+	// shared /tmp does not, and removes nothing.
 	var opts pslogin.DriverOptions
+	if b, err := strconv.ParseBool(strings.TrimSpace(getenv("LOGIN_BROKER_OWNS_TMPDIR"))); err == nil {
+		opts.OwnsTempDir = b
+	}
 	if raw := strings.TrimSpace(getenv("POWERSCHOOL_SESSION_LIFETIME")); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil || d < time.Hour {

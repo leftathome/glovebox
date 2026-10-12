@@ -264,9 +264,18 @@ check "egress: DNS, the Vault pods, the API server's addresses, and the site on 
 refuse "the policy without the API server's addresses (TokenReview would be cut off)" "kubernetesAPICIDRs is required" \
   --set loginBrokers.powerschool.enabled=true
 
-check "the chart-wide switch turns the policy off" \
-  'find("NetworkPolicy", "glovebox-glovebox-login-broker-powerschool") is None' \
+# A broker without its NetworkPolicy is reachable, over plain HTTP, by every
+# pod in the cluster. Neither switch produces that by accident.
+refuse "the chart-wide NetworkPolicy switch off (the broker would be open to every pod)" "WITHOUT its NetworkPolicy" \
   -f "$TMP/broker.yaml" --set networkPolicy.enabled=false
+refuse "the instance's own NetworkPolicy switch off" "WITHOUT its NetworkPolicy" \
+  -f "$TMP/broker.yaml" --set loginBrokers.powerschool.networkPolicy.enabled=false
+check "an acknowledged external policy: the instance renders, with no policy of the chart's" \
+  'find("NetworkPolicy", "glovebox-glovebox-login-broker-powerschool") is None
+   and find("Deployment", "glovebox-glovebox-login-broker-powerschool") is not None' \
+  -f "$TMP/broker.yaml" --set networkPolicy.enabled=false --set loginBrokers.powerschool.acknowledgeNoNetworkPolicy=true
+check "a disabled broker is not held to it" 'mine == []' \
+  --set networkPolicy.enabled=false
 
 # --- one instance per site, nothing shared ----------------------------------
 
@@ -325,9 +334,30 @@ refuse "no password mapping" "must map LOGIN_BROKER_USERNAME and LOGIN_BROKER_PA
   -f "$TMP/broker.yaml" --set loginBrokers.powerschool.credentials.env.LOGIN_BROKER_PASSWORD=null
 refuse "the request mailbox and a broker for the same session" "choose one way to log in on demand" \
   -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true --set powerschoolAuthRefresher.onRequest.enabled=true \
+  --set powerschoolAuthRefresher.suspendSchedules=true \
   --set "powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs={192.0.2.10/32}"
-accept "the scheduled login CronJobs beside a broker (they share the latch)" \
+refuse "LIVE scheduled logins beside a broker for the same session" "is a live schedule for the same session" \
+  -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true
+refuse "one live schedule left among suspended ones" "schedules.evening is a live schedule" \
+  -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true --set powerschoolAuthRefresher.schedules.morning.suspend=true
+accept "SUSPENDED scheduled login CronJobs beside a broker (templates for a manual run)" \
   -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true --set powerschoolAuthRefresher.suspendSchedules=true
+accept "each schedule suspended on its own" \
+  -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true \
+  --set powerschoolAuthRefresher.schedules.morning.suspend=true --set powerschoolAuthRefresher.schedules.evening.suspend=true
+accept "live schedules beside a broker, explicitly acknowledged" \
+  -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true --set loginBrokers.powerschool.acknowledgeScheduledLogins=true
+accept "live schedules for ANOTHER session are nobody's business" \
+  -f "$TMP/broker.yaml" --set powerschoolAuthRefresher.enabled=true \
+  --set powerschoolAuthRefresher.vault.sessionPath=glovebox/powerschool/other/session
+check "the daily login budget reaches the binary" \
+  'env(find("Deployment", "glovebox-glovebox-login-broker-powerschool"))["LOGIN_BROKER_DAILY_LOGIN_BUDGET"] == "6"' \
+  -f "$TMP/broker.yaml"
+check "the budget can be lowered" \
+  'env(find("Deployment", "glovebox-glovebox-login-broker-powerschool"))["LOGIN_BROKER_DAILY_LOGIN_BUDGET"] == "3"' \
+  -f "$TMP/broker.yaml" --set loginBrokers.powerschool.dailyLoginBudget=3
+refuse "the budget raised above the ceiling" "dailyLoginBudget must be between 1 and 6" \
+  -f "$TMP/broker.yaml" --set loginBrokers.powerschool.dailyLoginBudget=12
 accept "an existing credentials Secret instead of the ExternalSecret" \
   -f "$TMP/broker.yaml" --set loginBrokers.powerschool.credentials.existingSecret=my-secret \
   --set loginBrokers.powerschool.vault.secretStoreRef.name=

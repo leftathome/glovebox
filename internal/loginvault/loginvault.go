@@ -88,11 +88,67 @@ type State struct {
 	// for one. The minimum interval between such logins is measured from
 	// it.
 	RequestLoginAt time.Time
-	// AttemptStartedAt is set by the broker immediately before a login and
-	// cleared when the login's outcome has been recorded. Found set at the
-	// start of a later request, it means a process died in the middle of a
+	// AttemptStartedAt is set by every login workload immediately before a
+	// login and cleared when the login's outcome has been recorded. While it
+	// is fresh (AttemptInProgress) another workload must not log in: a login
+	// is in flight. Found stale, it means a process died in the middle of a
 	// login whose outcome nobody knows.
 	AttemptStartedAt time.Time
+	// CooldownUntil: no login before this time. Set after a login that
+	// failed before the credentials were submitted.
+	CooldownUntil time.Time
+	// LoginDay ("2006-01-02", on the account's local calendar) and
+	// LoginDayCount: how many logins that may have submitted the
+	// credentials were made that day, by any workload sharing this record.
+	LoginDay      string
+	LoginDayCount int
+
+	// Version is the KV version this State was read at (0: the path did
+	// not exist). It is not stored. WriteState is check-and-set against it
+	// and advances it, so two workloads can never both write on top of the
+	// same read: the second is refused and must read again.
+	Version int
+}
+
+// AttemptFreshFor is how long an attempt marker means "a login is in
+// flight". It is longer than any workload lets a login run (the broker
+// bounds a refresh at 6 minutes, the scheduled job a run at 8).
+const AttemptFreshFor = 10 * time.Minute
+
+// AttemptInProgress reports whether the marker says a login is in flight
+// at now. A marker dated further in the future than AttemptFreshFor is a
+// broken clock, not a login, and is not "in progress".
+func (s *State) AttemptInProgress(now time.Time) bool {
+	if s.AttemptStartedAt.IsZero() {
+		return false
+	}
+	d := now.Sub(s.AttemptStartedAt)
+	return d < AttemptFreshFor && d > -AttemptFreshFor
+}
+
+// DayOf names the local calendar day of t in loc, the form of LoginDay.
+func DayOf(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return t.In(loc).Format("2006-01-02")
+}
+
+// LoginsOn returns how many logins the record counts for day.
+func (s *State) LoginsOn(day string) int {
+	if s.LoginDay != day {
+		return 0
+	}
+	return s.LoginDayCount
+}
+
+// CountLogin adds one login to day's count, starting a new count when the
+// day has changed.
+func (s *State) CountLogin(day string) {
+	if s.LoginDay != day {
+		s.LoginDay, s.LoginDayCount = day, 0
+	}
+	s.LoginDayCount++
 }
 
 // Store is the two paths on an authenticated client.
@@ -261,15 +317,21 @@ const (
 	stateServed      = "served_request"
 	stateRequestAt   = "request_login_at"
 	stateAttemptAt   = "attempt_started_at"
+	stateCooldown    = "cooldown_until"
+	stateLoginDay    = "login_day"
+	stateLoginCount  = "login_day_count"
 )
 
 // ReadState returns the state; a zero state when none is stored.
 func (v *Store) ReadState(ctx context.Context) (*State, error) {
-	data, _, err := v.get(ctx, v.statePath)
+	data, meta, err := v.get(ctx, v.statePath)
 	if err != nil {
 		return nil, err
 	}
 	state := &State{}
+	if meta != nil {
+		state.Version = meta.Version
+	}
 	str := func(k string) string { s, _ := data[k].(string); return s }
 	state.Salt = str(stateSalt)
 	state.Blocked = str(stateBlocked) == "true"
@@ -288,12 +350,26 @@ func (v *Store) ReadState(ctx context.Context) (*State, error) {
 	if n, err := strconv.Atoi(str(stateUnconfirmed)); err == nil && n > 0 {
 		state.UnconfirmedCount = n
 	}
+	if t, err := time.Parse(time.RFC3339, str(stateCooldown)); err == nil {
+		state.CooldownUntil = t
+	}
+	state.LoginDay = str(stateLoginDay)
+	if n, err := strconv.Atoi(str(stateLoginCount)); err == nil && n > 0 {
+		state.LoginDayCount = n
+	}
 	return state, nil
 }
 
 // WriteState stores the state, every field of it: a writer that knows
 // nothing of a field another workload set still writes it back unchanged,
 // because it read it first.
+//
+// The write is check-and-set against state.Version, the version the state
+// was read at. If another workload has written since, Vault refuses it
+// (IsCASMismatch) and nothing is stored: the caller must read again and
+// decide again, and in particular must not log in on what it read before.
+// On success state.Version is advanced, so the same State can be written
+// again.
 func (v *Store) WriteState(ctx context.Context, state *State) error {
 	stamp := func(t time.Time) string {
 		if t.IsZero() {
@@ -311,9 +387,20 @@ func (v *Store) WriteState(ctx context.Context, state *State) error {
 		stateServed:      state.ServedRequest,
 		stateRequestAt:   stamp(state.RequestLoginAt),
 		stateAttemptAt:   stamp(state.AttemptStartedAt),
+		stateCooldown:    stamp(state.CooldownUntil),
+		stateLoginDay:    state.LoginDay,
+		stateLoginCount:  strconv.Itoa(state.LoginDayCount),
 	}
-	_, err := v.client.KVv2(v.mount).Put(ctx, v.statePath, data)
-	return err
+	secret, err := v.client.KVv2(v.mount).Put(ctx, v.statePath, data, vaultapi.WithCheckAndSet(state.Version))
+	if err != nil {
+		return err
+	}
+	if secret != nil && secret.VersionMetadata != nil {
+		state.Version = secret.VersionMetadata.Version
+	} else {
+		state.Version++
+	}
+	return nil
 }
 
 // Close revokes the Vault token, so that nothing which copied it during the

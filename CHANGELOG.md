@@ -28,9 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     blackout windows on the wall clock of a named time zone (16:00-21:00
     America/Los_Angeles is compiled into the PowerSchool driver); a latch
     set by ANY rejected login or by two failed ones in a row, cleared only
-    by a person; one credential submission per attempt; nothing sent to the
-    site without a request. The latch and the last login are kept in Vault
-    and survive a restart; the scheduled login job shares them.
+    by a person; one credential submission per attempt; at most 6 logins
+    per local calendar day (a compiled-in ceiling; `budget_exhausted` until
+    the next local midnight); nothing sent to the site without a request.
+    Blackout and interval are checked on the clock immediately before every
+    login attempt, with a headroom that covers the whole attempt. The latch,
+    the last login, the cooldown and the day's count are kept in Vault and
+    survive a restart; the scheduled login job shares them.
+  - Every write of the login state record is now check-and-set in Vault,
+    by the broker and by the scheduled login job, and both write an attempt
+    marker before a login and do not log in while the other's is fresh
+    (`login_in_progress`). The chart refuses a broker beside live
+    `powerschoolAuthRefresher.schedules` for the same session unless
+    `acknowledgeScheduledLogins` is set, and refuses a broker without its
+    NetworkPolicy unless `acknowledgeNoNetworkPolicy` is set.
   - Callers present a ServiceAccount token minted for the broker's own
     audience, verified by TokenReview, from an allow-listed ServiceAccount.
     The connector's pod holds only that token (its API token is not mounted)
@@ -46,10 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     poll is replaced from the broker's answer with no wait; a session that
     dies in the middle of a poll is replaced and the poll retried once; a
     session whose state cannot be established for three polls in a row is
-    a failed poll (the mailbox path is unchanged in this respect).
-  - New Vault state field `attempt_started_at` (set before a login, cleared
-    when its outcome is recorded) and latch reason `consecutive_failures`.
-    The scheduled login job preserves both.
+    reported as a failed poll (the mailbox path is unchanged in this
+    respect). With a broker the connector never exits over a login that
+    cannot be had (latch, deferral, budget, an unreachable broker): it
+    stays up, does not ask the portal again about a session it already
+    found dead, and asks the broker at most once per poll.
+  - New Vault state fields `attempt_started_at` (set before a login, cleared
+    when its outcome is recorded), `cooldown_until`, `login_day` and
+    `login_day_count`, and latch reason `consecutive_failures`. The
+    scheduled login job writes the marker and the count as well; its new
+    outcomes `login_in_progress` and `login_state_conflict` exit 0.
 - **PowerSchool: login on demand** (`connectors.powerschool.loginOnDemand`
   with `powerschoolAuthRefresher.onRequest`; both off by default). The
   portal ends an idle session in well under an hour (measured 2026-10-11:

@@ -159,9 +159,14 @@ type Constraints struct {
 	// MinInterval is the least configurable interval between logins.
 	MinInterval time.Duration
 	// LoginHeadroom is how long before a blackout window a login must not
-	// start: the longest a login may take to reach its submit, plus a
-	// margin.
+	// start: the longest ONE call of Login may take from its first request
+	// to its submit -- every step of it, not only the browser -- plus a
+	// margin. The core also cancels a Login call that runs longer.
 	LoginHeadroom time.Duration
+	// Location is the account's local time zone: the calendar the daily
+	// login budget is counted on. Nil means the zone of the configured
+	// blackout, else UTC.
+	Location *time.Location
 }
 
 // Constrained is implemented by a driver that has Constraints.

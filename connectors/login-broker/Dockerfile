@@ -51,9 +51,15 @@ RUN apt-get update \
 # --no-sandbox: see the PowerSchool login job's Dockerfile. The container is
 # the sandbox: one process tree, one site, a read-only root, no persistent
 # storage, egress limited by NetworkPolicy.
+#
+# LOGIN_BROKER_OWNS_TMPDIR: /tmp in this image belongs to this process alone
+# (the chart backs it with memory), so the binary removes browser profiles
+# and browser scratch directories from it at startup and after every login
+# attempt. A profile holds session cookies.
 ENV HOME=/home/broker \
     TMPDIR=/tmp \
-    POWERSCHOOL_CHROME_NO_SANDBOX=true
+    POWERSCHOOL_CHROME_NO_SANDBOX=true \
+    LOGIN_BROKER_OWNS_TMPDIR=true
 COPY --from=build /login-broker /login-broker
 USER 65532
 EXPOSE 8080 9090

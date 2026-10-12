@@ -60,6 +60,12 @@ const (
 	unansweredKey = "meta:login_requests_unanswered"
 	// backoffResetKey: the last operator reset token honoured.
 	backoffResetKey = "meta:login_backoff_reset"
+	// brokerHoldKey (login broker only): "<fingerprint|none> <RFC 3339|-> <code>"
+	// -- the session this connector last found dead, and, when the broker
+	// said when a login may next be made, that time and why. While the
+	// session in place is still that one, the portal is not asked about it
+	// again, and before that time the broker is not asked either.
+	brokerHoldKey = "meta:login_broker_hold"
 )
 
 const (
@@ -211,6 +217,9 @@ type SessionGate struct {
 	replaced string
 	// unknownStreak counts consecutive polls skipped as "state unknown".
 	unknownStreak int
+	// askedThisPoll is set once the broker has been asked in the poll that
+	// began with the last Ensure. One poll asks the broker at most once.
+	askedThisPoll bool
 }
 
 // NewSessionGate builds a gate. requester may be nil; on-demand login is
@@ -385,24 +394,41 @@ func (g *SessionGate) check(ctx context.Context, have bool) SessionVerdict {
 func (g *SessionGate) Ensure(ctx context.Context, cp connector.Checkpoint) GateResult {
 	g.honourReset(cp)
 	g.resetOverlay()
+	g.askedThisPoll = false
 	have := g.reload()
+
+	if g.Synchronous() {
+		// The session in place is one this connector has already found
+		// dead (in an earlier poll, or before a restart) and nothing has
+		// replaced it. Asking the portal about it again would tell nothing
+		// new and would be one more request with a dead session at every
+		// poll, for as long as the broker cannot or may not log in -- its
+		// latch, its blackout, its budget. So the portal is NOT asked; the
+		// broker is, at most once in this poll, and not at all before a
+		// time it has named.
+		if hold, ok := loadBrokerHold(cp); ok && hold.fingerprint == fingerprintOrNone(g.Fingerprint()) {
+			return g.requestAndWait(ctx, cp, brokerapi.ReasonSessionDead)
+		}
+	}
 	verdict := g.check(ctx, have)
 
 	switch verdict.State {
 	case SessionLive:
 		g.unknownStreak = 0
 		clearUnanswered(cp)
+		clearBrokerHold(cp)
 		return g.live(verdict.Reason)
 	case SessionUnknown:
 		// Nothing is changed and no login is asked for: a login would end
 		// the session if it is in fact alive.
 		//
 		// With the login broker, "could not tell" is not allowed to go on
-		// for ever unnoticed: from the third poll in a row it is a failed
-		// poll, which counts toward failure_threshold like any other. The
-		// mailbox path and the path without on-demand login keep what they
-		// do on main -- an unknown state is never a failure there
-		// (glovebox-wekc.14, review round 2) -- and are not changed here.
+		// for ever unnoticed: from the third poll in a row it is reported
+		// as a failed poll (an ERROR line and the skip metric; the process
+		// stays up). The mailbox path and the path without on-demand login
+		// keep what they do on main -- an unknown state is never a failure
+		// there (glovebox-wekc.14, review round 2) -- and are not changed
+		// here.
 		g.unknownStreak++
 		failed := g.Synchronous() && g.unknownStreak >= unknownStreakFails
 		slog.Warn("powerschool: could not tell whether the session is still accepted; skipping this poll, changing nothing",
@@ -414,6 +440,10 @@ func (g *SessionGate) Ensure(ctx context.Context, cp connector.Checkpoint) GateR
 	g.reportDead(verdict.Reason)
 	if !g.OnDemand() {
 		return GateResult{Outcome: GateDead, Reason: verdict.Reason}
+	}
+	if g.Synchronous() {
+		// Remembered across polls and restarts: this session is dead.
+		saveBrokerHold(cp, brokerHold{fingerprint: fingerprintOrNone(g.Fingerprint())})
 	}
 	return g.requestAndWait(ctx, cp, brokerReason(verdict.Reason))
 }
@@ -428,6 +458,13 @@ func (g *SessionGate) Renew(ctx context.Context, cp connector.Checkpoint) GateRe
 		return GateResult{Outcome: GateSkip, Reason: "no_login_broker"}
 	}
 	g.reportDead(ReasonSignInPage)
+	saveBrokerHold(cp, brokerHold{fingerprint: fingerprintOrNone(g.Fingerprint())})
+	if g.askedThisPoll {
+		// The session this poll was given by the broker minutes ago is
+		// dead already. The broker is asked once per poll, not twice; the
+		// next poll takes it up, without probing this session again.
+		return GateResult{Outcome: GateSkip, Reason: "login_broker_already_asked"}
+	}
 	return g.requestAndWait(ctx, cp, brokerapi.ReasonAuthFailure)
 }
 
@@ -466,6 +503,7 @@ func (g *SessionGate) honourReset(cp connector.Checkpoint) {
 		slog.Info("powerschool: login request backoff cleared by the operator", "unanswered_requests", n)
 	}
 	clearUnanswered(cp)
+	clearBrokerHold(cp)
 }
 
 // reportDead writes the line an operator greps for. A dead session is
@@ -527,8 +565,34 @@ func (g *SessionGate) requestAndWait(ctx context.Context, cp connector.Checkpoin
 	now := g.Now()
 	dead := g.Fingerprint()
 
-	// Shared by both ways of asking: after maxUnansweredRequests requests
-	// in a row that delivered no session the portal accepts, stop.
+	if g.broker != nil {
+		// After maxUnansweredRequests sessions in a row that the broker
+		// delivered and the portal then refused here: stop asking. The
+		// count is in the checkpoint and is NOT tied to which session
+		// happens to be in place: with a broker the session in place
+		// changes every time one is delivered, and after a restart it is
+		// whatever the file holds, so "the fingerprint changed" proves
+		// nothing. Only a session the portal accepts, or the operator's
+		// reset, clears it.
+		if n, _ := loadUnanswered(cp); n >= maxUnansweredRequests {
+			return g.blocked(n)
+		}
+		// The broker has said when a login may next be made. Until then
+		// there is nothing to ask.
+		if hold, ok := loadBrokerHold(cp); ok && hold.fingerprint == fingerprintOrNone(dead) && now.Before(hold.until) {
+			return skipPoll("login_deferred:"+hold.code,
+				"the session is dead and the login broker has said when a login may next be made; not asking before then",
+				"retry_after", hold.until.UTC().Format(time.RFC3339))
+		}
+		// The broker decides whether a login may be made -- its blackout,
+		// its minimum interval, its budget, its latch -- and says so in
+		// its answer. The limits below belong to the mailbox, where the
+		// connector cannot see what became of a request.
+		return g.askBroker(ctx, cp, dead, reason)
+	}
+
+	// The mailbox: after maxUnansweredRequests requests in a row that led
+	// to no session the portal accepts, stop.
 	if n, at := loadUnanswered(cp); n >= maxUnansweredRequests {
 		if at == dead {
 			return g.blocked(n)
@@ -537,14 +601,6 @@ func (g *SessionGate) requestAndWait(ctx context.Context, cp connector.Checkpoin
 		// is somebody's intervention. Start counting again.
 		slog.Info("powerschool: the session file changed since login requests stopped; asking is allowed again")
 		clearUnanswered(cp)
-	}
-
-	if g.broker != nil {
-		// The broker decides whether a login may be made -- its blackout,
-		// its minimum interval, its latch -- and says so in its answer.
-		// The limits below belong to the mailbox, where the connector
-		// cannot see what became of a request.
-		return g.askBroker(ctx, cp, dead, reason)
 	}
 
 	if g.source.FileAge != nil && dead != "" {
@@ -650,17 +706,23 @@ func (g *SessionGate) waitForNewSession(ctx context.Context, cp connector.Checkp
 //	                    once; live -> poll with it
 //	deferred            the broker will not log in now (blackout, minimum
 //	                    interval). Nobody's failure; this poll is skipped
-//	latched             logins are stopped until a person clears the latch:
-//	                    the permanent-failure path
-//	inconclusive,       no session; a failed poll, which counts toward
-//	failed, no answer   failure_threshold
+//	latched             logins are stopped until a person clears the latch.
+//	                    The process stays up and says so at every poll
+//	budget_exhausted    as deferred: nothing more today
+//	inconclusive,       no session; reported as a failed poll. The process
+//	failed, no answer   stays up (see pollNow)
 //
 // Only a session that was delivered and then NOT accepted counts as an
 // unanswered request here. A login the broker could not make is the
 // broker's to count: it has its own latch, in Vault, and two counters for
 // one fact would need two resets.
+//
+// Whatever the answer, the session found dead stays recorded as dead
+// (brokerHoldKey) until one the portal accepts is in place: the next poll
+// does not ask the portal about it again.
 func (g *SessionGate) askBroker(ctx context.Context, cp connector.Checkpoint, dead, reason string) GateResult {
 	slog.Info("powerschool: asking the login broker for a session", "reason", reason)
+	g.askedThisPoll = true
 	resp, err := g.broker.Refresh(ctx, reason, dead)
 	if err != nil {
 		return failPoll("login_broker_unreachable",
@@ -670,15 +732,31 @@ func (g *SessionGate) askBroker(ctx context.Context, cp connector.Checkpoint, de
 	switch resp.Outcome {
 	case brokerapi.OutcomeRefreshed, brokerapi.OutcomeCurrent:
 		// Handled below.
-	case brokerapi.OutcomeDeferred:
-		attrs := []any{"code", resp.Code}
+	case brokerapi.OutcomeDeferred, brokerapi.OutcomeBudgetExhausted:
+		code := resp.Code
+		if resp.Outcome == brokerapi.OutcomeBudgetExhausted {
+			code = brokerapi.OutcomeBudgetExhausted
+		}
+		hold := brokerHold{fingerprint: fingerprintOrNone(dead), code: code}
+		attrs := []any{"code", code}
 		if resp.RetryAfter != nil {
+			// Believed only so far: a time a day or more away is asked
+			// about again tomorrow.
+			hold.until = *resp.RetryAfter
+			if limit := g.Now().Add(maxBrokerHold); hold.until.After(limit) {
+				hold.until = limit
+			}
 			attrs = append(attrs, "retry_after", resp.RetryAfter.UTC().Format(time.RFC3339))
 		}
-		return skipPoll("login_deferred:"+resp.Code,
+		saveBrokerHold(cp, hold)
+		return skipPoll("login_deferred:"+code,
 			"the session is dead and the login broker will not log in now", attrs...)
 	case brokerapi.OutcomeLatched:
-		slog.Error("powerschool: the login broker's latch is set; it will not log in until a person clears it",
+		// Not an exit: an exit is a restart, and a restart is another
+		// poll. The connector stays up and says so at every poll window,
+		// with one question to the broker and none to the portal.
+		slog.Error("powerschool: the login broker's latch is set; it will not log in until a person clears it "+
+			"(fix the cause, then clear the latch in Vault as the login broker's design note describes)",
 			"code", resp.Code)
 		return GateResult{Outcome: GateBlocked, Reason: "login_latched:" + resp.Code, Failed: true}
 	case brokerapi.OutcomeInconclusive:
@@ -717,11 +795,14 @@ func (g *SessionGate) askBroker(ctx context.Context, cp connector.Checkpoint, de
 	switch verdict.State {
 	case SessionLive:
 		clearUnanswered(cp)
+		clearBrokerHold(cp)
 		slog.Info("powerschool: the login broker's session is in place and accepted; polling",
 			"outcome", resp.Outcome)
 		return g.live(verdict.Reason)
 	case SessionDead:
 		g.reportDead(verdict.Reason)
+		// This one is known dead now, too: it is not probed again.
+		saveBrokerHold(cp, brokerHold{fingerprint: fingerprintOrNone(g.Fingerprint())})
 		if n := g.bumpUnanswered(cp); n >= maxUnansweredRequests {
 			return g.blocked(n)
 		}
@@ -729,6 +810,63 @@ func (g *SessionGate) askBroker(ctx context.Context, cp connector.Checkpoint, de
 	return failPoll("new_session_not_accepted",
 		"the login broker returned a session but the portal does not accept it here; not asking again in this poll",
 		"session_state", verdict.State.String(), "reason", verdict.Reason)
+}
+
+// maxBrokerHold bounds how long a "not before" from the broker is believed
+// without asking again.
+const maxBrokerHold = 24 * time.Hour
+
+// brokerHold is what brokerHoldKey stores.
+type brokerHold struct {
+	// fingerprint of the session found dead ("none": there was none).
+	fingerprint string
+	// until: the broker need not be asked before this time. Zero: ask at
+	// the next poll.
+	until time.Time
+	// code says why (blackout, min_interval, budget_exhausted, ...).
+	code string
+}
+
+func loadBrokerHold(cp connector.Checkpoint) (brokerHold, bool) {
+	raw, ok := cp.Load(brokerHoldKey)
+	if !ok {
+		return brokerHold{}, false
+	}
+	fields := strings.Fields(raw)
+	if len(fields) != 3 || fields[0] == "" {
+		return brokerHold{}, false
+	}
+	h := brokerHold{fingerprint: fields[0]}
+	if fields[1] != "-" {
+		if t, err := time.Parse(time.RFC3339, fields[1]); err == nil {
+			h.until = t
+		}
+	}
+	if fields[2] != "-" {
+		h.code = fields[2]
+	}
+	return h, true
+}
+
+func saveBrokerHold(cp connector.Checkpoint, h brokerHold) {
+	until, code := "-", "-"
+	if !h.until.IsZero() {
+		until = h.until.UTC().Format(time.RFC3339)
+	}
+	if h.code != "" && !strings.ContainsAny(h.code, " \t\n") {
+		code = h.code
+	}
+	if err := cp.Save(brokerHoldKey, h.fingerprint+" "+until+" "+code); err != nil {
+		slog.Warn("powerschool: could not record that the session is dead; the next poll will ask the portal again", "error", err)
+	}
+}
+
+func clearBrokerHold(cp connector.Checkpoint) {
+	if _, ok := cp.Load(brokerHoldKey); ok {
+		if err := cp.Delete(brokerHoldKey); err != nil {
+			slog.Warn("powerschool: could not clear the dead-session record", "error", err)
+		}
+	}
 }
 
 // brokerErrorText renders a broker client error for a log line. The client

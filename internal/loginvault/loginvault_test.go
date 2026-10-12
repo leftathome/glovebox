@@ -48,7 +48,8 @@ func TestStateRoundTripKeepsEveryField(t *testing.T) {
 		Salt: "0123abcd", Blocked: true, BlockedReason: "consecutive_failures", BlockedAt: at,
 		CredentialFingerprint: "ff00", UnconfirmedCount: 2,
 		ServedRequest: "2026-10-12T13:05:09Z 5f2a9c0e11d24b7a", RequestLoginAt: at.Add(-time.Hour),
-		AttemptStartedAt: at.Add(time.Minute),
+		AttemptStartedAt: at.Add(time.Minute), CooldownUntil: at.Add(2 * time.Minute),
+		LoginDay: "2026-10-12", LoginDayCount: 4,
 	}
 	if err := store.WriteState(ctx, &want); err != nil {
 		t.Fatal(err)
@@ -66,7 +67,8 @@ func TestStateRoundTripKeepsEveryField(t *testing.T) {
 	}
 	raw, _ := v.Secret(statePath)
 	if raw["attempt_started_at"] != "" || raw["login_blocked"] != "true" || raw["unconfirmed_count"] != "2" ||
-		raw["served_request"] != want.ServedRequest {
+		raw["served_request"] != want.ServedRequest || raw["login_day"] != "2026-10-12" || raw["login_day_count"] != "4" ||
+		raw["cooldown_until"] != "2026-10-12T13:07:09Z" {
 		t.Errorf("stored record = %v", raw)
 	}
 }
@@ -121,5 +123,107 @@ func TestCredentialFingerprint(t *testing.T) {
 	}
 	if a == loginvault.CredentialFingerprint("other", "ab", "c") || len(a) != 64 {
 		t.Errorf("fingerprint %q", a)
+	}
+}
+
+// Two workloads share the record. Whoever writes second, on top of a read
+// the other has since written over, is refused by Vault -- not by
+// convention -- and must read again. This is what keeps the login broker
+// and the scheduled job, or two pods of a broker during a restart, from
+// both deciding to log in on the same read.
+func TestStateWritesAreCheckAndSet(t *testing.T) {
+	vaulttest.CleanEnv(t)
+	v := vaulttest.New(t)
+	a, b := connect(t, v), connect(t, v)
+	ctx := context.Background()
+
+	stateA, err := a.ReadState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateB, err := b.ReadState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 12, 13, 0, 0, 0, time.UTC)
+
+	// Both decide to log in; A's marker lands first.
+	stateA.AttemptStartedAt = at
+	if err := a.WriteState(ctx, stateA); err != nil {
+		t.Fatalf("the first writer: %v", err)
+	}
+	stateB.AttemptStartedAt = at.Add(time.Second)
+	err = b.WriteState(ctx, stateB)
+	if !loginvault.IsCASMismatch(err) {
+		t.Fatalf("the second writer on a stale read: %v, want a check-and-set refusal", err)
+	}
+	if raw, version := v.Secret(statePath); raw["attempt_started_at"] != "2026-10-12T13:00:00Z" || version != 1 {
+		t.Fatalf("the refused write changed the record: %v (v%d)", raw, version)
+	}
+
+	// B reads again and sees A's login in flight.
+	stateB, err = b.ReadState(ctx)
+	if err != nil || !stateB.AttemptInProgress(at.Add(time.Minute)) {
+		t.Fatalf("after reading again: %+v, %v", stateB, err)
+	}
+
+	// A records its outcome with the same State it wrote before: the
+	// version moved with its own write, so this is not a conflict.
+	stateA.AttemptStartedAt = time.Time{}
+	stateA.CountLogin("2026-10-12")
+	if err := a.WriteState(ctx, stateA); err != nil {
+		t.Fatalf("the first writer's second write: %v", err)
+	}
+
+	// A record somebody deleted (an operator clearing the latch) is
+	// version 0 again; a writer holding the old version is refused.
+	v.Delete(statePath)
+	stateA.Blocked = true
+	if err := a.WriteState(ctx, stateA); !loginvault.IsCASMismatch(err) {
+		t.Errorf("a write on top of a deleted record: %v", err)
+	}
+	fresh, _ := a.ReadState(ctx)
+	if fresh.Version != 0 || fresh.Blocked {
+		t.Errorf("a deleted record reads as %+v", fresh)
+	}
+	if err := a.WriteState(ctx, fresh); err != nil {
+		t.Errorf("the first write of a new record: %v", err)
+	}
+}
+
+func TestAttemptInProgressAndTheDailyCount(t *testing.T) {
+	now := time.Date(2026, 10, 12, 13, 0, 0, 0, time.UTC)
+	for age, want := range map[time.Duration]bool{
+		0: true, 30 * time.Second: true, 9*time.Minute + 59*time.Second: true,
+		10 * time.Minute: false, 3 * time.Hour: false,
+		-time.Minute: true, -time.Hour: false, // a marker from the future is a clock, not a login
+	} {
+		s := loginvault.State{AttemptStartedAt: now.Add(-age)}
+		if s.AttemptInProgress(now) != want {
+			t.Errorf("a marker %s old: in progress = %v", age, !want)
+		}
+	}
+	if (&loginvault.State{}).AttemptInProgress(now) {
+		t.Error("no marker is a login in flight")
+	}
+
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 23:30 Pacific on the 12th is already the 13th in UTC.
+	late := time.Date(2026, 10, 13, 6, 30, 0, 0, time.UTC)
+	if loginvault.DayOf(late, la) != "2026-10-12" || loginvault.DayOf(late, nil) != "2026-10-13" {
+		t.Errorf("DayOf: %s / %s", loginvault.DayOf(late, la), loginvault.DayOf(late, nil))
+	}
+	var s loginvault.State
+	s.CountLogin("2026-10-12")
+	s.CountLogin("2026-10-12")
+	if s.LoginsOn("2026-10-12") != 2 || s.LoginsOn("2026-10-13") != 0 {
+		t.Errorf("count = %+v", s)
+	}
+	s.CountLogin("2026-10-13")
+	if s.LoginDay != "2026-10-13" || s.LoginDayCount != 1 {
+		t.Errorf("a new day did not start a new count: %+v", s)
 	}
 }

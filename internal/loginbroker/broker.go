@@ -36,6 +36,14 @@ const (
 	// DefaultOpTimeout bounds one refresh: the store, the probe, at most
 	// two login attempts, the confirmation and the writes.
 	DefaultOpTimeout = 6 * time.Minute
+	// CeilingDailyLogins is the most logins that may be made for one site
+	// in one local calendar day, by every workload sharing the account's
+	// record together. It is a constant: configuration can lower it and
+	// cannot raise it. Six is three poll windows a day with one retry
+	// each. It is the bound that still holds when everything else has been
+	// talked round: a caller that restarts, a session that keeps dying, an
+	// owner and a connector signing each other out all day.
+	CeilingDailyLogins = 6
 
 	// recentLogin: a stored session this young, which is not the one the
 	// caller reports dead, is the answer to a request that crossed with a
@@ -98,6 +106,9 @@ type Config struct {
 	// MaxFailures: consecutive failed logins before the latch. Zero means
 	// DefaultMaxFailures.
 	MaxFailures int
+	// DailyBudget: logins per local calendar day. Zero means
+	// CeilingDailyLogins, which is also the most it can be.
+	DailyBudget int
 	// Cooldown and OpTimeout; zero means the defaults.
 	Cooldown  time.Duration
 	OpTimeout time.Duration
@@ -124,6 +135,8 @@ type Broker struct {
 	headroom    time.Duration
 	minInterval time.Duration
 	maxFailures int
+	dailyBudget int
+	budgetLoc   *time.Location
 	cooldown    time.Duration
 	opTimeout   time.Duration
 	statePath   string
@@ -138,8 +151,7 @@ type Broker struct {
 	wg       sync.WaitGroup
 
 	// Touched only by the one refresh in flight.
-	cooldownUntil time.Time
-	unsaved       *heldSession
+	unsaved *heldSession
 }
 
 // call is one refresh in flight and its answer.
@@ -177,6 +189,7 @@ func New(cfg Config) (*Broker, error) {
 		headroom:    DefaultLoginHeadroom,
 		minInterval: cfg.MinInterval,
 		maxFailures: cfg.MaxFailures,
+		dailyBudget: cfg.DailyBudget,
 		cooldown:    cfg.Cooldown,
 		opTimeout:   cfg.OpTimeout,
 		statePath:   cfg.StatePath,
@@ -199,6 +212,24 @@ func New(cfg Config) (*Broker, error) {
 		if limits.LoginHeadroom > 0 {
 			b.headroom = limits.LoginHeadroom
 		}
+		b.budgetLoc = limits.Location
+	}
+	if b.budgetLoc == nil {
+		for _, set := range cfg.Blackout {
+			if set.Loc != nil {
+				b.budgetLoc = set.Loc
+				break
+			}
+		}
+	}
+	if b.budgetLoc == nil {
+		b.budgetLoc = time.UTC
+	}
+	if b.dailyBudget == 0 {
+		b.dailyBudget = CeilingDailyLogins
+	}
+	if b.dailyBudget < 1 || b.dailyBudget > CeilingDailyLogins {
+		return nil, fmt.Errorf("loginbroker: the daily login budget must be between 1 and %d; it can be lowered, not raised", CeilingDailyLogins)
 	}
 	if b.minInterval < floor {
 		return nil, fmt.Errorf("loginbroker: the minimum interval between logins must be at least %s for site %s", floor, cfg.Driver.Site())
@@ -239,6 +270,13 @@ func (b *Broker) Blackout() dailywindow.Schedule { return b.blackout }
 
 // MinInterval returns the interval in force.
 func (b *Broker) MinInterval() time.Duration { return b.minInterval }
+
+// DailyBudget returns the daily login budget in force and the zone whose
+// calendar it is counted on.
+func (b *Broker) DailyBudget() (int, *time.Location) { return b.dailyBudget, b.budgetLoc }
+
+// LoginHeadroom returns how long before a blackout window no login starts.
+func (b *Broker) LoginHeadroom() time.Duration { return b.headroom }
 
 // Refresh answers one request. Concurrent requests share one refresh and
 // get the same answer: there is never more than one login in flight, and a
@@ -303,17 +341,21 @@ func (b *Broker) answer(outcome, code, detail string) *brokerapi.Response {
 
 // refresh is the policy, in order:
 //
-//  1. Open the store and read the broker's record. A login attempt that
-//     never recorded its outcome (the process died) is counted as a failed
-//     one. If the latch is set for these credentials: stop.
+//  1. Open the store and read the broker's record. If it says a login is
+//     in flight elsewhere, stop: its outcome is not guessed. An attempt
+//     that never recorded its outcome and is no longer fresh (the process
+//     died) is counted as a failed login. If the latch is set for these
+//     credentials: stop.
 //  2. Read the stored session. If the site still accepts it, return it. If
 //     that cannot be told, stop: a login would end it if it is alive.
 //  3. The session is dead or absent. Stop, with the time a login may be
 //     made, when inside a blackout window, within the minimum interval of
-//     the last login, or cooling down after a login that never got as far
-//     as the submit.
-//  4. Record that a login is starting, then log in: once, or twice when
-//     the first attempt failed before the credentials were submitted.
+//     the last login, cooling down after a login that never got as far as
+//     the submit, or out of the day's budget.
+//  4. Record that a login is starting -- check-and-set, so that a record
+//     somebody else changed since step 1 means no login -- then read the
+//     clock again, apply step 3 again, and log in: once, or twice when the
+//     first attempt failed before the credentials were submitted.
 //  5. Confirm the new session with the probe. A rejected login sets the
 //     latch; so do MaxFailures logins in a row without a confirmed session.
 //  6. Record the outcome, write the session to the store, return it.
@@ -346,17 +388,29 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 	}
 	credFP := loginvault.CredentialFingerprint(state.Salt, b.creds.Username, b.creds.Password)
 
+	now := b.now()
+	if state.AttemptInProgress(now) {
+		// Somebody else -- a second pod of this broker during a restart,
+		// the scheduled login job -- is logging in right now. (Not this
+		// process: its own refreshes are one at a time.) That login is not
+		// a failure and not this request's to judge. Nothing is counted,
+		// nothing is written and the site is not asked anything.
+		return b.deferred(log, brokerapi.CodeLoginInProgress, now, state.AttemptStartedAt.Add(loginvault.AttemptFreshFor))
+	}
 	if !state.AttemptStartedAt.IsZero() {
 		// A process died between "about to log in" and "this is how it
-		// went". The credentials may have been submitted; nobody knows.
-		// It counts as a failed login made at that time.
+		// went", long enough ago that it is not coming back. The
+		// credentials may have been submitted; nobody knows. It counts as
+		// a failed login made at that time.
 		log.Warn("an earlier login attempt never recorded its outcome (the process ended during it); counting it as a failed login",
 			"attempt_started_at", state.AttemptStartedAt.UTC().Format(time.RFC3339))
-		state.RequestLoginAt = state.AttemptStartedAt
+		at := state.AttemptStartedAt
+		state.RequestLoginAt = at
 		state.AttemptStartedAt = time.Time{}
+		state.CountLogin(loginvault.DayOf(at, b.budgetLoc))
 		b.countFailure(state)
 		if err := b.writeState(ctx, store, state); err != nil {
-			return b.storeFailure(log, "write_state", err)
+			return b.recordFailure(log, now, "write_state", err)
 		}
 	}
 
@@ -374,6 +428,7 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 		state.Blocked, state.BlockedReason, state.BlockedAt, state.UnconfirmedCount = false, "", time.Time{}, 0
 	}
 	b.metrics.setLatched(false)
+	b.metrics.loginsToday(state.LoginsOn(loginvault.DayOf(now, b.budgetLoc)))
 
 	// --- 2. the stored session ----------------------------------------
 	fields, loggedInAt, version, err := store.ReadFields(ctx)
@@ -394,7 +449,6 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 		stored, loggedInAt, needsWrite = u.session, u.loggedInAt, true
 	}
 
-	now := b.now()
 	if stored != nil {
 		storedFP := brokerapi.ShortFingerprint(b.driver.Fingerprint(stored))
 		age := now.Sub(loggedInAt)
@@ -424,29 +478,10 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 	}
 
 	// --- 3. may a login be made now? -----------------------------------
-	if b.blackout.BlocksAt(now, b.headroom) {
-		return b.deferred(log, brokerapi.CodeBlackout, now, now)
-	}
-	// The last login by anybody: the one this broker (or the scheduled
-	// job, for a request) recorded, or the one that made the stored
-	// session. A session that died minutes after it was made was most
-	// likely ended by the account's owner signing in; logging in again at
-	// once would sign them out.
-	last := state.RequestLoginAt
-	if loggedInAt.After(last) {
-		last = loggedInAt
-	}
-	if !last.IsZero() {
-		if last.After(now) {
-			// A clock that jumped must not open the gate.
-			return b.deferred(log, brokerapi.CodeMinInterval, now, now.Add(b.minInterval))
-		}
-		if now.Sub(last) < b.minInterval {
-			return b.deferred(log, brokerapi.CodeMinInterval, now, last.Add(b.minInterval))
-		}
-	}
-	if now.Before(b.cooldownUntil) {
-		return b.deferred(log, brokerapi.CodeCooldown, now, b.cooldownUntil)
+	// The clock is read again: the store and the probe took time, and the
+	// probe may have taken its whole timeout.
+	if resp := b.gate(log, b.now(), state, loggedInAt); resp != nil {
+		return resp
 	}
 
 	// --- 4. the login ---------------------------------------------------
@@ -459,18 +494,31 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 		return b.answer(brokerapi.OutcomeFailed, brokerapi.CodeStoreRejected, "")
 	}
 
-	// Written BEFORE the login: if this write is refused, the outcome
-	// could not be recorded either, and a rejected password would be
-	// submitted again by the next request.
+	// Written BEFORE the login, check-and-set against the version read in
+	// step 1. If the write is refused for any reason there is no login:
+	// either the outcome could not be recorded afterwards (and a rejected
+	// password would be submitted again), or somebody else has changed the
+	// record since -- logged in, set the latch, started a login -- and
+	// everything decided above was decided on a stale read.
 	started := b.now().UTC()
 	state.CredentialFingerprint = credFP
 	state.AttemptStartedAt = started
 	if err := b.writeState(ctx, store, state); err != nil {
 		log.Error("could not record that a login is starting; not logging in")
-		return b.storeFailure(log, "write_state", err)
+		return b.recordFailure(log, started, "write_state", err)
 	}
 
-	session, lerr := b.login(ctx, log)
+	session, lerr, held := b.login(ctx, log, state, loggedInAt)
+	if held != nil {
+		// The gate closed between the decision and the attempt (the
+		// writes above took time, or the pause before a second attempt
+		// did). Nothing was submitted by the attempt that was not made.
+		if err := b.commit(ctx, store, state, func(s *loginvault.State) { s.AttemptStartedAt = time.Time{} }); err != nil {
+			log.Error("could not clear the attempt marker; the next request will treat this attempt as a login in flight, then as a failed one",
+				"state_path", b.statePath, "error", b.redact(err))
+		}
+		return held
+	}
 	if lerr != nil {
 		return b.loginFailed(ctx, log, store, state, started, lerr)
 	}
@@ -485,51 +533,164 @@ func (b *Broker) refresh(ctx context.Context, req brokerapi.Request) *brokerapi.
 
 	// --- 6. record and store -------------------------------------------
 	newLoggedInAt := b.now().UTC()
-	state.AttemptStartedAt = time.Time{}
-	state.RequestLoginAt = started
-	state.UnconfirmedCount = 0
-	if err := b.writeState(ctx, store, state); err != nil {
+	if err := b.commit(ctx, store, state, func(s *loginvault.State) {
+		s.AttemptStartedAt = time.Time{}
+		s.RequestLoginAt = started
+		s.UnconfirmedCount = 0
+		s.CooldownUntil = time.Time{}
+		s.CountLogin(loginvault.DayOf(started, b.budgetLoc))
+	}); err != nil {
 		// The login worked. What is lost is the record of it: the next
-		// request will find the attempt marker and count a failure that
-		// did not happen. That errs on the side of fewer logins.
-		log.Error("the login succeeded but its outcome could not be recorded; the next request will count it as a failure",
+		// request will find the attempt marker and, once it is stale,
+		// count a failure that did not happen. That errs on the side of
+		// fewer logins.
+		log.Error("the login succeeded but its outcome could not be recorded; a later request will count it as a failure",
 			"state_path", b.statePath, "error", b.redact(err))
 	}
 	b.metrics.loginResult("success")
 	b.metrics.lastLogin(newLoggedInAt)
+	b.metrics.loginsToday(state.LoginsOn(loginvault.DayOf(newLoggedInAt, b.budgetLoc)))
 	log.Info("logged in; the site accepts the new session", "outcome", brokerapi.OutcomeRefreshed)
 	return b.withSession(ctx, log, store, brokerapi.OutcomeRefreshed, session, newLoggedInAt, version, true)
+}
+
+// gate decides whether a login may START at now. It returns nil when it
+// may, and otherwise the answer that says why not and until when. It reads
+// no clock of its own and has no side effects, so it can be -- and is --
+// applied more than once: when the session is found dead, and again
+// immediately before every call of the driver's Login.
+//
+// loggedInAt is when the stored session was made (zero when unknown).
+func (b *Broker) gate(log *slog.Logger, now time.Time, state *loginvault.State, loggedInAt time.Time) *brokerapi.Response {
+	// No login starts unless the whole span from now to now + headroom is
+	// clear of every window; the headroom covers one whole call of the
+	// driver's Login, which is cancelled if it runs longer.
+	if b.blackout.BlocksAt(now, b.headroom) {
+		return b.deferred(log, brokerapi.CodeBlackout, now, now)
+	}
+	// The last login by anybody: the one a workload recorded, or the one
+	// that made the stored session. A session that died minutes after it
+	// was made was most likely ended by the account's owner signing in;
+	// logging in again at once would sign them out.
+	last := state.RequestLoginAt
+	if loggedInAt.After(last) {
+		last = loggedInAt
+	}
+	if !last.IsZero() {
+		if last.After(now) {
+			// A clock that jumped must not open the gate.
+			return b.deferred(log, brokerapi.CodeMinInterval, now, now.Add(b.minInterval))
+		}
+		if now.Sub(last) < b.minInterval {
+			return b.deferred(log, brokerapi.CodeMinInterval, now, last.Add(b.minInterval))
+		}
+	}
+	if now.Before(state.CooldownUntil) {
+		until := state.CooldownUntil
+		// A cooldown far beyond what this broker ever sets is a broken
+		// clock or a hand edit; it is honoured only as far as one cooldown.
+		if limit := now.Add(b.cooldown); until.After(limit) {
+			until = limit
+		}
+		return b.deferred(log, brokerapi.CodeCooldown, now, until)
+	}
+	day := loginvault.DayOf(now, b.budgetLoc)
+	if used := state.LoginsOn(day); used >= b.dailyBudget {
+		local := now.In(b.budgetLoc)
+		midnight := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, b.budgetLoc).UTC()
+		resp := b.answer(brokerapi.OutcomeBudgetExhausted, "", "")
+		resp.RetryAfter = &midnight
+		b.metrics.loginsToday(used)
+		log.Error("the session is dead and the day's login budget is spent; no login until the next local midnight",
+			"outcome", brokerapi.OutcomeBudgetExhausted, "logins_today", used, "daily_budget", b.dailyBudget,
+			"local_day", day, "retry_after", midnight.Format(time.RFC3339))
+		return resp
+	}
+	return nil
+}
+
+// commit applies mutate to state and stores it. If the record has changed
+// since state was read (a check-and-set mismatch) the record is read again,
+// mutate is applied to THAT, and it is stored: an outcome that has already
+// happened must not be lost because somebody else wrote in between, and it
+// must not overwrite what they wrote either. state is updated to what was
+// stored.
+//
+// This is for recording what has happened. Deciding to log in never goes
+// through here: that write is plain check-and-set, and a mismatch means no
+// login.
+func (b *Broker) commit(ctx context.Context, store Store, state *loginvault.State, mutate func(*loginvault.State)) error {
+	mutate(state)
+	err := b.writeState(ctx, store, state)
+	if !loginvault.IsCASMismatch(err) {
+		return err
+	}
+	fresh, rerr := store.ReadState(ctx)
+	if rerr != nil || fresh == nil {
+		return err
+	}
+	mutate(fresh)
+	if werr := b.writeState(ctx, store, fresh); werr != nil {
+		return werr
+	}
+	*state = *fresh
+	return nil
+}
+
+// recordFailure answers a write of the record that failed BEFORE a login.
+// A check-and-set mismatch is not a broken store: somebody else changed the
+// record, and the answer is "not now", with nothing decided.
+func (b *Broker) recordFailure(log *slog.Logger, now time.Time, op string, err error) *brokerapi.Response {
+	if loginvault.IsCASMismatch(err) {
+		log.Warn("the login record changed while this request was deciding; nothing was decided on the stale read")
+		return b.deferred(log, brokerapi.CodeStateConflict, now, now.Add(time.Minute))
+	}
+	return b.storeFailure(log, op, err)
 }
 
 // login calls the driver: once, or once more when the first call failed
 // before the credentials were submitted. It is the only place the
 // credentials leave the Broker.
-func (b *Broker) login(ctx context.Context, log *slog.Logger) (Session, *LoginError) {
-	var last *LoginError
+//
+// Immediately before EVERY call the clock is read and the gate applied
+// again -- blackout and interval included -- because everything between
+// the decision and here took time: the store, the pause before a second
+// attempt, a first attempt that used most of its allowance. If the gate
+// has closed, no call is made and held is the answer to give. Each call is
+// cancelled after the login headroom, which is what makes "the next
+// headroom is clear of every window" mean "this login cannot submit inside
+// one".
+func (b *Broker) login(ctx context.Context, log *slog.Logger, state *loginvault.State, loggedInAt time.Time) (session Session, lerr *LoginError, held *brokerapi.Response) {
 	for attempt := 1; attempt <= maxLoginAttempts; attempt++ {
 		if attempt > 1 {
 			if err := b.sleep(ctx, retryDelay); err != nil {
-				return nil, last
+				return nil, lerr, nil
 			}
-			// The pause and the first attempt took time.
-			if b.blackout.BlocksAt(b.now(), b.headroom) {
-				return nil, last
+		}
+		if held := b.gate(log, b.now(), state, loggedInAt); held != nil {
+			if lerr != nil {
+				// A first attempt was made and failed before the submit;
+				// that, not the closed gate, is how this request ends.
+				return nil, lerr, nil
 			}
+			return nil, nil, held
 		}
 		log.Info("logging in", "attempt", attempt)
 		b.metrics.loginAttempt()
-		session, err := b.driver.Login(ctx, b.creds)
+		actx, cancel := context.WithTimeout(ctx, b.headroom)
+		s, err := b.driver.Login(actx, b.creds)
+		cancel()
 		if err == nil {
-			return session, nil
+			return s, nil, nil
 		}
-		last = asLoginError(err)
-		if last.Kind != LoginNotSubmitted {
-			return nil, last
+		lerr = asLoginError(err)
+		if lerr.Kind != LoginNotSubmitted {
+			return nil, lerr, nil
 		}
 		log.Warn("the login failed before the credentials were submitted",
-			"attempt", attempt, "detail", b.token(last.Detail))
+			"attempt", attempt, "detail", b.token(lerr.Detail))
 	}
-	return nil, last
+	return nil, lerr, nil
 }
 
 // asLoginError makes any error a *LoginError. An error of another type is
@@ -550,10 +711,14 @@ func (b *Broker) loginFailed(ctx context.Context, log *slog.Logger, store Store,
 		// Nothing was submitted: not a login for the interval, not a
 		// strike for the latch. Only the cooldown.
 		b.metrics.loginResult("not_submitted")
-		b.cooldownUntil = b.now().Add(b.cooldown)
-		state.AttemptStartedAt = time.Time{}
-		if err := b.writeState(ctx, store, state); err != nil {
-			log.Error("could not clear the attempt marker; the next request will count this attempt as a failed login",
+		until := b.now().Add(b.cooldown).UTC()
+		if err := b.commit(ctx, store, state, func(s *loginvault.State) {
+			s.AttemptStartedAt = time.Time{}
+			// In the record, not in the process: a restart does not
+			// shorten it.
+			s.CooldownUntil = until
+		}); err != nil {
+			log.Error("could not clear the attempt marker; a later request will count this attempt as a failed login",
 				"state_path", b.statePath, "error", b.redact(err))
 		}
 		log.Error("the login could not be attempted: it failed before the credentials were submitted",
@@ -561,10 +726,12 @@ func (b *Broker) loginFailed(ctx context.Context, log *slog.Logger, store Store,
 		return b.answer(brokerapi.OutcomeFailed, brokerapi.CodeLoginNotSubmitted, lerr.Detail)
 	case LoginRejected:
 		b.metrics.loginResult("rejected")
-		state.AttemptStartedAt = time.Time{}
-		state.RequestLoginAt = started
-		b.setLatch(state, blockedCredentialsRejected)
-		b.recordLatch(ctx, log, store, state)
+		b.recordLatch(ctx, log, store, state, func(s *loginvault.State) {
+			s.AttemptStartedAt = time.Time{}
+			s.RequestLoginAt = started
+			s.CountLogin(loginvault.DayOf(started, b.budgetLoc))
+			b.setLatch(s, blockedCredentialsRejected)
+		})
 		log.Error("the site rejected the credentials; no further login will be attempted until they change or the latch is cleared",
 			"outcome", brokerapi.OutcomeLatched, "code", brokerapi.CodeCredentialsRejected, "state_path", b.statePath)
 		return b.answer(brokerapi.OutcomeLatched, brokerapi.CodeCredentialsRejected, "")
@@ -581,19 +748,24 @@ func (b *Broker) loginFailed(ctx context.Context, log *slog.Logger, store Store,
 func (b *Broker) failedLogin(ctx context.Context, log *slog.Logger, store Store, state *loginvault.State,
 	started time.Time, code, detail string) *brokerapi.Response {
 	b.metrics.loginResult(code)
-	state.AttemptStartedAt = time.Time{}
-	state.RequestLoginAt = started
-	b.countFailure(state)
+	err := b.commit(ctx, store, state, func(s *loginvault.State) {
+		s.AttemptStartedAt = time.Time{}
+		s.RequestLoginAt = started
+		s.CountLogin(loginvault.DayOf(started, b.budgetLoc))
+		b.countFailure(s)
+	})
 	if state.Blocked {
-		b.recordLatch(ctx, log, store, state)
+		if err != nil {
+			b.latchNotRecorded(log, state, err)
+		}
 		log.Error("logins keep failing; no further login will be attempted until the latch is cleared",
 			"outcome", brokerapi.OutcomeLatched, "code", brokerapi.CodeConsecutiveFailures,
 			"last_failure", code, "detail", b.token(detail),
 			"consecutive_failures", state.UnconfirmedCount, "state_path", b.statePath)
 		return b.answer(brokerapi.OutcomeLatched, brokerapi.CodeConsecutiveFailures, detail)
 	}
-	if err := b.writeState(ctx, store, state); err != nil {
-		log.Error("could not record the failed login; the next request will count it from the attempt marker",
+	if err != nil {
+		log.Error("could not record the failed login; a later request will count it from the attempt marker",
 			"state_path", b.statePath, "error", b.redact(err))
 	}
 	log.Error("the login did not produce a session the site accepts",
@@ -617,16 +789,20 @@ func (b *Broker) setLatch(state *loginvault.State, reason string) {
 	b.metrics.setLatched(true)
 }
 
-// recordLatch writes a state whose latch has just been set.
-func (b *Broker) recordLatch(ctx context.Context, log *slog.Logger, store Store, state *loginvault.State) {
-	if err := b.writeState(ctx, store, state); err != nil {
-		// The attempt marker written before the login is still in the
-		// store, so the next request counts this login as failed even
-		// without this record. A REJECTED password, though, is then only a
-		// strike and not yet a latch. Say so loudly.
-		log.Error("COULD NOT RECORD THE LOGIN LATCH. Scale this broker to zero until the store is writable again",
-			"blocked_reason", state.BlockedReason, "state_path", b.statePath, "error", b.redact(err))
+// recordLatch stores an outcome that sets the latch.
+func (b *Broker) recordLatch(ctx context.Context, log *slog.Logger, store Store, state *loginvault.State, mutate func(*loginvault.State)) {
+	if err := b.commit(ctx, store, state, mutate); err != nil {
+		b.latchNotRecorded(log, state, err)
 	}
+}
+
+// latchNotRecorded says, loudly, that a latch exists only in this process.
+// The attempt marker written before the login is still in the store, so a
+// later request counts this login as failed even without the record. A
+// REJECTED password, though, is then only a strike and not yet a latch.
+func (b *Broker) latchNotRecorded(log *slog.Logger, state *loginvault.State, err error) {
+	log.Error("COULD NOT RECORD THE LOGIN LATCH. Scale this broker to zero until the store is writable again",
+		"blocked_reason", state.BlockedReason, "state_path", b.statePath, "error", b.redact(err))
 }
 
 // latchCode maps a stored latch reason to an answer code. Anything but a
@@ -674,7 +850,7 @@ func (b *Broker) deferred(log *slog.Logger, code string, now, earliest time.Time
 	if code == brokerapi.CodeBlackout {
 		attrs = append(attrs, "blackout", b.blackout.String())
 	}
-	log.Warn("the session is dead but no login may be made now", attrs...)
+	log.Warn("no login may be made now", attrs...)
 	return resp
 }
 

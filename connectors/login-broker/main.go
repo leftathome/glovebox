@@ -32,6 +32,8 @@
 //	                               default 20m; a site may set a floor
 //	LOGIN_BROKER_MAX_FAILURES      failed logins in a row before the latch;
 //	                               default 2, at most 5
+//	LOGIN_BROKER_DAILY_LOGIN_BUDGET  logins per local calendar day; default
+//	                               and maximum 6 (it can be lowered only)
 //	LOGIN_BROKER_BLACKOUT_WINDOWS  daily windows with no login,
 //	                               "HH:MM-HH:MM,HH:MM-HH:MM"; added to the
 //	                               site's own
@@ -110,6 +112,7 @@ type config struct {
 
 	MinInterval time.Duration
 	MaxFailures int
+	DailyBudget int
 	Blackout    dailywindow.Schedule
 
 	Vault loginvault.Config
@@ -181,6 +184,18 @@ func loadConfig(getenv func(string) string) (cfg config, problems []string) {
 			bad("LOGIN_BROKER_MAX_FAILURES must be between 1 and %d", loginbroker.CeilingMaxFailures)
 		} else {
 			cfg.MaxFailures = n
+		}
+	}
+
+	cfg.DailyBudget = loginbroker.CeilingDailyLogins
+	if raw := get("LOGIN_BROKER_DAILY_LOGIN_BUDGET"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > loginbroker.CeilingDailyLogins {
+			// A ceiling, not a default: this is the bound that holds when
+			// every other one has been talked round.
+			bad("LOGIN_BROKER_DAILY_LOGIN_BUDGET must be between 1 and %d: it can be lowered, not raised", loginbroker.CeilingDailyLogins)
+		} else {
+			cfg.DailyBudget = n
 		}
 	}
 
@@ -271,6 +286,7 @@ func build(cfg config, driver loginbroker.Driver, auth loginbroker.Authenticator
 		Blackout:    cfg.Blackout,
 		MinInterval: cfg.MinInterval,
 		MaxFailures: cfg.MaxFailures,
+		DailyBudget: cfg.DailyBudget,
 		StatePath:   cfg.Vault.KVMount + "/" + cfg.Vault.StatePath,
 		Logger:      logger,
 		Metrics:     metrics,
@@ -334,6 +350,12 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	// Before the credentials are even read: see hardenProcess.
+	if err := hardenProcess(); err != nil {
+		logger.Warn("could not mark the process non-dumpable; a browser started under the same user could read this process's start-up environment",
+			"outcome", "not_hardened")
+	}
+
 	cfg, problems := loadConfig(os.Getenv)
 	var driver loginbroker.Driver
 	if factory, ok := drivers[cfg.Site]; ok {
@@ -391,6 +413,8 @@ func main() {
 		"allowed_callers", auth.Allowed(),
 		"min_interval_seconds", int64(a.broker.MinInterval()/time.Second),
 		"max_failures", cfg.MaxFailures,
+		"daily_login_budget", cfg.DailyBudget,
+		"login_headroom_seconds", int64(a.broker.LoginHeadroom()/time.Second),
 		"blackout", a.broker.Blackout().String(),
 		"vault_session_path", cfg.Vault.KVMount+"/"+cfg.Vault.SessionPath,
 		"vault_state_path", cfg.Vault.KVMount+"/"+cfg.Vault.StatePath)

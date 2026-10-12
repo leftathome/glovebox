@@ -98,8 +98,13 @@ const (
 	OutcomeCurrent = "current"
 	// OutcomeDeferred: the stored session is dead but policy forbids a
 	// login now. RetryAfter says when one may be made. Code is CodeBlackout,
-	// CodeMinInterval or CodeCooldown.
+	// CodeMinInterval, CodeCooldown, CodeLoginInProgress or
+	// CodeStateConflict.
 	OutcomeDeferred = "deferred"
+	// OutcomeBudgetExhausted: the stored session is dead and the day's
+	// login budget for the site is spent. RetryAfter is the next local
+	// midnight. Nothing a caller does before then causes a login.
+	OutcomeBudgetExhausted = "budget_exhausted"
 	// OutcomeLatched: logins are stopped until a person clears the latch.
 	// Code is CodeCredentialsRejected or CodeConsecutiveFailures.
 	OutcomeLatched = "latched"
@@ -113,9 +118,16 @@ const (
 
 // Codes that qualify an outcome. A closed list.
 const (
-	CodeBlackout            = "blackout"
-	CodeMinInterval         = "min_interval"
-	CodeCooldown            = "cooldown"
+	CodeBlackout    = "blackout"
+	CodeMinInterval = "min_interval"
+	CodeCooldown    = "cooldown"
+	// CodeLoginInProgress: another workload sharing the account's record
+	// (a second broker pod during a restart, the scheduled login job) has a
+	// login in flight. Its outcome is not yet known and is not guessed.
+	CodeLoginInProgress = "login_in_progress"
+	// CodeStateConflict: the record changed between this request reading
+	// it and writing it. Nothing was decided on the stale read.
+	CodeStateConflict       = "state_conflict"
 	CodeCredentialsRejected = "credentials_rejected"
 	CodeConsecutiveFailures = "consecutive_failures"
 	CodeLoginUnconfirmed    = "login_unconfirmed"

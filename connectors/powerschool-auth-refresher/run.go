@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/loginvault"
 	"github.com/leftathome/glovebox/internal/pslogin"
 	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
@@ -209,6 +210,37 @@ func execute(ctx context.Context, cfg config, d deps) result {
 		state.Salt = salt
 	}
 	fingerprint := credentialFingerprint(state.Salt, cfg.Username, cfg.Password)
+
+	// The record is shared with the login broker, when one is deployed for
+	// this account, and with any other run of this job. A fresh attempt
+	// marker means one of them is logging in right now: this run must not
+	// log in beside it, and must not judge it either.
+	if now := d.now(); state.AttemptInProgress(now) {
+		log.Warn("another login for this account is in flight (the login broker, or another run of this job); not logging in beside it",
+			"outcome", "login_in_progress",
+			"attempt_started_at", state.AttemptStartedAt.UTC().Format(time.RFC3339))
+		return result{exitSuccess, "login_in_progress",
+			"another login for this account started at " + state.AttemptStartedAt.UTC().Format(time.RFC3339) + " and has not recorded its outcome yet"}
+	}
+	if !state.AttemptStartedAt.IsZero() {
+		// A marker too old to be a login in flight: the process that wrote
+		// it died in the middle of a login whose outcome nobody knows. It
+		// counts as a login made then, without a working session.
+		at := state.AttemptStartedAt
+		log.Warn("an earlier login attempt never recorded its outcome (the process ended during it); counting it as an unconfirmed login",
+			"attempt_started_at", at.UTC().Format(time.RFC3339))
+		state.AttemptStartedAt = time.Time{}
+		state.RequestLoginAt = at
+		state.CountLogin(loginvault.DayOf(at, cfg.Blackout.loc))
+		state.UnconfirmedCount++
+		if state.UnconfirmedCount >= maxUnconfirmedLogins && !state.Blocked {
+			state.Blocked, state.BlockedReason, state.BlockedAt = true, blockedLoginUnconfirmed, d.now().UTC()
+			state.CredentialFingerprint = fingerprint
+		}
+		if err := writeState(ctx, d, store, state); err != nil {
+			return vaultFailure(log, cfg, "write", cfg.VaultStatePath, err)
+		}
+	}
 	if state.Blocked {
 		if state.CredentialFingerprint == fingerprint {
 			log.Error("login blocked: an earlier login with these credentials did not produce a session, and submitting them again risks locking the account. "+
@@ -313,18 +345,44 @@ func execute(ctx context.Context, cfg config, d deps) result {
 		state.ServedRequest = request.raw
 		state.RequestLoginAt = d.now().UTC()
 	}
+	// The attempt marker: from this write until the outcome is recorded,
+	// nobody else sharing the record logs in (they see a login in flight).
+	// The write is check-and-set against the version read above, so if
+	// anybody changed the record since -- the broker starting a login of
+	// its own, most of all -- it is refused and this run does not log in.
+	attemptAt := d.now().UTC()
+	state.AttemptStartedAt = attemptAt
 	if err := writeState(ctx, d, store, state); err != nil {
+		if isCASMismatch(err) {
+			log.Warn("the login state changed while this run was deciding (another login workload wrote it); not logging in on a stale read",
+				"outcome", "login_state_conflict", "vault_path", cfg.VaultStatePath)
+			return result{exitSuccess, "login_state_conflict",
+				"the login state at " + cfg.VaultStatePath + " changed during this run; not logging in"}
+		}
 		log.Error("could not write the login state; not logging in, since a rejected login could not be recorded")
 		return vaultFailure(log, cfg, "write", cfg.VaultStatePath, err)
 	}
 
-	session, r := runLogin(ctx, cfg, d)
+	session, r, notSubmitted := runLogin(ctx, cfg, d)
+	// Every write of the record from here on clears the marker, and every
+	// way out of this function below makes one.
+	state.AttemptStartedAt = time.Time{}
+	if !notSubmitted {
+		// The credentials were submitted, or may have been: a login, for
+		// the daily count the login broker budgets against.
+		state.CountLogin(loginvault.DayOf(attemptAt, cfg.Blackout.loc))
+	}
 	if session == nil {
 		switch r.code {
 		case exitBadCredentials:
 			setLatch(ctx, cfg, d, store, state, blockedCredentialsRejected)
 		case exitLoginUnconfirmed:
 			return unconfirmed(ctx, cfg, d, store, state, r.message)
+		default:
+			if err := writeState(ctx, d, store, state); err != nil {
+				log.Error("could not clear the attempt marker; other login workloads will hold off until it is stale, then count this run as an unconfirmed login",
+					"vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
+			}
 		}
 		return r
 	}
@@ -341,12 +399,12 @@ func execute(ctx context.Context, cfg config, d deps) result {
 		return unconfirmed(ctx, cfg, d, store, state, "the session the login produced does not open the home page")
 	}
 
-	// Only a confirmed login clears the count.
-	if state.UnconfirmedCount != 0 {
-		state.UnconfirmedCount = 0
-		if err := writeState(ctx, d, store, state); err != nil {
-			log.Warn("could not reset the unconfirmed-login count", "vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
-		}
+	// Only a confirmed login clears the count. This write also clears the
+	// attempt marker and records the login in the daily count.
+	state.UnconfirmedCount = 0
+	if err := writeState(ctx, d, store, state); err != nil {
+		log.Warn("could not record the confirmed login (the unconfirmed-login count, the attempt marker)",
+			"vault_path", cfg.VaultStatePath, "error", cfg.redact(err.Error()))
 	}
 
 	data, err := sessionData(session, loggedInAt, selected)
@@ -538,7 +596,7 @@ func keepStored(ctx context.Context, cfg config, d deps, stored *storedSession) 
 // logins, and the second happens only when the first is known to have
 // failed before any credentials were submitted. A rejected login, and any
 // failure that cannot be placed before the submit, ends the run.
-func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, result) {
+func runLogin(ctx context.Context, cfg config, d deps) (session *pslib.SessionExport, r result, notSubmitted bool) {
 	log := d.logger
 	for attempt := 1; attempt <= maxLoginAttempts; attempt++ {
 		// Checked again here, with the same headroom: Vault and the reads
@@ -546,9 +604,9 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, re
 		if now := d.now(); cfg.Blackout.blocksLoginAt(now) {
 			logBlackoutRefusal(log, cfg, now)
 			if attempt == 1 {
-				return nil, blackoutResult(cfg, exitSuccess)
+				return nil, blackoutResult(cfg, exitSuccess), true
 			}
-			return nil, blackoutResult(cfg, exitTransient)
+			return nil, blackoutResult(cfg, exitTransient), true
 		}
 
 		log.Info("logging in to the portal", "attempt", attempt)
@@ -556,9 +614,9 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, re
 		if err == nil {
 			if session == nil {
 				log.Error("the login returned no session", "outcome", "login_unconfirmed")
-				return nil, result{exitLoginUnconfirmed, "login_unconfirmed", "the login returned no session"}
+				return nil, result{exitLoginUnconfirmed, "login_unconfirmed", "the login returned no session"}, false
 			}
-			return session, result{}
+			return session, result{}, false
 		}
 
 		switch failureKind(err) {
@@ -567,7 +625,7 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, re
 			log.Error("the portal rejected the credentials; no further login will be attempted until they change or the latch is cleared",
 				"outcome", "bad_credentials",
 				"attempt", attempt)
-			return nil, result{exitBadCredentials, "bad_credentials", "the portal rejected the credentials; the login is now blocked"}
+			return nil, result{exitBadCredentials, "bad_credentials", "the portal rejected the credentials; the login is now blocked"}, false
 		case loginFailedBeforeSubmit:
 			if attempt < maxLoginAttempts {
 				log.Warn("the login failed before the credentials were submitted; trying once more",
@@ -575,7 +633,7 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, re
 					"error", cfg.redact(err.Error()))
 				if serr := d.sleep(ctx, loginRetryDelay); serr != nil {
 					log.Error("interrupted before the second login attempt", "outcome", "transient_failure")
-					return nil, result{exitTransient, "transient_failure", "interrupted before the second login attempt"}
+					return nil, result{exitTransient, "transient_failure", "interrupted before the second login attempt"}, true
 				}
 				continue
 			}
@@ -583,18 +641,18 @@ func runLogin(ctx context.Context, cfg config, d deps) (*pslib.SessionExport, re
 				"outcome", "transient_failure",
 				"attempt", attempt,
 				"error", cfg.redact(err.Error()))
-			return nil, result{exitTransient, "transient_failure", "the login failed before the credentials were submitted, twice"}
+			return nil, result{exitTransient, "transient_failure", "the login failed before the credentials were submitted, twice"}, true
 		default:
 			log.Error("the login failed and the credentials may have been submitted; not retrying",
 				"outcome", "transient_failure",
 				"attempt", attempt,
 				"error", cfg.redact(err.Error()))
-			return nil, result{exitTransient, "transient_failure", "the login failed; the credentials may have been submitted"}
+			return nil, result{exitTransient, "transient_failure", "the login failed; the credentials may have been submitted"}, false
 		}
 	}
 	// Unreachable: every path through the loop body returns or continues
 	// with attempt < maxLoginAttempts.
-	return nil, result{exitTransient, "transient_failure", "no login attempt completed"}
+	return nil, result{exitTransient, "transient_failure", "no login attempt completed"}, false
 }
 
 // unconfirmed records a login that returned without a working session and

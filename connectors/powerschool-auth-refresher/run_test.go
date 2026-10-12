@@ -179,6 +179,8 @@ type harness struct {
 	// succeeds. A nil entry is a success.
 	loginResults []error
 	logins       int
+	// onLogin, when set, runs at the start of every login.
+	onLogin func()
 
 	// probeResults is consumed one per probe; when exhausted a probe
 	// succeeds.
@@ -251,6 +253,9 @@ func (h *harness) deps() deps {
 		},
 		login: func(context.Context) (*pslib.SessionExport, error) {
 			h.logins++
+			if h.onLogin != nil {
+				h.onLogin()
+			}
 			if n := h.logins - 1; n < len(h.loginResults) && h.loginResults[n] != nil {
 				return nil, h.loginResults[n]
 			}

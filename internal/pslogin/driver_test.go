@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -408,14 +410,36 @@ func TestDriverConstraintsAreThePortalsFloor(t *testing.T) {
 	p := newPortal(t)
 	d := newTestDriver(t, p, nil)
 	limits := d.Constraints()
-	if limits.MinInterval != 20*time.Minute || limits.LoginHeadroom != psportal.LoginHeadroom {
+	// The headroom covers ALL of one Login call: the sign-in page check
+	// (30 s) as well as the browser (90 s), plus the margin (60 s). The
+	// scheduled job's 150 s covers only the browser, because it checks the
+	// blackout between the two; the broker checks once, before both.
+	if limits.MinInterval != 20*time.Minute || limits.LoginHeadroom != 180*time.Second {
 		t.Errorf("limits = %+v", limits)
 	}
+	if sum := ProbeTimeout + LoginTimeout + psportal.LoginMargin; sum != limits.LoginHeadroom {
+		t.Errorf("the parts of a login add up to %s, the headroom is %s", sum, limits.LoginHeadroom)
+	}
 	la := psportal.FloorLocation()
+	if limits.Location != la {
+		t.Errorf("the budget's calendar is %v, want the owner's zone", limits.Location)
+	}
 	day := time.Date(2026, 10, 12, 0, 0, 0, 0, la)
 	for at := day; at.Before(day.Add(25 * time.Hour)); at = at.Add(37 * time.Second) {
-		if limits.Blackout.BlocksAt(at, limits.LoginHeadroom) != psportal.FloorBlocksLoginAt(at) {
+		// Same windows as the shared floor; only the reach back from the
+		// start differs, by exactly the sign-in check's 30 s.
+		if limits.Blackout.BlocksAt(at, psportal.LoginHeadroom) != psportal.FloorBlocksLoginAt(at) {
 			t.Fatalf("%s: the driver's blackout disagrees with the shared floor", at.Format("15:04:05"))
+		}
+	}
+	for at, blocked := range map[time.Time]bool{
+		time.Date(2026, 10, 12, 15, 56, 59, 0, la): false,
+		time.Date(2026, 10, 12, 15, 57, 0, 0, la):  true,
+		time.Date(2026, 10, 12, 20, 59, 59, 0, la): true,
+		time.Date(2026, 10, 12, 21, 0, 0, 0, la):   false,
+	} {
+		if limits.Blackout.BlocksAt(at, limits.LoginHeadroom) != blocked {
+			t.Errorf("%s: blocked = %v, want %v", at.Format("15:04:05"), !blocked, blocked)
 		}
 	}
 	if d.Site() != "powerschool" {
@@ -426,5 +450,74 @@ func TestDriverConstraintsAreThePortalsFloor(t *testing.T) {
 	}
 	if _, err := NewDriver(p.cfg(), DriverOptions{SessionLifetime: time.Minute}); err == nil {
 		t.Error("a one-minute session lifetime was accepted")
+	}
+}
+
+// A browser profile holds the session cookies. Whatever a login that did
+// not end normally left in the temporary directory is removed when the
+// driver is built (startup) and after every login attempt -- when, and only
+// when, the process has that directory to itself.
+func TestDriverSweepsBrowserLeftovers(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	leftovers := []string{"ps-login-profile-123", ".org.chromium.Chromium.AbCdEf", "chromedp-runner4711"}
+	plant := func() {
+		for _, name := range leftovers {
+			dir := filepath.Join(tmp, name, "Default")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "Cookies"), []byte(liveCookie), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(tmp, "unrelated.txt"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left := func() []string {
+		entries, _ := os.ReadDir(tmp)
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return names
+	}
+
+	p := newPortal(t)
+	calls := 0
+
+	// A shared temporary directory: nothing is touched.
+	plant()
+	d := newTestDriver(t, p, p.browserLogin(&calls))
+	if _, err := d.Login(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	if len(left()) != len(leftovers)+1 {
+		t.Fatalf("a driver that does not own the directory removed something: %v", left())
+	}
+
+	// Its own: swept at startup ...
+	own, err := NewDriver(p.cfg(), DriverOptions{
+		Base: p.srv.Client().Transport, Now: func() time.Time { return driverNow }, OwnsTempDir: true,
+		Login: func(cfg Config) func(context.Context) (*pslib.SessionExport, error) {
+			return func(ctx context.Context) (*pslib.SessionExport, error) {
+				plant() // the browser dies and leaves its profile behind
+				return nil, &LoginError{Kind: FailedUnknown, Err: errors.New("browser crashed")}
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := left(); len(got) != 1 || got[0] != "unrelated.txt" {
+		t.Fatalf("after startup: %v", got)
+	}
+	// ... and after an attempt, however it ended.
+	if _, err := own.Login(context.Background(), creds); err == nil {
+		t.Fatal("the crashed login succeeded")
+	}
+	if got := left(); len(got) != 1 || got[0] != "unrelated.txt" {
+		t.Fatalf("after a failed attempt: %v", got)
 	}
 }

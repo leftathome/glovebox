@@ -325,16 +325,23 @@ on the connector's side:
   and checked once; the mounted session file receives the same session
   through Vault and ESO a little later, and until then does not displace it.
 - The connector applies no blackout and no interval of its own: the broker
-  enforces both and says `deferred` (a skipped poll, not a failed one). A
-  latch on the broker's side ends in the permanent-failure path with its own
-  message.
+  enforces both and says `deferred`, or `budget_exhausted` (a skipped poll,
+  not a failed one). The connector then does not ask again before the time
+  the broker named.
+- The process never exits over a login that cannot be had -- the broker's
+  latch, a deferral, an unreachable broker. An exit is a restart, and a
+  restart loop would put a request to the portal on a timer. It stays up,
+  logs an ERROR at every poll, and asks the broker at most once per poll.
+- A session found dead is remembered as dead (in the checkpoint, across
+  restarts): the portal is not asked about it again.
 - A session that dies in the middle of a poll is replaced and the poll is
   run again on the new one, once.
-- A session whose state cannot be established for three polls in a row is a
-  failed poll and counts toward `failure_threshold`.
-- The count of requests that led nowhere, and
-  `POWERSCHOOL_LOGIN_BACKOFF_RESET`, work as above, but only a session that
-  was delivered and then refused counts.
+- A session whose state cannot be established for three polls in a row is
+  reported as a failed poll (ERROR line, skip metric).
+- Two sessions in a row that were delivered and then refused by the portal
+  stop the asking. The count is in the checkpoint and survives a restart;
+  a session the portal accepts, or `POWERSCHOOL_LOGIN_BACKOFF_RESET`,
+  clears it.
 - The pod needs no access to the Kubernetes API. It presents a
   ServiceAccount token projected for the broker's audience, to the broker's
   address only.

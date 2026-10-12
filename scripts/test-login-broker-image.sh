@@ -119,6 +119,21 @@ else
   cat "$WORK/browser.log"
 fi
 
+# 6. The broker makes itself non-dumpable before it reads the password, so
+#    that the browser -- same user, no sandbox of its own -- cannot read the
+#    broker's start-up environment or memory out of /proc. Shown here as the
+#    image's user, where the kernel's refusal is real (root is not refused).
+if docker run "${RUN_AS_POD[@]}" \
+  -e LOGIN_BROKER_BROWSER_TEST=1 \
+  -v "$WORK:/t:ro" --entrypoint /t/broker.test "$IMAGE" \
+  -test.run '^TestSameUserCannotReadAHardenedProcess$' -test.v >"$WORK/harden.log" 2>&1 &&
+  grep -q -- '--- PASS: TestSameUserCannotReadAHardenedProcess' "$WORK/harden.log"; then
+  ok "a same-user process cannot read the hardened broker's environment or memory"
+else
+  fail "the hardening test did not pass inside the image"
+  cat "$WORK/harden.log"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "test-login-broker-image: FAILED"
   exit 1

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +68,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatalf("problems: %v", problems)
 	}
-	if cfg.Listen != ":8080" || cfg.MetricsListen != ":9090" || cfg.MinInterval != 20*time.Minute || cfg.MaxFailures != 2 {
+	if cfg.Listen != ":8080" || cfg.MetricsListen != ":9090" || cfg.MinInterval != 20*time.Minute || cfg.MaxFailures != 2 ||
+		cfg.DailyBudget != 6 {
 		t.Errorf("cfg = %+v", cfg)
 	}
 	// The state lives beside the session, where the scheduled job keeps
@@ -99,6 +101,8 @@ func TestLoadConfigReportsFaultsWithoutValues(t *testing.T) {
 		"interval not a time":  {func(e map[string]string) { e["LOGIN_BROKER_MIN_INTERVAL"] = testPassword }, "LOGIN_BROKER_MIN_INTERVAL"},
 		"interval too short":   {func(e map[string]string) { e["LOGIN_BROKER_MIN_INTERVAL"] = "30s" }, "LOGIN_BROKER_MIN_INTERVAL"},
 		"failure limit":        {func(e map[string]string) { e["LOGIN_BROKER_MAX_FAILURES"] = "50" }, "LOGIN_BROKER_MAX_FAILURES"},
+		"budget raised":        {func(e map[string]string) { e["LOGIN_BROKER_DAILY_LOGIN_BUDGET"] = "7" }, "can be lowered, not raised"},
+		"budget zero":          {func(e map[string]string) { e["LOGIN_BROKER_DAILY_LOGIN_BUDGET"] = "0" }, "LOGIN_BROKER_DAILY_LOGIN_BUDGET"},
 		"windows without zone": {func(e map[string]string) { delete(e, "LOGIN_BROKER_BLACKOUT_TZ") }, "LOGIN_BROKER_BLACKOUT_TZ is required"},
 		"zone Local":           {func(e map[string]string) { e["LOGIN_BROKER_BLACKOUT_TZ"] = "Local" }, "LOGIN_BROKER_BLACKOUT_TZ"},
 		"zone unknown":         {func(e map[string]string) { e["LOGIN_BROKER_BLACKOUT_TZ"] = "Pacific" }, "LOGIN_BROKER_BLACKOUT_TZ"},
@@ -119,6 +123,11 @@ func TestLoadConfigReportsFaultsWithoutValues(t *testing.T) {
 		if strings.Contains(joined, testPassword) || strings.Contains(joined, testUsername) {
 			t.Errorf("%s: a problem quotes a value: %q", name, joined)
 		}
+	}
+	lowered := goodEnv()
+	lowered["LOGIN_BROKER_DAILY_LOGIN_BUDGET"] = "3"
+	if cfg, problems := loadConfig(getenv(lowered)); len(problems) != 0 || cfg.DailyBudget != 3 {
+		t.Errorf("a lowered budget: %d, %v", cfg.DailyBudget, problems)
 	}
 	env := goodEnv()
 	env["LOGIN_BROKER_BLACKOUT_WINDOWS"] = "4pm-9pm"
@@ -681,4 +690,21 @@ func keysOf(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The process makes itself non-dumpable before it reads the credentials:
+// the kernel then refuses a same-user process -- the browser -- access to
+// this process's /proc/<pid>/environ and memory. (That it does refuse
+// cannot be shown here when the tests run as root, which may read anything;
+// what is pinned is that the flag is set and stays set.)
+func TestHardenProcessMakesTheProcessNonDumpable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux only")
+	}
+	if err := hardenProcess(); err != nil {
+		t.Fatalf("hardenProcess: %v", err)
+	}
+	if v, err := processDumpable(); err != nil || v != 0 {
+		t.Fatalf("dumpable = %d, %v; want 0", v, err)
+	}
 }

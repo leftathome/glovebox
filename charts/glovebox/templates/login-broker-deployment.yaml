@@ -135,6 +135,11 @@ spec:
               value: {{ $b.minInterval | default "20m" | quote }}
             - name: LOGIN_BROKER_MAX_FAILURES
               value: {{ $b.maxFailures | default 2 | quote }}
+            # Logins per local calendar day, shared with every other
+            # workload that logs in for this account. Six is compiled into
+            # the binary as the most it accepts.
+            - name: LOGIN_BROKER_DAILY_LOGIN_BUDGET
+              value: {{ $b.dailyLoginBudget | default 6 | quote }}
             {{- $blackout := $b.blackout | default dict }}
             {{- if $blackout.windows }}
             {{- $windows := list }}

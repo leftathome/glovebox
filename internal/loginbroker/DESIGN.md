@@ -24,7 +24,7 @@ synchronously and has none of them:
 | Mailbox defect (bead glovebox-wekc.14) | Here |
 |---|---|
 | A request made outside the CronJob's windows is never read, and counts as a strike toward the connector's two-strike stop. | No windows. Every request is answered; "not now" is an answer (`deferred`), not a strike. |
-| A session whose state cannot be established is skipped for ever, silently. | From the third poll in a row it is a failed poll and counts toward `failure_threshold` (broker mode only). |
+| A session whose state cannot be established is skipped for ever, silently. | From the third poll in a row it is reported as a failed poll: an ERROR line and the skip metric (broker mode only). |
 | A request stays valid (15 min) longer than the connector waits (10 min), so a late login can end the owner's session for nobody. | There is no pending request. A login that outlives its caller is stored and returned to the next one without a second login. |
 | A login that fails before the credentials are submitted still spends the request and the 20-minute interval. | It costs a two-minute cooldown: no interval, no strike. |
 
@@ -50,7 +50,8 @@ outcome:
 |---|---|---|
 | `refreshed` | The broker logged in. | yes |
 | `current` | The stored session is alive; no login. | yes |
-| `deferred` | Dead, but no login may be made now; `retry_after` says when. Code `blackout`, `min_interval` or `cooldown`. | no |
+| `deferred` | No login may be made now; `retry_after` says when. Code `blackout`, `min_interval`, `cooldown`, `login_in_progress` (another workload's login is in flight) or `state_conflict` (the record changed under this request). | no |
+| `budget_exhausted` | Dead, and the day's logins are spent; `retry_after` is the next local midnight. | no |
 | `latched` | Logins are stopped until a person clears the latch. Code `credentials_rejected` or `consecutive_failures`. | no |
 | `inconclusive` | Could not tell whether the stored session is alive; no login on a guess. | no |
 | `failed` | A login was attempted and produced no session, or could not be attempted. | no |
@@ -110,9 +111,12 @@ Enforced in the broker, in this order, for every request:
 1. **Single flight.** Concurrent requests share one refresh and get the
    same answer. The refresh runs on its own deadline (6 min), not the
    caller's: a caller that gives up does not abort a login halfway.
-2. **The record is read from Vault** (below). A login attempt that never
-   recorded its outcome -- the pod died in the middle -- counts as a failed
-   login made at that time.
+2. **The record is read from Vault** (below), with its version. If it holds
+   a FRESH attempt marker, somebody else -- a second pod during a restart,
+   the scheduled login job -- has a login in flight: the answer is
+   `deferred` / `login_in_progress`, and nothing is counted, written or
+   sent to the site. A marker older than ten minutes is a login that died
+   with its process: it counts as a failed login made at that time.
 3. **The latch.** If it is set for the configured credentials: stop.
    Nothing is sent to the site.
 4. **Probe before login.** The stored session is checked with one GET. If
@@ -122,41 +126,67 @@ Enforced in the broker, in this order, for every request:
    alive. The caller's fingerprint is never by itself a reason to log in;
    it only lets a request about a session replaced within the last two
    minutes be answered without asking the site again.
-5. **Blackout.** No login inside a configured window, nor within the time a
-   login may take before one (150 s for PowerSchool). Windows are daily, on
-   the wall clock of a named time zone, across daylight-saving changes. The
-   account's owner uses the portal 16:00-21:00 America/Los_Angeles and a
-   login then signs them out; that window is compiled into the PowerSchool
-   driver and cannot be configured away. The answer is `deferred` with the
-   time the window ends. A live stored session is still returned during a
-   blackout: the blackout forbids logins, not answers.
-6. **Minimum interval** (default and PowerSchool floor: 20 min), measured
-   from the last login by ANYBODY -- the broker's own record or the
-   `logged_in_at` of the stored session. A session that died minutes after
-   it was made was most likely ended by the owner signing in; logging in
-   again at once would sign them out. This is also the bound on what a
-   compromised connector can cause.
-7. **One submission per attempt.** The record is written BEFORE the login
-   (if that write fails there is no login: the outcome could not be recorded
-   either). `Login` is called once; once more only after
-   `LoginNotSubmitted`. The new session is confirmed with the probe and only
-   then stored.
-8. **The failure latch.** ANY rejection of the credentials sets it at once;
+5. **The gate**, on a clock read AFTER the probe, and again immediately
+   before every call of the driver's login (the store and the probe take
+   time; a first attempt can use most of its allowance):
+   - **Blackout.** No login starts unless the whole login headroom from
+     now is clear of every window. The headroom covers ONE WHOLE login
+     attempt -- for PowerSchool the sign-in page check (30 s), the browser
+     (90 s) and a margin (60 s): 180 s, so the last instant a login may
+     start before 16:00 is 15:56:59 -- and each attempt is cancelled when
+     it has run that long, so a submission cannot land inside a window.
+     Windows are daily, on the wall clock of a named time zone, across
+     daylight-saving changes. The account's owner uses the portal
+     16:00-21:00 America/Los_Angeles and a login then signs them out; that
+     window is compiled into the PowerSchool driver and cannot be
+     configured away. The answer is `deferred` with the time the window
+     ends. A live stored session is still returned during a blackout: the
+     blackout forbids logins, not answers.
+   - **Minimum interval** (default and PowerSchool floor: 20 min), measured
+     from the last login by ANYBODY -- the record's `request_login_at` or
+     the `logged_in_at` of the stored session. A session that died minutes
+     after it was made was most likely ended by the owner signing in;
+     logging in again at once would sign them out.
+   - **Cooldown** (2 min) after a login that failed before the credentials
+     were submitted. Kept in the record, so a restart does not shorten it.
+   - **Daily budget.** At most 6 logins per local calendar day for the
+     site (three poll windows, one retry each), counted in the record
+     across restarts and across the broker and the scheduled job. Six is a
+     compiled-in ceiling; configuration can lower it and cannot raise it.
+     Over budget the answer is `budget_exhausted` with the next local
+     midnight. This is the bound that still holds when the others have
+     been talked round -- a caller that restarts, an owner and a connector
+     signing each other out all day.
+6. **One submission per attempt.** The attempt marker is written BEFORE the
+   login, check-and-set against the version read in step 2. If that write
+   is refused there is no login: either the outcome could not be recorded
+   afterwards, or somebody changed the record since it was read and
+   everything above was decided on a stale read (`deferred` /
+   `state_conflict`). `Login` is called once; once more only after
+   `LoginNotSubmitted`. The new session is confirmed with the probe and
+   only then stored.
+7. **The failure latch.** ANY rejection of the credentials sets it at once;
    so do `maxFailures` (default 2) logins in a row that did not end with a
    confirmed session. Repeating a wrong password is how an account gets
    locked, and a sign-in page that now wants a CAPTCHA or a new password
    looks like a login that "worked" without a session. Only a person clears
    it.
-9. **No traffic without a request.** No warm-up at startup, no periodic
+8. **No traffic without a request.** No warm-up at startup, no periodic
    check, no keepalive: `/healthz` asks the broker, never the site.
 
 ### What is kept, and where
 
 In Vault, beside the session, at `vault.statePath` (default: `login-state`
 next to the session). It is read at every request, so a restarted pod
-forgets nothing and a person's change takes effect without a restart. The
-scheduled PowerSchool login job reads and writes the SAME record: a latch
-set by either stops both.
+forgets nothing and a person's change takes effect without a restart.
+
+The scheduled PowerSchool login job reads and writes the SAME record. Every
+write of it, by either workload, is **check-and-set** in Vault against the
+version the writer read: two writers can never both act on the same read.
+The second is refused and reads again, and a refused write before a login
+means no login. Both write the attempt marker before a login and neither
+logs in while the other's marker is fresh. A latch set by either stops
+both; a login by either counts for the other's interval and for the day.
 
 | Field | Content |
 |---|---|
@@ -164,13 +194,40 @@ set by either stops both.
 | `credential_fingerprint`, `salt` | Salted SHA-256 of the credentials last submitted; never the values. A latch applies only while the configured credentials still match it. |
 | `unconfirmed_count` | Failed logins in a row. |
 | `request_login_at` | When a login was last made on request; the interval is measured from it. |
-| `attempt_started_at` | Set immediately before a login, cleared when its outcome is recorded. |
+| `attempt_started_at` | Set immediately before a login, cleared when its outcome is recorded. Fresh (under 10 min): a login is in flight. |
+| `cooldown_until` | No login before this time (after a failure before the submit). |
+| `login_day`, `login_day_count` | The local calendar day and how many logins were made on it. |
 
 **Clearing the latch.** First find out why it was set (sign in to the site
 yourself). Then either change the credentials (the pod must restart to read
 them; the latch no longer matches and lifts), or delete the record with an
 operator token: `vault kv metadata delete -mount=secret glovebox/powerschool/default/login-state`.
-Do not clear it to retry the same rejected password.
+Deleting the record also resets the day's count. Do not clear it to retry
+the same rejected password.
+
+### The connector's side
+
+With a broker the PowerSchool connector never exits over a login that
+cannot be had. An exit is a restart, and a restart loop is a loop of polls:
+it would put a request to the portal with a dead session on a timer, round
+the clock. Instead:
+
+- A session found dead is recorded as dead in the connector's checkpoint.
+  While that session is still the one in place, later polls -- and the
+  process after a restart -- do not ask the portal about it again.
+- Each poll asks the broker at most once. After `deferred` or
+  `budget_exhausted` it does not ask again before `retry_after` (believed
+  for at most a day). After `latched` it asks once per poll window and
+  sends the portal nothing.
+- Two sessions in a row that the broker delivered and the portal then
+  refused stop the asking altogether. That count is in the checkpoint and
+  is not tied to which session is in place, so a restart does not undo it;
+  a session the portal accepts, or `POWERSCHOOL_LOGIN_BACKOFF_RESET`,
+  clears it.
+
+What tells an operator is the ERROR line at every poll,
+`powerschool_polls_skipped_total{reason}`, and the broker's
+`login_broker_latched` and `login_broker_refresh_total{outcome}`.
 
 ## Threat model
 
@@ -200,21 +257,53 @@ idle out, it can cause at most one login per minimum interval, never in the
 blackout, and never after a rejection. It learns the session cookies -- which
 it is given anyway -- and never the password. It cannot make the broker
 contact another host: the request carries no address. It can cause one
-probe GET per request; requests are rate limited at the endpoint (one per
-second sustained).
+probe GET per request; an authenticated caller is rate limited (one request
+per second sustained), and whatever it does, the day's logins are bounded
+by the daily budget.
 
-**What a compromised broker exposes.** One account: its password (in the
-pod's environment at start and in memory; it is removed from the process
-environment before any browser is started, so a browser does not inherit
-it, but code running as the same user could still find it), and that
-account's session and login
-record in Vault. Not another site's: each instance has its own
-ServiceAccount, Vault role and credentials Secret, and the chart refuses two
-instances sharing a role or a session path. Its egress is DNS, Vault, the
-API server and the site on 443, with private ranges carved out.
+**What a compromised broker exposes.** One account: its password, and that
+account's session and login record in Vault. Not another site's: each
+instance has its own ServiceAccount, Vault role and credentials Secret, and
+the chart refuses two instances sharing a role or a session path. Its egress
+is DNS, Vault, the API server and the site on 443, with private ranges
+carved out.
+
+**The browser inside the broker.** The PowerSchool driver starts a Chromium
+without Chromium's own sandbox, as the same user as the broker, and that
+browser parses whatever the site sends. What it can and cannot reach:
+
+- *The password.* It arrives in the process environment. `os.Unsetenv`
+  keeps a child from inheriting it but does not change
+  `/proc/<pid>/environ`, so the broker also marks itself non-dumpable
+  (`prctl(PR_SET_DUMPABLE, 0)`) before it reads its configuration: the
+  kernel then refuses a same-user process access to the broker's
+  `/proc/<pid>/environ` and memory. Reading the credentials from a mounted
+  file instead was considered and is no better: with one user in the pod, a
+  file the broker can read the browser can read too, for as long as it is
+  mounted.
+- *The ServiceAccount token* -- NOT protected. It is a file the pod's user
+  can read. Code running in the browser could read it, log in to Vault as
+  this instance (Vault is within the pod's egress) and read or overwrite
+  this account's session and login record: clear the latch, reset the
+  day's count. It could also present the token to the Kubernetes API,
+  where the instance may only create TokenReviews. This is a real residual
+  exposure of running the browser in the broker's pod. The login record's
+  guards protect against mistakes and against a compromised CONNECTOR; they
+  do not survive code execution in the BROWSER. Closing it needs the
+  browser under another identity -- its own container and user, or a remote
+  browser -- which is not built. The Vault role should in any case carry
+  no `delete` and nothing outside the two paths.
+- *Leftovers.* A browser profile holds session cookies. The driver removes
+  its profile on every way out of a login, and removes any browser profile
+  or scratch directory found in the temporary directory at startup and
+  after every attempt.
 
 **Other pods; the network.** Another pod in the namespace is refused by the
-NetworkPolicy before the token is looked at. A token read off the wire is
+NetworkPolicy before the token is looked at. Should one reach the port
+anyway, its junk tokens are limited per source address BEFORE
+authentication -- so it cannot use up an allowance the connector needs --
+and the shared limit sits behind authentication, where only an allow-listed
+caller can spend it. A token read off the wire is
 valid for ten minutes, against this broker only, from an admitted pod only;
 what it buys is the list above under "compromised connector". The answer
 carries the session in the clear over the pod network: if that is not
@@ -230,13 +319,24 @@ and every refusal for each secret it handled.
 
 ## Deploying an instance
 
-`loginBrokers.<name>` in the chart: a Deployment (1 replica, `Recreate` --
-two pods would be two logins racing for one session), Service,
-ServiceAccount, credentials ExternalSecret, NetworkPolicy and a ClusterRole
-that allows TokenReview and nothing else. Disabled by default. The
-connector is wired with `connectors.powerschool.loginBroker.enabled`; the
-chart refuses that together with `loginOnDemand`, and refuses a broker
-together with `powerschoolAuthRefresher.onRequest` for the same session.
+`loginBrokers.<name>` in the chart: a Deployment (1 replica, `Recreate`),
+Service, ServiceAccount, credentials ExternalSecret, NetworkPolicy and a
+ClusterRole that allows TokenReview and nothing else. Disabled by default.
+The connector is wired with `connectors.powerschool.loginBroker.enabled`.
+
+The chart refuses to render:
+
+- `loginOnDemand` and `loginBroker` together for the connector, and a
+  broker together with `powerschoolAuthRefresher.onRequest` for the same
+  session;
+- a broker beside LIVE `powerschoolAuthRefresher.schedules` for the same
+  session, unless `acknowledgeScheduledLogins: true` (suspended schedules,
+  kept as templates for a manual run, are fine);
+- a broker WITHOUT its NetworkPolicy -- the chart-wide switch or the
+  instance's own turned off -- unless `acknowledgeNoNetworkPolicy: true`
+  says an equivalent policy exists elsewhere;
+- two brokers sharing a Vault role or a session path;
+- a daily budget above 6.
 
 Not in this chart, and required before enabling an instance: a Vault policy
 and Kubernetes auth role bound to that instance's ServiceAccount
@@ -285,8 +385,19 @@ NOT ported in this change), a driver would need:
 
 ## Known limits
 
-- One replica, by design. There is no leader election; `Recreate` and the
-  check-and-set write to Vault are what keep two writers apart.
+- One replica, by design, and no leader election. What keeps two writers
+  apart is in Vault, not in the Deployment: every write of the login record
+  is check-and-set, the attempt marker makes a login in flight visible, and
+  the session write is check-and-set too. `Recreate` only keeps the overlap
+  short. A second writer that ignores the record entirely -- a person
+  logging in by hand, a workload that does not use `internal/loginvault` --
+  is not guarded against.
+- The browser shares the broker's pod and user: see "The browser inside the
+  broker". The password is kept out of its reach; the ServiceAccount token,
+  and with it this account's Vault paths, is not.
+- The attempt marker is honoured for ten minutes. A broker pod killed in
+  the middle of a login therefore answers `login_in_progress` for up to ten
+  minutes after it comes back, and then counts the login as failed.
 - `selected_student_id` is written empty by the broker (the scheduled job
   records it). Nothing reads it.
 - The sign-in page is checked with a GET before the browser opens it again;
@@ -297,3 +408,5 @@ NOT ported in this change), a driver would need:
   the session (code `session_not_stored`) and the broker offers it to Vault
   again at the next request; a pod restart in between loses it, and the
   next login waits out the interval.
+- The scheduled job counts its logins into the daily count but is not
+  itself stopped by the budget: its schedule is the operator's own.

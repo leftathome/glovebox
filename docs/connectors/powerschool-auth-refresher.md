@@ -257,12 +257,23 @@ State path:
 | `served_request` | The last connector request acted on, verbatim (a time and a fingerprint prefix). A request is acted on once. |
 | `request_login_at` | When a login was last started for a request; the 20-minute interval is measured from it. |
 | `unconfirmed_count` | Logins in a row that returned without a working session. |
-| `attempt_started_at` | Written by the login broker only: set immediately before a login, cleared when its outcome is recorded. This job carries it through unchanged. |
+| `attempt_started_at` | Set immediately before a login, cleared when its outcome is recorded. While it is under ten minutes old a login is in flight: no other run, and not the login broker, logs in (`outcome=login_in_progress`, exit 0). Older than that, it is a run that died in the middle of a login, and is counted as an unconfirmed one. |
+| `cooldown_until` | Written by the login broker: no broker login before this time. This job carries it through unchanged. |
+| `login_day`, `login_day_count` | The Pacific calendar day and the number of logins made on it, by this job and the login broker together. The broker stops at six a day; this job counts and is not stopped. |
+
+Every write of this record is check-and-set against the version the run
+read. If something else wrote it in between, the write before the login is
+refused and the run does not log in (`outcome=login_state_conflict`, exit
+0).
 
 The login broker (`loginBrokers.powerschool`, see
 `internal/loginbroker/DESIGN.md`) reads and writes this same record when it
 is deployed for the same account: a latch set by either workload stops
-both, and a login made by either counts for the other's interval.
+both, a login made by either counts for the other's interval, and neither
+logs in while the other's login is in flight. The chart refuses live
+schedules of this job beside a broker for the same session unless
+`loginBrokers.<name>.acknowledgeScheduledLogins` is set; suspended ones,
+kept as templates for a manual run, are fine.
 
 ### Clearing the latch
 
