@@ -312,6 +312,8 @@ func TestVaultStoreLoginStateRoundTrip(t *testing.T) {
 		BlockedAt:             time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
 		CredentialFingerprint: credentialFingerprint(testSalt, testUsername, testPassword),
 		UnconfirmedCount:      2,
+		ServedRequest:         "2026-10-12T13:05:09Z 5f2a9c0e11d24b7a",
+		RequestLoginAt:        time.Date(2026, 10, 12, 13, 6, 0, 0, time.UTC),
 	}
 	if err := store.WriteState(ctx, &want); err != nil {
 		t.Fatal(err)

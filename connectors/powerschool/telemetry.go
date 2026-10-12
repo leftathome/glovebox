@@ -31,6 +31,7 @@ type Telemetry struct {
 	kidsSkippedTotal   metric.Int64Counter
 	rejectedSessionAge metric.Float64Gauge
 	attendanceNonEvent metric.Int64Counter
+	pollsSkipped       metric.Int64Counter
 
 	tracer trace.Tracer
 }
@@ -99,6 +100,12 @@ func newTelemetry(base *connector.Metrics, meter metric.Meter, tracer trace.Trac
 	if err != nil {
 		return nil, fmt.Errorf("construct powerschool_rejected_session_age_seconds: %w", err)
 	}
+	t.pollsSkipped, err = meter.Int64Counter("powerschool_polls_skipped_total",
+		metric.WithDescription("Polls that did not read the portal because no live session was available, by reason "+
+			"(session_state_unknown, blackout, no_new_session, login_job_failed, login_request_failed, ...)"))
+	if err != nil {
+		return nil, fmt.Errorf("construct powerschool_polls_skipped_total: %w", err)
+	}
 	return t, nil
 }
 
@@ -157,6 +164,18 @@ func (t *Telemetry) RecordPollByTrigger(triggerSource string) {
 	}
 	t.pollsTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("trigger_source", triggerSource),
+	))
+}
+
+// RecordPollSkipped increments powerschool_polls_skipped_total{reason}: a
+// poll that did not read the portal because there was no live session to
+// read it with (see SessionGate). reason is a short fixed word.
+func (t *Telemetry) RecordPollSkipped(reason string) {
+	if t == nil || t.pollsSkipped == nil {
+		return
+	}
+	t.pollsSkipped.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("reason", reason),
 	))
 }
 

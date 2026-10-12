@@ -34,8 +34,58 @@ stored session is young and still accepted; one login per run):
 {{- $_ := set $active $name $entry }}
 {{- end }}
 {{- end }}
-{{- if not $active }}
-{{- fail "powerschoolAuthRefresher.enabled is true but powerschoolAuthRefresher.schedules is empty" }}
+{{- $onRequest := $r.onRequest | default dict }}
+{{- if and (not $active) (not $onRequest.enabled) }}
+{{- fail "powerschoolAuthRefresher.enabled is true but powerschoolAuthRefresher.schedules is empty and onRequest is off: there would be no login workload" }}
+{{- end }}
+{{- /*
+Every CronJob this template renders, of both kinds, as one list:
+
+  schedule  an entry of `schedules`: runs on its clock (unless suspended)
+            and logs in by the ordinary rules.
+  request   an entry of `onRequest.windows`: runs every few minutes inside
+            a window and does nothing -- sends nothing to the portal --
+            unless the connector has written a login request.
+
+They share one pod template. What differs is in $e.
+*/}}
+{{- $entries := dict }}
+{{- range $name, $entry := $active }}
+{{- $_ := set $entries (printf "0/%s" $name) (dict
+      "kind" "schedule" "name" $name
+      "cronName" (printf "%s-powerschool-login-%s" $fullname $name)
+      "where" (printf "powerschoolAuthRefresher.schedules.%s" $name)
+      "schedule" $entry.schedule
+      "minSessionAge" $entry.minSessionAge
+      "suspend" (or $r.suspendSchedules $entry.suspend)
+      "deadline" $r.startingDeadlineSeconds) }}
+{{- end }}
+{{- if $onRequest.enabled }}
+{{- $windows := dict }}
+{{- range $name, $schedule := $onRequest.windows }}
+{{- if $schedule }}
+{{- $_ := set $windows $name $schedule }}
+{{- end }}
+{{- end }}
+{{- if not $windows }}
+{{- fail "powerschoolAuthRefresher.onRequest.enabled is true but onRequest.windows is empty: the connector's login requests would never be read" }}
+{{- end }}
+{{- if lt (int ($onRequest.minIntervalMinutes | default 20)) 20 }}
+{{- fail "powerschoolAuthRefresher.onRequest.minIntervalMinutes must be at least 20: it bounds how often a login can be caused through the request ConfigMap" }}
+{{- end }}
+{{- if lt (int ($onRequest.maxRequestAgeMinutes | default 15)) 1 }}
+{{- fail "powerschoolAuthRefresher.onRequest.maxRequestAgeMinutes must be at least 1" }}
+{{- end }}
+{{- range $name, $schedule := $windows }}
+{{- $_ := set $entries (printf "1/%s" $name) (dict
+      "kind" "request" "name" $name
+      "cronName" (printf "%s-powerschool-login-req-%s" $fullname $name)
+      "where" (printf "powerschoolAuthRefresher.onRequest.windows.%s" $name)
+      "schedule" $schedule
+      "minSessionAge" ($onRequest.minSessionAge | default "5m")
+      "suspend" false
+      "deadline" ($onRequest.startingDeadlineSeconds | default 120)) }}
+{{- end }}
 {{- end }}
 {{- /*
 The connector must be handed the session this job writes. When both are
@@ -52,11 +102,13 @@ paths have to be the same one.
 {{- end }}
 {{- end }}
 {{- end }}
-{{- range $name, $entry := $active }}
-{{- include "glovebox.powerschoolScheduleCheck" (dict "name" $name "schedule" $entry.schedule "root" $) }}
-{{- $cronName := printf "%s-powerschool-login-%s" $fullname $name }}
+{{- range $key, $e := $entries }}
+{{- $name := $e.name }}
+{{- $isRequest := eq $e.kind "request" }}
+{{- include "glovebox.powerschoolScheduleCheck" (dict "name" $name "where" $e.where "schedule" $e.schedule "deadline" $e.deadline "root" $) }}
+{{- $cronName := $e.cronName }}
 {{- if gt (len $cronName) 52 }}
-{{- fail (printf "CronJob name %q is %d characters; the limit is 52. Shorten the schedules key %q or set fullnameOverride" $cronName (len $cronName) $name) }}
+{{- fail (printf "CronJob name %q is %d characters; the limit is 52. Shorten the key %q (%s) or set fullnameOverride" $cronName (len $cronName) $name $e.where) }}
 {{- end }}
 ---
 apiVersion: batch/v1
@@ -66,24 +118,50 @@ metadata:
   labels:
     {{- include "glovebox.labels" $ | nindent 4 }}
     app.kubernetes.io/component: powerschool-auth-refresher
+    {{- if $isRequest }}
+    glovebox.io/powerschool-login-request-window: {{ $name | quote }}
+    {{- else }}
     glovebox.io/powerschool-login-schedule: {{ $name | quote }}
+    {{- end }}
 spec:
-  schedule: {{ $entry.schedule | quote }}
+  schedule: {{ $e.schedule | quote }}
   # Kubernetes 1.27+. Without it the schedule would be read in the
   # controller's zone (usually UTC) and "0 5" would be 21:00 or 22:00 Pacific.
   timeZone: {{ $r.timeZone | quote }}
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: {{ int $r.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ int $e.deadline }}
+  {{- if $e.suspend }}
+  # No scheduled runs. The CronJob remains as the template an operator
+  # makes a manual run from (kubectl create job --from=cronjob/...).
+  suspend: true
+  {{- end }}
+  {{- if $isRequest }}
+  # These run every few minutes and almost always have nothing to do.
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  {{- else }}
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5
+  {{- end }}
   jobTemplate:
+    metadata:
+      labels:
+        # On every login Job, however it was started: the controller copies
+        # these to scheduled Jobs and kubectl to manual ones.
+        #   kubectl get jobs -l glovebox.io/powerschool-login=true
+        glovebox.io/powerschool-login: "true"
+        glovebox.io/powerschool-login-kind: {{ $e.kind | quote }}
+        app.kubernetes.io/name: {{ include "glovebox.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: powerschool-auth-refresher
     spec:
       # Never retried: every pod is a login to a real parent account.
       backoffLimit: 0
       activeDeadlineSeconds: 600
       # An hour, not days: a finished pod is of no further use once its log
       # has been shipped, and its termination message says how it ended.
-      ttlSecondsAfterFinished: 3600
+      # Ten minutes for the on-request runs, which are frequent.
+      ttlSecondsAfterFinished: {{ ternary 600 3600 $isRequest }}
       template:
         metadata:
           labels:
@@ -186,7 +264,22 @@ spec:
                   value: {{ join "," $extra | quote }}
                 {{- end }}
                 - name: POWERSCHOOL_MIN_SESSION_AGE
-                  value: {{ required (printf "powerschoolAuthRefresher.schedules.%s.minSessionAge is required" $name) $entry.minSessionAge | quote }}
+                  value: {{ required (printf "%s.minSessionAge is required" $e.where) $e.minSessionAge | quote }}
+                {{- if $isRequest }}
+                # Request mode: this run acts only when the connector has
+                # written a login request, and otherwise sends nothing to
+                # the portal. The interval is the bound on how often a
+                # login can be caused through that ConfigMap; the binary
+                # refuses a value under 20m.
+                - name: POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP
+                  value: {{ printf "%s-powerschool-login-request" $fullname | quote }}
+                - name: POWERSCHOOL_LOGIN_REQUEST_NAMESPACE
+                  value: {{ $.Release.Namespace | quote }}
+                - name: POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL
+                  value: {{ printf "%dm" (int ($onRequest.minIntervalMinutes | default 20)) | quote }}
+                - name: POWERSCHOOL_LOGIN_REQUEST_MAX_AGE
+                  value: {{ printf "%dm" (int ($onRequest.maxRequestAgeMinutes | default 15)) | quote }}
+                {{- end }}
                 - name: POWERSCHOOL_SESSION_LIFETIME
                   value: {{ $r.sessionLifetime | quote }}
               resources:

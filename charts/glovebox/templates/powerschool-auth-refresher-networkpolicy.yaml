@@ -61,6 +61,24 @@ spec:
         - port: {{ .Values.networkPolicy.vault.port }}
           protocol: TCP
     {{- end }}
+    {{- if ($r.onRequest | default dict).enabled }}
+    {{- if not $r.networkPolicy.kubernetesAPICIDRs }}
+    {{- fail "powerschoolAuthRefresher.onRequest.enabled with this NetworkPolicy needs powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs: the on-request runs read the login request from the Kubernetes API, which this policy would otherwise cut off (the API server's addresses are private, and private ranges are excluded from the 443 rule). List the control-plane addresses (kubectl get endpoints kubernetes -n default) and the kubernetes Service's cluster IP, each as a /32; or set powerschoolAuthRefresher.networkPolicy.enabled=false" }}
+    {{- end }}
+    # The Kubernetes API server, to read the connector's login request (one
+    # GET of one ConfigMap). Addresses, because the API server is not a pod
+    # a selector could match.
+    - to:
+        {{- range $r.networkPolicy.kubernetesAPICIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range ($r.networkPolicy.kubernetesAPIPorts | default (list 443 6443)) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
     # The portal, https only. A NetworkPolicy selects addresses, not names,
     # so this is "the public internet on 443": private, CGNAT and link-local
     # ranges -- where the cluster's own pods and services and the LAN live --

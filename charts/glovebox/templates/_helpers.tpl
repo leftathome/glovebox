@@ -292,7 +292,7 @@ Renders nothing; fails the render on a violation.
 {{- define "glovebox.powerschoolScheduleCheck" -}}
 {{- $r := .root.Values.powerschoolAuthRefresher -}}
 {{- $schedule := toString .schedule -}}
-{{- $where := printf "powerschoolAuthRefresher.schedules.%s" .name -}}
+{{- $where := .where | default (printf "powerschoolAuthRefresher.schedules.%s" .name) -}}
 {{- $zone := "America/Los_Angeles" -}}
 {{- if ne (toString $r.blackout.timeZone) $zone -}}
   {{- fail (printf "powerschoolAuthRefresher.blackout.timeZone is fixed at %s (got %q): the login blackout may be widened, never moved to another zone" $zone (toString $r.blackout.timeZone)) -}}
@@ -331,9 +331,9 @@ Renders nothing; fails the render on a violation.
   {{- end -}}
   {{- $windows = append $windows (dict "s" $ws "e" $we "label" (printf "%s-%s" (toString $w.start) (toString $w.end))) -}}
 {{- end -}}
-{{- $deadline := int ($r.startingDeadlineSeconds | default 0) -}}
+{{- $deadline := int (.deadline | default $r.startingDeadlineSeconds | default 0) -}}
 {{- if lt $deadline 10 -}}
-  {{- fail "powerschoolAuthRefresher.startingDeadlineSeconds must be set (10 or more): without it a missed run can start at any later time, including inside the login blackout" -}}
+  {{- fail (printf "the startingDeadlineSeconds that applies to %s must be set (10 or more): without it a missed run can start at any later time, including inside the login blackout" $where) -}}
 {{- end -}}
 {{- /*
 A run may start up to the deadline late, and the binary refuses a login that

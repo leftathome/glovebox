@@ -7,7 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PowerSchool: login on demand** (`connectors.powerschool.loginOnDemand`
+  with `powerschoolAuthRefresher.onRequest`; both off by default). The
+  portal ends an idle session in well under an hour (measured 2026-10-11:
+  dead at 30 and at 45 minutes idle, alive at 4), so a login scheduled well
+  ahead of a poll is dead by the time it is wanted. With this on, a poll
+  that finds its session dead asks for a login and waits up to `waitSeconds`
+  (600) for the new session file before polling once. There is no
+  keepalive, by decision.
+  - The connector can only ask: it writes one field (a time and a
+    fingerprint prefix) of one ConfigMap, with a Role granting
+    `get`/`update`/`patch` on that one name. It cannot create a Job or a
+    pod, cannot read a Secret, never holds a credential and never logs in.
+  - The login workload answers from CronJobs that run every 3 minutes
+    inside windows covering the connector's poll windows, in request mode:
+    a run with no pending request exits at its first step and sends nothing
+    to the portal -- not even a check of the stored session. A request is
+    acted on once, and logins made for requests are at least 20 minutes
+    apart; both are enforced in the login binary from its own Vault state.
+    The blackout and the latch apply unchanged.
+  - So a connector that has been taken over can cause at most one login per
+    20 minutes, inside those windows, never during the blackout.
+  - Connector-side limits: one request per poll (and per window, across
+    restarts); one per 20 minutes; none between 15:57:30 and 21:00 Pacific;
+    none when the session file is under two minutes old; after two requests
+    in a row that led to no accepted session it stops asking and exits with
+    a permanent error until the session file changes or
+    `POWERSCHOOL_LOGIN_BACKOFF_RESET` is set to a new value.
+  - `powerschoolAuthRefresher.suspendSchedules` and
+    `schedules.<name>.suspend`: the scheduled CronJobs can exist purely as
+    templates for a manual run. Login Jobs carry
+    `glovebox.io/powerschool-login=true`.
+  - The Kubernetes API is reached through `internal/kubecm`, a client that
+    can get and patch ConfigMaps and nothing else, pinned to the API server;
+    it cannot reach the portal, and the portal's read-only client cannot
+    reach the API server.
+- PowerSchool connector: `powerschool_polls_skipped_total{reason}`.
+
+### Fixed
+
+- **PowerSchool connector: a dead session is recognised as one.** At the
+  start of every poll, before any child is read, the connector asks the
+  portal with one GET whether the session is still accepted, and classifies
+  the answer as live, dead or unknown. Dead needs a positive
+  identification: the portal's own sign-in page (under `/public/`, with a
+  password form) or the access gateway's `/my.logout.php3`, with status
+  200; any other status (401 and 403 included) and any other page is
+  unknown. A dead session is logged as `powerschool session is no longer
+  accepted`, with its age. In 0.10.3 an idle-dead session failed the poll
+  in 305 ms with `kid skipped: could not select and confirm this kid's
+  student ... error_class=parse` and never took the rejected-session path.
+  An unknown answer skips the poll and changes nothing.
+- PowerSchool connector: its reads now carry a cookie the access gateway
+  renews in mid-request, as the login workload's already did (the helper
+  moved to `internal/psportal`, shared by both). Without it a lapsed gateway
+  cookie ended every read on the gateway's error page. The overlay can add
+  or replace a cookie but no longer honours a deletion, and the connector
+  empties it at the start of every poll.
+
 ### Changed
+
+- PowerSchool connector: with login on demand, a session document past its
+  `expires_at`, or no session file at all, is no longer a startup error; it
+  leads to a login request at the next poll. `sessionLifetime` is documented
+  as the upper bound it is.
+- Chart: `connectors.powerschool.externalSecret.refreshInterval` default
+  `5m` -> `1m`, so a new session reaches the connector while a poll is
+  waiting for it.
 
 - Dependencies: `golang.org/x/time` v0.15.0 -> v0.16.0 and
   `github.com/getkin/kin-openapi` v0.148.0 -> v0.149.0.

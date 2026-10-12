@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leftathome/glovebox/connector"
 )
@@ -22,6 +23,42 @@ type Config struct {
 	AttendanceDays  AttendanceDaysConfig  `json:"attendance_days"`
 	TermGrades      TermGradesConfig      `json:"term_grades"`
 	TeacherComments TeacherCommentsConfig `json:"teacher_comments"`
+
+	LoginOnDemand LoginOnDemandConfig `json:"login_on_demand"`
+}
+
+// LoginOnDemandConfig lets the connector ask for a login when it finds its
+// session dead, by writing a request into one field of one ConfigMap that
+// the login workload reads. Off by default. The connector still never logs
+// in, never sees a credential and cannot start a workload: see
+// session_gate.go.
+type LoginOnDemandConfig struct {
+	Enabled bool `json:"enabled"`
+	// ConfigMapName is the ConfigMap the request is written to. Required
+	// when Enabled.
+	ConfigMapName string `json:"configmap_name"`
+	// Namespace of that ConfigMap. Empty means the pod's own (read from
+	// the ServiceAccount's namespace file).
+	Namespace string `json:"namespace"`
+	// WaitSeconds is how long a poll waits for the new session to reach
+	// the mounted file after asking: the login workload's next run, the
+	// login, and the Secret's sync. Default 600.
+	WaitSeconds int `json:"wait_seconds"`
+	// MinIntervalMinutes is the least time between two requests by this
+	// connector, across restarts. Default and minimum 20.
+	MinIntervalMinutes int `json:"min_interval_minutes"`
+}
+
+func (c LoginOnDemandConfig) wait() time.Duration {
+	return time.Duration(c.WaitSeconds) * time.Second
+}
+
+func (c LoginOnDemandConfig) minInterval() time.Duration {
+	d := time.Duration(c.MinIntervalMinutes) * time.Minute
+	if d < minLoginInterval {
+		d = minLoginInterval
+	}
+	return d
 }
 
 // AttendanceDaysConfig tunes the attendance_day surface.
@@ -178,6 +215,12 @@ func ApplyDefaults(c *Config) {
 	if c.TeacherComments.MaxTerms == 0 {
 		c.TeacherComments.MaxTerms = 12
 	}
+	if c.LoginOnDemand.WaitSeconds == 0 {
+		c.LoginOnDemand.WaitSeconds = 600
+	}
+	if c.LoginOnDemand.MinIntervalMinutes == 0 {
+		c.LoginOnDemand.MinIntervalMinutes = 20
+	}
 }
 
 // GradesEnabled reports whether the grades surface is on.
@@ -213,6 +256,9 @@ func (c *Config) TeacherCommentsEnabled() bool {
 // connector begins polling. The framework's BaseConfig validation (rules,
 // identity defaults) is applied separately by connector.Run.
 func ValidateConfig(c *Config) error {
+	if err := validateLoginOnDemand(c.LoginOnDemand); err != nil {
+		return err
+	}
 	if len(c.Kids) == 0 {
 		return fmt.Errorf("kids: at least one kid required")
 	}
@@ -516,4 +562,26 @@ func parseTimeOfDay(s string) (int, error) {
 		return 0, fmt.Errorf("invalid minute in %q", s)
 	}
 	return hh*60 + mm, nil
+}
+
+// validateLoginOnDemand checks the login_on_demand block. It is only held
+// to anything when enabled.
+func validateLoginOnDemand(c LoginOnDemandConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.ConfigMapName) == "" {
+		return fmt.Errorf("login_on_demand: configmap_name is required when enabled")
+	}
+	if strings.ContainsAny(c.ConfigMapName, "/ \t\n") || strings.ContainsAny(c.Namespace, "/ \t\n") {
+		return fmt.Errorf("login_on_demand: configmap_name and namespace must be plain Kubernetes names")
+	}
+	// Zero is "unset" before ApplyDefaults has run.
+	if c.WaitSeconds != 0 && (c.WaitSeconds < 30 || c.WaitSeconds > 1800) {
+		return fmt.Errorf("login_on_demand: wait_seconds must be between 30 and 1800")
+	}
+	if c.MinIntervalMinutes != 0 && c.MinIntervalMinutes < int(minLoginInterval/time.Minute) {
+		return fmt.Errorf("login_on_demand: min_interval_minutes must be at least %d", int(minLoginInterval/time.Minute))
+	}
+	return nil
 }

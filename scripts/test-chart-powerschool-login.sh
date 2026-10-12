@@ -26,8 +26,9 @@ render() {
 # The expression sees:
 #   docs   every rendered object
 #   mine   those labelled component=powerschool-auth-refresher
-#   crons  {schedules key: CronJob}
-#   env    {schedules key: {env name: value, or (secret, key) for a secretKeyRef}}
+#   crons     {schedules key: CronJob}
+#   env       {schedules key: {env name: value, or (secret, key) for a secretKeyRef}}
+#   reqcrons  {onRequest.windows key: CronJob}, reqenv likewise
 #   kinds  sorted [kind/name] of `mine`
 check() {
   local name="$1"; shift
@@ -39,8 +40,12 @@ def comp(d):
     return (d.get('metadata', {}).get('labels') or {}).get('app.kubernetes.io/component')
 mine = [d for d in docs if comp(d) == 'powerschool-auth-refresher']
 kinds = sorted(d['kind'] + '/' + d['metadata']['name'] for d in mine)
-crons = {d['metadata']['labels']['glovebox.io/powerschool-login-schedule']: d
-         for d in mine if d['kind'] == 'CronJob'}
+SCHED = 'glovebox.io/powerschool-login-schedule'
+WINDOW = 'glovebox.io/powerschool-login-request-window'
+crons = {d['metadata']['labels'][SCHED]: d
+         for d in mine if d['kind'] == 'CronJob' and SCHED in d['metadata']['labels']}
+reqcrons = {d['metadata']['labels'][WINDOW]: d
+            for d in mine if d['kind'] == 'CronJob' and WINDOW in d['metadata']['labels']}
 def pod(c):
     return c['spec']['jobTemplate']['spec']['template']['spec']
 def container(c):
@@ -55,6 +60,7 @@ def envmap(c):
             out[e['name']] = (ref['name'], ref['key'])
     return out
 env = {k: envmap(c) for k, c in crons.items()}
+reqenv = {k: envmap(c) for k, c in reqcrons.items()}
 def find(kind, name):
     hits = [d for d in docs if d['kind'] == kind and d['metadata']['name'] == name]
     return hits[0] if hits else None
@@ -354,7 +360,7 @@ refuse "15:30 with a 30-minute catch-up deadline (could start at 16:00:00)" "bef
   "${ON[@]}" --set-string "$(morning '30 15 * * *')"
 refuse "a 12-hour catch-up deadline on the 05:00 run" "before the login blackout" \
   "${ON[@]}" --set powerschoolAuthRefresher.startingDeadlineSeconds=43200
-refuse "no catch-up deadline at all" "startingDeadlineSeconds must be set" \
+refuse "no catch-up deadline at all" "must be set (10 or more)" \
   "${ON[@]}" --set powerschoolAuthRefresher.startingDeadlineSeconds=null
 
 refuse "a macro schedule"                 "five-field cron expression" "${ON[@]}" --set-string "$(morning '@daily')"
@@ -448,6 +454,244 @@ refuse "a malformed extra window" "must be HH:MM" \
   "${ON[@]}" --set-json 'powerschoolAuthRefresher.blackout.extraWindows=[{"start":"7am","end":"08:00"}]'
 refuse "an empty extra window" "a window cannot be empty" \
   "${ON[@]}" --set-json 'powerschoolAuthRefresher.blackout.extraWindows=[{"start":"07:00","end":"07:00"}]'
+
+# --- suspended schedules ------------------------------------------------------
+
+check "CronJobs are not suspended by default" \
+  'all("suspend" not in c["spec"] for c in crons.values())' \
+  "${ON[@]}"
+
+check "suspendSchedules suspends every CronJob and keeps them as templates" \
+  'sorted(crons) == ["evening", "morning"] and all(c["spec"]["suspend"] is True for c in crons.values())
+   and all(c["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0 for c in crons.values())' \
+  "${ON[@]}" --set powerschoolAuthRefresher.suspendSchedules=true
+
+check "one schedule can be suspended on its own" \
+  'crons["evening"]["spec"]["suspend"] is True and "suspend" not in crons["morning"]["spec"]' \
+  "${ON[@]}" --set powerschoolAuthRefresher.schedules.evening.suspend=true
+
+check "every login Job carries the login label" \
+  'all(c["spec"]["jobTemplate"]["metadata"]["labels"]["glovebox.io/powerschool-login"] == "true"
+       and c["spec"]["jobTemplate"]["metadata"]["labels"]["app.kubernetes.io/component"] == "powerschool-auth-refresher"
+       for c in crons.values())' \
+  "${ON[@]}"
+
+refuse "a suspended schedule is still checked against the blackout" "$INSIDE" \
+  "${ON[@]}" --set powerschoolAuthRefresher.suspendSchedules=true --set-string "$(morning '0 17 * * *')"
+
+# --- logins on request ----------------------------------------------------------
+
+cat >"$TMP/ondemand.yaml" <<'YAML'
+powerschoolAuthRefresher:
+  enabled: true
+  suspendSchedules: true
+  onRequest:
+    enabled: true
+  networkPolicy:
+    kubernetesAPICIDRs: [192.0.2.10/32, 192.0.2.11/32, 10.96.0.1/32]
+connectors:
+  powerschool:
+    enabled: true
+    loginOnDemand:
+      enabled: true
+    externalSecret:
+      enabled: true
+      secretStoreRef:
+        name: vault-default
+YAML
+
+CM='find("ConfigMap", "glovebox-glovebox-powerschool-login-request")'
+ROLE='find("Role", "glovebox-glovebox-powerschool-login-on-demand")'
+BINDING='find("RoleBinding", "glovebox-glovebox-powerschool-login-on-demand")'
+RROLE='find("Role", "glovebox-glovebox-powerschool-login-request-reader")'
+RBINDING='find("RoleBinding", "glovebox-glovebox-powerschool-login-request-reader")'
+CONNSA='find("ServiceAccount", "glovebox-glovebox-powerschool")'
+PSPOD='find("Deployment", "glovebox-glovebox-powerschool")["spec"]["template"]["spec"]'
+PSCFG='__import__("json").loads(find("ConfigMap", "glovebox-glovebox-powerschool-config")["data"]["config.json"])'
+RBAC='[d["kind"] + "/" + d["metadata"]["name"] for d in docs if d["kind"] in ("Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding")]'
+
+check "everything is off by default: no request ConfigMap, no Role or binding of any kind, no on-request CronJob" \
+  "$CM is None and $RBAC == [] and reqcrons == {} and $CONNSA is None" \
+  "${ON[@]}"
+
+check "the connector alone, on-demand off: shared ServiceAccount, no token, no request config" \
+  "$RBAC == [] and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox\" and \"automountServiceAccountToken\" not in $PSPOD
+   and \"login_on_demand\" not in $PSCFG and $CM is None" \
+  -f "$TMP/both.yaml"
+
+check "the request ConfigMap is rendered without data (the key belongs to the connector)" \
+  "$CM is not None and \"data\" not in $CM and \"binaryData\" not in $CM" \
+  -f "$TMP/ondemand.yaml"
+
+check "connector Role: exactly get, update, patch on the one request ConfigMap" \
+  "$ROLE[\"rules\"] == [
+     {\"apiGroups\": [\"\"], \"resources\": [\"configmaps\"],
+      \"resourceNames\": [\"glovebox-glovebox-powerschool-login-request\"], \"verbs\": [\"get\", \"update\", \"patch\"]}]" \
+  -f "$TMP/ondemand.yaml"
+
+check "login workload Role: exactly get on the one request ConfigMap" \
+  "$RROLE[\"rules\"] == [
+     {\"apiGroups\": [\"\"], \"resources\": [\"configmaps\"],
+      \"resourceNames\": [\"glovebox-glovebox-powerschool-login-request\"], \"verbs\": [\"get\"]}]" \
+  -f "$TMP/ondemand.yaml"
+
+check "no Role in the chart grants anything on jobs, cronjobs, pods or secrets, or create/delete of anything" \
+  "all(not ({\"jobs\", \"cronjobs\", \"pods\", \"secrets\", \"*\"} & set(rule[\"resources\"]))
+       and not ({\"create\", \"delete\", \"deletecollection\", \"*\"} & set(rule[\"verbs\"]))
+       and rule.get(\"resourceNames\")
+       for d in docs if d[\"kind\"] in (\"Role\", \"ClusterRole\") for rule in d[\"rules\"])" \
+  -f "$TMP/ondemand.yaml"
+
+check "those two Roles and their bindings are all the RBAC there is" \
+  "$RBAC == [\"Role/glovebox-glovebox-powerschool-login-request-reader\",
+            \"RoleBinding/glovebox-glovebox-powerschool-login-request-reader\",
+            \"Role/glovebox-glovebox-powerschool-login-on-demand\",
+            \"RoleBinding/glovebox-glovebox-powerschool-login-on-demand\"] or sorted($RBAC) == sorted([
+            \"Role/glovebox-glovebox-powerschool-login-request-reader\",
+            \"RoleBinding/glovebox-glovebox-powerschool-login-request-reader\",
+            \"Role/glovebox-glovebox-powerschool-login-on-demand\",
+            \"RoleBinding/glovebox-glovebox-powerschool-login-on-demand\"])" \
+  -f "$TMP/ondemand.yaml"
+
+check "each Role is bound to its own ServiceAccount only" \
+  "$BINDING[\"roleRef\"][\"name\"] == \"glovebox-glovebox-powerschool-login-on-demand\"
+   and $BINDING[\"subjects\"] == [{\"kind\": \"ServiceAccount\", \"name\": \"glovebox-glovebox-powerschool\", \"namespace\": \"glovebox\"}]
+   and $RBINDING[\"roleRef\"][\"name\"] == \"glovebox-glovebox-powerschool-login-request-reader\"
+   and $RBINDING[\"subjects\"] == [{\"kind\": \"ServiceAccount\", \"name\": \"glovebox-glovebox-powerschool-auth-refresher\", \"namespace\": \"glovebox\"}]" \
+  -f "$TMP/ondemand.yaml"
+
+check "the connector runs as its own ServiceAccount with its token mounted; other connectors do not" \
+  "$CONNSA is not None and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-powerschool\"
+   and $PSPOD[\"automountServiceAccountToken\"] is True
+   and find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"][\"serviceAccountName\"] == \"glovebox-glovebox\"
+   and \"automountServiceAccountToken\" not in find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"]" \
+  -f "$TMP/ondemand.yaml" --set connectors.rss.enabled=true
+
+check "the connector is told which ConfigMap, namespace, wait (10 min) and interval" \
+  "$PSCFG[\"login_on_demand\"] == {\"enabled\": True, \"configmap_name\": \"glovebox-glovebox-powerschool-login-request\",
+     \"namespace\": \"glovebox\", \"wait_seconds\": 600, \"min_interval_minutes\": 20}
+   and $PSCFG[\"login_on_demand\"][\"configmap_name\"] == $CM[\"metadata\"][\"name\"]" \
+  -f "$TMP/ondemand.yaml"
+
+check "the rest of the connector's config is untouched" \
+  "[k[\"name\"] for k in $PSCFG[\"kids\"]] == [\"k1\", \"k2\"] and len($PSCFG[\"rules\"]) == 12
+   and $PSCFG[\"poll_schedule\"][\"windows\"][0] == {\"start\": \"06:00\", \"end\": \"06:30\"}" \
+  -f "$TMP/ondemand.yaml"
+
+check "wait and interval can be raised" \
+  "$PSCFG[\"login_on_demand\"][\"wait_seconds\"] == 900 and $PSCFG[\"login_on_demand\"][\"min_interval_minutes\"] == 45" \
+  -f "$TMP/ondemand.yaml" --set connectors.powerschool.loginOnDemand.waitSeconds=900 \
+  --set connectors.powerschool.loginOnDemand.minIntervalMinutes=45
+
+check "the session reaches the connector within a minute of ESO's side" \
+  'find("ExternalSecret", "glovebox-glovebox-powerschool-files")["spec"]["refreshInterval"] == "1m"' \
+  -f "$TMP/ondemand.yaml"
+
+check "the connector still gets no credentials" \
+  "all(\"USERNAME\" not in e[\"name\"] and \"PASSWORD\" not in e[\"name\"] for e in $PSPOD[\"containers\"][0][\"env\"])
+   and [f[\"secretRef\"][\"name\"] for f in $PSPOD[\"containers\"][0][\"envFrom\"]] == [\"glovebox-glovebox-powerschool-secret\"]" \
+  -f "$TMP/ondemand.yaml"
+
+# --- the on-request CronJobs ----------------------------------------------------
+
+check "on-request CronJobs: one per window, every 3 minutes around the connector's poll windows" \
+  '{k: c["spec"]["schedule"] for k, c in reqcrons.items()} == {
+     "morning": "*/3 6 * * 1-5", "afternoon": "0-45/3 15 * * 1-5",
+     "evening": "30-59/3 21 * * 1-5", "late": "0-15/3 22 * * 1-5"}
+   and sorted(c["metadata"]["name"] for c in reqcrons.values()) == [
+     "glovebox-glovebox-powerschool-login-req-afternoon", "glovebox-glovebox-powerschool-login-req-evening",
+     "glovebox-glovebox-powerschool-login-req-late", "glovebox-glovebox-powerschool-login-req-morning"]' \
+  -f "$TMP/ondemand.yaml"
+
+check "on-request CronJobs: Pacific time, Forbid, never retried, short catch-up, not suspended" \
+  'all(c["spec"]["timeZone"] == "America/Los_Angeles" and c["spec"]["concurrencyPolicy"] == "Forbid"
+       and c["spec"]["startingDeadlineSeconds"] == 120 and "suspend" not in c["spec"]
+       and c["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0 and pod(c)["restartPolicy"] == "Never"
+       and c["spec"]["jobTemplate"]["spec"]["ttlSecondsAfterFinished"] == 600
+       and c["spec"]["successfulJobsHistoryLimit"] == 1 for c in reqcrons.values())' \
+  -f "$TMP/ondemand.yaml"
+
+check "on-request CronJobs run in request mode: the ConfigMap, the 20-minute floor, the request age limit" \
+  'all(e["POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP"] == "glovebox-glovebox-powerschool-login-request"
+       and e["POWERSCHOOL_LOGIN_REQUEST_NAMESPACE"] == "glovebox"
+       and e["POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL"] == "20m" and e["POWERSCHOOL_LOGIN_REQUEST_MAX_AGE"] == "15m"
+       and e["POWERSCHOOL_MIN_SESSION_AGE"] == "5m" and "POWERSCHOOL_LOGIN_REQUEST_BYPASS" not in e
+       and e["POWERSCHOOL_BLACKOUT_START"] == "16:00" and e["POWERSCHOOL_BLACKOUT_END"] == "21:00"
+       for e in reqenv.values()) and len(reqenv) == 4' \
+  -f "$TMP/ondemand.yaml"
+
+check "the scheduled CronJobs are NOT in request mode (they are the manual-run templates) and are suspended" \
+  'all("POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP" not in e for e in env.values()) and sorted(env) == ["evening", "morning"]
+   and all(c["spec"]["suspend"] is True for c in crons.values())' \
+  -f "$TMP/ondemand.yaml"
+
+check "on-request pods are the same hardened pod: read-only root, non-root, the login ServiceAccount" \
+  'all(container(c)["securityContext"]["readOnlyRootFilesystem"] is True and pod(c)["securityContext"]["runAsUser"] == 65532
+       and pod(c)["serviceAccountName"] == "glovebox-glovebox-powerschool-auth-refresher"
+       and c["spec"]["jobTemplate"]["metadata"]["labels"]["glovebox.io/powerschool-login-kind"] == "request"
+       for c in reqcrons.values())
+   and all(c["spec"]["jobTemplate"]["metadata"]["labels"]["glovebox.io/powerschool-login-kind"] == "schedule" for c in crons.values())' \
+  -f "$TMP/ondemand.yaml"
+
+check "the login workload's NetworkPolicy lets it reach the Kubernetes API, and only at the listed addresses" \
+  "[rule for rule in $NP[\"spec\"][\"egress\"] if 6443 in [p[\"port\"] for p in rule[\"ports\"]]] == [
+     {\"to\": [{\"ipBlock\": {\"cidr\": \"192.0.2.10/32\"}}, {\"ipBlock\": {\"cidr\": \"192.0.2.11/32\"}}, {\"ipBlock\": {\"cidr\": \"10.96.0.1/32\"}}],
+      \"ports\": [{\"port\": 443, \"protocol\": \"TCP\"}, {\"port\": 6443, \"protocol\": \"TCP\"}]}]
+   and len($NP[\"spec\"][\"egress\"]) == 4" \
+  -f "$TMP/ondemand.yaml"
+
+check "onRequest without the connector's side is allowed (nothing asks; nothing happens)" \
+  "len(reqcrons) == 4 and $CM is not None and $ROLE is None and $RROLE is not None" \
+  "${ON[@]}" --set powerschoolAuthRefresher.onRequest.enabled=true \
+  --set 'powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs={192.0.2.10/32}'
+
+check "a window can be removed and another added" \
+  'sorted(reqcrons) == ["afternoon", "evening", "midday", "morning"]' \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.onRequest.windows.late=null \
+  --set-string 'powerschoolAuthRefresher.onRequest.windows.midday=*/3 11 * * 1-5'
+
+# The cadence is validated against the blackout like any schedule.
+reqwin() { printf '%s' "powerschoolAuthRefresher.onRequest.windows.$1=$2"; }
+
+refuse "an on-request window inside the blackout" "$INSIDE" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin afternoon '*/3 17 * * 1-5')"
+refuse "an on-request window running up to the blackout (15:57)" "before the login blackout" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin afternoon '*/3 15 * * 1-5')"
+refuse "an on-request window all day" "the login blackout" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin morning '*/3 * * * *')"
+refuse "an added on-request window in the evening blackout" "$INSIDE" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin extra '*/5 20 * * *')"
+accept "an on-request window ending at 15:54 (six minutes clear, five needed)" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin afternoon '0-54/3 15 * * 1-5')"
+refuse "an on-request window ending at 15:57 (three minutes clear)" "before the login blackout" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin afternoon '0-57/3 15 * * 1-5')"
+accept "an on-request window from 21:00" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin evening '*/3 21 * * 1-5')"
+refuse "an on-request window the chart cannot evaluate" "five-field cron expression" \
+  -f "$TMP/ondemand.yaml" --set-string "$(reqwin morning '@hourly')"
+refuse "the widened blackout applies to on-request windows too" "$INSIDE" \
+  -f "$TMP/ondemand.yaml" --set-string powerschoolAuthRefresher.blackout.start=15:00 \
+  --set-string "$(reqwin afternoon '0-45/3 15 * * 1-5')"
+
+refuse "on-demand without the login workload" "requires powerschoolAuthRefresher.enabled" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.enabled=false
+refuse "on-demand without the on-request runs" "requires powerschoolAuthRefresher.onRequest.enabled" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.onRequest.enabled=false
+refuse "on-request with no windows" "onRequest.windows is empty" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.onRequest.windows=null
+refuse "an interval between request logins under the floor" "minIntervalMinutes must be at least 20" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.onRequest.minIntervalMinutes=5
+refuse "on-request behind the NetworkPolicy without the API server's addresses" "kubernetesAPICIDRs" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs=null
+accept "on-request without the API addresses when the job's NetworkPolicy is off" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.networkPolicy.kubernetesAPICIDRs=null \
+  --set powerschoolAuthRefresher.networkPolicy.enabled=false
+refuse "a wait too short to be met" "waitSeconds must be between 30 and 1800" \
+  -f "$TMP/ondemand.yaml" --set connectors.powerschool.loginOnDemand.waitSeconds=5
+refuse "a connector interval under the floor" "minIntervalMinutes must be at least 20" \
+  -f "$TMP/ondemand.yaml" --set connectors.powerschool.loginOnDemand.minIntervalMinutes=5
+accept "schedules removed entirely, on-request only" \
+  -f "$TMP/ondemand.yaml" --set powerschoolAuthRefresher.schedules.morning=null --set powerschoolAuthRefresher.schedules.evening=null
 
 if [ "$FAILED" -ne 0 ]; then
   echo "test-chart-powerschool-login: FAILED"

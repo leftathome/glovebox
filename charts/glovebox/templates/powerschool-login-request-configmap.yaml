@@ -1,0 +1,26 @@
+{{- $r := .Values.powerschoolAuthRefresher }}
+{{- if and $r.enabled ($r.onRequest | default dict).enabled }}
+# The PowerSchool login request.
+#
+# One ConfigMap with, at most, one key: `request`, written by the
+# PowerSchool connector when a poll finds its session dead and read by the
+# login workload's on-request runs. Its value is a time and sixteen hex
+# digits ("2026-10-12T13:05:09Z 5f2a9c0e11d24b7a") or a time and "none".
+# It holds no secret and nothing about a student.
+#
+# It is rendered WITHOUT a data section on purpose: the key belongs to the
+# connector, and a chart upgrade leaves a key it never set alone.
+#
+# This object is the whole of what the connector can do towards a login.
+# It has get/update/patch on this one name (powerschool-connector-role.yaml)
+# and nothing else in the API; the login workload has get on it
+# (powerschool-auth-refresher-role.yaml). Whatever is written here, the
+# login workload decides by its own rules whether and when to log in.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-request
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: powerschool-auth-refresher
+{{- end }}

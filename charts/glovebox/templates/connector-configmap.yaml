@@ -10,7 +10,37 @@ metadata:
     app.kubernetes.io/component: connector
     glovebox.io/connector: {{ $name }}
 data:
+  {{- $config := $connector.config }}
+  {{- $lod := $connector.loginOnDemand | default dict }}
+  {{- if and (eq $name "powerschool") $lod.enabled }}
+  {{- /*
+  On-demand login (connectors.powerschool.loginOnDemand): tell the connector
+  which ConfigMap to write its login request to. The name is derived here,
+  from the same expression the ConfigMap and both Roles use.
+  */}}
+  {{- $refresher := $.Values.powerschoolAuthRefresher }}
+  {{- if not $refresher.enabled }}
+  {{- fail "connectors.powerschool.loginOnDemand.enabled requires powerschoolAuthRefresher.enabled: a login request needs a login workload to read it" }}
+  {{- end }}
+  {{- if not ($refresher.onRequest | default dict).enabled }}
+  {{- fail "connectors.powerschool.loginOnDemand.enabled requires powerschoolAuthRefresher.onRequest.enabled: without the on-request runs nothing reads the connector's login request" }}
+  {{- end }}
+  {{- $wait := int ($lod.waitSeconds | default 600) }}
+  {{- if or (lt $wait 30) (gt $wait 1800) }}
+  {{- fail "connectors.powerschool.loginOnDemand.waitSeconds must be between 30 and 1800" }}
+  {{- end }}
+  {{- $interval := int ($lod.minIntervalMinutes | default 20) }}
+  {{- if lt $interval 20 }}
+  {{- fail "connectors.powerschool.loginOnDemand.minIntervalMinutes must be at least 20" }}
+  {{- end }}
+  {{- $config = mustMergeOverwrite (deepCopy $connector.config) (dict "login_on_demand" (dict
+        "enabled" true
+        "configmap_name" (printf "%s-powerschool-login-request" (include "glovebox.fullname" $))
+        "namespace" $.Release.Namespace
+        "wait_seconds" $wait
+        "min_interval_minutes" $interval)) }}
+  {{- end }}
   config.json: |
-    {{- $connector.config | toJson | nindent 4 }}
+    {{- $config | toJson | nindent 4 }}
 {{- end }}
 {{- end }}

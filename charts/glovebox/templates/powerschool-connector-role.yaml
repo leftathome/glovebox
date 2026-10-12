@@ -1,0 +1,30 @@
+{{- $conn := (.Values.connectors | default dict).powerschool | default dict }}
+{{- $lod := $conn.loginOnDemand | default dict }}
+{{- if and $conn.enabled $lod.enabled }}
+# Everything the PowerSchool connector may do through the Kubernetes API,
+# for on-demand login (connectors.powerschool.loginOnDemand): read and
+# write ONE ConfigMap, named here.
+#
+# The connector parses pages from the portal and has to be assumed
+# compromisable. So it is given no way to start anything: no Jobs, no
+# CronJobs, no pods, no Secrets, no create or delete of any kind. It can
+# put a login request into that ConfigMap (patch; update and get are
+# granted for the same object and add nothing to its reach). The login
+# workload reads the request and decides, by rules the connector cannot
+# influence -- the blackout, the latch, at most one login per 20 minutes --
+# whether to act on it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "glovebox.fullname" . }}-powerschool-login-on-demand
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+    glovebox.io/connector: powerschool
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ printf "%s-powerschool-login-request" (include "glovebox.fullname" .) | quote }}
+    verbs: ["get", "update", "patch"]
+{{- end }}

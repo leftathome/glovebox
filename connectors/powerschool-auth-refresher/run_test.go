@@ -17,6 +17,7 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -192,7 +193,31 @@ type harness struct {
 
 	// terminations are the termination messages, one per run.
 	terminations []string
+
+	// request is the connector's login request field; requestErr fails the
+	// read. requestReads counts reads.
+	request      string
+	requestErr   error
+	requestReads int
 }
+
+// requestMode puts the harness's config into request mode.
+func (h *harness) requestMode() *harness {
+	h.cfg.RequestConfigMap = "glovebox-glovebox-powerschool-login-request"
+	h.cfg.RequestMaxAge = defaultRequestMaxAge
+	h.cfg.RequestMinInterval = minRequestInterval
+	return h
+}
+
+// ask sets a request made `ago` before the harness clock about the session
+// with the given full fingerprint ("" = the connector had none).
+func (h *harness) ask(ago time.Duration, fullFingerprint string) string {
+	h.request = psportal.FormatLoginRequest(h.clock.Add(-ago), fullFingerprint)
+	return h.request
+}
+
+// portalContacts is every way the portal can be reached.
+func (h *harness) portalContacts() int { return h.probes + h.signInChecks + h.logins }
 
 func newHarness(t *testing.T, at time.Time) *harness {
 	t.Helper()
@@ -237,6 +262,10 @@ func (h *harness) deps() deps {
 				return "", h.probeResults[n]
 			}
 			return testStudentID, nil
+		},
+		readRequest: func(context.Context) (string, error) {
+			h.requestReads++
+			return h.request, h.requestErr
 		},
 		newSalt:   func() (string, error) { return testSalt, nil },
 		terminate: func(m string) { h.terminations = append(h.terminations, m) },
@@ -1176,5 +1205,390 @@ func TestRedactBoundsLength(t *testing.T) {
 	}
 	if got := (config{}).redact("nothing to hide"); got != "nothing to hide" {
 		t.Errorf("redact with empty secrets = %q", got)
+	}
+}
+
+// --- request mode -----------------------------------------------------------
+
+// storedFP is the full fingerprint of a stored session, as the connector
+// would compute it from the same document.
+func storedFP(t *testing.T, s *storedSession, now time.Time) string {
+	t.Helper()
+	parsed, err := powerschool.ParseSession([]byte(s.Document), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return powerschool.SessionFingerprint(parsed)
+}
+
+// The rule the owner set: no keepalive. A run with no pending request does
+// nothing at the portal -- no login, no sign-in check, no look at the
+// stored session -- whatever state that session is in.
+func TestRequestModeWithoutARequestContactsNothing(t *testing.T) {
+	for name, setup := range map[string]func(h *harness){
+		"empty field":            func(h *harness) {},
+		"blank field":            func(h *harness) { h.request = "  \n" },
+		"not a request":          func(h *harness) { h.request = "log in now please" },
+		"oversized":              func(h *harness) { h.request = strings.Repeat("2026-10-12T13:05:09Z ", 500) },
+		"a json object":          func(h *harness) { h.request = `{"request":"now"}` },
+		"upper-case fingerprint": func(h *harness) { h.request = "2026-10-12T12:00:00Z 5F2A9C0E11D24B7A" },
+		"stale (16 minutes)":     func(h *harness) { h.ask(16*time.Minute, "") },
+		"stale (yesterday)":      func(h *harness) { h.ask(26*time.Hour, "") },
+		"dated in the future":    func(h *harness) { h.ask(-3*time.Minute, "") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, morning(t)).requestMode()
+			// An old, dead-looking session in Vault: without a request
+			// that is nobody's business.
+			h.store.stored = storedAt(t, h.clock.Add(-30*time.Hour))
+			setup(h)
+			code := h.run()
+			h.expect(code, exitSuccess, 0, 0)
+			if h.portalContacts() != 0 {
+				t.Errorf("the portal was contacted: probes %d, sign-in checks %d, logins %d", h.probes, h.signInChecks, h.logins)
+			}
+			if h.connects != 0 {
+				t.Errorf("Vault was contacted %d time(s) although there was nothing to compare a request with", h.connects)
+			}
+			if h.requestReads != 1 {
+				t.Errorf("request reads = %d, want 1", h.requestReads)
+			}
+			if !h.logged(`"outcome":"no_login_requested"`) {
+				t.Errorf("no no_login_requested line:\n%s", h.logs.String())
+			}
+			if msg := h.lastTermination(); !strings.Contains(msg, "outcome=no_login_requested exit=0") {
+				t.Errorf("termination message = %q", msg)
+			}
+			// What the field held is never echoed.
+			if h.request != "" && len(h.request) > 10 && strings.Contains(h.logs.String(), strings.TrimSpace(h.request)) {
+				t.Errorf("the request field was echoed into the log")
+			}
+		})
+	}
+}
+
+// The same, with the REAL portal clients pointed at a server that fails the
+// test on any request at all: fifty runs without a pending request, with a
+// stored session of every age, and not one byte goes to the portal.
+func TestRequestModeWithoutARequestMakesZeroPortalRequests(t *testing.T) {
+	p := newPortal(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the portal received %s %s from a run with no pending login request", r.Method, r.URL.Path)
+		http.Error(w, "no", http.StatusTeapot)
+	})
+	portalCfg := p.cfg()
+
+	h := newHarness(t, morning(t)).requestMode()
+	h.cfg.BaseURL, h.cfg.Host = portalCfg.BaseURL, portalCfg.Host
+	d := h.deps()
+	d.probe = realProbe(h.cfg, p.srv.Client().Transport)
+	d.checkSignIn = realSignInCheck(h.cfg, p.srv.Client().Transport)
+	d.login = func(context.Context) (*pslib.SessionExport, error) {
+		t.Error("a login was started without a pending request")
+		return nil, errors.New("no")
+	}
+
+	ages := []time.Duration{time.Minute, 20 * time.Minute, 2 * time.Hour, 11 * time.Hour, 40 * time.Hour}
+	requests := []string{"", "garbage", psportal.FormatLoginRequest(h.clock.Add(-time.Hour), "")}
+	for i := 0; i < 50; i++ {
+		h.store.stored = storedAt(t, h.clock.Add(-ages[i%len(ages)]))
+		h.request = requests[i%len(requests)]
+		if code := run(context.Background(), h.cfg, d); code != exitSuccess {
+			t.Fatalf("run %d: exit %d\n%s", i, code, h.logs.String())
+		}
+		h.clock = h.clock.Add(3 * time.Minute)
+		if h.cfg.Blackout.blocksLoginAt(h.clock) {
+			h.clock = morning(t).Add(24 * time.Hour)
+		}
+	}
+	if got := len(p.paths()); got != 0 {
+		t.Fatalf("%d request(s) reached the portal: %v", got, p.paths())
+	}
+
+	// And a served request, and a request older than the last login --
+	// both need Vault, neither needs the portal.
+	served := psportal.FormatLoginRequest(h.clock.Add(-time.Minute), "")
+	h.store.state = &loginState{Salt: testSalt, ServedRequest: served}
+	h.request = served
+	if code := run(context.Background(), h.cfg, d); code != exitSuccess {
+		t.Fatalf("served request: exit %d", code)
+	}
+	h.store.state = nil
+	h.store.stored = storedAt(t, h.clock.Add(-30*time.Second))
+	h.request = psportal.FormatLoginRequest(h.clock.Add(-time.Minute), "")
+	if code := run(context.Background(), h.cfg, d); code != exitSuccess {
+		t.Fatalf("request older than the last login: exit %d", code)
+	}
+	if got := len(p.paths()); got != 0 {
+		t.Fatalf("%d request(s) reached the portal: %v", got, p.paths())
+	}
+}
+
+// A pending request about the very session Vault holds: the connector has
+// just asked the portal about it, so this run does not ask again. It logs
+// in, once, and records the request as served.
+func TestRequestModeLogsInForAPendingRequest(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.store.stored = storedAt(t, h.clock.Add(-40*time.Minute))
+	h.store.version = 3
+	raw := h.ask(90*time.Second, storedFP(t, h.store.stored, h.clock))
+
+	code := h.run()
+	h.expect(code, exitSuccess, 1, 1)
+	if h.probes != 1 {
+		t.Errorf("probes = %d, want only the confirmation of the new session", h.probes)
+	}
+	if h.signInChecks != 1 {
+		t.Errorf("sign-in checks = %d", h.signInChecks)
+	}
+	st := h.store.state
+	if st.ServedRequest != raw || !st.RequestLoginAt.Equal(h.clock.UTC()) {
+		t.Errorf("state after serving: served %q at %s, want %q at %s", st.ServedRequest, st.RequestLoginAt, raw, h.clock.UTC())
+	}
+	if !h.logged("the stored session is the one the connector found dead") {
+		t.Errorf("log:\n%s", h.logs.String())
+	}
+}
+
+// Served once. The same request is still in the field at the next runs
+// (the connector does not clear it); nothing more happens for it.
+func TestRequestModeServesARequestOnce(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.ask(time.Minute, "")
+	h.expect(h.run(), exitSuccess, 1, 1)
+
+	for i := 0; i < 5; i++ {
+		h.clock = h.clock.Add(3 * time.Minute)
+		contacts := h.portalContacts()
+		h.expect(h.run(), exitSuccess, 1, 1)
+		if h.portalContacts() != contacts {
+			t.Fatalf("run %d contacted the portal for a request already served", i+2)
+		}
+	}
+	if !h.logged("already been acted on") && !h.logged("newer than the pending request") {
+		t.Errorf("log:\n%s", h.logs.String())
+	}
+}
+
+// A request gets ONE login, whatever comes of it. A login that failed after
+// the credentials may have been submitted is not repeated three minutes
+// later for the same request.
+func TestRequestModeDoesNotRepeatAFailedLoginForTheSameRequest(t *testing.T) {
+	for name, failure := range map[string]error{"unplaceable": errUnknown, "before submit, twice": errBeforeSubmit} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, morning(t)).requestMode()
+			h.ask(time.Minute, "")
+			h.loginResults = []error{failure, failure}
+			h.run()
+			logins := h.logins
+			for i := 0; i < 4; i++ {
+				h.clock = h.clock.Add(3 * time.Minute)
+				h.run()
+			}
+			if h.logins != logins {
+				t.Errorf("logins went from %d to %d for one request", logins, h.logins)
+			}
+		})
+	}
+}
+
+// A failure BEFORE any login was started (Vault down, the sign-in page
+// unreachable) leaves the request pending: the next run tries again.
+func TestRequestModeRetriesWhenNoLoginWasStarted(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.ask(time.Minute, "")
+	h.signInErr = errors.New("dial tcp: no route to host")
+	h.expect(h.run(), exitTransient, 0, 0)
+
+	h.signInErr = nil
+	h.clock = h.clock.Add(3 * time.Minute)
+	h.expect(h.run(), exitSuccess, 1, 1)
+}
+
+// The bound on a connector that has been taken over: however many fresh
+// requests it writes, logins made for requests are at least 20 minutes
+// apart. Enforced here, from this workload's own record.
+func TestRequestModeMinimumIntervalBetweenRequestLogins(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.cfg.MinSessionAge = 5 * time.Minute // what the chart sets on the on-request CronJobs
+	h.ask(time.Minute, "")
+	h.expect(h.run(), exitSuccess, 1, 1)
+
+	// A new request every three minutes, each about a "different" session.
+	for minute := 3; minute < 20; minute += 3 {
+		h.clock = morning(t).Add(time.Duration(minute) * time.Minute)
+		h.ask(10*time.Second, fmt.Sprintf("%064d", minute))
+		contacts := h.portalContacts()
+		code := h.run()
+		h.expect(code, exitSuccess, 1, 1)
+		if h.portalContacts() != contacts {
+			t.Fatalf("minute %d: the portal was contacted inside the minimum interval", minute)
+		}
+		if !h.logged(`"outcome":"login_request_too_soon"`) {
+			t.Fatalf("minute %d: no login_request_too_soon line", minute)
+		}
+	}
+	if msg := h.lastTermination(); !strings.Contains(msg, "outcome=login_request_too_soon exit=0") {
+		t.Errorf("termination message = %q", msg)
+	}
+
+	h.clock = morning(t).Add(20 * time.Minute)
+	h.ask(10*time.Second, fmt.Sprintf("%064d", 99))
+	h.expect(h.run(), exitSuccess, 2, 2)
+
+	// Over a whole day of a request every three minutes: at most three
+	// logins an hour, and none in the blackout.
+	h = newHarness(t, time.Date(2026, 10, 12, 0, 0, 0, 0, mustZone(t, "America/Los_Angeles"))).requestMode()
+	h.cfg.MinSessionAge = 5 * time.Minute
+	start := h.clock
+	for i := 0; i < 480; i++ {
+		h.clock = start.Add(time.Duration(i) * 3 * time.Minute)
+		h.ask(5*time.Second, fmt.Sprintf("%064d", i))
+		before := h.logins
+		h.run()
+		if h.logins > before && h.cfg.Blackout.blocksLoginAt(h.clock) {
+			t.Fatalf("a login was made at %s, inside the blackout", h.clock.Format("15:04"))
+		}
+	}
+	// 24h minus the blackout (5h + 2.5 min) at one per 21 minutes (the
+	// first 3-minute tick at or after 20 minutes): at most 55.
+	if h.logins > 55 || h.logins < 40 {
+		t.Errorf("logins over a day of constant requests = %d, want roughly 54 and never more than 55", h.logins)
+	}
+}
+
+func TestRequestModeMinimumIntervalHasAFloor(t *testing.T) {
+	env := minimalEnv()
+	env["POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP"] = "cm"
+	cfg, problems := loadConfig(envOf(env))
+	if len(problems) != 0 || !cfg.requestMode() || cfg.RequestMinInterval != 20*time.Minute || cfg.RequestMaxAge != 15*time.Minute {
+		t.Fatalf("defaults: %+v, problems %v", cfg, problems)
+	}
+	env["POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL"] = "1m"
+	if _, problems := loadConfig(envOf(env)); len(problems) == 0 {
+		t.Error("a 1m interval between request logins was accepted")
+	}
+	env["POWERSCHOOL_LOGIN_REQUEST_MIN_INTERVAL"] = "45m"
+	env["POWERSCHOOL_LOGIN_REQUEST_MAX_AGE"] = "30m"
+	env["POWERSCHOOL_LOGIN_REQUEST_NAMESPACE"] = "openclaw"
+	cfg, problems = loadConfig(envOf(env))
+	if len(problems) != 0 || cfg.RequestMinInterval != 45*time.Minute || cfg.RequestMaxAge != 30*time.Minute || cfg.RequestNamespace != "openclaw" {
+		t.Errorf("overrides: %+v, problems %v", cfg, problems)
+	}
+	env["POWERSCHOOL_LOGIN_REQUEST_CONFIGMAP"] = "a/b"
+	if _, problems := loadConfig(envOf(env)); len(problems) == 0 {
+		t.Error("a path was accepted as a ConfigMap name")
+	}
+	// Not configured: not request mode.
+	if cfg, _ := loadConfig(envOf(minimalEnv())); cfg.requestMode() {
+		t.Error("request mode is on without a ConfigMap")
+	}
+}
+
+// Vault holds a different session from the one the connector saw die (the
+// connector's copy was stale). If the portal still accepts it there is
+// nothing to log in for; the request is recorded as answered so that the
+// next runs do not keep asking the portal about it.
+func TestRequestModeAnswersWithAGoodStoredSessionAndDoesNotAskAgain(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.cfg.MinSessionAge = 10 * time.Hour
+	h.store.stored = storedAt(t, h.clock.Add(-5*time.Minute))
+	raw := h.ask(time.Minute, strings.Repeat("ab", 32)) // some other session
+	// The stored session predates the request, so it is not "a newer
+	// login"; it is young, so it is checked.
+	h.expect(h.run(), exitSuccess, 0, 0)
+	if h.probes != 1 || !h.logged("session still good") {
+		t.Fatalf("probes = %d\n%s", h.probes, h.logs.String())
+	}
+	if h.store.state.ServedRequest != raw {
+		t.Errorf("the answered request was not recorded: %+v", h.store.state)
+	}
+	for i := 0; i < 4; i++ {
+		h.clock = h.clock.Add(3 * time.Minute)
+		h.expect(h.run(), exitSuccess, 0, 0)
+	}
+	if h.probes != 1 {
+		t.Errorf("probes = %d: the stored session was checked again for the same request (a keepalive by another name)", h.probes)
+	}
+}
+
+// A login newer than the request is already in Vault: done, without Vault
+// state and without the portal.
+func TestRequestModeIgnoresARequestOlderThanTheLastLogin(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.store.stored = storedAt(t, h.clock.Add(-30*time.Second))
+	h.ask(2*time.Minute, "")
+	h.expect(h.run(), exitSuccess, 0, 0)
+	if h.portalContacts() != 0 || h.store.stateWrites != 0 {
+		t.Errorf("portal contacts %d, state writes %d", h.portalContacts(), h.store.stateWrites)
+	}
+}
+
+func TestRequestModeCannotReadTheRequest(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.requestErr = errors.New("kubernetes get configmap: HTTP 403 Forbidden")
+	h.expect(h.run(), exitTransient, 0, 0)
+	if h.portalContacts() != 0 || h.connects != 0 {
+		t.Errorf("portal contacts %d, vault connects %d", h.portalContacts(), h.connects)
+	}
+}
+
+// The blackout comes first, as always: the request is not even read.
+func TestRequestModeBlackoutComesFirst(t *testing.T) {
+	la := mustZone(t, "America/Los_Angeles")
+	h := newHarness(t, time.Date(2026, 10, 12, 17, 0, 0, 0, la)).requestMode()
+	h.ask(time.Minute, "")
+	h.expect(h.run(), exitSuccess, 0, 0)
+	if h.requestReads != 0 || h.portalContacts() != 0 || !h.logged(`"outcome":"blackout_refused"`) {
+		t.Errorf("request reads %d, portal contacts %d", h.requestReads, h.portalContacts())
+	}
+}
+
+// The latch outranks a request.
+func TestRequestModeLatchStillBlocks(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.store.state = &loginState{Salt: testSalt, Blocked: true, BlockedReason: blockedCredentialsRejected,
+		CredentialFingerprint: credentialFingerprint(testSalt, testUsername, testPassword)}
+	h.ask(time.Minute, "")
+	h.expect(h.run(), exitLoginBlocked, 0, 0)
+	if h.portalContacts() != 0 {
+		t.Error("the portal was contacted with the latch set")
+	}
+}
+
+// The operator's manual run: the bypass makes the binary behave as a
+// scheduled run, ignoring the request field and the request interval. The
+// connector cannot set it: it is an environment variable on a Job.
+func TestRequestBypassIsAnOrdinaryRun(t *testing.T) {
+	h := newHarness(t, morning(t)).requestMode()
+	h.cfg.RequestBypass = true
+	h.store.state = &loginState{Salt: testSalt, RequestLoginAt: h.clock.Add(-time.Minute)}
+	h.expect(h.run(), exitSuccess, 1, 1)
+	if h.requestReads != 0 {
+		t.Errorf("the request was read %d time(s) in a bypass run", h.requestReads)
+	}
+	// It does not disturb the request bookkeeping.
+	if !h.store.state.RequestLoginAt.Equal(h.clock.Add(-time.Minute)) || h.store.state.ServedRequest != "" {
+		t.Errorf("state = %+v", h.store.state)
+	}
+
+	// Every other rule still holds for it: the blackout...
+	h = newHarness(t, time.Date(2026, 10, 12, 17, 0, 0, 0, mustZone(t, "America/Los_Angeles"))).requestMode()
+	h.cfg.RequestBypass = true
+	h.expect(h.run(), exitSuccess, 0, 0)
+	// ...and the young-session check.
+	h = newHarness(t, morning(t)).requestMode()
+	h.cfg.RequestBypass = true
+	h.store.stored = storedAt(t, h.clock.Add(-time.Hour))
+	h.expect(h.run(), exitSuccess, 0, 0)
+}
+
+// Without request mode nothing about a scheduled run changes, and the
+// request is never read.
+func TestScheduledRunsDoNotReadTheRequest(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.request = "2026-10-12T12:00:00Z none"
+	h.expect(h.run(), exitSuccess, 1, 1)
+	if h.requestReads != 0 || h.store.state.ServedRequest != "" || !h.store.state.RequestLoginAt.IsZero() {
+		t.Errorf("request reads %d, state %+v", h.requestReads, h.store.state)
 	}
 }

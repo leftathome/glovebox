@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/leftathome/glovebox/internal/psportal"
 )
 
 func mustZone(t *testing.T, name string) *time.Location {
@@ -234,5 +236,28 @@ func TestBlackoutCannotBeWeakened(t *testing.T) {
 				t.Errorf("%s: the returned blackout does not cover %02d:%02d:%02d", c.name, hm[0], hm[1], hm[2])
 			}
 		}
+	}
+}
+
+// The connector decides whether to ASK for a login with
+// psportal.FloorBlocksLoginAt; this binary decides whether to log in with
+// its own blackout. With nothing widened the two must agree at every
+// instant, or the connector would create Jobs this binary then refuses (or
+// hold back when a login would have been fine).
+func TestDefaultBlackoutAgreesWithTheSharedFloor(t *testing.T) {
+	b := defaultBlackout(t)
+	la := mustZone(t, "America/Los_Angeles")
+	for _, day := range blackoutDays {
+		start := time.Date(2026, time.Month(day.month), day.day, 0, 0, 0, 0, la)
+		for at := start; at.Before(start.Add(25 * time.Hour)); at = at.Add(7 * time.Second) {
+			if b.blocksLoginAt(at) != psportal.FloorBlocksLoginAt(at) || b.contains(at) != psportal.InFloor(at) {
+				t.Fatalf("%s %s: blackout says blocks=%v inside=%v, the shared floor says blocks=%v inside=%v",
+					day.name, at.Format("15:04:05"), b.blocksLoginAt(at), b.contains(at),
+					psportal.FloorBlocksLoginAt(at), psportal.InFloor(at))
+			}
+		}
+	}
+	if loginTimeout != psportal.LoginTimeout || loginHeadroom != psportal.LoginHeadroom {
+		t.Error("the login timeout or headroom differs from the shared one")
 	}
 }

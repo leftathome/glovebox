@@ -1631,9 +1631,59 @@ connectors:
     # to change; the env var name POWERSCHOOL_HOST and the file name
     # session.json (which POWERSCHOOL_SESSION_FILE above points at) are
     # fixed.
+    # Log in on demand (off by default). The portal ends an IDLE session in
+    # well under an hour (measured 2026-10-11: dead at 30 and at 45 minutes
+    # idle, alive at 4), so with three polls a day every poll finds the
+    # previous session dead, and a login scheduled an hour ahead of a poll
+    # is an hour too early. With this on, the connector checks its session
+    # at the start of each poll and, when the portal no longer accepts it,
+    # ASKS for a login and waits for the new session file. There is
+    # deliberately no keepalive: the session is not kept alive with requests
+    # nobody needs (owner decision).
+    #
+    # What "asks" means: the connector writes one short string -- the time
+    # and a fingerprint prefix of the dead session -- into one key of one
+    # ConfigMap (<fullname>-powerschool-login-request). That is all it can
+    # do. It has no permission to create a Job or a pod or to read a Secret,
+    # never sees the username or the password, and cannot log in. The login
+    # workload (powerschoolAuthRefresher.onRequest) reads the request on its
+    # own short cadence and decides by its own rules whether to act: its
+    # blackout, its latch, and at most one request-driven login per 20
+    # minutes. A connector that has been taken over can therefore cause, at
+    # most, logins at that rate, in the hours the login workload runs, and
+    # none during the blackout.
+    #
+    # Enabling it:
+    #   - requires powerschoolAuthRefresher.enabled AND
+    #     powerschoolAuthRefresher.onRequest.enabled (the chart refuses to
+    #     render otherwise);
+    #   - gives this connector a ServiceAccount of its own, with its token
+    #     mounted, and a Role granting exactly get/update/patch on that one
+    #     ConfigMap;
+    #   - needs egress from the connector to the Kubernetes API server. The
+    #     chart's own connector NetworkPolicy already allows all egress; in
+    #     a namespace whose policies are managed elsewhere, add the rule in
+    #     docs/connectors/powerschool.md.
+    loginOnDemand:
+      enabled: false
+      # How long a poll waits for the new session to reach the mounted file
+      # after asking. Worst case, added up: the login workload's next run
+      # (up to 3 min, plus the pod's start), the login (up to ~100 s), ESO's
+      # sync (refreshInterval below, 1 min) and the kubelet's update of the
+      # mounted Secret (up to ~90 s) -- about seven and a half minutes. A
+      # session that arrives inside the wait gets its one poll even after
+      # the poll window's nominal end. 30-1800.
+      waitSeconds: 600
+      # Least time between two requests by this connector, across restarts.
+      # 20 is also the minimum. (The login workload enforces its own
+      # interval, which is the one that cannot be bypassed.)
+      minIntervalMinutes: 20
     externalSecret:
       enabled: false
-      refreshInterval: "5m"
+      # One minute, where other connectors use an hour: this is how quickly
+      # a new session reaches the connector, and with loginOnDemand a poll
+      # is waiting for it.
+      refreshInterval: "1m"
       secretStoreRef:
         kind: ClusterSecretStore
         name: ""
@@ -1768,6 +1818,68 @@ powerschoolAuthRefresher:
   # 1.27+). Fixed: it must be America/Los_Angeles, the zone of the blackout,
   # and the chart refuses to render otherwise.
   timeZone: America/Los_Angeles
+  # Suspend every CronJob of `schedules` below (spec.suspend: true): no
+  # login runs on a clock. Use it with onRequest, which logs in when the
+  # connector asks instead. A suspended CronJob still exists and still
+  # serves as the template for an operator's manual run
+  # (`kubectl create job --from=cronjob/...-login-morning`). It does not
+  # affect the onRequest CronJobs.
+  #
+  # Why: the portal ends an idle session in well under an hour (measured
+  # 2026-10-11: dead at 30 and at 45 minutes idle), so a login at 05:00 for
+  # a 06:00 poll produces a session that is dead by the time it is wanted.
+  # Scheduled logins only make sense when placed minutes before a poll, or
+  # for a portal whose sessions survive the gap.
+  suspendSchedules: false
+  # Logins on request (off by default; for connectors.powerschool
+  # .loginOnDemand). One CronJob per entry of `windows`, named
+  # <fullname>-powerschool-login-req-<key>, running every few minutes inside
+  # that window in REQUEST MODE:
+  #
+  #   - The run's first step, before Vault and before anything is sent to
+  #     the portal, is to read the connector's request ConfigMap. With no
+  #     pending request it exits 0 (`no_login_requested`) having contacted
+  #     the portal NOT AT ALL -- no login, no check of the stored session.
+  #     Nearly every run is this one. There is no keepalive, by decision.
+  #   - With a pending request it runs the ordinary flow: blackout, latch,
+  #     the stored session (checked only if it is not the one the connector
+  #     reported dead), sign-in page check, one login, confirmation, Vault.
+  #   - Each request is acted on once, and logins made for requests are at
+  #     least minIntervalMinutes apart. Both are enforced in the binary from
+  #     its own record in Vault, which the connector cannot write.
+  #
+  # What the connector can cause through the request ConfigMap is bounded by
+  # this block and by nothing the connector controls: logins only inside
+  # these windows (which the chart checks against the blackout), at most
+  # one per minIntervalMinutes, never with the latch set.
+  onRequest:
+    enabled: false
+    # When the on-request runs happen: five-field cron expressions in
+    # `timeZone`, checked against the blackout like `schedules`. The
+    # defaults cover the connector's default poll windows (06:00-06:30,
+    # 15:00-15:30, 21:30-22:00 on weekdays) plus the ten minutes a poll
+    # waits and a tick to spare, every 3 minutes. If you change
+    # connectors.powerschool.config.poll_schedule, change these to match:
+    # a request made when no run is due inside the connector's wait is a
+    # lost poll. Set an entry to null to remove it.
+    windows:
+      morning: "*/3 6 * * 1-5"       # 06:00-06:57
+      afternoon: "0-45/3 15 * * 1-5" # 15:00-15:45 (the blackout starts 15:57:30)
+      evening: "30-59/3 21 * * 1-5"  # 21:30-21:57
+      late: "0-15/3 22 * * 1-5"      # 22:00-22:15
+    # How late a missed run may start. Short: the next one is 3 minutes on.
+    startingDeadlineSeconds: 120
+    # Least time between two logins made because of requests. 20 is the
+    # minimum; the binary refuses less.
+    minIntervalMinutes: 20
+    # A request older than this is not acted on: the poll that made it has
+    # stopped waiting (loginOnDemand.waitSeconds, 10 min).
+    maxRequestAgeMinutes: 15
+    # With a pending request, a stored session at least this old is
+    # replaced without asking the portal about it; a younger one that is not
+    # the session the connector reported dead is checked first (it may be a
+    # newer login the connector has not received yet).
+    minSessionAge: 5m
   # One CronJob per entry, named <fullname>-powerschool-login-<key>. A map,
   # so one entry can be changed or added from an overlay without restating
   # the others; set an entry to null to remove it.
@@ -1778,6 +1890,10 @@ powerschoolAuthRefresher:
   #   minSessionAge  Go duration. The run logs in only if the stored
   #                  session is at least this old, or the portal no longer
   #                  accepts it.
+  #   suspend        optional; true suspends this one CronJob. Keep
+  #                  `morning` (suspended) as the template for a manual
+  #                  run; the others can be removed (null) or left
+  #                  suspended.
   #
   # Defaults, and why there are two:
   #
@@ -1831,10 +1947,14 @@ powerschoolAuthRefresher:
     timeZone: America/Los_Angeles
     # Further daily windows, each {start: "HH:MM", end: "HH:MM"}.
     extraWindows: []
-  # expires_at written into the session: login time + this. An upper bound
-  # on how long the connector will present a session, not a claim about the
-  # portal (which says when a session ends by refusing it). 36h carries a
-  # morning session through the next morning's login.
+  # expires_at written into the session: login time + this. It is an UPPER
+  # BOUND and nothing more. It says nothing about how long the portal keeps
+  # a session: an idle one is ended in well under an hour (measured
+  # 2026-10-11), whatever is written here. What decides whether a session
+  # is usable is the portal's answer, which the connector asks for at the
+  # start of every poll. With loginOnDemand the connector treats a session
+  # past this time like a dead one (it asks for a login); without it, it
+  # refuses to start on one.
   sessionLifetime: 36h
   image:
     repository: ghcr.io/leftathome/glovebox-powerschool-auth-refresher
@@ -1919,6 +2039,16 @@ powerschoolAuthRefresher:
       - 192.168.0.0/16
       - 100.64.0.0/10
       - 169.254.0.0/16
+    # The Kubernetes API server, for onRequest (the runs read the login
+    # request ConfigMap). Required when onRequest and this policy are both
+    # on -- the render fails without it: the API server is not a pod a
+    # selector can match, and its addresses are private, which the 443 rule
+    # above excludes. List the control-plane addresses
+    # (`kubectl get endpoints kubernetes -n default`) and the kubernetes
+    # Service's cluster IP (`kubectl get svc kubernetes -n default`), each
+    # as a /32.
+    kubernetesAPICIDRs: []
+    kubernetesAPIPorts: [443, 6443]
     # Further egress rules, verbatim (for a Vault outside the cluster, say).
     extraEgress: []
   # The container's root filesystem is read-only. What Chromium and the

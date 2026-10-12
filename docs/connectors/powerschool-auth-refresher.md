@@ -90,6 +90,79 @@ connector will go on presenting a session. The portal ends a session by
 refusing it, and the connector reports the age at which that happens
 (`powerschool_rejected_session_age_seconds`).
 
+## Logins on request (no schedule)
+
+**Finding, 2026-10-11:** the portal ends an idle session in well under an
+hour (stored 19:23:51Z, never used, refused at 20:27Z; measured dead at 30
+and 45 minutes idle, alive at 4). A login at 05:00 is dead by the 06:00
+poll, so logins scheduled well ahead of a poll cannot serve this portal,
+and `sessionLifetime` (36h) is only an upper bound.
+
+**No keepalive, by decision.** Sessions are not kept alive artificially,
+and this workload does not look at the stored session unless the connector
+is waiting for the answer.
+
+Instead the connector asks for a login when a poll finds its session dead
+(`connectors.powerschool.loginOnDemand`; described in
+[powerschool.md](powerschool.md#idle-sessions-the-pre-poll-check-and-login-on-demand)),
+and this workload answers (`powerschoolAuthRefresher.onRequest`):
+
+- One CronJob per entry of `onRequest.windows`,
+  `$FULLNAME-powerschool-login-req-<key>`, every 3 minutes inside windows
+  that cover the connector's poll windows: by default 06:00-06:57,
+  15:00-15:45, 21:30-21:57 and 22:00-22:15 on weekdays. The chart checks
+  each against the blackout. **If the connector's `poll_schedule` changes,
+  change these to match.**
+- Each run is in **request mode**. Its first step -- after the blackout
+  check, before Vault, before anything is sent to the portal -- is to read
+  the connector's request from the ConfigMap
+  `$FULLNAME-powerschool-login-request`. With no pending request it logs
+  `no login requested` (`outcome=no_login_requested`), exits 0, and has
+  made **no request to the portal at all**. That is nearly every run:
+  about 60 a day, of which about 3 do anything.
+- A request is *pending* when the field parses as a request (a time and a
+  fingerprint prefix; anything else is ignored and never echoed), is not
+  dated in the future, is at most 15 minutes old
+  (`onRequest.maxRequestAgeMinutes`), has not been acted on already, and no
+  login newer than it is in Vault.
+- With a pending request the ordinary flow runs: latch, the stored session
+  (if it is the one the connector reported dead it is not checked again; a
+  different, younger one is checked first, since it may be a login the
+  connector has not received yet), sign-in page check, **one** login,
+  confirmation, Vault.
+- A request is acted on **once**: it is recorded as served in this
+  workload's Vault state before the login starts, whatever comes of the
+  login. A failed login is not repeated three minutes later.
+- Logins made for requests are at least **20 minutes** apart
+  (`onRequest.minIntervalMinutes`; the binary refuses less). A request that
+  arrives sooner waits: `outcome=login_request_too_soon`, exit 0.
+
+**What this bounds.** The connector, which parses the portal's pages, can
+write that ConfigMap and do nothing else in the cluster. Through it, a
+connector that has been taken over can cause at most one login per 20
+minutes, only inside the windows above, never in the blackout, never with
+the latch set, and with no say in which credentials are used or where the
+session goes. Those limits are all enforced here, from this workload's own
+record in Vault and its compiled-in blackout.
+
+Set `powerschoolAuthRefresher.suspendSchedules: true` so that nothing else
+logs in on a clock. The suspended `morning` CronJob stays as the template
+for a manual run. A manual run is not in request mode: it ignores the
+request and the 20-minute interval and follows the scheduled rules. To run
+an on-request CronJob's template by hand without a pending request, set
+`POWERSCHOOL_LOGIN_REQUEST_BYPASS=true` on the Job (the connector cannot:
+it has no permission to create or change Jobs).
+
+```bash
+kubectl -n "$NS" get configmap "$FULLNAME-powerschool-login-request" -o jsonpath='{.data.request}{"\n"}'
+kubectl -n "$NS" get jobs -l glovebox.io/powerschool-login-kind=request --sort-by=.metadata.creationTimestamp | tail
+vault kv get -mount="$KV" -field=served_request "$STATE"
+```
+
+RBAC for this workload: `get` on that one ConfigMap, and nothing else in
+the Kubernetes API. Its NetworkPolicy needs the API server's addresses in
+`networkPolicy.kubernetesAPICIDRs` (the render fails without them).
+
 ## Vault: what to create
 
 Two KV v2 paths, one policy, one Kubernetes auth role. If you change a name,
@@ -181,6 +254,8 @@ State path:
 | `blocked_at` | When it was set. |
 | `credential_fingerprint` | SHA-256 over `salt`, username and password of the credentials last submitted. Never the values. |
 | `salt` | 16 random bytes, generated on first use and kept for the install. |
+| `served_request` | The last connector request acted on, verbatim (a time and a fingerprint prefix). A request is acted on once. |
+| `request_login_at` | When a login was last started for a request; the 20-minute interval is measured from it. |
 | `unconfirmed_count` | Logins in a row that returned without a working session. |
 
 ### Clearing the latch
@@ -262,7 +337,16 @@ connectors:
 | `blackout.start` / `.end` | `16:00` / `21:00` | The main no-login window. `start` may be earlier, `end` later; never the reverse. |
 | `blackout.extraWindows` | `[]` | Further daily windows, `{start, end}`. |
 | `blackout.timeZone` | `America/Los_Angeles` | Fixed. |
-| `sessionLifetime` | `36h` | `expires_at` = login time + this. |
+| `suspendSchedules` | `false` | Suspend every CronJob of `schedules`; they remain as templates for a manual run. |
+| `onRequest.enabled` | `false` | Render the on-request CronJobs, the request ConfigMap and this workload's Role (`get` on it). |
+| `onRequest.windows.<name>` | every 3 min around the default poll windows | Five-field cron expressions, checked against the blackout. |
+| `onRequest.startingDeadlineSeconds` | `120` | |
+| `onRequest.minIntervalMinutes` | `20` | Least time between logins made for requests; 20 is the floor. |
+| `onRequest.maxRequestAgeMinutes` | `15` | Older requests are ignored. |
+| `onRequest.minSessionAge` | `5m` | With a pending request, a stored session at least this old is replaced without being checked. |
+| `networkPolicy.kubernetesAPICIDRs` / `kubernetesAPIPorts` | `[]` / `[443, 6443]` | The API server, for on-request runs. Required with `onRequest` when this policy is on. |
+| `schedules.<name>.suspend` | unset | Suspend one CronJob. |
+| `sessionLifetime` | `36h` | `expires_at` = login time + this. An upper bound only: the portal ends an idle session in under an hour. |
 | `credentials.existingSecret` | `""` | Existing Secret with the account; empty renders an ExternalSecret. |
 | `credentials.keys.*` | `POWERSCHOOL_HOSTNAME` / `_USERNAME` / `_PASSWORD` | Key names in that Secret. |
 | `vault.addr` | `https://vault.vault.svc.cluster.local:8200` | https only. |
@@ -513,6 +597,8 @@ ended. The same outcome is in the pod's termination message
 | 4 | `secret_read_failed` / `secret_write_failed` | Vault refused (policy, role binding, path). No login happens when this is detected beforehand. | Fix the policy or role. |
 | 5 | `login_unconfirmed` | The browser login returned but its session does not open the home page. Nothing was written; the previous session stays in Vault. The second in a row sets the latch. | Sign in as the owner and see what the portal now asks for. |
 | 6 | `login_blocked` | The latch is set. No browser was started, nothing was submitted. | "Clearing the latch" above. |
+| 0 | `no_login_requested` | Request mode: the connector has not asked (or its request is stale, malformed, already served, or older than the last login). Nothing was sent to the portal. | Nothing. This is what nearly every on-request run logs. |
+| 0 | `login_request_too_soon` | Request mode: a login was made for a request less than 20 minutes ago. Nothing was sent to the portal. | Nothing, unless it repeats: then find out why the connector keeps asking. |
 | 7 | `signin_page_unrecognised` | The sign-in page is not a password form on the configured host (`reason` says which check failed). No browser was started. | The table of reasons below. |
 
 No run is retried by Kubernetes.
@@ -542,12 +628,10 @@ independently. When the home-page read made with a stored session is sent
 through `/my.policy` because the gateway's cookie has lapsed, the job
 carries the renewed cookie for the rest of that one read (and does not
 write it back); the portal then answers for its own session. The
-**connector** has no such handling: its HTTP client deliberately keeps no
-cookies from responses. If the gateway's cookie lapses before the portal's
-session does, the connector's read ends on the gateway's error page. Watch
-for that in the first days (checklist step 9): it would show as connector
-polls failing with a parse/`unknown` error class rather than `auth`, with
-a session the login job still calls good.
+connector's client does the same (the code is shared,
+`internal/psportal`). Before it did -- 0.10.3 -- a dead session behind the
+gateway ended on the gateway's error page and was logged by the connector
+as `kid skipped ... error_class=parse` instead of as a refused session.
 
 `reason` values of `signin_page_unrecognised`:
 

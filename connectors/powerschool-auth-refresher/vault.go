@@ -159,6 +159,8 @@ const (
 	stateBlockedAt   = "blocked_at"
 	stateFingerprint = "credential_fingerprint"
 	stateUnconfirmed = "unconfirmed_count"
+	stateServed      = "served_request"
+	stateRequestAt   = "request_login_at"
 )
 
 // ReadState implements sessionStore.
@@ -176,6 +178,10 @@ func (v *vaultStore) ReadState(ctx context.Context) (*loginState, error) {
 	if t, err := time.Parse(time.RFC3339, str(stateBlockedAt)); err == nil {
 		state.BlockedAt = t
 	}
+	state.ServedRequest = str(stateServed)
+	if t, err := time.Parse(time.RFC3339, str(stateRequestAt)); err == nil {
+		state.RequestLoginAt = t
+	}
 	if n, err := strconv.Atoi(str(stateUnconfirmed)); err == nil && n > 0 {
 		state.UnconfirmedCount = n
 	}
@@ -191,6 +197,11 @@ func (v *vaultStore) WriteState(ctx context.Context, state *loginState) error {
 		stateBlockedAt:   "",
 		stateFingerprint: state.CredentialFingerprint,
 		stateUnconfirmed: strconv.Itoa(state.UnconfirmedCount),
+		stateServed:      state.ServedRequest,
+		stateRequestAt:   "",
+	}
+	if !state.RequestLoginAt.IsZero() {
+		data[stateRequestAt] = state.RequestLoginAt.UTC().Format(time.RFC3339)
 	}
 	if !state.BlockedAt.IsZero() {
 		data[stateBlockedAt] = state.BlockedAt.UTC().Format(time.RFC3339)

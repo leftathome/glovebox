@@ -72,7 +72,16 @@ spec:
         prometheus.io/path: "/metrics"
         {{- end }}
     spec:
+      {{- if and (eq $name "powerschool") ($connector.loginOnDemand | default dict).enabled }}
+      # On-demand login: this connector writes a login request into one
+      # ConfigMap through the Kubernetes API, so it has a ServiceAccount of
+      # its own (see powerschool-connector-role.yaml for everything it may
+      # do) and, unlike every other connector, its token mounted.
+      serviceAccountName: {{ include "glovebox.fullname" $ }}-powerschool
+      automountServiceAccountToken: true
+      {{- else }}
       serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      {{- end }}
       {{- with (include "glovebox.runtimeClassName" (dict "workload" $connector "root" $)) }}
       runtimeClassName: {{ . | quote }}
       {{- end }}

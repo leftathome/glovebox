@@ -13,6 +13,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -30,11 +31,6 @@ const maxSignInBytes = 2 << 20
 // maxSignInRedirects bounds the redirects followed on the way to the
 // sign-in page.
 const maxSignInRedirects = 5
-
-// gatewayPaths are where an access gateway in front of the portal (an F5
-// APM on the reference instance) leaves a client it will not, or cannot,
-// give a session: its policy endpoint and its logout/error page.
-var gatewayPaths = []string{"/my.policy", "/my.logout.php3"}
 
 // Reasons a sign-in check fails. A closed list: these are log values.
 const (
@@ -149,7 +145,7 @@ func realSignInCheck(cfg config, base http.RoundTripper) func(ctx context.Contex
 		if final.Scheme != "https" || !strings.EqualFold(final.Host, cfg.Host) {
 			return &signInError{reason: reasonRedirectOffHost}
 		}
-		if isGatewayPath(final.Path) {
+		if psportal.IsGatewayPath(final.Path) {
 			return &signInError{reason: reasonGatewayRefused}
 		}
 		if resp.StatusCode >= 500 {
@@ -167,17 +163,6 @@ func realSignInCheck(cfg config, base http.RoundTripper) func(ctx context.Contex
 		}
 		return checkSignInForms(doc, final, cfg.Host)
 	}
-}
-
-// isGatewayPath reports whether path is one of the access gateway's own
-// pages.
-func isGatewayPath(path string) bool {
-	for _, p := range gatewayPaths {
-		if path == p || strings.HasPrefix(path, p+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // textLikeInput matches an input a person types an account name into: an

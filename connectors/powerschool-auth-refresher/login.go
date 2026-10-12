@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
 // loginTimeout bounds one browser login, browser start included. The
 // library's own default is 60s; a cold container needs some room. It is
 // also part of the blackout headroom (loginHeadroom).
-const loginTimeout = 90 * time.Second
+const loginTimeout = psportal.LoginTimeout
 
 // probeTimeout bounds one home-page read.
 const probeTimeout = 30 * time.Second
@@ -133,7 +134,7 @@ func classifyLoginFailure(msg string) loginFailure {
 func probeHTTPClient(cfg config, base http.RoundTripper) *http.Client {
 	client := powerschool.NewHTTPClient(cfg.Host, false, nil, probeTimeout)
 	if t, ok := client.Transport.(*powerschool.Transport); ok {
-		t.Base = newGatewayCookies(base)
+		t.Base = psportal.NewGatewayCookies(base)
 	}
 	return client
 }
