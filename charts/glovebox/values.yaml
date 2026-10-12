@@ -1678,6 +1678,38 @@ connectors:
       # 20 is also the minimum. (The login workload enforces its own
       # interval, which is the one that cannot be bypassed.)
       minIntervalMinutes: 20
+    # Log in on demand through a LOGIN BROKER instead (off by default): the
+    # other way of asking, and an alternative to loginOnDemand above -- the
+    # chart refuses to render with both enabled.
+    #
+    # Where loginOnDemand leaves a note in a ConfigMap for a CronJob that
+    # looks every 3 minutes, this asks a small always-on service
+    # (loginBrokers.<name>, below) and gets the outcome and the session in
+    # the answer: no waiting on a schedule, on ESO or on the kubelet, and a
+    # request made outside the mailbox's windows is not a lost poll. On a
+    # session that dies in the MIDDLE of a poll the connector asks and
+    # retries the poll once, instead of leaving the rest for the next
+    # window. Every limit on logins -- blackout, minimum interval, latch --
+    # is enforced by the broker, where the connector cannot reach it.
+    #
+    # Enabling it:
+    #   - requires loginBrokers.<name>.enabled, with connector: powerschool
+    #     there (the chart refuses to render otherwise);
+    #   - gives this connector a ServiceAccount of its own with NO Role and
+    #     no API token mounted; the pod holds one token, projected for the
+    #     broker's audience, which nothing else accepts;
+    #   - needs no access to the Kubernetes API, and egress only to the
+    #     broker's Service (the chart's connector NetworkPolicy already
+    #     allows all egress).
+    # Keep externalSecret.files below as it is: the broker writes the same
+    # Vault path, and a restarted connector starts from that file.
+    loginBroker:
+      enabled: false
+      # Key of the loginBrokers entry to ask.
+      name: powerschool
+      # How long one call may take. A call lasts as long as the login it
+      # may cause (the broker bounds its own work at 6 minutes). 60-900.
+      timeoutSeconds: 420
     externalSecret:
       enabled: false
       # One minute, where other connectors use an hour: this is how quickly
@@ -2071,6 +2103,203 @@ powerschoolAuthRefresher:
     limits:
       cpu: 1000m
       memory: 1536Mi
+
+# Login brokers (internal/loginbroker/DESIGN.md). Disabled by default.
+#
+# A login broker is a small always-on service that holds ONE site's account
+# credentials and logs in when -- and only when -- that site's connector
+# reports its session dead. One entry here is one instance: its own
+# Deployment (1 replica, Recreate), Service, ServiceAccount, credentials
+# Secret, Vault role, token audience and NetworkPolicy. Every instance runs
+# the same image; nothing else is shared, so taking over one instance
+# exposes one account. Set an entry to null to remove it.
+#
+# What every instance enforces, whoever asks and however often:
+#
+#   - one login at a time; concurrent requests share it;
+#   - the stored session is checked first, and a session the site still
+#     accepts is returned -- nobody ever logs in over a live session;
+#   - at most one login per minInterval, measured from the last login by
+#     anybody (the scheduled login job included);
+#   - no login inside the blackout windows, nor within the time a login may
+#     take before one: the answer is "deferred until <time>";
+#   - a latch: ANY rejection of the credentials, or maxFailures failed
+#     logins in a row, stops all logins until a person clears it (a wrong
+#     password retried is how an account gets locked);
+#   - nothing is ever sent to the site without a request: no keepalive, no
+#     warm-up, no periodic check.
+#
+# The latch and the time of the last login are kept in Vault, beside the
+# session, and are read at every request: a restarted pod forgets nothing.
+# To clear a latch, delete the secret at vault.statePath (or change the
+# credentials, which lifts a latch set for the old ones).
+#
+# A broker is an ALTERNATIVE to powerschoolAuthRefresher.onRequest (the
+# ConfigMap request mailbox); the chart refuses to render both for the same
+# session. The scheduled CronJobs of powerschoolAuthRefresher.schedules may
+# stay, suspended or not, as the template for a manual login: they write the
+# same Vault paths and share the latch.
+#
+# Outside this chart (see the design note): the Vault policy and Kubernetes
+# auth role for each instance, bound to that instance's ServiceAccount
+# (<fullname>-login-broker-<key>) with read/create/update on its session
+# path and state path and nothing else.
+loginBrokers:
+  powerschool:
+    enabled: false
+    # Which site driver the binary runs. One per instance.
+    site: powerschool
+    # The connectors.<name> this broker serves. Its ServiceAccount
+    # (<fullname>-<name>) is the one allowed to call, and its pods are the
+    # ones the NetworkPolicy admits.
+    connector: powerschool
+    # Further ServiceAccounts allowed to call, each "namespace/name". They
+    # also need admitting by networkPolicy.extraIngress.
+    extraAllowedCallers: []
+    # The audience callers' tokens must be minted for. Empty: this
+    # instance's own, "<fullname>-login-broker-<key>.<namespace>". A token
+    # minted for any other audience -- the Kubernetes API's, another
+    # broker's -- is refused.
+    audience: ""
+    image:
+      repository: ghcr.io/leftathome/glovebox-login-broker
+      # tag defaults to .Chart.AppVersion when empty.
+      tag: ""
+      pullPolicy: IfNotPresent
+    # The authenticated endpoint, and a separate listener for /metrics.
+    port: 8080
+    metricsPort: 9090
+    # Least time between two logins, a Go duration. The PowerSchool driver
+    # refuses to start with less than 20m: it bounds how often a connector
+    # that has been taken over can cause a login.
+    minInterval: 20m
+    # Failed logins in a row before the latch is set. 1-5.
+    maxFailures: 2
+    # Daily windows with no login, on the wall clock of timeZone (daylight
+    # saving included). For PowerSchool, 16:00-21:00 America/Los_Angeles is
+    # ALSO compiled into the driver -- the account's owner uses the portal
+    # then, and a login would sign them out -- so nothing here can shorten
+    # that span, move it or change its zone; these values can only add to
+    # it. The broker also keeps clear of each window's start by the time a
+    # login may take (150s): the last moment a login may start is 15:57:29.
+    blackout:
+      timeZone: America/Los_Angeles
+      windows:
+        - start: "16:00"
+          end: "21:00"
+    # Where the account comes from.
+    credentials:
+      # Name of an existing Secret holding it. Empty: the chart renders an
+      # ExternalSecret from vault.credentialsPath, into
+      # <fullname>-login-broker-<key>-credentials.
+      existingSecret: ""
+      # Environment variable -> key of that Secret. LOGIN_BROKER_USERNAME
+      # and LOGIN_BROKER_PASSWORD are required for every site; the rest is
+      # whatever the site's driver keeps with the account (for PowerSchool,
+      # where the portal is). Set an entry to null to drop it.
+      env:
+        LOGIN_BROKER_USERNAME: username
+        LOGIN_BROKER_PASSWORD: password
+        POWERSCHOOL_HOSTNAME: hostname
+    # Further plain settings of the site's driver.
+    env:
+      # expires_at written into the session: login time + this. An upper
+      # bound and nothing more; see powerschoolAuthRefresher.sessionLifetime.
+      POWERSCHOOL_SESSION_LIFETIME: 36h
+    vault:
+      # https only: the binary refuses a plaintext address, and
+      # VAULT_SKIP_VERIFY. Give it the CA through caConfigMap.
+      addr: "https://vault.vault.svc.cluster.local:8200"
+      # Kubernetes auth role bound to THIS instance's ServiceAccount, with
+      # read/create/update on the session path and the state path and
+      # nothing else. Never another instance's role: the chart refuses two
+      # brokers with the same one.
+      k8sRole: "glovebox-login-broker-powerschool"
+      kvMount: "secret"
+      # KV v2 path (inside kvMount) the session is written to: the path the
+      # scheduled login job writes and the connector's
+      # externalSecret.files.data."session.json".key reads.
+      sessionPath: "glovebox/powerschool/default/session"
+      # KV v2 path of the latch and the login record. Empty: "login-state"
+      # beside the session -- the scheduled login job's own default, so the
+      # two share one latch for one account. Never the session path.
+      statePath: ""
+      # ConfigMap holding the CA bundle that signed Vault's certificate.
+      caConfigMap:
+        name: ""
+        key: ca.crt
+      # Used only when credentials.existingSecret is empty: the KV v2 path
+      # (as the SecretStore addresses it) and, per key of the Secret, the
+      # property to read there.
+      credentialsPath: "eso/glovebox-powerschool"
+      credentialsProperties:
+        username: powerschool_username
+        password: powerschool_password
+        hostname: powerschool_hostname
+      refreshInterval: "1h"
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: vault-default
+    # The ClusterRole and ClusterRoleBinding that let this instance ask the
+    # API server whether a caller's token is genuine (TokenReview; nothing
+    # else). false: manage them outside the chart, for a deployer without
+    # cluster-scoped rights.
+    rbac:
+      create: true
+    # Ingress and egress of this instance's pods, rendered when
+    # networkPolicy.enabled (top level) is also true. The broker speaks
+    # plain HTTP inside the cluster; this policy -- admitting only the
+    # connector's pods to the API port -- is what makes that acceptable. If
+    # you turn it off, put an equivalent policy in its place.
+    networkPolicy:
+      enabled: true
+      # Further ingress rules, verbatim (for extraAllowedCallers).
+      extraIngress: []
+      # Pods Vault egress is limited to, inside networkPolicy.vault.namespace
+      # on networkPolicy.vault.port. {} admits every pod in that namespace.
+      vaultPodLabels:
+        app.kubernetes.io/name: vault
+      # The Kubernetes API server, for TokenReview. REQUIRED with this
+      # policy -- the render fails without it. List the control-plane
+      # addresses (`kubectl get endpoints kubernetes -n default`) and the
+      # kubernetes Service's cluster IP, each as a /32.
+      kubernetesAPICIDRs: []
+      kubernetesAPIPorts: [443, 6443]
+      # Where the site may be reached. A NetworkPolicy cannot name a host;
+      # narrow this to the site's address range if it is stable.
+      siteCIDRs:
+        - 0.0.0.0/0
+      sitePorts: [443]
+      # Carved out of every siteCIDRs entry that is 0.0.0.0/0, so that the
+      # browser cannot reach in-cluster or LAN services. ADD your cluster's
+      # pod and service CIDRs here if they lie outside these.
+      siteExceptCIDRs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+      # Further egress rules, verbatim (a Vault outside the cluster; a
+      # remote browser a site's driver uses).
+      extraEgress: []
+    # A login in flight is finished before the process exits.
+    terminationGracePeriodSeconds: 420
+    # The container's root filesystem is read-only. What Chromium and the
+    # binary write goes to three memory-backed emptyDirs, counted against
+    # the memory limit below: /tmp (the browser profile), /home/broker
+    # ($HOME) and /dev/shm.
+    tmpSizeLimit: 256Mi
+    homeSizeLimit: 64Mi
+    shmSizeLimit: 256Mi
+    # Idle, the broker is a few megabytes. The limit is for the minute a
+    # browser runs.
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 1000m
+        memory: 1536Mi
 
 # Schoology CONNECTOR (spec 12). Disabled by default; opt-in by setting
 # schoologyConnector.enabled=true. When enabled the chart renders a

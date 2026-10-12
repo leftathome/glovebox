@@ -1,0 +1,256 @@
+{{- /*
+Login brokers (internal/loginbroker/DESIGN.md).
+
+One Deployment per enabled entry of loginBrokers: a small always-on service
+that holds ONE site's account credentials and logs in when, and only when,
+that site's connector reports its session dead. Every instance runs the same
+image and is otherwise separate -- its own ServiceAccount, Vault role,
+credentials Secret, token audience and NetworkPolicy -- so that taking over
+one instance exposes one account.
+
+  replicas 1, strategy Recreate   two pods would be two logins racing for
+                                  an account that keeps one live session;
+                                  the old pod is gone before the new starts.
+  no startup traffic              the pod sends the site nothing until a
+                                  connector asks. There is no keepalive.
+  state in Vault                  the latch and the time of the last login
+                                  are read from Vault at every request, so
+                                  a restart forgets nothing.
+*/}}
+{{- range $name, $b := .Values.loginBrokers }}
+{{- if and $b $b.enabled }}
+{{- $ctx := dict "name" $name "broker" $b "root" $ }}
+{{- include "glovebox.loginBrokerCheck" $ctx }}
+{{- $fullname := include "glovebox.loginBrokerName" $ctx }}
+{{- $secret := include "glovebox.loginBrokerCredentialsSecret" $ctx }}
+{{- $port := int ($b.port | default 8080) }}
+{{- $metricsPort := int ($b.metricsPort | default 9090) }}
+{{- if eq $port $metricsPort }}
+{{- fail (printf "loginBrokers.%s.port and metricsPort must differ: the metrics listener is admitted to scrapers, the other only to the connector" $name) }}
+{{- end }}
+{{- /* Who may ask: the connector's own ServiceAccount, plus any named. */}}
+{{- $callers := list }}
+{{- if $b.connector }}
+{{- $callers = append $callers (printf "%s/%s-%s" $.Release.Namespace (include "glovebox.fullname" $) $b.connector) }}
+{{- end }}
+{{- range $b.extraAllowedCallers }}
+{{- $callers = append $callers (toString .) }}
+{{- end }}
+{{- if not $callers }}
+{{- fail (printf "loginBrokers.%s: nobody may call it. Set connector (the connectors.<name> it serves) or extraAllowedCallers" $name) }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: login-broker
+    glovebox.io/login-broker: {{ $name }}
+spec:
+  replicas: 1
+  # Never two at once: see the note at the top.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "glovebox.loginBrokerSelectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "glovebox.loginBrokerSelectorLabels" $ctx | nindent 8 }}
+      annotations:
+        {{- if not ($b.credentials | default dict).existingSecret }}
+        # The credentials reach the process as env vars, which a running
+        # pod never re-reads: roll it when the ExternalSecret's spec
+        # changes. (A changed VALUE needs a restart by hand; a new
+        # password also lifts a latch set for the old one.)
+        checksum/credentials: {{ include (print $.Template.BasePath "/login-broker-externalsecret.yaml") $ | sha256sum }}
+        {{- end }}
+        {{- if $.Values.metrics.annotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      # Needed twice: Vault's Kubernetes auth, and the TokenReview that
+      # authenticates callers.
+      automountServiceAccountToken: true
+      # A login in flight is finished, and its outcome recorded, before the
+      # process exits. If the pod is killed first, the attempt marker in
+      # Vault makes the next request count it as a failed login.
+      terminationGracePeriodSeconds: {{ int ($b.terminationGracePeriodSeconds | default 420) }}
+      {{- with (include "glovebox.runtimeClassName" (dict "workload" $b "root" $)) }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        {{- with (include "glovebox.seccompProfile" $) }}
+        {{- . | nindent 8 }}
+        {{- else }}
+        # The chart-wide profile was switched off. This pod runs a browser
+        # and is not left unconfined on that account.
+        seccompProfile:
+          type: RuntimeDefault
+        {{- end }}
+      containers:
+        - name: login-broker
+          image: "{{ $b.image.repository }}:{{ $b.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $b.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            # Read-only root. Everything Chromium and the binary write goes
+            # to the three memory-backed emptyDirs below (/tmp, $HOME,
+            # /dev/shm), so a browser profile -- which holds the session
+            # cookies -- never reaches a node's disk.
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: TMPDIR
+              value: /tmp
+            - name: HOME
+              value: /home/broker
+            - name: LOGIN_BROKER_SITE
+              value: {{ $b.site | quote }}
+            - name: LOGIN_BROKER_LISTEN
+              value: ":{{ $port }}"
+            - name: LOGIN_BROKER_METRICS_LISTEN
+              value: ":{{ $metricsPort }}"
+            # Callers' tokens must be minted for exactly this audience, by
+            # one of exactly these ServiceAccounts.
+            - name: LOGIN_BROKER_AUDIENCE
+              value: {{ include "glovebox.loginBrokerAudience" $ctx | quote }}
+            - name: LOGIN_BROKER_ALLOWED_CALLERS
+              value: {{ join "," $callers | quote }}
+            - name: LOGIN_BROKER_MIN_INTERVAL
+              value: {{ $b.minInterval | default "20m" | quote }}
+            - name: LOGIN_BROKER_MAX_FAILURES
+              value: {{ $b.maxFailures | default 2 | quote }}
+            {{- $blackout := $b.blackout | default dict }}
+            {{- if $blackout.windows }}
+            {{- $windows := list }}
+            {{- range $blackout.windows }}
+            {{- $windows = append $windows (printf "%s-%s" (toString .start) (toString .end)) }}
+            {{- end }}
+            # Added to whatever the site's driver enforces by itself; these
+            # can widen that, never shorten it.
+            - name: LOGIN_BROKER_BLACKOUT_WINDOWS
+              value: {{ join "," $windows | quote }}
+            - name: LOGIN_BROKER_BLACKOUT_TZ
+              value: {{ $blackout.timeZone | quote }}
+            {{- end }}
+            # The account, and anything else of the site's that is kept
+            # with it. Taken key by key, not envFrom, so nothing else in
+            # that Secret reaches the process.
+            {{- range $envName, $key := $b.credentials.env }}
+            {{- if $key }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: {{ $key | quote }}
+            {{- end }}
+            {{- end }}
+            - name: VAULT_ADDR
+              value: {{ $b.vault.addr | quote }}
+            - name: VAULT_K8S_ROLE
+              value: {{ $b.vault.k8sRole | quote }}
+            - name: VAULT_KV_MOUNT
+              value: {{ $b.vault.kvMount | default "secret" | quote }}
+            - name: VAULT_SESSION_PATH
+              value: {{ $b.vault.sessionPath | quote }}
+            {{- with $b.vault.statePath }}
+            - name: VAULT_STATE_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $b.vault.caConfigMap }}
+            {{- if .name }}
+            - name: VAULT_CACERT
+              value: /etc/vault-ca/{{ .key | default "ca.crt" }}
+            {{- end }}
+            {{- end }}
+            {{- range $key, $value := $b.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: {{ $port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ $metricsPort }}
+              protocol: TCP
+          # /healthz says the process is serving. It says nothing about the
+          # site and asks it nothing: a probe must not be a keepalive.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/broker
+            - name: dshm
+              mountPath: /dev/shm
+            {{- with $b.vault.caConfigMap }}
+            {{- if .name }}
+            - name: vault-ca
+              mountPath: /etc/vault-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      {{- with ($b.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($b.affinity | default $.Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($b.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        # Memory-backed, size-capped, gone with the pod.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $b.tmpSizeLimit | default "256Mi" }}
+        - name: home
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $b.homeSizeLimit | default "64Mi" }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $b.shmSizeLimit | default "256Mi" }}
+        {{- with $b.vault.caConfigMap }}
+        {{- if .name }}
+        - name: vault-ca
+          configMap:
+            name: {{ .name | quote }}
+        {{- end }}
+        {{- end }}
+{{- end }}
+{{- end }}

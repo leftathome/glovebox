@@ -1,0 +1,31 @@
+{{- range $name, $b := .Values.loginBrokers }}
+{{- if and $b $b.enabled }}
+{{- $ctx := dict "name" $name "broker" $b "root" $ }}
+---
+# Where the connector reaches its login broker. Plain HTTP inside the
+# cluster: what makes that acceptable is login-broker-networkpolicy.yaml,
+# which admits the connector's pods to this port and nothing else, and the
+# audience-bound ServiceAccount token every request must carry.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "glovebox.loginBrokerName" $ctx }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: login-broker
+    glovebox.io/login-broker: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "glovebox.loginBrokerSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ int ($b.port | default 8080) }}
+      targetPort: api
+      protocol: TCP
+    - name: metrics
+      port: {{ int ($b.metricsPort | default 9090) }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}
+{{- end }}

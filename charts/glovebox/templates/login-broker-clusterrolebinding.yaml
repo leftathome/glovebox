@@ -1,0 +1,25 @@
+{{- range $name, $b := .Values.loginBrokers }}
+{{- if and $b $b.enabled (ne (toString (($b.rbac | default dict).create)) "false") }}
+{{- $ctx := dict "name" $name "broker" $b "root" $ }}
+{{- $role := printf "%s-%s-tokenreview" $.Release.Namespace (include "glovebox.loginBrokerName" $ctx) | trunc 63 | trimSuffix "-" }}
+---
+# Binds the TokenReview ClusterRole to this broker's ServiceAccount, and to
+# nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $role }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: login-broker
+    glovebox.io/login-broker: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $role }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "glovebox.loginBrokerName" $ctx }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

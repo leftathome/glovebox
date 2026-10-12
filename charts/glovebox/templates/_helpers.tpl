@@ -381,3 +381,109 @@ chart's own ExternalSecret produces.
 {{- include "glovebox.fullname" . }}-powerschool-refresher-credentials
 {{- end -}}
 {{- end }}
+
+{{/*
+Login brokers (loginBrokers.<name>): one always-on login service per site.
+These helpers take (dict "name" <key> "broker" <entry> "root" $).
+*/}}
+
+{{/*
+Name of a broker's Deployment, Service, ServiceAccount and policies.
+*/}}
+{{- define "glovebox.loginBrokerName" -}}
+{{- $n := printf "%s-login-broker-%s" (include "glovebox.fullname" .root) .name -}}
+{{- if gt (len $n) 63 -}}
+{{- fail (printf "login broker name %q is %d characters; the limit is 63. Shorten the key loginBrokers.%s or set fullnameOverride" $n (len $n) .name) -}}
+{{- end -}}
+{{- $n -}}
+{{- end }}
+
+{{/*
+The audience callers' tokens must be minted for. Each instance has its own,
+and the default includes the namespace: a token minted for one broker is
+refused by every other, in this release or any other.
+*/}}
+{{- define "glovebox.loginBrokerAudience" -}}
+{{- .broker.audience | default (printf "%s.%s" (include "glovebox.loginBrokerName" .) .root.Release.Namespace) -}}
+{{- end }}
+
+{{/*
+Selector labels of a broker's pods.
+*/}}
+{{- define "glovebox.loginBrokerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "glovebox.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: login-broker
+glovebox.io/login-broker: {{ .name }}
+{{- end }}
+
+{{/*
+Name of the Secret holding a broker's account credentials: the operator's
+existing one, or the one the chart's ExternalSecret produces.
+*/}}
+{{- define "glovebox.loginBrokerCredentialsSecret" -}}
+{{- $c := .broker.credentials | default dict -}}
+{{- if $c.existingSecret -}}
+{{- $c.existingSecret -}}
+{{- else -}}
+{{- include "glovebox.loginBrokerName" . }}-credentials
+{{- end -}}
+{{- end }}
+
+{{/*
+Render-time checks of one enabled broker. Included by the Deployment
+template, so they run exactly once per broker.
+*/}}
+{{- define "glovebox.loginBrokerCheck" -}}
+{{- $b := .broker -}}
+{{- $where := printf "loginBrokers.%s" .name -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" .name) -}}
+{{- fail (printf "%s: the key must be a lower-case DNS label (it becomes part of object names and of the token audience)" $where) -}}
+{{- end -}}
+{{- if not $b.site -}}
+{{- fail (printf "%s.site is required: it selects the site driver (for example powerschool)" $where) -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" (lower (toString $b.vault.addr))) -}}
+{{- fail (printf "%s.vault.addr must be an https URL: the broker sends the session and its ServiceAccount token to Vault and refuses a plaintext address" $where) -}}
+{{- end -}}
+{{- if not $b.vault.k8sRole -}}
+{{- fail (printf "%s.vault.k8sRole is required: each broker has a Vault role of its own, bound to its own ServiceAccount, so that one broker's token cannot read another site's credentials" $where) -}}
+{{- end -}}
+{{- if not $b.vault.sessionPath -}}
+{{- fail (printf "%s.vault.sessionPath is required" $where) -}}
+{{- end -}}
+{{- if and $b.vault.statePath (eq (trimAll "/" (toString $b.vault.statePath)) (trimAll "/" (toString $b.vault.sessionPath))) -}}
+{{- fail (printf "%s.vault.statePath must not be the session path: the session secret is what ESO copies to the connector" $where) -}}
+{{- end -}}
+{{- $blackout := $b.blackout | default dict -}}
+{{- if and $blackout.windows (not $blackout.timeZone) -}}
+{{- fail (printf "%s.blackout.timeZone is required with blackout.windows: a window means nothing without a zone" $where) -}}
+{{- end -}}
+{{- $cred := ($b.credentials | default dict).env | default dict -}}
+{{- if or (not (hasKey $cred "LOGIN_BROKER_USERNAME")) (not (hasKey $cred "LOGIN_BROKER_PASSWORD")) -}}
+{{- fail (printf "%s.credentials.env must map LOGIN_BROKER_USERNAME and LOGIN_BROKER_PASSWORD to keys of the credentials Secret" $where) -}}
+{{- end -}}
+{{- /*
+Two brokers must never share an account's record or a Vault role: the first
+would make them log in over each other, the second would let one site's
+broker read another site's password.
+*/ -}}
+{{- range $other, $ob := .root.Values.loginBrokers -}}
+{{- if and $ob $ob.enabled (ne $other $.name) -}}
+{{- if eq (trimAll "/" (toString $ob.vault.sessionPath)) (trimAll "/" (toString $b.vault.sessionPath)) -}}
+{{- fail (printf "loginBrokers.%s and loginBrokers.%s write the same vault.sessionPath: two brokers for one account would log in over each other" $.name $other) -}}
+{{- end -}}
+{{- if eq (toString $ob.vault.k8sRole) (toString $b.vault.k8sRole) -}}
+{{- fail (printf "loginBrokers.%s and loginBrokers.%s use the same vault.k8sRole: each broker needs a Vault role of its own, or one compromise exposes both sites' credentials" $.name $other) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+The request mailbox (powerschoolAuthRefresher.onRequest) and a broker for
+the same session are two login workloads answering the same dead session.
+*/ -}}
+{{- $r := .root.Values.powerschoolAuthRefresher -}}
+{{- if and $r.enabled ($r.onRequest | default dict).enabled (eq (trimAll "/" (toString $r.vault.sessionPath)) (trimAll "/" (toString $b.vault.sessionPath))) -}}
+{{- fail (printf "%s and powerschoolAuthRefresher.onRequest are both enabled for the session at %q: choose one way to log in on demand. (The scheduled CronJobs of powerschoolAuthRefresher.schedules may stay, suspended or not: they share the broker's latch.)" $where (toString $b.vault.sessionPath)) -}}
+{{- end -}}
+{{- end }}

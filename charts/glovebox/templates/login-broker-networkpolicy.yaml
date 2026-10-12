@@ -1,0 +1,139 @@
+{{- range $name, $b := .Values.loginBrokers }}
+{{- $np := ($b | default dict).networkPolicy | default dict }}
+{{- if and $b $b.enabled $.Values.networkPolicy.enabled $np.enabled }}
+{{- $ctx := dict "name" $name "broker" $b "root" $ }}
+{{- if not $np.kubernetesAPICIDRs }}
+{{- fail (printf "loginBrokers.%s.networkPolicy.kubernetesAPICIDRs is required with this NetworkPolicy: the broker authenticates every caller by asking the Kubernetes API server (TokenReview), which this policy would otherwise cut off -- the API server is not a pod a selector can match, and its addresses are private, which the site rule excludes. List the control-plane addresses (kubectl get endpoints kubernetes -n default) and the kubernetes Service's cluster IP, each as a /32; or set loginBrokers.%s.networkPolicy.enabled=false and provide a policy of your own (the broker must not be reachable by every pod: it speaks plain HTTP)" $name $name) }}
+{{- end }}
+---
+# Both directions for the "{{ $name }}" login broker's pods, which hold one
+# site's account password.
+#
+# Ingress: the broker speaks plain HTTP. That is acceptable only because
+# this policy admits exactly the pods of the connector it serves to the API
+# port -- so no other pod can replay a token it somehow obtained, or even
+# see whether the endpoint exists. The token check (audience plus
+# ServiceAccount allow-list, verified by the API server) is the second lock,
+# not the only one.
+#
+# Egress: cluster DNS, Vault, the Kubernetes API server (TokenReview), and
+# the site over https. Each broker has its own policy, so a broker for one
+# site can be narrowed to that site's addresses without touching another's.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "glovebox.loginBrokerName" $ctx }}
+  labels:
+    {{- include "glovebox.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: login-broker
+    glovebox.io/login-broker: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "glovebox.loginBrokerSelectorLabels" $ctx | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $b.connector }}
+    # The connector this broker serves, in this namespace, and only it.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "glovebox.connectorSelectorLabels" (dict "connector" $b.connector "Values" $.Values "Chart" $.Chart "Release" $.Release) | nindent 14 }}
+      ports:
+        - port: {{ int ($b.port | default 8080) }}
+          protocol: TCP
+    {{- end }}
+    {{- with $np.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    # Metrics, on a listener of their own: counters by outcome, nothing of
+    # the account or the session. Restricted to the monitoring namespace
+    # when one is named (metrics.allowedNamespaceLabel), as for the scanner.
+    {{- if $.Values.metrics.allowedNamespaceLabel }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: {{ $.Values.metrics.allowedNamespaceLabel }}
+      ports:
+        - port: {{ int ($b.metricsPort | default 9090) }}
+          protocol: TCP
+    {{- else }}
+    - ports:
+        - port: {{ int ($b.metricsPort | default 9090) }}
+          protocol: TCP
+    {{- end }}
+  egress:
+    {{- with $.Values.networkPolicy.dns }}
+    {{- if .enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          {{- with .podLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- if $.Values.networkPolicy.vault.namespace }}
+    # Vault (Kubernetes auth login, session and state read and write): the
+    # Vault pods and port only. A Vault outside the cluster: set
+    # networkPolicy.vault.namespace to "" and allow it through extraEgress.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.networkPolicy.vault.namespace }}
+          {{- with $np.vaultPodLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: {{ $.Values.networkPolicy.vault.port }}
+          protocol: TCP
+    {{- end }}
+    # The Kubernetes API server, for TokenReview. Addresses, because the API
+    # server is not a pod a selector could match.
+    - to:
+        {{- range $np.kubernetesAPICIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range ($np.kubernetesAPIPorts | default (list 443 6443)) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    # The site. A NetworkPolicy selects addresses, not names, so by default
+    # this is "the public internet on 443": private, CGNAT and link-local
+    # ranges -- where the cluster's own pods and services and the LAN live
+    # -- are carved out of the catch-all, so a browser cannot be pointed at
+    # an in-cluster https service. Narrow siteCIDRs to the site's range if
+    # it is stable.
+    - to:
+        {{- range $np.siteCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- if and (eq (toString .) "0.0.0.0/0") $np.siteExceptCIDRs }}
+            except:
+              {{- toYaml $np.siteExceptCIDRs | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      ports:
+        {{- range ($np.sitePorts | default (list 443)) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
