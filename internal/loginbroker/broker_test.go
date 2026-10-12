@@ -40,6 +40,9 @@ type backing struct {
 	// let "somebody else" write in between).
 	onStateWrite       func(n int)
 	stateWriteAttempts int
+	// applyThenFail lists state write attempts (1-based) that Vault
+	// APPLIES and then answers with a 5xx: the caller is told it failed.
+	applyThenFail map[int]bool
 
 	sessionWrites, stateWrites int
 	failSessionWrites          int   // this many session writes fail (5xx-like)
@@ -113,10 +116,16 @@ func (s memStore) WriteState(_ context.Context, state *loginvault.State) error {
 		return errors.New("check-and-set parameter did not match the current version")
 	}
 	s.b.stateVersion++
-	state.Version = s.b.stateVersion
 	c := *state
+	c.Version = s.b.stateVersion
 	s.b.state = &c
 	s.b.stateWrites++
+	if s.b.applyThenFail[n] {
+		// Stored; the answer is lost. The caller's State keeps the old
+		// version, as it does with the real client on an error.
+		return errors.New("vault: 500 internal error after commit")
+	}
+	state.Version = s.b.stateVersion
 	return nil
 }
 

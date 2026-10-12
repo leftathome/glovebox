@@ -43,6 +43,21 @@ const (
 	// exitSignInUnrecognised: the portal's sign-in page is not one this
 	// binary will type a password into. No browser was started.
 	exitSignInUnrecognised = 7
+	// exitLoginStateConflict: the login state record was changed by
+	// another workload between this run reading it and writing its attempt
+	// marker. NO LOGIN WAS MADE: for a scheduled run, this window has no
+	// new session unless whoever changed the record made one.
+	//
+	// Non-zero on purpose, so that the Job shows as failed. That is safe
+	// only because a failed login Job is never run again by Kubernetes:
+	// the chart renders backoffLimit 0 and restartPolicy Never for every
+	// login CronJob (scripts/test-chart-powerschool-login.sh pins both),
+	// and a Job made by hand from one inherits them. If that ever changes,
+	// this must go back to 0: a re-run would be a second login.
+	//
+	// "Another login is in flight" (outcome login_in_progress) stays 0:
+	// there a session is being made, by the other workload.
+	exitLoginStateConflict = 8
 )
 
 const (
@@ -354,10 +369,10 @@ func execute(ctx context.Context, cfg config, d deps) result {
 	state.AttemptStartedAt = attemptAt
 	if err := writeState(ctx, d, store, state); err != nil {
 		if isCASMismatch(err) {
-			log.Warn("the login state changed while this run was deciding (another login workload wrote it); not logging in on a stale read",
+			log.Error("the login state changed while this run was deciding (another login workload wrote it); NO LOGIN WAS MADE by this run",
 				"outcome", "login_state_conflict", "vault_path", cfg.VaultStatePath)
-			return result{exitSuccess, "login_state_conflict",
-				"the login state at " + cfg.VaultStatePath + " changed during this run; not logging in"}
+			return result{exitLoginStateConflict, "login_state_conflict",
+				"the login state at " + cfg.VaultStatePath + " changed during this run; no login was made"}
 		}
 		log.Error("could not write the login state; not logging in, since a rejected login could not be recorded")
 		return vaultFailure(log, cfg, "write", cfg.VaultStatePath, err)
@@ -698,18 +713,11 @@ func setLatch(ctx context.Context, cfg config, d deps, store sessionStore, state
 
 // writeState stores the login state, retrying a transient failure.
 func writeState(ctx context.Context, d deps, store sessionStore, state *loginState) error {
-	var err error
-	for attempt := 1; attempt <= writeAttempts; attempt++ {
-		if err = store.WriteState(ctx, state); err == nil || isClientError(err) {
-			return err
-		}
-		if attempt < writeAttempts {
-			if serr := d.sleep(ctx, writeDelay); serr != nil {
-				break
-			}
-		}
-	}
-	return err
+	// Exactly once: see loginvault.WriteStateOnce. A write Vault applied
+	// and then answered with an error is recognised as this run's own.
+	return loginvault.WriteStateOnce(ctx, store, state, writeAttempts, func(ctx context.Context) error {
+		return d.sleep(ctx, writeDelay)
+	})
 }
 
 // normalizeSession drops cookies the connector would drop and sets the

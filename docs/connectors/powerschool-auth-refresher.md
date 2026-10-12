@@ -264,7 +264,23 @@ State path:
 Every write of this record is check-and-set against the version the run
 read. If something else wrote it in between, the write before the login is
 refused and the run does not log in (`outcome=login_state_conflict`, exit
-0).
+8: the Job shows as failed, because no login was made for its window). A
+write Vault applied but answered with an error is recognised as the run's
+own when the retry is refused, and is not mistaken for a conflict.
+
+**Changes to the scheduled path that apply even without a login broker:**
+
+- A run that is killed in the middle of a login (node drain, OOM, the
+  Job's deadline) leaves its attempt marker. The next run, if it starts
+  within ten minutes, does nothing (`login_in_progress`, exit 0). A later
+  run counts the dead one as an unconfirmed login: **two such deaths in a
+  row set the latch** (`login_unconfirmed`), where before they left no
+  trace.
+- A run writes the state record once more than before (the marker is
+  cleared on every way out).
+- Two runs at once (a manual Job beside a scheduled one): the second to
+  write is refused and exits 8 without logging in, where before both could
+  log in and the check-and-set on the SESSION sorted it out afterwards.
 
 The login broker (`loginBrokers.powerschool`, see
 `internal/loginbroker/DESIGN.md`) reads and writes this same record when it
@@ -617,6 +633,7 @@ ended. The same outcome is in the pod's termination message
 | 0 | `no_login_requested` | Request mode: the connector has not asked (or its request is stale, malformed, already served, or older than the last login). Nothing was sent to the portal. | Nothing. This is what nearly every on-request run logs. |
 | 0 | `login_request_too_soon` | Request mode: a login was made for a request less than 20 minutes ago. Nothing was sent to the portal. | Nothing, unless it repeats: then find out why the connector keeps asking. |
 | 7 | `signin_page_unrecognised` | The sign-in page is not a password form on the configured host (`reason` says which check failed). No browser was started. | The table of reasons below. |
+| 8 | `login_state_conflict` | The login state record was changed by another login workload (the login broker, another run) between this run reading it and writing its attempt marker. **No login was made by this run.** Non-zero so that the Job shows as failed; safe because a failed login Job is never re-run (backoffLimit 0, restartPolicy Never). | See what the other workload did (its log; `vault kv get` of the state). If no session was made for this window, run the job once by hand. |
 
 No run is retried by Kubernetes.
 

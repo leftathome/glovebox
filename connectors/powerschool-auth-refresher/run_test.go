@@ -95,6 +95,10 @@ type fakeStore struct {
 	state          *loginState // nil = nothing stored
 	readStateErr   error
 	writeStateErrs []error // consumed one per WriteState
+	// applyStateThenFail lists WriteState calls (1-based) that are STORED
+	// and then answered with a 5xx.
+	applyStateThenFail map[int]bool
+	stateVersion       int
 
 	// onRead, when set, runs after each Read (to simulate another run
 	// writing the path in between).
@@ -141,9 +145,10 @@ func (f *fakeStore) ReadState(context.Context) (*loginState, error) {
 		return nil, f.readStateErr
 	}
 	if f.state == nil {
-		return &loginState{}, nil
+		return &loginState{Version: f.stateVersion}, nil
 	}
 	copied := *f.state
+	copied.Version = f.stateVersion
 	return &copied, nil
 }
 
@@ -152,8 +157,18 @@ func (f *fakeStore) WriteState(_ context.Context, state *loginState) error {
 	if n := f.stateWrites - 1; n < len(f.writeStateErrs) && f.writeStateErrs[n] != nil {
 		return f.writeStateErrs[n]
 	}
+	if state.Version != f.stateVersion {
+		return &vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 400,
+			Errors: []string{"check-and-set parameter did not match the current version"}}
+	}
+	f.stateVersion++
 	copied := *state
+	copied.Version = f.stateVersion
 	f.state = &copied
+	if f.applyStateThenFail[f.stateWrites] {
+		return &vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 500, Errors: []string{"internal error"}}
+	}
+	state.Version = f.stateVersion
 	return nil
 }
 

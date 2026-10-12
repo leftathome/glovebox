@@ -65,8 +65,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New Vault state fields `attempt_started_at` (set before a login, cleared
     when its outcome is recorded), `cooldown_until`, `login_day` and
     `login_day_count`, and latch reason `consecutive_failures`. The
-    scheduled login job writes the marker and the count as well; its new
-    outcomes `login_in_progress` and `login_state_conflict` exit 0.
+    scheduled login job writes the marker and the count as well.
+  - `metrics.prometheusRule` (off by default): alerts for a set latch, an
+    exhausted budget, failing logins, polls skipped for want of a session,
+    and a failed login Job.
+
+### Changed
+
+- **PowerSchool scheduled login job, with or without a login broker:**
+  - It writes an attempt marker to its Vault state before each login and
+    clears it afterwards. A run killed in the middle of a login (node
+    drain, OOM, the Job's deadline) is therefore counted, by the next run
+    that starts more than ten minutes later, as an unconfirmed login;
+    **two in a row set the latch** (`login_unconfirmed`, exit 6 from then
+    on). Before, a killed run left no trace. A run that starts within ten
+    minutes of such a marker does nothing (`login_in_progress`, exit 0).
+  - Every write of the state record is check-and-set. A run that finds the
+    record changed under it by another login workload or another run does
+    not log in and exits **8** (`login_state_conflict`): the Job shows as
+    failed, because no login was made for that window. This is safe only
+    because a failed login Job is never re-run (backoffLimit 0,
+    restartPolicy Never). Two runs at once therefore no longer both log in.
+  - It counts its logins into `login_day` / `login_day_count`.
 - **PowerSchool: login on demand** (`connectors.powerschool.loginOnDemand`
   with `powerschoolAuthRefresher.onRequest`; both off by default). The
   portal ends an idle session in well under an hour (measured 2026-10-11:

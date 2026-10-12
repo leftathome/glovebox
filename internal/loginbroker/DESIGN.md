@@ -162,7 +162,10 @@ Enforced in the broker, in this order, for every request:
    is refused there is no login: either the outcome could not be recorded
    afterwards, or somebody changed the record since it was read and
    everything above was decided on a stale read (`deferred` /
-   `state_conflict`). `Login` is called once; once more only after
+   `state_conflict`). A write that Vault applied and then answered with an
+   error is recognised as the broker's own when the retry is refused (the
+   record read back is exactly what was being written), so an outcome is
+   never applied twice and a marker is never orphaned. `Login` is called once; once more only after
    `LoginNotSubmitted`. The new session is confirmed with the probe and
    only then stored.
 7. **The failure latch.** ANY rejection of the credentials sets it at once;
@@ -219,6 +222,10 @@ the clock. Instead:
   `budget_exhausted` it does not ask again before `retry_after` (believed
   for at most a day). After `latched` it asks once per poll window and
   sends the portal nothing.
+- When the broker answers with the very session the connector holds to be
+  dead, the connector asks the portal once more (one GET) before believing
+  either: alive, it polls; dead again, that is a strike; unanswered,
+  nothing is concluded. One false "dead" therefore cannot stop it.
 - Two sessions in a row that the broker delivered and the portal then
   refused stop the asking altogether. That count is in the checkpoint and
   is not tied to which session is in place, so a restart does not undo it;
@@ -275,7 +282,8 @@ browser parses whatever the site sends. What it can and cannot reach:
 - *The password.* It arrives in the process environment. `os.Unsetenv`
   keeps a child from inheriting it but does not change
   `/proc/<pid>/environ`, so the broker also marks itself non-dumpable
-  (`prctl(PR_SET_DUMPABLE, 0)`) before it reads its configuration: the
+  (`prctl(PR_SET_DUMPABLE, 0)`) before it reads its configuration, and
+  refuses to start if that fails: the
   kernel then refuses a same-user process access to the broker's
   `/proc/<pid>/environ` and memory. Reading the credentials from a mounted
   file instead was considered and is no better: with one user in the pod, a
@@ -316,6 +324,34 @@ one free text is a Vault error, with the username and password removed and
 bounded in length. `connectors/login-broker/main_test.go` runs a whole life
 of the service over real HTTP and scans every log line, the metrics page
 and every refusal for each secret it handled.
+
+## Alerting
+
+With a broker, nothing restarts when a session cannot be had, so the alert
+has to come from metrics. `metrics.prometheusRule.enabled` renders these as
+one PrometheusRule (prometheus-operator); without the operator, the same
+expressions can be used directly.
+
+| Condition | Metric | Example expression |
+|---|---|---|
+| Latch set | `login_broker_latched{site}` (broker, `/metrics` on the metrics port) | `max by (site) (login_broker_latched) == 1` for 5m |
+| Day's budget spent | `login_broker_refresh_total{site,outcome,code}` | `increase(login_broker_refresh_total{outcome="budget_exhausted"}[1h]) > 0` |
+| A login failed | `login_broker_login_total{site,result}` | `increase(login_broker_login_total{result!="success"}[6h]) > 0` |
+| Connector skipping polls for want of a session | `powerschool_polls_skipped_total{reason}` (connector) | `increase(powerschool_polls_skipped_total{reason=~"login_latched\|login_backoff\|login_broker_.*\|broker_session_.*\|new_session_not_accepted"}[24h]) >= 2` |
+| Session state unknown, repeatedly | same | `increase(powerschool_polls_skipped_total{reason="session_state_unknown"}[24h]) >= 3` |
+| Scheduled login made no login (conflict), or failed otherwise | `kube_job_status_failed` (kube-state-metrics) | `kube_job_status_failed{job_name=~".*-powerschool-login-.*"} > 0` |
+
+Deferrals (`reason="login_deferred"`: blackout, interval, budget) are
+routine and are left out of the skipped-polls alert; the budget has its own.
+Other broker series: `login_broker_logins_today`, `login_broker_probe_total`,
+`login_broker_login_attempt_total`, `login_broker_request_refused_total`,
+`login_broker_last_login_timestamp_seconds`.
+
+The scheduled job has no metrics of its own (it is a Job). A run that found
+the login state changed under it exits 8 (`login_state_conflict`): no login
+was made, and the Job is failed so that this shows. That is safe only
+because a failed login Job is never re-run by Kubernetes (backoffLimit 0,
+restartPolicy Never).
 
 ## Deploying an instance
 

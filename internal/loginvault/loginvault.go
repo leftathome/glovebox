@@ -110,6 +110,73 @@ type State struct {
 	Version int
 }
 
+// SameRecord reports whether s and o would be stored as the same record:
+// every stored field equal, times compared to the second (the precision
+// they are stored at), Version aside.
+//
+// It is how a writer recognises its own write. Vault can apply a write and
+// then fail to say so (a 5xx, a dropped connection). The retry is then
+// refused as a check-and-set mismatch -- against the writer's own earlier
+// write. Read back, a record that is exactly what the writer was trying to
+// store was stored by it, once; treating that as somebody else's change
+// would apply an outcome twice, or leave a marker nobody clears.
+func (s *State) SameRecord(o *State) bool {
+	if s == nil || o == nil {
+		return false
+	}
+	same := func(a, b time.Time) bool { return a.Unix() == b.Unix() || (a.IsZero() && b.IsZero()) }
+	return s.Salt == o.Salt &&
+		s.Blocked == o.Blocked && s.BlockedReason == o.BlockedReason && same(s.BlockedAt, o.BlockedAt) &&
+		s.CredentialFingerprint == o.CredentialFingerprint &&
+		s.UnconfirmedCount == o.UnconfirmedCount &&
+		s.ServedRequest == o.ServedRequest && same(s.RequestLoginAt, o.RequestLoginAt) &&
+		same(s.AttemptStartedAt, o.AttemptStartedAt) && same(s.CooldownUntil, o.CooldownUntil) &&
+		s.LoginDay == o.LoginDay && s.LoginDayCount == o.LoginDayCount
+}
+
+// StateStore is the part of a store WriteStateOnce needs.
+type StateStore interface {
+	ReadState(ctx context.Context) (*State, error)
+	WriteState(ctx context.Context, state *State) error
+}
+
+// WriteStateOnce stores state so that it is applied exactly once, whatever
+// Vault answers. A transient failure (5xx, network) is retried up to
+// attempts times, pause apart. If a retry is then refused as a
+// check-and-set mismatch, the record is read back: when it is exactly what
+// was being written (SameRecord), the earlier attempt was applied after
+// all, and this is success -- state.Version is set to the stored version.
+// Any other mismatch, and any other refusal (4xx), is returned at once:
+// somebody else wrote, and the caller must decide again.
+func WriteStateOnce(ctx context.Context, store StateStore, state *State, attempts int, pause func(context.Context) error) error {
+	var err error
+	uncertain := false // an earlier attempt failed in a way that may have applied it
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = store.WriteState(ctx, state); err == nil {
+			return nil
+		}
+		if IsCASMismatch(err) {
+			if uncertain {
+				if stored, rerr := store.ReadState(ctx); rerr == nil && stored.SameRecord(state) {
+					state.Version = stored.Version
+					return nil
+				}
+			}
+			return err
+		}
+		if IsClientError(err) {
+			return err
+		}
+		uncertain = true
+		if attempt < attempts {
+			if perr := pause(ctx); perr != nil {
+				break
+			}
+		}
+	}
+	return err
+}
+
 // AttemptFreshFor is how long an attempt marker means "a login is in
 // flight". It is longer than any workload lets a login run (the broker
 // bounds a refresh at 6 minutes, the scheduled job a run at 8).

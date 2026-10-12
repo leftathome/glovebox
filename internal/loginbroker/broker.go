@@ -953,18 +953,13 @@ func (b *Broker) writeSession(ctx context.Context, log *slog.Logger, store Store
 
 // writeState stores the record, retrying a transient failure.
 func (b *Broker) writeState(ctx context.Context, store Store, state *loginvault.State) error {
-	var err error
-	for attempt := 1; attempt <= writeAttempts; attempt++ {
-		if err = store.WriteState(ctx, state); err == nil || loginvault.IsClientError(err) {
-			return err
-		}
-		if attempt < writeAttempts {
-			if serr := b.sleep(ctx, writeDelay); serr != nil {
-				break
-			}
-		}
-	}
-	return err
+	// Exactly once: a write Vault applied and then answered with an error
+	// is recognised as this broker's own when the retry is refused, and is
+	// not mistaken for somebody else's change (which would apply an
+	// outcome twice, or leave an attempt marker behind).
+	return loginvault.WriteStateOnce(ctx, store, state, writeAttempts, func(ctx context.Context) error {
+		return b.sleep(ctx, writeDelay)
+	})
 }
 
 // storeFailure answers a store read or write that failed.

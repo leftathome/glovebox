@@ -9,6 +9,7 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 
 	"github.com/leftathome/glovebox/internal/loginvault"
+	pslib "github.com/leftathome/powerschool-go"
 )
 
 // The login state record is shared with the login broker when one is
@@ -106,20 +107,60 @@ func TestRunWritesTheAttemptMarkerAroundTheLogin(t *testing.T) {
 
 // The marker is written check-and-set. If the record changed after this
 // run read it -- the broker started a login of its own -- the write is
-// refused and this run does not log in. Not a failure of the job.
+// refused and this run does not log in.
+//
+// For a scheduled run that means NO LOGIN WAS MADE in its window, and that
+// must be visible: the run exits 8, so the Job shows as failed. It is safe
+// to fail it only because Kubernetes never runs a failed login Job again
+// (backoffLimit 0, restartPolicy Never; pinned by
+// scripts/test-chart-powerschool-login.sh).
 func TestRunDoesNotLogInWhenTheRecordChangedUnderIt(t *testing.T) {
 	h := newHarness(t, morning(t))
 	h.store.writeStateErrs = []error{&vaultapi.ResponseError{HTTPMethod: "PUT", StatusCode: 400,
 		Errors: []string{"check-and-set parameter did not match the current version"}}}
 
-	if code := h.run(); code != exitSuccess {
-		t.Fatalf("exit %d, want 0", code)
+	if code := h.run(); code != exitLoginStateConflict || exitLoginStateConflict != 8 {
+		t.Fatalf("exit %d, want %d", code, exitLoginStateConflict)
 	}
-	if h.logins != 0 {
+	if h.logins != 0 || h.signInChecks > 1 {
 		t.Fatal("logged in on a record somebody else had changed")
 	}
-	if !strings.Contains(h.terminations[0], "outcome=login_state_conflict") {
+	if !strings.Contains(h.terminations[0], "outcome=login_state_conflict") || !strings.Contains(h.terminations[0], "no login was made") {
 		t.Errorf("termination message: %s", h.terminations[0])
+	}
+	if !strings.Contains(h.logs.String(), `"outcome":"login_state_conflict"`) || !strings.Contains(h.logs.String(), `"level":"ERROR"`) {
+		t.Error("the conflict is not an ERROR line with its own outcome")
+	}
+}
+
+// Vault stores the marker and answers 500. The retry is refused -- against
+// this run's own write. The run recognises it, logs in once, and clears the
+// marker; it does not walk away from a marker it wrote.
+func TestRunRecognisesItsOwnMarkerAfterAnUnacknowledgedWrite(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.store.applyStateThenFail = map[int]bool{1: true}
+
+	if code := h.run(); code != exitSuccess {
+		t.Fatalf("exit %d: %s", code, h.terminations[0])
+	}
+	st := h.store.state
+	if h.logins != 1 || !st.AttemptStartedAt.IsZero() || st.LoginDayCount != 1 || st.UnconfirmedCount != 0 {
+		t.Fatalf("logins %d, state %+v", h.logins, st)
+	}
+}
+
+// And the outcome: an unconfirmed login whose record Vault stored but did
+// not acknowledge is one unconfirmed login, not two (two would latch).
+func TestRunCountsAnUnacknowledgedOutcomeOnce(t *testing.T) {
+	h := newHarness(t, morning(t))
+	h.probeResults = []error{pslib.ErrSessionExpired} // the new session is refused
+	h.store.applyStateThenFail = map[int]bool{2: true}
+
+	if code := h.run(); code != exitLoginUnconfirmed {
+		t.Fatalf("exit %d: %s", code, h.terminations[0])
+	}
+	if st := h.store.state; st.UnconfirmedCount != 1 || st.Blocked || st.LoginDayCount != 1 {
+		t.Fatalf("state = %+v", st)
 	}
 }
 

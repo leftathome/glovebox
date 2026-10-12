@@ -366,6 +366,40 @@ check "an existing credentials Secret: no ExternalSecret, and the Deployment rea
    and env(find("Deployment", "glovebox-glovebox-login-broker-powerschool"))["LOGIN_BROKER_PASSWORD"] == ("my-secret", "password")' \
   -f "$TMP/broker.yaml" --set loginBrokers.powerschool.credentials.existingSecret=my-secret
 
+# --- alerts -----------------------------------------------------------------
+
+RULE='find("PrometheusRule", "glovebox-glovebox-login")'
+ALERTS="{r[\"alert\"]: r for g in $RULE[\"spec\"][\"groups\"] for r in g[\"rules\"]}"
+
+check "no PrometheusRule by default" \
+  '[d for d in docs if d["kind"] == "PrometheusRule"] == []' \
+  -f "$TMP/wired.yaml"
+
+check "alerts for a broker and its connector: latch, budget, failing logins, skipped polls, unknown state" \
+  "sorted($ALERTS) == [\"GloveboxLoginBrokerBudgetExhausted\", \"GloveboxLoginBrokerLatched\", \"GloveboxLoginBrokerLoginsFailing\",
+                       \"GloveboxPowerSchoolPollsSkippedNoSession\", \"GloveboxPowerSchoolSessionStateUnknown\"]
+   and $ALERTS[\"GloveboxLoginBrokerLatched\"][\"expr\"] == 'max by (site) (login_broker_latched{site=\"powerschool\"}) == 1'
+   and $ALERTS[\"GloveboxLoginBrokerLatched\"][\"for\"] == \"5m\"
+   and 'outcome=\"budget_exhausted\"' in $ALERTS[\"GloveboxLoginBrokerBudgetExhausted\"][\"expr\"]
+   and 'login_latched' in $ALERTS[\"GloveboxPowerSchoolPollsSkippedNoSession\"][\"expr\"]
+   and 'login_deferred' not in $ALERTS[\"GloveboxPowerSchoolPollsSkippedNoSession\"][\"expr\"]
+   and $RULE[\"metadata\"][\"labels\"][\"release\"] == \"prometheus\"" \
+  -f "$TMP/wired.yaml" --set metrics.prometheusRule.enabled=true --set metrics.prometheusRule.labels.release=prometheus
+
+check "the scheduled login Jobs get a failed-Job alert that names the conflict outcome" \
+  "'kube_job_status_failed{namespace=\"glovebox\",job_name=~\"glovebox-glovebox-powerschool-login-.*\"}' in $ALERTS[\"GloveboxPowerSchoolLoginJobFailed\"][\"expr\"]
+   and 'login_state_conflict' in $ALERTS[\"GloveboxPowerSchoolLoginJobFailed\"][\"annotations\"][\"description\"]
+   and '{{ \$labels.job_name }}' in $ALERTS[\"GloveboxPowerSchoolLoginJobFailed\"][\"annotations\"][\"summary\"]" \
+  --set powerschoolAuthRefresher.enabled=true --set metrics.prometheusRule.enabled=true
+
+check "an extra selector reaches the workloads' series" \
+  "'login_broker_latched{site=\"powerschool\",namespace=\"glovebox\"}' in $ALERTS[\"GloveboxLoginBrokerLatched\"][\"expr\"]" \
+  -f "$TMP/broker.yaml" --set metrics.prometheusRule.enabled=true --set-string 'metrics.prometheusRule.extraSelector=namespace="glovebox"'
+
+check "enabled with nothing to alert on: no empty object" \
+  '[d for d in docs if d["kind"] == "PrometheusRule"] == []' \
+  --set metrics.prometheusRule.enabled=true
+
 # --- the connector's side ---------------------------------------------------
 
 check "the connector is told where its broker is and which token to present" \

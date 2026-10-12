@@ -428,16 +428,174 @@ func TestBrokerSessionsThatDoNotWorkStopTheAskingAcrossRestarts(t *testing.T) {
 	}
 }
 
-// The broker handing back the very session this connector was just refused
-// with is a strike too.
-func TestBrokerReturningTheDeadSessionIsAStrike(t *testing.T) {
+// answerWith queues an answer computed when the broker is asked, so a test
+// can change what the portal says between the gate's first look and its
+// second.
+func (f *fakeBroker) answerWith(fn func() *brokerapi.Response) {
+	f.answers = append(f.answers, func() (*brokerapi.Response, error) { return fn(), nil })
+}
+
+// One false "dead" -- a gateway page served once -- must not stop the
+// connector. The broker, asked, says the stored session is alive and hands
+// back the very session the connector has; the connector then asks the
+// portal ONCE more, is told it is alive, and polls. No strike, no record
+// left behind.
+func TestATransientDeadVerdictIsSettledByASecondLookNotAStrike(t *testing.T) {
+	r, b, c, cp, staging := newBrokerPollRig(t)
+	r.file = r.session("s1", SessionDead, ReasonGatewayPage) // the transient answer
+	same := testSession("s1", r.clock.Add(24*time.Hour))
+	b.answerWith(func() *brokerapi.Response {
+		r.states["s1"] = SessionVerdict{SessionLive, ReasonSignedIn} // the gateway has recovered
+		return sessionAnswer(t, brokerapi.OutcomeCurrent, same)
+	})
+
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatalf("pollNow: %v", err)
+	}
+	if len(readItems(t, staging)) == 0 {
+		t.Fatal("the poll did not run on a session that is alive")
+	}
+	if r.probes != 2 {
+		t.Errorf("portal checks = %d, want 2: the false one and the second look", r.probes)
+	}
+	if n, _ := loadUnanswered(cp); n != 0 {
+		t.Errorf("unanswered = %d: a false verdict was counted as a strike", n)
+	}
+	if _, ok := cp.Load(brokerHoldKey); ok {
+		t.Error("the session is still recorded as dead")
+	}
+
+	// And the following polls are ordinary ones: one check, no broker.
+	for i := 0; i < 3; i++ {
+		r.nextWindow(time.Hour)
+		if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(b.calls) != 1 || r.probes != 5 {
+		t.Errorf("afterwards: broker calls %d (want 1), portal checks %d (want 5)", len(b.calls), r.probes)
+	}
+}
+
+// The path the review traced: an auth error in the middle of a poll records
+// the session as dead; the broker says it is alive. Before, the record then
+// suppressed every further look and two polls ended in a permanent stop
+// with a live session. Now each such poll takes the second look.
+func TestAMidPollAuthErrorOnALiveSessionDoesNotStopTheConnector(t *testing.T) {
+	r, b, c, cp, staging := newBrokerPollRig(t)
+	r.file = r.session("s1", SessionLive, ReasonSignedIn)
+	fails := 1
+	r.gate.source.Build = wrapBuild(r.gate.source.Build, func(_ string, client *fakeClient) {
+		home := client.HomeFunc
+		client.HomeFunc = func(ctx context.Context) (*pslib.HomePage, error) {
+			if fails > 0 {
+				fails--
+				return nil, pslib.ErrSessionExpired // once
+			}
+			return home(ctx)
+		}
+	})
+	b.answer(sessionAnswer(t, brokerapi.OutcomeCurrent, testSession("s1", r.clock.Add(24*time.Hour))))
+
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatalf("pollNow: %v", err)
+	}
+	if len(readItems(t, staging)) == 0 {
+		t.Error("the poll was not retried on the session the portal accepts")
+	}
+	if n, _ := loadUnanswered(cp); n != 0 {
+		t.Errorf("unanswered = %d", n)
+	}
+	if _, ok := cp.Load(brokerHoldKey); ok {
+		t.Error("a live session is recorded as dead")
+	}
+	// Many more polls: never blocked.
+	for i := 0; i < 5; i++ {
+		r.nextWindow(time.Hour)
+		if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(b.calls) != 1 {
+		t.Errorf("broker calls = %d, want 1", len(b.calls))
+	}
+}
+
+// A session recorded as dead in an earlier poll (so not probed at the start
+// of this one) that the broker now says is alive: the second look is the
+// poll's only request to the portal about it.
+func TestARecordedDeadSessionTheBrokerCallsAliveIsLookedAtOnce(t *testing.T) {
+	r, b := newBrokerRig(t)
+	r.file = r.session("s1", SessionLive, ReasonSignedIn)
+	saveBrokerHold(r.cp, brokerHold{fingerprint: SessionFingerprint(r.file)})
+	b.answer(sessionAnswer(t, brokerapi.OutcomeCurrent, testSession("s1", r.clock.Add(24*time.Hour))))
+
+	res := r.ensure()
+	r.expect(res, GateLive, "", 0)
+	if r.probes != 1 || len(b.calls) != 1 {
+		t.Errorf("portal checks %d (want exactly 1), broker calls %d", r.probes, len(b.calls))
+	}
+}
+
+// When the second look cannot be answered, nothing is concluded: not a
+// strike, and not a loop -- the poll ends, and the next one starts with an
+// ordinary check.
+func TestAnUnansweredSecondLookIsNeitherAStrikeNorALoop(t *testing.T) {
+	r, b := newBrokerRig(t)
+	r.file = r.session("s1", SessionDead, ReasonGatewayPage)
+	for i := 0; i < 4; i++ {
+		b.answerWith(func() *brokerapi.Response {
+			r.states["s1"] = SessionVerdict{SessionUnknown, ReasonNetwork}
+			return sessionAnswer(t, brokerapi.OutcomeCurrent, testSession("s1", r.clock.Add(24*time.Hour)))
+		})
+	}
+	res := r.ensure()
+	r.expect(res, GateSkip, "broker_session_unverified", 0)
+	if n, _ := loadUnanswered(r.cp); n != 0 || !res.Failed {
+		t.Errorf("unanswered = %d, failed = %v", n, res.Failed)
+	}
+	if r.probes != 2 || len(b.calls) != 1 {
+		t.Fatalf("one poll: portal checks %d (want 2), broker calls %d (want 1)", r.probes, len(b.calls))
+	}
+	// The next polls: the portal still does not answer. Each is one check
+	// and no question to the broker (unknown is not dead), for ever.
+	for i := 0; i < 4; i++ {
+		r.nextWindow(time.Hour)
+		if res := r.ensure(); res.Outcome != GateSkip || res.Outcome == GateBlocked {
+			t.Fatalf("poll %d: outcome %d", i, res.Outcome)
+		}
+	}
+	if r.probes != 6 || len(b.calls) != 1 {
+		t.Errorf("after four more polls: portal checks %d (want 6), broker calls %d (want 1)", r.probes, len(b.calls))
+	}
+	if n, _ := loadUnanswered(r.cp); n != 0 {
+		t.Errorf("unanswered = %d", n)
+	}
+}
+
+// Dead at the second look too, against the broker's word: that is a strike.
+// Two of them stop the asking. Never more than one extra request to the
+// portal per poll.
+func TestBrokerReturningASessionThePortalRefusesTwiceIsAStrike(t *testing.T) {
 	r, b := newBrokerRig(t)
 	r.file = r.session("old", SessionDead, ReasonSignInPage)
 	b.answer(sessionAnswer(t, brokerapi.OutcomeCurrent, testSession("old", r.clock.Add(24*time.Hour))))
 	res := r.ensure()
 	r.expect(res, GateSkip, "broker_session_is_the_dead_one", 0)
-	if n, _ := loadUnanswered(r.cp); n != 1 {
-		t.Errorf("unanswered = %d", n)
+	if n, _ := loadUnanswered(r.cp); n != 1 || r.probes != 2 {
+		t.Errorf("unanswered = %d, portal checks = %d (want 2)", n, r.probes)
+	}
+
+	// Next poll: recorded dead, so no first check; the second look is the
+	// one request.
+	r.nextWindow(9 * time.Hour)
+	r.file = testSession("old", r.clock.Add(24*time.Hour))
+	b.answer(sessionAnswer(t, brokerapi.OutcomeCurrent, testSession("old", r.clock.Add(24*time.Hour))))
+	if res := r.ensure(); res.Outcome != GateBlocked {
+		t.Fatalf("after two: outcome %d reason %q", res.Outcome, res.Reason)
+	}
+	if r.probes != 3 {
+		t.Errorf("portal checks = %d, want 3 in all", r.probes)
 	}
 }
 

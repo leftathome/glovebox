@@ -1,0 +1,100 @@
+{{- /*
+Alerts for "no session can be had" (metrics.prometheusRule.enabled; needs
+the prometheus-operator CRDs, like metrics.serviceMonitor).
+
+With a login broker the PowerSchool connector no longer exits when it cannot
+get a session -- an exit would be a restart loop that touches the portal --
+so a pod restart is no longer the alert. These rules are. One PrometheusRule
+object, with a group per enabled broker, one for the connector when it is
+wired to a broker, and one for the scheduled login Jobs.
+
+The expressions use only labels the workloads set themselves (site, outcome,
+reason) plus the release namespace on the kube-state-metrics series. If your
+scrape configuration adds a namespace label to every series and you run
+several releases, narrow them through metrics.prometheusRule.extraSelector.
+*/}}
+{{- $pr := .Values.metrics.prometheusRule | default dict }}
+{{- if $pr.enabled }}
+{{- $extra := "" }}
+{{- with $pr.extraSelector }}
+{{- $extra = printf ",%s" . }}
+{{- end }}
+{{- $groups := list }}
+{{- range $name, $b := .Values.loginBrokers }}
+{{- if and $b $b.enabled }}
+{{- $site := $b.site }}
+{{- $groups = append $groups (dict
+      "name" (printf "glovebox-login-broker-%s" $name)
+      "rules" (list
+        (dict
+          "alert" "GloveboxLoginBrokerLatched"
+          "expr" (printf "max by (site) (login_broker_latched{site=%q%s}) == 1" $site $extra)
+          "for" ($pr.latchedFor | default "5m")
+          "labels" (dict "severity" ($pr.severity | default "warning") "site" $site)
+          "annotations" (dict
+            "summary" (printf "The %s login broker has stopped logging in" $site)
+            "description" "The site rejected the credentials, or logins kept failing without a session. No login is attempted until a person clears the latch (internal/loginbroker/DESIGN.md, 'Clearing the latch'). The connector stays up and skips its polls."))
+        (dict
+          "alert" "GloveboxLoginBrokerBudgetExhausted"
+          "expr" (printf "sum by (site) (increase(login_broker_refresh_total{site=%q,outcome=\"budget_exhausted\"%s}[1h])) > 0" $site $extra)
+          "labels" (dict "severity" ($pr.severity | default "warning") "site" $site)
+          "annotations" (dict
+            "summary" (printf "The %s login broker has used up the day's logins" $site)
+            "description" "Six logins (or the configured budget) were made for this account today and its session is dead again. Something keeps ending the sessions -- most likely the account's owner and the connector signing each other out. No login until the next local midnight."))
+        (dict
+          "alert" "GloveboxLoginBrokerLoginsFailing"
+          "expr" (printf "sum by (site) (increase(login_broker_login_total{site=%q,result!=\"success\"%s}[6h])) > 0" $site $extra)
+          "labels" (dict "severity" ($pr.severity | default "warning") "site" $site)
+          "annotations" (dict
+            "summary" (printf "A %s login did not produce a session" $site)
+            "description" "See the broker's log for the outcome and code. Two in a row set the latch.")))) }}
+{{- end }}
+{{- end }}
+{{- $conn := (.Values.connectors | default dict).powerschool | default dict }}
+{{- if and $conn.enabled (or ($conn.loginBroker | default dict).enabled ($conn.loginOnDemand | default dict).enabled) }}
+{{- $groups = append $groups (dict
+      "name" "glovebox-powerschool-connector-login"
+      "rules" (list
+        (dict
+          "alert" "GloveboxPowerSchoolPollsSkippedNoSession"
+          "expr" (printf "sum(increase(powerschool_polls_skipped_total{reason=~\"login_latched|login_backoff|login_broker_.*|broker_session_.*|new_session_not_accepted|no_new_session|login_request_failed\"%s}[24h])) >= %d" $extra (int ($pr.skippedPolls | default 2)))
+          "labels" (dict "severity" ($pr.severity | default "warning"))
+          "annotations" (dict
+            "summary" "The PowerSchool connector is skipping polls because it cannot get a session"
+            "description" "A poll found its session dead and asking for a login did not produce one the portal accepts. Deferrals (blackout, minimum interval, budget) are not counted here. The connector does not restart over this; look at its log (skip_reason) and at the login workload."))
+        (dict
+          "alert" "GloveboxPowerSchoolSessionStateUnknown"
+          "expr" (printf "sum(increase(powerschool_polls_skipped_total{reason=\"session_state_unknown\"%s}[24h])) >= 3" $extra)
+          "labels" (dict "severity" ($pr.severity | default "warning"))
+          "annotations" (dict
+            "summary" "The PowerSchool connector cannot tell whether its session is alive"
+            "description" "Three polls in a day were skipped because the portal's answer was neither the home page nor the sign-in page (a server error, a gateway page, a network failure). No login is asked for in that state.")))) }}
+{{- end }}
+{{- if .Values.powerschoolAuthRefresher.enabled }}
+{{- $groups = append $groups (dict
+      "name" "glovebox-powerschool-scheduled-login"
+      "rules" (list
+        (dict
+          "alert" "GloveboxPowerSchoolLoginJobFailed"
+          "expr" (printf "max by (job_name) (kube_job_status_failed{namespace=%q,job_name=~\"%s-powerschool-login-.*\"}) > 0" .Release.Namespace (include "glovebox.fullname" .))
+          "labels" (dict "severity" ($pr.severity | default "warning"))
+          "annotations" (dict
+            "summary" "A PowerSchool login Job failed: {{ $labels.job_name }}"
+            "description" "The pod's termination message names the outcome (kubectl describe pod). Exit 8, outcome=login_state_conflict, means the login state was changed by another login workload while this run was deciding and NO LOGIN WAS MADE for this window. Exit 3 or 6 is the latch. A failed login Job is never re-run automatically (backoffLimit 0). Needs kube-state-metrics.")))) }}
+{{- end }}
+{{- if $groups }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "glovebox.fullname" . }}-login
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: login-alerts
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- toYaml $groups | nindent 4 }}
+{{- end }}
+{{- end }}

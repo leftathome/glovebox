@@ -385,6 +385,35 @@ metrics:
     enabled: false    # create ServiceMonitor CRDs (requires prometheus-operator)
     interval: 30s
     labels: {}        # additional labels for ServiceMonitor (e.g., release: prometheus)
+  # Alerts for "no session can be had" (requires prometheus-operator; off by
+  # default). With a login broker the PowerSchool connector stays up when it
+  # cannot get a session -- a restart loop would touch the portal -- so a
+  # restarting pod is no longer the alert; these rules are. One
+  # PrometheusRule, <fullname>-login, with groups only for what is enabled:
+  #
+  #   per loginBrokers.<name>      GloveboxLoginBrokerLatched
+  #                                GloveboxLoginBrokerBudgetExhausted
+  #                                GloveboxLoginBrokerLoginsFailing
+  #   connectors.powerschool with  GloveboxPowerSchoolPollsSkippedNoSession
+  #   loginBroker or loginOnDemand GloveboxPowerSchoolSessionStateUnknown
+  #   powerschoolAuthRefresher     GloveboxPowerSchoolLoginJobFailed (needs
+  #                                kube-state-metrics; covers exit 8,
+  #                                login_state_conflict: no login was made)
+  #
+  # Metric names and the expressions are in internal/loginbroker/DESIGN.md
+  # for installs without the operator.
+  prometheusRule:
+    enabled: false
+    labels: {}        # additional labels (e.g., release: prometheus)
+    severity: warning
+    # How long the latch must be seen set before the alert fires.
+    latchedFor: 5m
+    # Polls skipped for want of a session, in 24h, before the alert fires.
+    skippedPolls: 2
+    # Extra label matchers added to every expression on the workloads' own
+    # series, e.g. 'namespace="glovebox"', when the scrape configuration
+    # adds such a label and several releases share a Prometheus.
+    extraSelector: ""
   # When set, the NetworkPolicy restricts /metrics ingress to namespaces
   # labelled `name: <this value>` (typically the monitoring namespace, e.g.
   # "monitoring"). Left empty, metrics stay reachable from any pod -- which

@@ -351,9 +351,13 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Before the credentials are even read: see hardenProcess.
+	// If it cannot be done the process does not go on to read them: a
+	// broker that runs without this is one whose password the browser can
+	// read, and nothing would say so again after this line.
 	if err := hardenProcess(); err != nil {
-		logger.Warn("could not mark the process non-dumpable; a browser started under the same user could read this process's start-up environment",
+		logger.Error("could not mark the process non-dumpable (prctl PR_SET_DUMPABLE); refusing to start, since a browser started under the same user could read this process's start-up environment",
 			"outcome", "not_hardened")
+		os.Exit(1)
 	}
 
 	cfg, problems := loadConfig(os.Getenv)

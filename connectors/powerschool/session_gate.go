@@ -778,14 +778,7 @@ func (g *SessionGate) askBroker(ctx context.Context, cp connector.Checkpoint, de
 		return failPoll("login_broker_bad_session", "the login broker's answer carried no usable session", "problem", err.Error())
 	}
 	if dead != "" && SessionFingerprint(session) == dead {
-		// The broker holds the very session this connector has just been
-		// refused with to be alive. One of the two is wrong; another
-		// request will not settle it.
-		if n := g.bumpUnanswered(cp); n >= maxUnansweredRequests {
-			return g.blocked(n)
-		}
-		return failPoll("broker_session_is_the_dead_one",
-			"the login broker returned the session the portal has just refused here")
+		return g.secondOpinion(ctx, cp)
 	}
 	if err := g.adopt(session); err != nil {
 		return failPoll("login_broker_bad_session", "could not build a client for the session the login broker returned", "error", err.Error())
@@ -867,6 +860,49 @@ func clearBrokerHold(cp connector.Checkpoint) {
 			slog.Warn("powerschool: could not clear the dead-session record", "error", err)
 		}
 	}
+}
+
+// secondOpinion is what happens when the broker answers with the very
+// session this connector holds to be dead. The broker has just asked the
+// portal and was told it is alive; this connector was told otherwise --
+// by a gateway page that happened to be served once, by one auth error in
+// the middle of a poll -- possibly polls ago, since a session recorded as
+// dead is not probed again. The disagreement is settled by the only party
+// that knows: the portal is asked once more, with ONE GET, and the record
+// that suppressed that question is dropped first.
+//
+//	alive    the earlier verdict was wrong or has passed. Poll; clear the
+//	         strikes.
+//	dead     twice now, against the broker's word: a strike, and the
+//	         session is recorded as dead again.
+//	unknown  neither. No strike, and no record: the next poll starts with
+//	         an ordinary check.
+//
+// This is the only way a poll asks the portal about a session a second
+// time, and it does so at most once: a poll calls the broker at most once.
+func (g *SessionGate) secondOpinion(ctx context.Context, cp connector.Checkpoint) GateResult {
+	clearBrokerHold(cp)
+	g.resetOverlay()
+	verdict := g.check(ctx, true)
+	switch verdict.State {
+	case SessionLive:
+		g.unknownStreak = 0
+		clearUnanswered(cp)
+		slog.Info("powerschool: the login broker says the session is alive, and asked again the portal accepts it; polling")
+		return g.live(verdict.Reason)
+	case SessionDead:
+		g.reportDead(verdict.Reason)
+		saveBrokerHold(cp, brokerHold{fingerprint: fingerprintOrNone(g.Fingerprint())})
+		if n := g.bumpUnanswered(cp); n >= maxUnansweredRequests {
+			return g.blocked(n)
+		}
+		return failPoll("broker_session_is_the_dead_one",
+			"the login broker returned the session the portal refuses here, and asked again the portal still refuses it",
+			"reason", verdict.Reason)
+	}
+	return failPoll("broker_session_unverified",
+		"the login broker says the session is alive and the portal could not be asked again; nothing is concluded",
+		"reason", verdict.Reason)
 }
 
 // brokerErrorText renders a broker client error for a log line. The client

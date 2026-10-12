@@ -2,6 +2,7 @@ package loginbroker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -188,6 +189,81 @@ func TestAnOutcomeIsRecordedOnTopOfAConcurrentChange(t *testing.T) {
 	}
 	if st.ServedRequest != "edited-by-hand" {
 		t.Errorf("the concurrent change was overwritten: %+v", st)
+	}
+}
+
+// --- a write that was applied and answered with an error -----------------------
+
+// Vault applies the write that records a failed login, then answers 500.
+// The retry is refused as a check-and-set mismatch -- against the broker's
+// own write. That is recognised as such: the failure is counted ONCE. (It
+// used to be read back and counted again: one failed login, count 2,
+// latched.)
+func TestAnOutcomeVaultAppliedButDidNotAcknowledgeIsCountedOnce(t *testing.T) {
+	r := newRig(t, nil) // limit 2: a double count would latch
+	r.store("old", ProbeDead, 9*time.Hour)
+	r.driver.failWith(LoginUnknown, "after_or_during_submit")
+	r.back.applyThenFail = map[int]bool{2: true} // 1: the marker; 2: the outcome
+
+	resp := r.ask(fp("old"))
+	r.want(resp, brokerapi.OutcomeFailed, brokerapi.CodeLoginFailed)
+	st := r.back.state
+	if st.UnconfirmedCount != 1 || st.Blocked || st.LoginDayCount != 1 || !st.AttemptStartedAt.IsZero() {
+		t.Fatalf("one failed login was recorded as: %+v", st)
+	}
+	if r.back.stateWrites != 2 {
+		t.Errorf("state writes applied = %d, want 2 (marker, outcome)", r.back.stateWrites)
+	}
+	// The broker's copy of the version followed: the next request writes
+	// without a conflict.
+	r.clock = r.clock.Add(time.Hour)
+	r.driver.succeed("new")
+	r.want(r.ask(fp("old")), brokerapi.OutcomeRefreshed, "")
+}
+
+// The same on the attempt marker: applied, answered 500. The marker IS in
+// the record, written by this request, so the login goes ahead -- once --
+// and the marker is cleared with the outcome. (It used to end as "no
+// login", leaving a marker that was counted as a failed login eleven
+// minutes later.)
+func TestAMarkerVaultAppliedButDidNotAcknowledgeIsStillThisRequests(t *testing.T) {
+	r := newRig(t, nil)
+	r.store("old", ProbeDead, 9*time.Hour)
+	r.driver.succeed("new")
+	r.back.applyThenFail = map[int]bool{1: true}
+
+	r.want(r.ask(fp("old")), brokerapi.OutcomeRefreshed, "")
+	st := r.back.state
+	if r.driver.loginCalls != 1 || !st.AttemptStartedAt.IsZero() || st.UnconfirmedCount != 0 || st.LoginDayCount != 1 {
+		t.Fatalf("logins %d, state %+v", r.driver.loginCalls, st)
+	}
+	// Nothing is left to be mistaken for a dead login later.
+	r.clock = r.clock.Add(11 * time.Minute)
+	r.driver.set("new", ProbeAlive)
+	r.want(r.ask(fp("new")), brokerapi.OutcomeCurrent, "")
+	if r.back.state.UnconfirmedCount != 0 {
+		t.Errorf("a failed login appeared from nowhere: %+v", r.back.state)
+	}
+}
+
+// A mismatch after a transient failure that is NOT the broker's own write
+// -- somebody else really did write -- is still a conflict: no login.
+func TestATransientFailureDoesNotExcuseARealConflict(t *testing.T) {
+	r := newRig(t, nil)
+	r.store("old", ProbeDead, 9*time.Hour)
+	r.driver.succeed("new")
+	r.back.onStateWrite = func(n int) {
+		switch n {
+		case 1:
+			r.back.failStateWrites = errors.New("vault: 503 sealed") // not applied
+		case 2:
+			r.back.failStateWrites = nil
+			r.back.otherWriter(func(s *loginvault.State) { s.AttemptStartedAt = r.clock.Add(-time.Second) })
+		}
+	}
+	r.want(r.ask(fp("old")), brokerapi.OutcomeDeferred, brokerapi.CodeStateConflict)
+	if r.driver.loginCalls != 0 {
+		t.Fatal("logged in over another writer's marker")
 	}
 }
 
