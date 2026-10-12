@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
+	"github.com/leftathome/glovebox/internal/pslogin"
 	"github.com/leftathome/glovebox/internal/psportal"
 	pslib "github.com/leftathome/powerschool-go"
 )
@@ -72,45 +70,6 @@ const (
 	blockedLoginUnconfirmed    = "login_unconfirmed"
 )
 
-// loginFailure says what a failed login means for a second attempt.
-type loginFailure int
-
-const (
-	// loginFailedUnknown: anything not positively identified as one of the
-	// other two. The credentials may have been submitted, so no retry.
-	loginFailedUnknown loginFailure = iota
-	// loginFailedBeforeSubmit: the browser did not start, or the sign-in
-	// page could not be reached. Nothing was typed into a form. This is the
-	// only kind that allows the single retry.
-	loginFailedBeforeSubmit
-	// loginRejected: the portal answered the submitted form with its
-	// invalid-credentials notice.
-	loginRejected
-)
-
-// loginError is what a loginFunc returns on failure.
-type loginError struct {
-	kind loginFailure
-	err  error
-}
-
-func (e *loginError) Error() string { return e.err.Error() }
-func (e *loginError) Unwrap() error { return e.err }
-
-// failureKind extracts the loginFailure from err. An error that is not a
-// *loginError is loginFailedUnknown, the kind that never retries.
-func failureKind(err error) loginFailure {
-	var le *loginError
-	if errors.As(err, &le) {
-		return le.kind
-	}
-	return loginFailedUnknown
-}
-
-// errSignInUnrecognised is returned (wrapped) by a sign-in check when the
-// page it fetched is not one to type the account's password into.
-var errSignInUnrecognised = errors.New("the portal's sign-in page was not recognised")
-
 // loginFunc performs exactly one browser login and returns the session it
 // produced. It is the only code path that submits the credentials.
 type loginFunc func(ctx context.Context) (*pslib.SessionExport, error)
@@ -121,45 +80,6 @@ type loginFunc func(ctx context.Context) (*pslib.SessionExport, error)
 // pslib.IsSessionExpired is true means the portal does not accept the
 // session; any other error means the question was not answered.
 type probeFunc func(ctx context.Context, session *pslib.SessionExport) (selectedStudentID string, err error)
-
-// storedSession is the session currently in Vault.
-type storedSession struct {
-	// Document is the session JSON, exactly what the connector is given.
-	Document string
-	// LoggedInAt is when that session was created: the logged_in_at field
-	// this binary writes, else the creation time of the KV version. Zero
-	// when neither is known.
-	LoggedInAt time.Time
-}
-
-// loginState is the record this binary keeps next to the session, at a
-// sibling KV path the connector never reads. It is what stops a run from
-// submitting credentials the portal has already refused.
-type loginState struct {
-	// Salt is random, generated on first use and kept. It makes the
-	// fingerprint below useless for testing guesses of the password
-	// against it without also holding this record.
-	Salt string
-	// Blocked is the latch. While it is set and the configured credentials
-	// still have the fingerprint below, no run starts a browser.
-	Blocked       bool
-	BlockedReason string
-	BlockedAt     time.Time
-	// CredentialFingerprint is SHA-256 over the salt, the username and the
-	// password last submitted (or about to be). Never the values.
-	CredentialFingerprint string
-	// UnconfirmedCount is the number of logins in a row that returned
-	// without a session the portal accepts. Reset by a confirmed login.
-	UnconfirmedCount int
-	// ServedRequest is the last login request (the connector's, verbatim)
-	// this workload acted on: the one it logged in for, or answered by
-	// finding the stored session good. A request is acted on once.
-	ServedRequest string
-	// RequestLoginAt is when this workload last started a login because of
-	// a request. The minimum interval between such logins is measured
-	// from it.
-	RequestLoginAt time.Time
-}
 
 // sessionStore is the Vault side: the session path and the state path.
 type sessionStore interface {
@@ -450,11 +370,9 @@ func execute(ctx context.Context, cfg config, d deps) result {
 }
 
 // credentialFingerprint identifies a username/password pair without
-// revealing either: SHA-256 over the salt and both values, NUL-separated so
-// ("ab","c") and ("a","bc") differ.
+// revealing either.
 func credentialFingerprint(salt, username, password string) string {
-	sum := sha256.Sum256([]byte(salt + "\x00" + username + "\x00" + password))
-	return hex.EncodeToString(sum[:])
+	return pslogin.CredentialFingerprint(salt, username, password)
 }
 
 // blackoutResult is the result of every blackout refusal.
@@ -737,28 +655,11 @@ func writeState(ctx context.Context, d deps, store sessionStore, state *loginSta
 }
 
 // normalizeSession drops cookies the connector would drop and sets the
-// session's expiry. It returns nil when no cookie is left.
-//
-// The expiry the library reports is not evidence of the portal's session
-// lifetime: it is the latest expiry among the browser's cookies (which can
-// be a year out for a preference cookie) or, when every cookie is a
-// session cookie, "four hours from now". The connector refuses a session
-// past its expires_at, so a four-hour guess would stop the afternoon and
-// evening polls on a session the portal still honours. This binary writes
-// login time plus SessionLifetime instead: an upper bound on how long the
-// connector will present the session. The portal says when it really ends,
-// by refusing it, and the connector handles that.
+// session's expiry (login time plus SessionLifetime; see
+// pslogin.NormalizeSession for why not the library's). It returns nil when
+// no cookie is left.
 func normalizeSession(s *pslib.SessionExport, expiresAt time.Time) *pslib.SessionExport {
-	out := &pslib.SessionExport{ExpiresAt: expiresAt.UTC()}
-	for _, c := range s.Cookies {
-		if c != nil && c.Name != "" && c.Value != "" {
-			out.Cookies = append(out.Cookies, c)
-		}
-	}
-	if len(out.Cookies) == 0 {
-		return nil
-	}
-	return out
+	return pslogin.NormalizeSession(s, expiresAt)
 }
 
 // confirmSession reads the home page with the new session. Reads only: the
@@ -787,29 +688,11 @@ func confirmSession(ctx context.Context, d deps, session *pslib.SessionExport) (
 	return "", false
 }
 
-// sessionData shapes the Vault secret.
-//
-//	session              the session JSON, as one string. This is the
-//	                     property ESO copies into the connector's
-//	                     session.json; the connector parses it with
-//	                     powerschool.ParseSession.
-//	logged_in_at         when this binary logged in (RFC 3339, UTC). Read
-//	                     back by the next run to compute the session's age.
-//	expires_at           the same instant as in the session JSON.
-//	selected_student_id  the student the portal had selected after login,
-//	                     "" when the page marked none. Kept in Vault only:
-//	                     never logged, and not part of what ESO syncs.
+// sessionData shapes the Vault secret: the session JSON as one string
+// (what ESO copies into the connector's session.json), logged_in_at,
+// expires_at and selected_student_id. See pslogin.SessionData.
 func sessionData(session *pslib.SessionExport, loggedInAt time.Time, selected string) (map[string]any, error) {
-	doc, err := json.Marshal(session)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"session":             string(doc),
-		"logged_in_at":        loggedInAt.UTC().Format(time.RFC3339),
-		"expires_at":          session.ExpiresAt.UTC().Format(time.RFC3339),
-		"selected_student_id": selected,
-	}, nil
+	return pslogin.SessionData(session, loggedInAt, selected)
 }
 
 // writeSession stores the session, check-and-set against the version read
@@ -874,22 +757,6 @@ func vaultFailure(log *slog.Logger, cfg config, op, path string, err error) resu
 		"error", cfg.redact(err.Error()))
 	return result{exitTransient, "transient_failure", "Vault " + op + " of " + path + " failed"}
 }
-
-// signInReason is the short, closed-vocabulary reason carried by a
-// sign-in check error ("" when there is none).
-func signInReason(err error) string {
-	var se *signInError
-	if errors.As(err, &se) {
-		return se.reason
-	}
-	return "unrecognised"
-}
-
-// signInError is errSignInUnrecognised with a reason from a fixed list.
-type signInError struct{ reason string }
-
-func (e *signInError) Error() string { return errSignInUnrecognised.Error() + ": " + e.reason }
-func (e *signInError) Unwrap() error { return errSignInUnrecognised }
 
 // redact removes the account's username and password from text bound for a
 // log line, and bounds its length. Error text from a browser driver or an

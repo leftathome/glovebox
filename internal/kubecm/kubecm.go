@@ -97,10 +97,26 @@ type Client struct {
 // are mounted.
 const ServiceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
-// NewInCluster builds the client from the pod's environment
-// (KUBERNETES_SERVICE_HOST / _PORT) and the ServiceAccount files in saDir.
-// namespace overrides the ServiceAccount's own when not empty.
-func NewInCluster(getenv func(string) string, saDir, namespace string) (*Client, error) {
+// Access is how a pod reaches the API server as its own ServiceAccount:
+// the address, a transport that verifies the cluster CA and uses no proxy,
+// and the token, re-read for every request because the kubelet rotates it.
+// It grants nothing by itself; internal/loginbroker builds its TokenReview
+// client from it.
+type Access struct {
+	// BaseURL is "https://host:port".
+	BaseURL string
+	// Transport verifies the API server against the cluster CA. Wrap it in
+	// a Transport (this package) to pin requests to the API server.
+	Transport http.RoundTripper
+	// Token returns the ServiceAccount token.
+	Token func() (string, error)
+	// Namespace is the ServiceAccount's own.
+	Namespace string
+}
+
+// InCluster reads the pod's environment (KUBERNETES_SERVICE_HOST / _PORT)
+// and the ServiceAccount files in saDir.
+func InCluster(getenv func(string) string, saDir string) (*Access, error) {
 	host, port := getenv("KUBERNETES_SERVICE_HOST"), getenv("KUBERNETES_SERVICE_PORT")
 	if host == "" || port == "" {
 		return nil, errors.New("KUBERNETES_SERVICE_HOST / KUBERNETES_SERVICE_PORT are not set: not running in a pod?")
@@ -113,32 +129,46 @@ func NewInCluster(getenv func(string) string, saDir, namespace string) (*Client,
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("the cluster CA file holds no certificate")
 	}
-	if namespace == "" {
-		raw, err := os.ReadFile(filepath.Join(saDir, "namespace"))
-		if err != nil {
-			return nil, fmt.Errorf("read the pod's namespace: %w", err)
-		}
-		namespace = strings.TrimSpace(string(raw))
+	raw, err := os.ReadFile(filepath.Join(saDir, "namespace"))
+	if err != nil {
+		return nil, fmt.Errorf("read the pod's namespace: %w", err)
 	}
 	tokenPath := filepath.Join(saDir, "token")
 	if _, err := os.Stat(tokenPath); err != nil {
 		return nil, fmt.Errorf("the ServiceAccount token is not mounted: %w", err)
 	}
-	transport := &http.Transport{
-		TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout: 10 * time.Second,
-		// Explicitly no proxy: the token goes to the API server only.
-		Proxy: nil,
+	return &Access{
+		BaseURL: "https://" + net.JoinHostPort(host, port),
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout: 10 * time.Second,
+			// Explicitly no proxy: the token goes to the API server only.
+			Proxy: nil,
+		},
+		// The projected token is rotated by the kubelet; read it per request.
+		Token: func() (string, error) {
+			raw, err := os.ReadFile(tokenPath)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(raw)), nil
+		},
+		Namespace: strings.TrimSpace(string(raw)),
+	}, nil
+}
+
+// NewInCluster builds the client from the pod's environment
+// (KUBERNETES_SERVICE_HOST / _PORT) and the ServiceAccount files in saDir.
+// namespace overrides the ServiceAccount's own when not empty.
+func NewInCluster(getenv func(string) string, saDir, namespace string) (*Client, error) {
+	access, err := InCluster(getenv, saDir)
+	if err != nil {
+		return nil, err
 	}
-	// The projected token is rotated by the kubelet; read it per request.
-	token := func() (string, error) {
-		raw, err := os.ReadFile(tokenPath)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(raw)), nil
+	if namespace == "" {
+		namespace = access.Namespace
 	}
-	return New("https://"+net.JoinHostPort(host, port), namespace, transport, token)
+	return New(access.BaseURL, namespace, access.Transport, access.Token)
 }
 
 // New builds a client for baseURL ("https://host:port") on the given inner

@@ -88,6 +88,7 @@ import (
 
 	"github.com/leftathome/glovebox/connectors/powerschool"
 	"github.com/leftathome/glovebox/internal/kubecm"
+	"github.com/leftathome/glovebox/internal/pslogin"
 	"github.com/leftathome/glovebox/internal/psportal"
 )
 
@@ -105,8 +106,9 @@ const (
 	// has stopped waiting (the connector waits 10 minutes by default).
 	defaultRequestMaxAge = 15 * time.Minute
 	// minRequestInterval: the least time between two logins made because
-	// the connector asked. Default and floor.
-	minRequestInterval     = 20 * time.Minute
+	// the connector asked. Default and floor. The login broker applies the
+	// same floor to its own logins.
+	minRequestInterval     = pslogin.MinRequestInterval
 	defaultSessionLifetime = 36 * time.Hour
 	// terminationLogPath is where Kubernetes reads a container's
 	// termination message from (terminationMessagePath's default).

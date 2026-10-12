@@ -467,7 +467,7 @@ func TestVaultStoreCloseRevokesTheToken(t *testing.T) {
 	if !v.revoked {
 		t.Fatalf("no revoke-self request; requests: %v", v.requests)
 	}
-	if got := store.client.Token(); got != "" {
+	if got := store.Token(); got != "" {
 		t.Errorf("the client still holds a token after Close")
 	}
 }

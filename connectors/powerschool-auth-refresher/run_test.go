@@ -882,7 +882,7 @@ func TestRunRetriesTheConfirmingReadButNeverTheLogin(t *testing.T) {
 
 func TestRunDoesNotStartTheBrowserOnAnUnrecognisedSignInPage(t *testing.T) {
 	h := newHarness(t, morning(t))
-	h.signInErr = &signInError{reason: "form_posts_off_host"}
+	h.signInErr = &signInError{Reason: "form_posts_off_host"}
 	h.expect(h.run(), exitSignInUnrecognised, 0, 0)
 	if h.signInChecks != 1 {
 		t.Errorf("sign-in checks = %d, want 1: it is not retried within a run", h.signInChecks)
@@ -977,7 +977,7 @@ func TestRunRevokesTheVaultTokenOnEveryPath(t *testing.T) {
 		"unconfirmed":       func(h *harness) { h.probeResults = []error{errSessionGone} },
 		"write refused":     func(h *harness) { h.store.writeErrs = []error{vaultStatus(403)} },
 		"state unreadable":  func(h *harness) { h.store.readStateErr = vaultStatus(403) },
-		"sign-in not known": func(h *harness) { h.signInErr = &signInError{reason: "no_password_form"} },
+		"sign-in not known": func(h *harness) { h.signInErr = &signInError{Reason: "no_password_form"} },
 		"blocked": func(h *harness) {
 			h.store.state = &loginState{Salt: testSalt, Blocked: true, BlockedReason: blockedCredentialsRejected,
 				CredentialFingerprint: credentialFingerprint(testSalt, testUsername, testPassword)}

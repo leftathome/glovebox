@@ -2,6 +2,7 @@ package powerschool
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -28,15 +29,25 @@ type Config struct {
 }
 
 // LoginOnDemandConfig lets the connector ask for a login when it finds its
-// session dead, by writing a request into one field of one ConfigMap that
-// the login workload reads. Off by default. The connector still never logs
-// in, never sees a credential and cannot start a workload: see
-// session_gate.go.
+// session dead. Off by default. There are two ways to ask, and exactly one
+// is configured when Enabled:
+//
+//   - the request mailbox (configmap_name): the connector writes a request
+//     into one field of one ConfigMap that the login workload reads on its
+//     own schedule, then waits for the new session file;
+//   - the login broker (broker.url): the connector asks a small service
+//     that holds the credentials, and gets the outcome and the session in
+//     the answer.
+//
+// Either way the connector never logs in, never sees a credential and
+// cannot start a workload: see session_gate.go.
 type LoginOnDemandConfig struct {
 	Enabled bool `json:"enabled"`
-	// ConfigMapName is the ConfigMap the request is written to. Required
-	// when Enabled.
+	// ConfigMapName is the ConfigMap the request is written to (the
+	// mailbox). Required when Enabled, unless Broker.URL is set.
 	ConfigMapName string `json:"configmap_name"`
+	// Broker selects the login broker instead of the mailbox.
+	Broker LoginBrokerConfig `json:"broker"`
 	// Namespace of that ConfigMap. Empty means the pod's own (read from
 	// the ServiceAccount's namespace file).
 	Namespace string `json:"namespace"`
@@ -48,6 +59,39 @@ type LoginOnDemandConfig struct {
 	// connector, across restarts. Default and minimum 20.
 	MinIntervalMinutes int `json:"min_interval_minutes"`
 }
+
+// LoginBrokerConfig is where the login broker is and how this connector
+// proves who it is to it.
+type LoginBrokerConfig struct {
+	// URL is the broker's address, scheme and host only
+	// ("http://glovebox-login-broker-powerschool:8080"). Setting it selects
+	// the broker.
+	URL string `json:"url"`
+	// TokenFile is the projected ServiceAccount token minted for the
+	// broker's audience. Required with URL. It is re-read for every call
+	// and is sent to the broker's address only.
+	TokenFile string `json:"token_file"`
+	// TimeoutSeconds bounds one call, which lasts as long as the login it
+	// may cause. Default 420; 60-900.
+	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
+// UsesBroker reports whether logins are asked of the login broker rather
+// than through the request mailbox.
+func (c LoginOnDemandConfig) UsesBroker() bool {
+	return strings.TrimSpace(c.Broker.URL) != ""
+}
+
+// BrokerTimeout is how long one broker call may take.
+func (c LoginOnDemandConfig) BrokerTimeout() time.Duration {
+	if c.Broker.TimeoutSeconds <= 0 {
+		return defaultBrokerTimeout
+	}
+	return time.Duration(c.Broker.TimeoutSeconds) * time.Second
+}
+
+// defaultBrokerTimeout: above the broker's own bound on a refresh (6 min).
+const defaultBrokerTimeout = 420 * time.Second
 
 func (c LoginOnDemandConfig) wait() time.Duration {
 	return time.Duration(c.WaitSeconds) * time.Second
@@ -570,8 +614,28 @@ func validateLoginOnDemand(c LoginOnDemandConfig) error {
 	if !c.Enabled {
 		return nil
 	}
+	if c.UsesBroker() {
+		// One way to ask, not two: with both configured a dead session
+		// would cause a broker login AND leave a mailbox request for the
+		// scheduled job to act on later, over the session just made.
+		if strings.TrimSpace(c.ConfigMapName) != "" {
+			return fmt.Errorf("login_on_demand: configmap_name and broker.url are both set; configure exactly one way to ask for a login")
+		}
+		u, err := url.Parse(strings.TrimSpace(c.Broker.URL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+			strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("login_on_demand: broker.url must be an http or https URL with a host and nothing else")
+		}
+		if !strings.HasPrefix(c.Broker.TokenFile, "/") || strings.ContainsAny(c.Broker.TokenFile, " \t\n") {
+			return fmt.Errorf("login_on_demand: broker.token_file must be the absolute path of the token projected for the broker")
+		}
+		if c.Broker.TimeoutSeconds != 0 && (c.Broker.TimeoutSeconds < 60 || c.Broker.TimeoutSeconds > 900) {
+			return fmt.Errorf("login_on_demand: broker.timeout_seconds must be between 60 and 900")
+		}
+		return nil
+	}
 	if strings.TrimSpace(c.ConfigMapName) == "" {
-		return fmt.Errorf("login_on_demand: configmap_name is required when enabled")
+		return fmt.Errorf("login_on_demand: configmap_name (the request mailbox) or broker.url (the login broker) is required when enabled")
 	}
 	if strings.ContainsAny(c.ConfigMapName, "/ \t\n") || strings.ContainsAny(c.Namespace, "/ \t\n") {
 		return fmt.Errorf("login_on_demand: configmap_name and namespace must be plain Kubernetes names")
