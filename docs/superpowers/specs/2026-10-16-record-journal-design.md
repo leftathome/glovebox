@@ -344,21 +344,23 @@ journal:
       readers: "*"                         # may read as any member of the roster
       write_types: [attendance_note]       # household writes, on behalf of a member
       counts: true
-    openclaw/glovebox-glovebox:            # the connectors' ServiceAccount
+    openclaw/glovebox-connector-powerschool:   # one ServiceAccount per connector (4.9c)
       write_types: [course_mark, assignment, attendance_mark, attendance_day,
-                    attendance_total, term_grade, term_comment,
-                    lms_assignment, lms_assignment_detail]
-      write_scopes: {source: [powerschool, schoology]}
+                    attendance_total, term_grade, term_comment]
+      write_scopes: {source: [powerschool]}
       write_subjects: roster_subjects      # roster members, plus "" for types that declare it (no school type does)
+    openclaw/glovebox-connector-schoology:
+      write_types: [lms_assignment, lms_assignment_detail]
+      write_scopes: {source: [schoology]}
+      write_subjects: roster_subjects
     trunchbull/trunchbull:
       read: true
       readers: [e_parent1, e_parent2]      # the dashboard reads only as guardians
       counts: true
 ```
 
-(The connectors share one ServiceAccount today; if per-connector accounts are
-introduced later, the write policy splits per account with no change to the
-journal.)
+Every other workload -- the RSS connector, the core's own pods, the login
+jobs -- has no journal write rights at all.
 
 **Readers and grants.** Every read and every household write names **one
 reader** (a roster member id) and nothing else about access:
@@ -445,6 +447,33 @@ and the isolation tests (section 8) are for.
 - The journal exposes the roster's content hash on `/v1/healthz` and as a
   metric; openclaw logs the hash of the roster it read. Equal hashes show both
   applications are using the same roster.
+
+#### 4.9c One identity per connector (precondition)
+
+Today the PowerSchool, Schoology and RSS connectors all run as the
+`glovebox-glovebox` ServiceAccount, together with the core service. The RSS
+connector processes untrusted content from the open internet; under a shared
+identity, a compromise of it could write grades or attendance for any
+child, and could trigger pushed alerts to guardians. The journal therefore
+requires, before any connector is given write rights:
+
+- **One ServiceAccount per connector Deployment**, named
+  `<release>-connector-<name>` and rendered by the chart for every enabled
+  connector, plus a separate one for the core. No connector uses the core's
+  account or another connector's.
+- `automountServiceAccountToken: false` on every connector pod; a connector
+  with journal rights gets only a **projected token** with audience
+  `glovebox-journal` and a short lifetime. A connector without journal rights
+  gets no token at all.
+- The journal's NetworkPolicy admits writes to its listener only from pods of
+  connectors that hold journal write rights.
+- The record-type `owner` versus scope `source` check (4.3) stays as a second
+  line: even a correctly identified connector cannot write another source's
+  records.
+
+The chart change is independent of the journal and ships first (rollout step
+0, bead to be filed); it is verified with `kubectl auth can-i` and by
+inspecting each pod's `serviceAccountName`.
 
 #### 4.9a Household writes
 
@@ -773,7 +802,9 @@ snapshots, oldest first, per scope:
   no-meeting, unmarked-then-settled and corrected days; term rollover
   with `complete_range` (last term's records are not removed); scope completeness per surface.
 - **Auth:** token audience, allow-list, fail-closed TokenReview, per-service
-  write types and scopes, record-type owner versus scope source, unknown
+  write types and scopes; the RSS connector's and the core's accounts are
+  refused every write; a connector's projected token is the only token in its
+  pod; record-type owner versus scope source, unknown
   subjects (`409`), and allowed `readers`.
 - **Spool:** crash mid-write, replay order, overflow policy, `held` and
   `rejected` handling.
@@ -784,6 +815,10 @@ snapshots, oldest first, per scope:
 
 Each step is its own reviewed change and release; each can stop without
 affecting what came before.
+
+0. **Per-connector identities** (glovebox chart, 4.9c): one ServiceAccount per
+   connector and one for the core, no default token mounts, projected tokens
+   only where needed. Ships before step 1 and is useful on its own.
 
 1. **Journal core** (glovebox): schema, `Apply`, API, auth, roster adapter,
    guards, erase, metrics; off by default. Gitops: database on CNPG,
