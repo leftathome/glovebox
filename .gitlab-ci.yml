@@ -132,7 +132,7 @@ chart-test:
   cache: []
   before_script:
     - "apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-yaml >/dev/null"
-    - 'HELM_VERSION=$(sed -n ''s/^HELM_VERSION="${HELM_VERSION:-\(v[0-9.]*\)}"$/\1/p'' scripts/install-helm.sh); test -n "$HELM_VERSION"; go install "helm.sh/helm/v4/cmd/helm@${HELM_VERSION}"'
+    - 'HELM_VERSION=$(sed -n ''s/^HELM_VERSION="${HELM_VERSION:-\(v[0-9.]*\)}"$/\1/p'' scripts/install-helm.sh); test -n "$HELM_VERSION"; GOBIN=/usr/local/bin go install "helm.sh/helm/v4/cmd/helm@${HELM_VERSION}"'
     - "helm version --short"
     - "git fetch --quiet --depth=50 origin +refs/heads/main:refs/remotes/origin/main"
   script:
