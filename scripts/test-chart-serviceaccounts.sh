@@ -13,7 +13,8 @@
 # one with the same values and asserts the only differences are the intended
 # ones. Set GLOVEBOX_EXTRA_VALUES to a colon-separated list of values files
 # (production values, kept out of this repository) to compare those renders
-# too. The section is skipped, with a note, when BASE_REF does not resolve.
+# too. When BASE_REF does not resolve the section is skipped with a note --
+# except in CI (CI or REQUIRE_BASE_REF set), where that is a failure.
 #
 # Requires helm, git and python3 with PyYAML.
 # Usage: scripts/test-chart-serviceaccounts.sh
@@ -46,6 +47,10 @@ check() {
   if render "$@" 2>"$TMP/err" | python3 -c "
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+keys = [(d['kind'], d['metadata']['name']) for d in docs]
+dupes = sorted({k for k in keys if keys.count(k) > 1})
+if dupes:
+    sys.exit('duplicate objects: %s' % dupes)
 def find(kind, name):
     hits = [d for d in docs if d['kind'] == kind and d['metadata']['name'] == name]
     return hits[0] if hits else None
@@ -71,6 +76,19 @@ sys.exit(0 if ($expr) else 1)
     echo "ok   $name"
   else
     echo "FAIL $name"; cat "$TMP/err"; FAILED=1
+  fi
+}
+
+# refuse NAME PATTERN [helm args...]: the render must fail with PATTERN.
+refuse() {
+  local name="$1"; shift
+  local pattern="$1"; shift
+  if render "$@" >/dev/null 2>"$TMP/err"; then
+    echo "FAIL $name (rendered; expected a refusal)"; FAILED=1
+  elif grep -q -- "$pattern" "$TMP/err"; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name (failed for another reason)"; cat "$TMP/err"; FAILED=1
   fi
 }
 
@@ -262,6 +280,34 @@ check "a renamed PowerSchool account is what the on-demand Role is bound to" \
   'bound.get("ps-reader") == ["RoleBinding/glovebox-glovebox-powerschool-login-on-demand"]' \
   -f "$TMP/ondemand.yaml" --set connectors.powerschool.serviceAccount.name=ps-reader
 
+# --- no two workloads on one account ------------------------------------------
+
+refuse "a connector renamed onto the core's account" \
+  'ServiceAccount "glovebox-glovebox" would be used by both the core (serviceAccount) and connectors.rss' \
+  --set connectors.rss.enabled=true --set connectors.rss.serviceAccount.name=glovebox-glovebox
+
+refuse "the PowerSchool connector (with its ConfigMap-write Role) renamed onto RSS's account" \
+  'ServiceAccount "glovebox-glovebox-connector-rss" would be used by both connectors.powerschool and connectors.rss' \
+  -f "$TMP/ondemand.yaml" --set connectors.powerschool.serviceAccount.name=glovebox-glovebox-connector-rss
+
+refuse "create: false does not hide a collision" \
+  'ServiceAccount "glovebox-glovebox-connector-schoology" would be used by both connectors.rss and schoologyConnector' \
+  --set connectors.rss.enabled=true --set connectors.rss.serviceAccount.create=false \
+  --set connectors.rss.serviceAccount.name=glovebox-glovebox-connector-schoology --set schoologyConnector.enabled=true
+
+refuse "a connector renamed onto a refresher's account" \
+  'would be used by both connectors.powerschool and powerschoolAuthRefresher' \
+  -f "$TMP/ondemand.yaml" --set connectors.powerschool.serviceAccount.name=glovebox-glovebox-powerschool-auth-refresher
+
+refuse "an importer renamed onto the login broker's account" \
+  'would be used by both importers.apple and loginBrokers.powerschool' \
+  -f "$TMP/broker.yaml" --set importers.apple.enabled=true --set importers.apple.input.existingClaim=a \
+  --set importers.apple.serviceAccount.name=glovebox-glovebox-login-broker-powerschool
+
+refuse "the core renamed onto a connector's account" \
+  'would be used by both the core (serviceAccount) and connectors.rss' \
+  --set connectors.rss.enabled=true --set serviceAccount.name=glovebox-glovebox-connector-rss
+
 # --- differences from the base chart: only the intended ones -------------------
 
 # compare NAME [helm args...]: render BASE_REF's chart and this one with the
@@ -275,7 +321,15 @@ compare() {
   if python3 - "$TMP/old.yaml" "$TMP/new.yaml" >"$TMP/err" 2>&1 <<'PY'
 import sys, yaml, re
 def load(p):
-    return {(d['kind'], d['metadata']['name']): d for d in yaml.safe_load_all(open(p)) if d}
+    out = {}
+    for d in yaml.safe_load_all(open(p)):
+        if not d:
+            continue
+        k = (d['kind'], d['metadata']['name'])
+        if k in out:
+            sys.exit('%s: duplicate object %s/%s' % (p, k[0], k[1]))
+        out[k] = d
+    return out
 old, new = load(sys.argv[1]), load(sys.argv[2])
 bad = []
 # Objects added: only per-workload ServiceAccounts.
@@ -344,6 +398,8 @@ if git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>&
       compare "vs $BASE_REF, $(basename "$f"): only identity differences" -f "$f"
     done
   fi
+elif [ -n "${REQUIRE_BASE_REF:-}" ] || [ -n "${CI:-}" ]; then
+  echo "FAIL comparison with $BASE_REF: the ref does not resolve (fetch it, e.g. git fetch origin main)"; FAILED=1
 else
   echo "skip comparison with $BASE_REF (does not resolve here)"
 fi

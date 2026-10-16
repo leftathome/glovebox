@@ -68,6 +68,12 @@ to land first. What changes in the render:
 - Per-connector override, same shape as the core's:
   `connectors.<name>.serviceAccount.{create,name,annotations}`,
   `schoologyConnector.serviceAccount`, `importers.<name>.serviceAccount`.
+- **The render refuses two workloads on one account**: the core, every
+  enabled connector, importer and login broker, and the two refresher
+  CronJobs must resolve to distinct names, whether or not the chart creates
+  the object. A values file that pointed a connector at the core's account
+  (`serviceAccount.name: glovebox-glovebox`) now fails with a message naming
+  both workloads.
 
 **What it costs.** Every connector Deployment rolls once (its pod template
 changes), and so does the core (the explicit `automountServiceAccountToken`).

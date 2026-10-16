@@ -111,6 +111,36 @@ test:
     - if: '$CI_COMMIT_TAG'
 
 # ---------------------------------------------------------------------------
+# chart-test (MR gate): helm lint and every scripts/test-chart-*.sh, via
+# scripts/chart-checks.sh. These pin what the chart renders -- workload
+# identities, token mounts, RBAC bindings, NetworkPolicies, the PowerSchool
+# login blackout -- and were run by hand only, so a chart change could merge
+# with them red.
+#
+# Same pinned golang image as `test` (the one Zot is known to serve; see the
+# note there) rather than a helm image from Docker Hub; helm is installed at a
+# pinned, checksum-verified version by scripts/install-helm.sh. origin/main is
+# fetched because test-chart-serviceaccounts.sh compares the render against it,
+# and fails rather than skips in CI when it cannot.
+# ---------------------------------------------------------------------------
+chart-test:
+  stage: test
+  image: golang:1.27.1-bookworm
+  cache: []
+  before_script:
+    - "apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-yaml >/dev/null"
+    - "./scripts/install-helm.sh"
+    - "git fetch --quiet --depth=50 origin +refs/heads/main:refs/remotes/origin/main"
+  script:
+    - "./scripts/chart-checks.sh"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ---------------------------------------------------------------------------
 # integration: in-cluster connector integration tests (sub-project B / lyku.3).
 #
 # Runs ONLY on a scheduled (nightly) pipeline or a manual (web) trigger -- NOT
