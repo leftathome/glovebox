@@ -1,5 +1,8 @@
 package record
 
+// OwnerHousehold owns record types written through /v1/notes (4.9a).
+const OwnerHousehold = "household"
+
 // FieldDef declares one field of a record type.
 type FieldDef struct {
 	Type     FieldType `json:"type"`

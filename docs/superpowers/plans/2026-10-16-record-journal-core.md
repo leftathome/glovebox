@@ -2491,7 +2491,7 @@ A scope is an ordered list of `name=value` parts beginning with `source` (4.3). 
 - Create: `internal/journal/record/scope.go`
 - Test: `internal/journal/record/scope_test.go`
 
-- [ ] **Step 5.1: Write the failing test.**
+- [x] **Step 5.1: Write the failing test.**
 
 `internal/journal/record/scope_test.go`:
 
@@ -2570,11 +2570,11 @@ func TestHouseholdScope(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5.2: Run; expect a build failure** (`undefined: ParseScope`).
+- [x] **Step 5.2: Run; expect a build failure** (`undefined: ParseScope`).
 
 Run: `go test ./internal/journal/record/ -run Scope`
 
-- [ ] **Step 5.3: Write `scope.go`.**
+- [x] **Step 5.3: Write `scope.go`.**
 
 `internal/journal/record/scope.go`:
 
@@ -2689,11 +2689,11 @@ func HouseholdScope(recordType, subject string) string {
 const OwnerHousehold = "household"
 ```
 
-- [ ] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 5.5: Commit.**
+- [x] **Step 5.5: Commit.**
 
 ```bash
 git add internal/journal/record
