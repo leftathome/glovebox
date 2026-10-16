@@ -1050,7 +1050,8 @@ port `8080` (configurable via `HealthPort` in the connector options):
 | Endpoint | Description |
 |----------|-------------|
 | `/healthz` | Liveness probe. Returns `200 OK` as soon as the HTTP server starts. If this fails, the process is dead and should be restarted. |
-| `/readyz` | Readiness probe. Returns `503 Service Unavailable` until the connector has completed at least one successful poll cycle, then `200 OK`. Use this to determine when the connector is actively producing data. |
+| `/readyz` | Readiness probe. Returns `503 Service Unavailable` until the connector has completed at least one successful poll cycle, then `200 OK`. Connectors that opt into `ReadyWhenServing` (PowerSchool) return `200 OK` once started; a connector waiting for a new session is Ready and says so in the body (`ok (degraded: session=waiting_for_new_session)`). |
+| `/statusz` | JSON: `ready`, `degraded`, and the connector's conditions with their state and `since`. |
 | `/metrics` | Prometheus metrics endpoint for connector-specific metrics. |
 
 ### 7.3 Key Metrics

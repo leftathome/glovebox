@@ -48,9 +48,16 @@ type Framework struct {
 	// HealthPort is the port the /healthz, /readyz, /metrics server listens on.
 	HealthPort int
 
-	// Ready is flipped to true once the connector has completed its first
-	// successful poll. /readyz returns 503 until Ready is true.
+	// Ready is what /readyz reports. With Options.Readiness
+	// ReadyAfterFirstPoll (the default) it is flipped to true once the
+	// connector has completed its first successful poll; with
+	// ReadyWhenServing it is true as soon as NewFramework returns.
+	// /readyz returns 503 until Ready is true.
 	Ready *atomic.Bool
+
+	// Status holds the connector's "degraded but ready" conditions, served
+	// on /statusz. Never nil.
+	Status *Status
 
 	opts Options
 
@@ -174,6 +181,11 @@ func NewFramework(opts Options) (*Framework, error) {
 
 	fetchCounter := NewFetchCounter(baseCfg.FetchLimits)
 
+	status := opts.Status
+	if status == nil {
+		status = NewStatus()
+	}
+
 	if opts.Setup != nil {
 		if err := opts.Setup(ConnectorContext{
 			Writer:       writer,
@@ -181,6 +193,7 @@ func NewFramework(opts Options) (*Framework, error) {
 			Matcher:      matcher,
 			Metrics:      metrics,
 			FetchCounter: fetchCounter,
+			Status:       status,
 		}); err != nil {
 			metrics.Shutdown()
 			return nil, fmt.Errorf("connector setup: %w", err)
@@ -194,15 +207,8 @@ func NewFramework(opts Options) (*Framework, error) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	healthMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if ready.Load() {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("not ready"))
-		}
-	})
+	healthMux.HandleFunc("/readyz", readyzHandler(ready.Load, status))
+	healthMux.HandleFunc("/statusz", statuszHandler(opts.Name, ready.Load, status))
 	healthMux.Handle("/metrics", metrics.Handler())
 
 	healthServer := &http.Server{
@@ -231,6 +237,12 @@ func NewFramework(opts Options) (*Framework, error) {
 		}
 	}
 
+	if opts.Readiness == ReadyWhenServing {
+		// Bootstrap succeeded and the health server is starting: the
+		// process is healthy. What it is doing is in Status.
+		ready.Store(true)
+	}
+
 	fw := &Framework{
 		Name:           opts.Name,
 		Logger:         logger,
@@ -242,6 +254,7 @@ func NewFramework(opts Options) (*Framework, error) {
 		Checkpoint:     cp,
 		HealthPort:     opts.HealthPort,
 		Ready:          ready,
+		Status:         status,
 		opts:           opts,
 		healthServer:   healthServer,
 		listenerServer: listenerServer,

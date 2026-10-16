@@ -528,7 +528,8 @@ The runner exposes HTTP health endpoints on a configurable port (default 8080):
 | Endpoint    | Purpose    | Returns 200 When                                  |
 |-------------|------------|----------------------------------------------------|
 | `/healthz`  | Liveness   | Always (as soon as HTTP server starts)             |
-| `/readyz`   | Readiness  | After first successful poll completes              |
+| `/readyz`   | Readiness  | After first successful poll completes (default; see `Options.Readiness`) |
+| `/statusz`  | Status     | Always: JSON of the connector's conditions         |
 | `/metrics`  | Prometheus | Always (OTel metrics with Prometheus exporter)     |
 
 **Readiness progression:**
@@ -539,6 +540,20 @@ The runner exposes HTTP health endpoints on a configurable port (default 8080):
 
 If the initial poll returns a permanent error, the process exits. If it
 returns a transient error, `/readyz` remains 503 until a poll succeeds.
+
+**Readiness is not "doing its whole job".** A Deployment's readiness gates
+`helm upgrade --wait` and Flux's upgrade and rollback of the whole release,
+so a connector must not hold it false for a condition that is not a fault.
+A connector whose first poll may legitimately not happen, or may block for
+a long time (waiting for somebody else to replace a session), sets
+`Options.Readiness: connector.ReadyWhenServing`: `/readyz` is 200 once
+bootstrap has succeeded. It reports what it is doing as "degraded but
+ready" conditions on `ConnectorContext.Status` (or `Options.Status`, for
+conditions recorded before `connector.Run`), which `/statusz` serves as
+JSON and the `/readyz` body names. Saved-session connectors use
+`connector.SessionState` for the session condition and its
+`<name>_session_state` gauges, and `connector.WaitHealth` to answer probes
+while they wait before `connector.Run` (glovebox-wekc.17).
 
 **Listener port:** If the connector implements `Listener`, the runner starts the
 Listener's HTTP handler on `HealthPort + 1` (default 8081). This is a separate

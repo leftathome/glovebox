@@ -29,6 +29,10 @@ type ConnectorContext struct {
 	Matcher      *RuleMatcher
 	Metrics      *Metrics
 	FetchCounter *FetchCounter
+	// Status is the framework's condition set, served on /statusz and
+	// summarised in the /readyz body. Connectors report "degraded but
+	// ready" states here (see Readiness).
+	Status *Status
 }
 
 // SetupFunc is an optional initialization callback. If Options.Setup is set,
@@ -53,6 +57,15 @@ type Options struct {
 	Setup        SetupFunc
 	PollInterval time.Duration // 0 = poll once and exit
 	HealthPort   int
+
+	// Readiness selects what /readyz reports; the zero value is
+	// ReadyAfterFirstPoll (the historical behaviour).
+	Readiness Readiness
+	// Status, when set, is the condition set the health server reports;
+	// a binary that recorded conditions before connector.Run (while it
+	// waited for a session) passes it here so they carry over. Nil means
+	// a new, empty one.
+	Status *Status
 }
 
 type permanentError struct {

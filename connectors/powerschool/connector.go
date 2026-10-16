@@ -84,6 +84,12 @@ type PowerSchoolConnector struct {
 	// without a gate (tests). Set before Run.
 	Gate *SessionGate
 
+	// SessionState, when set, is told what each poll's session check found
+	// (usable, unknown, or waiting for a new session). It only reports: it
+	// changes nothing about when or whether the portal is contacted, and
+	// readiness does not depend on it. Set before Run.
+	SessionState *connector.SessionState
+
 	// Framework-provided; set by Wire().
 	wireMu  sync.Mutex
 	writer  connector.StagingBackend
@@ -359,6 +365,7 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 			}
 		}
 		gate := c.Gate.Ensure(ctx, cp)
+		c.reportSessionState(gate)
 		switch gate.Outcome {
 		case GateSkip:
 			tel.RecordPollSkipped(gateSkipLabel(gate.Reason))
@@ -426,6 +433,7 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		slog.Warn("powerschool session stopped being accepted during the poll; asking the login broker and retrying the poll once",
 			append([]any{"library_version", c.libVersion}, errAttrs(authErr)...)...)
 		renewed := c.Gate.Renew(ctx, cp)
+		c.reportSessionState(renewed)
 		if renewed.Outcome == GateLive && renewed.Client != nil {
 			env.Client = renewed.Client
 			again, read, err := c.pollKids(ctx, env)
@@ -447,6 +455,11 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	)
 
 	if authErr != nil {
+		c.SessionState.Set(connector.SessionStateWaiting, time.Time{},
+			"the portal stopped accepting the session during a poll")
+		if c.Gate != nil {
+			c.SessionState.SetSubject(c.Gate.Fingerprint())
+		}
 		if c.Gate.OnDemand() {
 			// The session died in the middle of the poll. With on-demand
 			// login that is not a reason to exit: the next poll's check
@@ -464,6 +477,38 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		return nil
 	}
 	return c.countFailedPoll("no student read")
+}
+
+// reportSessionState maps a session-gate answer onto the reported session
+// state. A skip for any reason other than "could not tell" or an
+// interruption follows a session found dead, for which no usable
+// replacement has come: the connector is waiting for a new session.
+func (c *PowerSchoolConnector) reportSessionState(g GateResult) {
+	if c.SessionState == nil {
+		return
+	}
+	defer func() {
+		if cur, _ := c.SessionState.Current(); cur == connector.SessionStateWaiting {
+			// Which session the wait is about, so a restarted process can
+			// tell whether it has been replaced since.
+			c.SessionState.SetSubject(c.Gate.Fingerprint())
+		}
+	}()
+	switch g.Outcome {
+	case GateLive:
+		c.SessionState.Set(connector.SessionStateUsable, time.Time{}, "the portal accepted the session at the last check")
+	case GateDead, GateBlocked:
+		c.SessionState.Set(connector.SessionStateWaiting, time.Time{}, "session refused upstream ("+gateSkipLabel(g.Reason)+")")
+	case GateSkip:
+		switch label := gateSkipLabel(g.Reason); label {
+		case "session_state_unknown":
+			c.SessionState.Set(connector.SessionStateUnknown, time.Time{}, "could not tell whether the session is accepted")
+		case "interrupted":
+			// Shutting down: nothing learned.
+		default:
+			c.SessionState.Set(connector.SessionStateWaiting, time.Time{}, "session refused upstream; no usable new one yet ("+label+")")
+		}
+	}
 }
 
 // countFailedPoll records a poll that read no student and returns the

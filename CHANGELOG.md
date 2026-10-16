@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A PowerSchool connector waiting for a new session no longer blocks Helm
+  upgrades and rollbacks** (glovebox-wekc.17). After the portal refused its
+  session the connector waited -- by design, making no upstream requests --
+  answering liveness but not readiness. Readiness is a Deployment rollout
+  condition, so a values change applied in that state timed out on
+  readiness, and so did Flux's automatic rollback (2026-10-12: eight failed
+  revisions, merged values reverted). Readiness now means "the process is
+  healthy and doing what it should": the waiting connector answers
+  `/readyz` 200. With `login_on_demand` the first poll, which may wait up to
+  `wait_seconds` (600 s by default) or the broker timeout (420 s) for a
+  login, no longer decides readiness either. Faults are unchanged: invalid
+  config still exits, a health port that is not bound answers nothing.
+  Upstream-request behaviour is unchanged everywhere.
+- The Schoology connector, while it waits for a session Schoology already
+  refused, now answers its probes (alive and ready) instead of serving
+  nothing and being restarted by the liveness probe.
+
+### Added
+
+- The session state stays observable: `powerschool_session_state{state=
+  "unknown|usable|waiting_for_new_session"}` and
+  `powerschool_session_state_since_timestamp_seconds{state=...}` (and the
+  same `schoology_*` pair for its pre-start wait), a `/statusz` JSON
+  endpoint on every connector's health port (`ready`, `degraded`, and the
+  `session` condition with the time the wait began), and the degraded
+  conditions named in the `/readyz` body.
+- Alert `GloveboxPowerSchoolWaitingForSession` (with
+  `metrics.prometheusRule.enabled` and `connectors.powerschool.enabled`, any
+  login mode): waiting for a new session for more than
+  `metrics.prometheusRule.sessionWaitingHours` (default 60: logins and polls
+  are weekday-only, so the longest routine wait is Friday's 21:26 login to
+  Monday's 05:56 one, about 56.5h). The wait's start is kept in the state
+  directory (`session-state`), so a restart -- a values change, an OOM kill,
+  an eviction -- does not reset it in any login mode; a wait whose
+  session was replaced while no process ran ends at start-up. Existing
+  rejected-session metrics and alerts are unchanged.
+- Alert `GloveboxSchoologyWaitingForSession` (with `schoologyConnector.enabled`),
+  `metrics.prometheusRule.schoologySessionWaitingHours` (default 14: the
+  production refresher runs at 01:30, 13:30 and 22:30 daily, a longest gap
+  of 12h). It replaces the Schoology wait's old operator signal, an
+  unhealthy pod. While waiting, Schoology's trigger port answers 503
+  "waiting for a new Schoology session" instead of refusing connections.
+- Framework: `connector.Options.Readiness` (`ReadyAfterFirstPoll`, the
+  default and unchanged, or `ReadyWhenServing`), `Options.Status` /
+  `ConnectorContext.Status` ("degraded but ready" conditions),
+  `connector.SessionState`, `connector.WaitHealth` (moved from the
+  PowerSchool package) and `RejectedSession.MarkedAt`.
+
 ## [0.11.0] - 2026-10-12
 
 ### Upgrade notes

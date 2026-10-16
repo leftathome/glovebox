@@ -162,7 +162,8 @@ func SessionFingerprint(s *pslib.SessionExport) string {
 // onWait, if not nil, is called once, the first time the function is about
 // to wait. The binary uses it to bring up WaitHealth: connector.Run has not
 // started, so without it nothing answers the kubelet's probes and the pod
-// is restarted instead of sitting Running and NotReady.
+// is restarted instead of sitting Running and Ready (waiting is not a fault;
+// see connector.WaitHealth).
 //
 // The first load must succeed (a missing or malformed session is a startup
 // error). Later failures are tolerated: the file may be mid-rewrite.

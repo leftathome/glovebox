@@ -79,10 +79,37 @@ upstream request at all, and re-reads the session file once a minute; when
 the login job replaces the Secret the kubelet updates the mounted file in
 place and the connector starts polling again without a pod restart.
 
-While it waits the pod is **Running and NotReady** (`/healthz` 200,
-`/readyz` 503), not crash-looping. `kubectl get pods` showing 0/1 Ready with
-no restarts, and the log line `this session was already rejected upstream;
-waiting for a new one`, mean "waiting for the next login", nothing more.
+While it waits the pod is **Running and Ready** (`/healthz` 200, `/readyz`
+200), neither crash-looping nor holding up a rollout: waiting is what it
+should be doing, and readiness gates every Helm upgrade and rollback of the
+release (up to 0.11.0 it answered `/readyz` 503 here, which made a values
+change applied during a wait time out, and Flux's rollback with it --
+glovebox-wekc.17). What it is doing is reported, not hidden in readiness:
+
+- `/readyz` body: `ok (degraded: session=waiting_for_new_session)`;
+- `/statusz`: JSON with the `session` condition, its state and `since`
+  (when the session was refused -- the time of the `rejected-session`
+  marker, so it survives restarts);
+- `powerschool_session_state{state="unknown|usable|waiting_for_new_session"}`
+  (1 for the current state) and
+  `powerschool_session_state_since_timestamp_seconds{state=...}`;
+- the log line `this session was already rejected upstream; waiting for a
+  new one`.
+
+With `metrics.prometheusRule.enabled` the chart alerts
+(`GloveboxPowerSchoolWaitingForSession`) when the wait passes
+`metrics.prometheusRule.sessionWaitingHours` (60 by default: logins and
+polls are weekday-only, so the longest routine wait is Friday's 21:26 login
+to Monday's 05:56 one, about 56.5h). When the wait began is kept in
+`session-state` in the state directory, so a restart does not reset it, in
+any login mode.
+
+The same state is reported with `login_on_demand` on, from each poll's
+session check: `usable`, `unknown` (the portal's answer was inconclusive),
+or `waiting_for_new_session` (dead, and no usable replacement yet --
+deferred, latched, backed off). The connector is Ready from start-up in
+every mode: the first poll, which may wait minutes for a login, no longer
+decides readiness.
 
 To learn how long sessions really last (the expiry in the session document
 is a placeholder), the connector reports each rejected session's age: the
