@@ -3,6 +3,7 @@ package record
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,13 @@ func TestFieldsJSONIsSortedAndEmptyIsObject(t *testing.T) {
 	}
 	if got := string(Fields(nil).JSON()); got != `{}` {
 		t.Errorf("empty JSON = %s", got)
+	}
+}
+
+func TestNormalizeFieldsBoundsUndeclaredName(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	_, rej := NormalizeFields(assignmentV1, map[string]json.RawMessage{"title": raw(`"a"`), long: raw(`1`)})
+	if rej == nil || len(rej.Detail) > 200 {
+		t.Errorf("rejection %v", rej)
 	}
 }

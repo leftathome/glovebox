@@ -8,11 +8,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
@@ -86,7 +89,9 @@ func ValidName(s string) bool { return nameRE.MatchString(s) }
 func ValidToken(s string) bool { return tokenRE.MatchString(s) }
 
 // NormalizeValue checks one JSON value against a field type and returns its
-// canonical encoding, or nil for null.
+// canonical encoding, or nil for null. An empty list ([]) is a value and
+// encodes as []; null is no value and is absent from Fields. A string_list
+// holds at most MaxListItems items of MaxStringBytes each (256 KiB in all).
 func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejection) {
 	v := bytes.TrimSpace(raw)
 	if len(v) == 0 || string(v) == "null" {
@@ -98,7 +103,8 @@ func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejecti
 		if err := json.Unmarshal(v, &s); err != nil {
 			return nil, schemaErr("want a JSON string")
 		}
-		if rej := checkString(t, s); rej != nil {
+		s, rej := checkString(t, s)
+		if rej != nil {
 			return nil, rej
 		}
 		return encode(s), nil
@@ -120,6 +126,9 @@ func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejecti
 		f, err := strconv.ParseFloat(n.String(), 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, schemaErr("want a finite number")
+		}
+		if f == 0 {
+			f = 0 // -0 and 0 are one number: one encoding, one hash
 		}
 		return encode(f), nil
 	case Bool:
@@ -146,7 +155,11 @@ func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejecti
 		if err != nil {
 			return nil, schemaErr("want an RFC 3339 timestamp")
 		}
-		return encode(ts.UTC().Format(time.RFC3339Nano)), nil
+		ts = ts.UTC()
+		if y := ts.Year(); y < 0 || y > 9999 {
+			return nil, schemaErr("timestamp is outside years 0000-9999 in UTC")
+		}
+		return encode(ts.Format(time.RFC3339Nano)), nil
 	case StringList:
 		var l []*string
 		if err := json.Unmarshal(v, &l); err != nil {
@@ -160,10 +173,11 @@ func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejecti
 			if s == nil {
 				return nil, schemaErr("null item in a string_list")
 			}
-			if rej := checkString(String, *s); rej != nil {
+			cs, rej := checkString(String, *s)
+			if rej != nil {
 				return nil, rej
 			}
-			out[i] = *s
+			out[i] = cs
 		}
 		return encode(out), nil
 	}
@@ -187,38 +201,77 @@ func jsonNumber(v []byte) (json.Number, *Rejection) {
 	if !ok {
 		return "", schemaErr("want a number")
 	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", schemaErr("trailing data after a number")
+	}
 	return n, nil
 }
 
-func checkString(t FieldType, s string) *Rejection {
+// checkString enforces the size and control-character rules and returns the
+// value to store. In string values (which are not scanned and are shown to
+// agents) C1 controls and bidirectional controls are replaced by U+FFFD, as
+// invalid UTF-8 already is; the snapshot is not refused for them. Text is
+// scanned, so it is kept as received.
+func checkString(t FieldType, s string) (string, *Rejection) {
 	limit := MaxStringBytes
 	if t == Text {
 		limit = MaxTextBytes
 	}
-	if len(s) > limit {
-		return tooLarge("a %s value of %d bytes exceeds %d", t, len(s), limit)
-	}
+	clean := false
 	for _, r := range s {
 		if r == 0 {
-			return schemaErr("NUL character in a value")
+			return "", schemaErr("NUL character in a value")
 		}
 		if t != Text && (r < 0x20 || r == 0x7f) {
-			return schemaErr("control character in a %s value: free text belongs in text fields", t)
+			return "", schemaErr("control character in a %s value: free text belongs in text fields", t)
+		}
+		if t != Text && suspicious(r) {
+			clean = true
 		}
 	}
-	return nil
+	if clean {
+		s = strings.Map(func(r rune) rune {
+			if suspicious(r) {
+				return utf8.RuneError
+			}
+			return r
+		}, s)
+	}
+	if len(s) > limit {
+		return "", tooLarge("a %s value of %d bytes exceeds %d", t, len(s), limit)
+	}
+	return s, nil
+}
+
+// suspicious reports C1 controls and bidirectional formatting controls.
+func suspicious(r rune) bool {
+	return (r >= 0x80 && r <= 0x9f) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // encode is the one JSON encoding of every stored value: no HTML escaping,
-// no trailing newline.
+// no trailing newline. Negative zero encodes as 0 and a time.Time as its
+// UTC RFC 3339 form. It panics when v cannot be encoded (NaN, Inf, an
+// unsupported type): that is a programming error, never an input error.
 func encode(v any) json.RawMessage {
+	switch x := v.(type) {
+	case float64:
+		if x == 0 {
+			v = float64(0)
+		}
+	case time.Time:
+		v = x.UTC().Format(time.RFC3339Nano)
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v)
+	if err := enc.Encode(v); err != nil {
+		panic(fmt.Sprintf("record: cannot encode %T: %v", v, err))
+	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
-// Encode returns the canonical encoding of a Go string, bool or number;
-// used by rules and tests to build values.
+// Encode returns the canonical encoding of a Go string, bool, integer,
+// float64, []string or time.Time, for values built by trusted code (rules,
+// tests). It panics on a value that has no JSON encoding. It does not
+// validate or sanitise: untrusted input must go through NormalizeValue.
 func Encode(v any) json.RawMessage { return encode(v) }

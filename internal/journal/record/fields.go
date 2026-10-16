@@ -67,6 +67,9 @@ func NormalizeFields(t Type, in map[string]json.RawMessage) (Fields, *Rejection)
 	for _, name := range sortedNames(in) {
 		def, ok := t.Fields[name]
 		if !ok {
+			if !ValidName(name) {
+				return nil, schemaErr("invalid field name")
+			}
 			return nil, schemaErr("field %q is not declared by %s v%d", name, t.Name, t.SchemaVersion)
 		}
 		v, rej := NormalizeValue(def.Type, in[name])
@@ -87,7 +90,8 @@ func NormalizeFields(t Type, in map[string]json.RawMessage) (Fields, *Rejection)
 
 // Reload decodes fields stored as jsonb and returns every declared value to
 // its canonical encoding (PostgreSQL reformats numbers and strings).
-// Undeclared names are kept as stored.
+// Undeclared names are kept as stored and so enter the content hash; the
+// type-sync migration relies on this, having applied Renames first.
 func Reload(t Type, stored []byte) (Fields, error) {
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(stored, &in); err != nil {

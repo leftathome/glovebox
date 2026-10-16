@@ -2,6 +2,7 @@ package record
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,15 @@ func TestNormalizeValueCanonicalForms(t *testing.T) {
 		{Timestamp, `"2026-10-16T06:00:41-07:00"`, `"2026-10-16T13:00:41Z"`},
 		{Timestamp, `"2026-10-16T13:00:41.500Z"`, `"2026-10-16T13:00:41.5Z"`},
 		{StringList, `["a","b"]`, `["a","b"]`},
+		{Number, `-0`, `0`},
+		{Number, `-0.0`, `0`},
+		{Int, `-0`, `0`},
+		{StringList, `[]`, `[]`},
+		{Timestamp, `"0000-01-01T00:00:00Z"`, `"0000-01-01T00:00:00Z"`},
+		{Timestamp, `"9999-12-31T23:59:59Z"`, `"9999-12-31T23:59:59Z"`},
+		{String, "\"a\\u0085b\\u202ec\\u2067d\"", "\"a\ufffdb\ufffdc\ufffdd\""},
+		{StringList, "[\"a\\u009f\"]", "[\"a\ufffd\"]"},
+		{Text, "\"a\\u202eb\"", "\"a\u202eb\""},
 		{String, `null`, ``},
 		{Int, ` null `, ``},
 	} {
@@ -59,6 +69,10 @@ func TestNormalizeValueRefusals(t *testing.T) {
 		{Timestamp, `"2026-10-16 13:00"`, 422},
 		{StringList, `["a", null]`, 422},
 		{StringList, `"a"`, 422},
+		{Timestamp, `"0000-01-01T00:00:00+01:00"`, 422},
+		{Timestamp, `"9999-12-31T23:30:00-01:00"`, 422},
+		{Number, `1 2`, 422},
+		{Int, `1 2`, 422},
 		{FieldType("blob"), `"a"`, 422},
 	} {
 		_, rej := NormalizeValue(c.t, json.RawMessage(c.in))
@@ -79,4 +93,39 @@ func TestNamesAndTokens(t *testing.T) {
 			t.Errorf("ValidToken(%q) != %v", s, ok)
 		}
 	}
+}
+
+func TestEncodePanicsOnUnencodable(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("Encode(NaN) did not panic")
+		}
+	}()
+	Encode(math.NaN())
+}
+
+func TestEncodeNegativeZero(t *testing.T) {
+	if got := string(Encode(math.Copysign(0, -1))); got != "0" {
+		t.Errorf("Encode(-0) = %s", got)
+	}
+}
+
+func FuzzNormalizeIdempotent(f *testing.F) {
+	types := []FieldType{String, Text, Int, Number, Bool, Date, Timestamp, StringList}
+	for _, s := range []string{`"x"`, `10`, `-0`, `8.50`, `1e21`, `true`, `"2026-10-20"`,
+		`"2026-10-16T06:00:41-07:00"`, `["a","b"]`, `[]`, `null`, `"\u0085\u202e"`, `"0000-01-01T00:00:00+01:00"`} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		for _, ft := range types {
+			once, rej := NormalizeValue(ft, json.RawMessage(in))
+			if rej != nil || once == nil {
+				continue
+			}
+			twice, rej := NormalizeValue(ft, once)
+			if rej != nil || string(twice) != string(once) {
+				t.Fatalf("%s %q: once %s, twice %s, %v", ft, in, once, twice, rej)
+			}
+		}
+	})
 }
