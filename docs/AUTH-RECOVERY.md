@@ -18,10 +18,17 @@ cookies expire approximately every **14 days**. The library does not
 auto-refresh.
 
 When the session expires, the connector pod surfaces a `PermanentError`
-with a recovery-instruction message and exits non-zero. Kubernetes then
-reports `CrashLoopBackOff`, which should fire whatever external alert
-you have wired to that condition (Prometheus alert on
-`kube_pod_status_phase`, Alertmanager, etc.).
+with a recovery-instruction message and exits non-zero. The restarted
+process sees the session it was refused and waits, contacting nothing,
+until the credentials file holds a different one. While it waits the pod
+is Running and Ready (readiness gates Helm upgrades and rollbacks of the
+whole release, and waiting is not a fault), its trigger port answers 503,
+and the wait is reported as `schoology_session_state{state="waiting_for_new_session"}`
+and on `/statusz`. With `metrics.prometheusRule.enabled` the chart alerts
+(`GloveboxSchoologyWaitingForSession`) once the wait passes
+`metrics.prometheusRule.schoologySessionWaitingHours` (14 by default).
+Up to 0.11.0 the waiting pod answered no probes and was restarted into
+`CrashLoopBackOff`; an alert on that condition no longer fires for it.
 
 If you see one of the following in `kubectl logs`, follow this procedure:
 

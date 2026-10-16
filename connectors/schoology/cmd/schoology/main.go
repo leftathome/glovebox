@@ -37,9 +37,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
@@ -53,6 +55,14 @@ import (
 // (connector.Options.HealthPort defaults to 8080) and therefore where the
 // stand-in must listen while the binary waits for a session.
 const healthAddr = ":8080"
+
+// listenerAddr is the trigger listener's port (HealthPort+1). While the
+// binary waits for a session the stand-in answers it 503.
+const listenerAddr = ":8081"
+
+// sessionStateFile, under GLOVEBOX_STATE_DIR, keeps the reported session
+// state and when it began (connector.SessionState.PersistTo).
+const sessionStateFile = "session-state"
 
 // schoologyLibVersion is the version string embedded in parse-failure
 // receipts so operators can correlate breakage to a specific upstream
@@ -120,6 +130,9 @@ func main() {
 		slog.Error("schoology: register session state metrics", "error", err)
 		os.Exit(1)
 	}
+	if dir := os.Getenv("GLOVEBOX_STATE_DIR"); dir != "" {
+		sessionState.PersistTo(filepath.Join(dir, sessionStateFile))
+	}
 
 	// If Schoology already refused this exact session, do not present it
 	// again: wait here, making no upstream requests, until the credentials
@@ -130,34 +143,14 @@ func main() {
 	// gates every Helm upgrade and rollback of the release. The operator
 	// signal is the ERROR line, schoology_session_state and /statusz.
 	rejected := schoology.NewRejectedSession(os.Getenv("GLOVEBOX_STATE_DIR"))
-	var waitHealth *connector.WaitHealth
-	waited := false
-	for rejected.IsRejected(schoology.SessionFingerprint(creds.SessID)) {
-		slog.Error("schoology: session was already rejected upstream; waiting for a new one, not polling",
-			"path", credsPath,
-			"recovery_doc", "docs/AUTH-RECOVERY.md")
-		if !waited {
-			waited = true
-			since, _ := rejected.MarkedAt()
-			sessionState.Set(connector.SessionStateWaiting, since,
-				"Schoology refused this session; waiting for a different one, not contacting Schoology")
-			h, err := connector.StartWaitHealth(healthAddr, "schoology", status)
-			if err != nil {
-				slog.Error("schoology: could not serve health endpoints while waiting", "error", err)
-			}
-			waitHealth = h
-		}
-		time.Sleep(time.Minute)
-		if fresh, err := schoologyauth.LoadCredentials(credsPath); err == nil {
-			creds = fresh
-		}
-	}
-	if waited {
-		sessionState.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
-	}
-	// Release the port before connector.Run binds it.
-	if err := waitHealth.Stop(); err != nil {
-		slog.Error("schoology: could not release the health port", "error", err)
+	creds, err = schoology.WaitForFreshCredentials(context.Background(), rejected, creds,
+		func() (*schoologyauth.Credentials, error) { return schoologyauth.LoadCredentials(credsPath) },
+		schoology.SessionWaitOptions{
+			HealthAddr: healthAddr, ListenerAddr: listenerAddr, Interval: time.Minute,
+			Status: status, State: sessionState,
+		})
+	if err != nil {
+		slog.Error("schoology: wait for a new session", "error", err)
 		os.Exit(1)
 	}
 	sessionFP := schoology.SessionFingerprint(creds.SessID)
@@ -206,11 +199,16 @@ func main() {
 		}
 	}
 
-	connector.Run(connector.Options{
+	connector.Run(runOptions(c, configFile, status, os.Getenv))
+}
+
+// runOptions is what the binary hands connector.Run.
+func runOptions(c *schoology.SchoologyConnector, configFile string, status *connector.Status, getenv func(string) string) connector.Options {
+	return connector.Options{
 		Name:       "schoology",
 		Tier:       connector.TierPersonal,
-		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
-		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
+		StagingDir: getenv("GLOVEBOX_STAGING_DIR"),
+		StateDir:   getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
 		// Readiness stays ReadyAfterFirstPoll here: the catch-up poll is
@@ -228,5 +226,5 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			return c.Wire(cc)
 		},
-	})
+	}
 }

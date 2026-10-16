@@ -413,15 +413,26 @@ metrics:
     skippedPolls: 2
     # Hours the PowerSchool connector may wait for a new session (after the
     # portal refused its own) before GloveboxPowerSchoolWaitingForSession
-    # fires. The wait is normal and the pod stays Ready through it. Logins
-    # happen only on school days (the scheduled morning/evening runs and the
-    # on-request windows), so the longest routine wait is a weekend: a
-    # session refused on Friday is replaced by the Sunday-evening login,
-    # about 64h after Friday's morning login. 72h clears that with margin
-    # and still fires by Monday's first poll if Sunday's login did not
-    # replace it; on a weekday it means two or more scheduled logins in a
-    # row did not. (A holiday that suspends logins can still trip it.)
-    sessionWaitingHours: 72
+    # fires. The wait is normal and the pod stays Ready through it. In
+    # production logins run at 05:56, 14:56 and 21:26 Pacific on weekdays
+    # only, and polls are weekday-only too, so the longest routine wait is
+    # Friday 21:26 to Monday 05:56, about 56.5h: a session refused at
+    # Friday's last poll is replaced by Monday's first login and seen
+    # usable at Monday's 06:00 poll (worst case about 57h). 60h clears that
+    # and fires Monday morning if that login did not replace it; on a
+    # weekday it means several logins in a row did not. A school holiday
+    # with logins suspended can trip it. Adjust if your login schedule
+    # differs (the chart's own default schedules leave longer gaps).
+    sessionWaitingHours: 60
+    # The same for the Schoology connector (GloveboxSchoologyWaitingForSession,
+    # with schoologyConnector.enabled). In production its session refresher
+    # runs every day at 01:30, 13:30 and 22:30 (`30 1,13,22 * * *`), so the
+    # longest gap between refreshes is 12h (01:30 to 13:30); a refused
+    # session is normally replaced by the next refresh plus the Secret sync.
+    # 14h fires when the next refresh did not replace it. With the chart's
+    # default refresher schedule (every 12 days) a refused session waits for
+    # a person, and the alert says so after 14h.
+    schoologySessionWaitingHours: 14
     # Extra label matchers added to every expression on the workloads' own
     # series, e.g. 'namespace="glovebox"', when the scrape configuration
     # adds such a label and several releases share a Prometheus.

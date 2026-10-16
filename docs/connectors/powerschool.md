@@ -98,8 +98,11 @@ glovebox-wekc.17). What it is doing is reported, not hidden in readiness:
 
 With `metrics.prometheusRule.enabled` the chart alerts
 (`GloveboxPowerSchoolWaitingForSession`) when the wait passes
-`metrics.prometheusRule.sessionWaitingHours` (72 by default: longer than
-the weekend, the longest routine gap between logins).
+`metrics.prometheusRule.sessionWaitingHours` (60 by default: logins and
+polls are weekday-only, so the longest routine wait is Friday's 21:26 login
+to Monday's 05:56 one, about 56.5h). When the wait began is kept in
+`session-state` in the state directory, so a restart does not reset it, in
+any login mode.
 
 The same state is reported with `login_on_demand` on, from each poll's
 session check: `usable`, `unknown` (the portal's answer was inconclusive),

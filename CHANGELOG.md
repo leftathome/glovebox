@@ -38,10 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Alert `GloveboxPowerSchoolWaitingForSession` (with
   `metrics.prometheusRule.enabled` and `connectors.powerschool.enabled`, any
   login mode): waiting for a new session for more than
-  `metrics.prometheusRule.sessionWaitingHours` (default 72: the longest
-  routine wait is a weekend, about 64h from Friday's morning login to
-  Sunday's evening one). Existing rejected-session metrics and alerts are
-  unchanged.
+  `metrics.prometheusRule.sessionWaitingHours` (default 60: logins and polls
+  are weekday-only, so the longest routine wait is Friday's 21:26 login to
+  Monday's 05:56 one, about 56.5h). The wait's start is kept in the state
+  directory (`session-state`), so a restart -- a values change, an OOM kill,
+  an eviction -- does not reset it in any login mode. Existing
+  rejected-session metrics and alerts are unchanged.
+- Alert `GloveboxSchoologyWaitingForSession` (with `schoologyConnector.enabled`),
+  `metrics.prometheusRule.schoologySessionWaitingHours` (default 14: the
+  production refresher runs at 01:30, 13:30 and 22:30 daily, a longest gap
+  of 12h). It replaces the Schoology wait's old operator signal, an
+  unhealthy pod. While waiting, Schoology's trigger port answers 503
+  "waiting for a new Schoology session" instead of refusing connections.
 - Framework: `connector.Options.Readiness` (`ReadyAfterFirstPoll`, the
   default and unchanged, or `ReadyWhenServing`), `Options.Status` /
   `ConnectorContext.Status` ("degraded but ready" conditions),

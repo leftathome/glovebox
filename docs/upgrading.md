@@ -21,11 +21,27 @@ at 02:00 with uploads failing.
   `spec.upgrade.disableWait` / `spec.rollback.disableWait`), remove those
   after this release's images are running, so the deploy health check
   comes back. Re-enable it only once the connector pod runs the new image:
-  an old image still waiting would still be NotReady.
+  an old image still waiting would still be NotReady. Pair it with a sane
+  `spec.timeout` -- long enough for your slowest pod to pull and start,
+  short enough that a real failure still fails the upgrade promptly.
+- **What Helm's wait no longer catches for PowerSchool.** The connector is
+  now Ready as soon as it has started (`ReadyWhenServing`), not after its
+  first poll. A connector whose catch-up poll fails -- a wrong ingest URL, a
+  parser broken by a portal change -- stays Ready, so `helm upgrade --wait`
+  passes. Those failures show up in the log, `connector_errors_total`,
+  `powerschool_polls_total` and the existing poll alerts, not in the
+  rollout. (Most of its polls are skipped by design anyway: three windows
+  on weekdays.) Invalid config still exits at start and fails the rollout.
+  Schoology keeps its old readiness (ready after the first successful
+  poll).
 - No chart value has to change. `metrics.prometheusRule.sessionWaitingHours`
-  (default 72) is new; with `metrics.prometheusRule.enabled` and the
-  PowerSchool connector enabled, the PrometheusRule gains one group,
-  `glovebox-powerschool-connector-session`, in every login mode.
+  (default 60) and `metrics.prometheusRule.schoologySessionWaitingHours`
+  (default 14) are new; with `metrics.prometheusRule.enabled` the
+  PrometheusRule gains a group `glovebox-powerschool-connector-session`
+  (PowerSchool connector enabled, any login mode) and a group
+  `glovebox-schoology-connector-session` (Schoology connector enabled).
+- Both connectors keep a small `session-state` file in their state
+  directory: the reported session state and when it began.
 
 ---
 

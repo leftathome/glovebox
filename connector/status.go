@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -184,25 +185,53 @@ func statuszHandler(name string, ready func() bool, s *Status) http.HandlerFunc 
 //	               design, making no upstream requests. The body names the
 //	               degraded conditions.
 //	/statusz  JSON the conditions (what it is waiting for, since when)
-//	/metrics       the process's Prometheus metrics (default registry)
+//	/metrics       the process's Prometheus metrics
 //
 // Waiting is not NotReady: readiness gates Helm upgrades and rollbacks of
 // the whole release, and a wait that lasts until the next scheduled login
 // must not block them (glovebox-wekc.17).
 //
+// A connector that is also a Listener (an inbound trigger port, served by
+// the framework on HealthPort+1) is in the Service's endpoints while it
+// waits, because it is Ready. WaitHealthOptions.UnavailableAddr binds that
+// port too and answers every request there 503 with a Retry-After, so a
+// caller is told "waiting for a session" instead of having its connection
+// refused.
+//
 // Stop must be called before connector.Run: the framework binds the same
-// port. Stop closes the listener and returns only once the port is free.
+// ports. Stop closes the listeners and returns only once the ports are free.
 type WaitHealth struct {
-	srv *http.Server
-	ln  net.Listener
+	srvs []*http.Server
+	lns  []net.Listener
 }
 
-// StartWaitHealth listens on addr (":8080", or "127.0.0.1:0" in tests) and
-// serves the endpoints above for connector name. status may be nil.
+// WaitHealthOptions configures StartWaitHealthWith.
+type WaitHealthOptions struct {
+	// Addr is the health port (":8080", or "127.0.0.1:0" in tests).
+	Addr string
+	// Name is the connector name reported on /statusz.
+	Name string
+	// Status, which may be nil, is what /statusz and the /readyz body report.
+	Status *Status
+	// Gatherer serves /metrics; nil means prometheus.DefaultGatherer.
+	Gatherer prometheus.Gatherer
+	// UnavailableAddr, when set, is also bound (the Listener port) and every
+	// request on it is answered 503 with UnavailableMessage.
+	UnavailableAddr    string
+	UnavailableMessage string
+}
+
+// StartWaitHealth listens on addr and serves the endpoints above for
+// connector name, with /metrics from the default registry. status may be nil.
 func StartWaitHealth(addr, name string, status *Status) (*WaitHealth, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("%s: wait health listen: %w", name, err)
+	return StartWaitHealthWith(WaitHealthOptions{Addr: addr, Name: name, Status: status})
+}
+
+// StartWaitHealthWith is StartWaitHealth with every option.
+func StartWaitHealthWith(o WaitHealthOptions) (*WaitHealth, error) {
+	gatherer := o.Gatherer
+	if gatherer == nil {
+		gatherer = prometheus.DefaultGatherer
 	}
 	ready := func() bool { return true }
 	mux := http.NewServeMux()
@@ -210,41 +239,79 @@ func StartWaitHealth(addr, name string, status *Status) (*WaitHealth, error) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok: waiting for a new session\n"))
 	})
-	mux.HandleFunc("/readyz", readyzHandler(ready, status))
-	mux.HandleFunc("/statusz", statuszHandler(name, ready, status))
-	mux.Handle("/metrics", promhttp.Handler())
-	h := &WaitHealth{
-		srv: &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second},
-		ln:  ln,
+	mux.HandleFunc("/readyz", readyzHandler(ready, o.Status))
+	mux.HandleFunc("/statusz", statuszHandler(o.Name, ready, o.Status))
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
+
+	h := &WaitHealth{}
+	if err := h.serve(o.Addr, mux); err != nil {
+		return nil, fmt.Errorf("%s: wait health listen: %w", o.Name, err)
 	}
-	go func() { _ = h.srv.Serve(ln) }()
+	if o.UnavailableAddr != "" {
+		msg := o.UnavailableMessage
+		if msg == "" {
+			msg = "unavailable: waiting for a new session"
+		}
+		unavailable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(msg + "\n"))
+		})
+		if err := h.serve(o.UnavailableAddr, unavailable); err != nil {
+			_ = h.Stop()
+			return nil, fmt.Errorf("%s: wait listener-port listen: %w", o.Name, err)
+		}
+	}
 	return h, nil
 }
 
-// Addr returns the address the server is listening on.
-func (h *WaitHealth) Addr() string {
-	if h == nil || h.ln == nil {
-		return ""
+func (h *WaitHealth) serve(addr string, handler http.Handler) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
 	}
-	return h.ln.Addr().String()
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	h.srvs = append(h.srvs, srv)
+	h.lns = append(h.lns, ln)
+	go func() { _ = srv.Serve(ln) }()
+	return nil
 }
 
-// Stop shuts the server down and releases the port. Safe on a nil receiver
-// and safe to call twice.
+// Addr returns the address the health server is listening on.
+func (h *WaitHealth) Addr() string {
+	if h == nil || len(h.lns) == 0 {
+		return ""
+	}
+	return h.lns[0].Addr().String()
+}
+
+// UnavailableAddr returns the address of the listener-port stand-in, if any.
+func (h *WaitHealth) UnavailableAddr() string {
+	if h == nil || len(h.lns) < 2 {
+		return ""
+	}
+	return h.lns[1].Addr().String()
+}
+
+// Stop shuts the servers down and releases the ports. Safe on a nil
+// receiver and safe to call twice.
 func (h *WaitHealth) Stop() error {
-	if h == nil || h.srv == nil {
+	if h == nil || h.srvs == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := h.srv.Shutdown(ctx)
-	if err != nil {
-		// A probe connection that would not drain: close it under it.
-		err = h.srv.Close()
+	var firstErr error
+	for _, srv := range h.srvs {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := srv.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			// A connection that would not drain: close it under it.
+			err = srv.Close()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && firstErr == nil {
+			firstErr = err
+		}
 	}
-	h.srv = nil
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
+	h.srvs = nil
+	return firstErr
 }

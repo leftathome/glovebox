@@ -3,6 +3,7 @@ package connector
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,9 +49,10 @@ type SessionState struct {
 	since  *prometheus.GaugeVec
 	now    func() time.Time
 
-	mu  sync.Mutex
-	cur string
-	at  time.Time
+	mu   sync.Mutex
+	cur  string
+	at   time.Time
+	path string
 }
 
 // NewSessionState registers the gauges for prefix (e.g. "powerschool") on
@@ -97,7 +99,13 @@ func (s *SessionState) Set(state string, since time.Time, message string) {
 			since = s.now()
 		}
 	}
+	changed := s.cur != state || !s.at.Equal(since)
 	s.cur, s.at = state, since
+	if changed && s.path != "" {
+		// Best effort: a lost write costs the wait's start time after a
+		// restart, nothing else.
+		_ = os.WriteFile(s.path, []byte(state+" "+since.UTC().Format(time.RFC3339Nano)+"\n"), 0o600)
+	}
 	for _, st := range sessionStates {
 		v := 0.0
 		if st == state {
@@ -113,6 +121,36 @@ func (s *SessionState) Set(state string, since time.Time, message string) {
 		Degraded: state == SessionStateWaiting,
 		Message:  message,
 	})
+}
+
+// PersistTo keeps the state in path (a file in the connector's state
+// directory, which outlives container restarts) and restores from it a
+// waiting state recorded by an earlier process, with the time that wait
+// began. Without it a restart -- a values change, an OOM kill, an eviction
+// -- would report "unknown" and then a wait starting at the next poll, and
+// an alert on how long the connector has waited would never fire. Other
+// states are not restored: they are re-learned at the next check. An empty
+// path disables persistence.
+func (s *SessionState) PersistTo(path string) {
+	if s == nil || path == "" {
+		return
+	}
+	s.mu.Lock()
+	s.path = path
+	s.mu.Unlock()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) != 2 || fields[0] != SessionStateWaiting {
+		return
+	}
+	since, err := time.Parse(time.RFC3339Nano, fields[1])
+	if err != nil || since.After(s.now()) {
+		return
+	}
+	s.Set(SessionStateWaiting, since, "restored: waiting for a new session since before this process started")
 }
 
 // Current returns the current state and when it was entered.

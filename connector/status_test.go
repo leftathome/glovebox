@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,11 +140,13 @@ func TestNewFramework_DefaultReadinessUnchanged(t *testing.T) {
 }
 
 // TestNewFramework_StatusCarriesOver: conditions recorded before
-// connector.Run (while a binary waited) are the ones the framework serves.
+// connector.Run (while a binary waited) are the ones the framework serves,
+// and later changes through the same Status show up there too.
 func TestNewFramework_StatusCarriesOver(t *testing.T) {
 	port := pickPort(t)
 	st := NewStatus()
-	st.Set("session", Condition{State: SessionStateUnknown})
+	began := time.Date(2026, 10, 12, 9, 12, 0, 0, time.UTC)
+	st.Set("session", Condition{State: SessionStateWaiting, Since: began, Degraded: true})
 	opts := frameworkTestOpts(t, "fw-status-carry", port, &mockPollConnector{})
 	opts.Status = st
 	fw, err := NewFramework(opts)
@@ -154,8 +157,118 @@ func TestNewFramework_StatusCarriesOver(t *testing.T) {
 	// Let the health server bind before Shutdown, so no listener outlives
 	// the test and collides with another test's port.
 	waitForPort(t, port, 2*time.Second)
-	if fw.Status != st {
-		t.Fatal("Framework.Status is not the Status passed in Options")
+	statusz := func() statusDoc {
+		t.Helper()
+		_, body := getBody(t, fmt.Sprintf("http://127.0.0.1:%d/statusz", port))
+		var doc statusDoc
+		if err := json.Unmarshal([]byte(body), &doc); err != nil {
+			t.Fatalf("/statusz not JSON: %v", err)
+		}
+		return doc
+	}
+	doc := statusz()
+	if c := doc.Conditions["session"]; c.State != SessionStateWaiting || !c.Since.Equal(began) || !doc.Degraded {
+		t.Errorf("/statusz = %+v, want the pre-run waiting condition since %s", doc, began)
+	}
+	st.Set("session", Condition{State: SessionStateUsable})
+	if doc := statusz(); doc.Conditions["session"].State != SessionStateUsable || doc.Degraded {
+		t.Errorf("/statusz after a change = %+v, want usable, not degraded", doc)
+	}
+}
+
+// TestSessionState_PersistsTheWaitAcrossRestarts: a waiting state, and when
+// it began, survive a restart (a new SessionState on the same file); other
+// states are not restored.
+func TestSessionState_PersistsTheWaitAcrossRestarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-state")
+	ss, _ := NewSessionState(prometheus.NewRegistry(), "p1", nil)
+	ss.PersistTo(path)
+	began := time.Now().Add(-30 * time.Hour).UTC().Truncate(time.Second)
+	ss.Set(SessionStateWaiting, began, "waiting")
+
+	st := NewStatus()
+	reg := prometheus.NewRegistry()
+	again, _ := NewSessionState(reg, "p1", st)
+	again.PersistTo(path)
+	if cur, at := again.Current(); cur != SessionStateWaiting || !at.Equal(began) {
+		t.Fatalf("after restart: %q since %s, want waiting since %s", cur, at, began)
+	}
+	if c, _ := st.Get(SessionStateCondition); !c.Degraded || !c.Since.Equal(began) {
+		t.Errorf("restored condition = %+v", c)
+	}
+	if v := gaugeValue(t, reg, "p1_session_state_since_timestamp_seconds", SessionStateWaiting); v != float64(began.Unix()) {
+		t.Errorf("restored since gauge = %v", v)
+	}
+	// Still waiting at the next check: the start does not move.
+	again.Set(SessionStateWaiting, time.Time{}, "still")
+	if _, at := again.Current(); !at.Equal(began) {
+		t.Errorf("since moved to %s", at)
+	}
+
+	// Usable is written but not restored.
+	again.Set(SessionStateUsable, time.Time{}, "ok")
+	third, _ := NewSessionState(prometheus.NewRegistry(), "p1", nil)
+	third.PersistTo(path)
+	if cur, _ := third.Current(); cur != SessionStateUnknown {
+		t.Errorf("restored %q, want unknown (only a wait is restored)", cur)
+	}
+
+	// A garbled or future file restores nothing.
+	for _, content := range []string{"garbage", SessionStateWaiting + " not-a-time", SessionStateWaiting + " " + time.Now().Add(time.Hour).Format(time.RFC3339Nano)} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ss, _ := NewSessionState(prometheus.NewRegistry(), "p1", nil)
+		ss.PersistTo(path)
+		if cur, _ := ss.Current(); cur != SessionStateUnknown {
+			t.Errorf("file %q restored %q", content, cur)
+		}
+	}
+}
+
+// TestWaitHealth_ListenerPortAnswers503: a Listener connector waiting for a
+// session is Ready, so its trigger port is in the Service; the stand-in
+// answers there 503 with Retry-After instead of refusing the connection,
+// and frees the port on Stop.
+func TestWaitHealth_ListenerPortAnswers503(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	h, err := StartWaitHealthWith(WaitHealthOptions{
+		Addr: "127.0.0.1:0", Name: "lst", Gatherer: reg,
+		UnavailableAddr: "127.0.0.1:0", UnavailableMessage: "waiting for a session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := getBody(t, "http://"+h.Addr()+"/readyz"); code != http.StatusOK {
+		t.Errorf("/readyz = %d, want 200", code)
+	}
+	resp, err := http.Post("http://"+h.UnavailableAddr()+"/v1/poll", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("POST listener port: %v", err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" || !strings.Contains(string(b), "waiting for a session") {
+		t.Errorf("listener port answered %d %q (Retry-After %q)", resp.StatusCode, b, resp.Header.Get("Retry-After"))
+	}
+	addrs := []string{h.Addr(), h.UnavailableAddr()}
+	if err := h.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			t.Errorf("%s still bound after Stop: %v", a, err)
+			continue
+		}
+		ln.Close()
+	}
+	// A listener port that is taken fails the start and leaves nothing bound.
+	busy, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer busy.Close()
+	if h, err := StartWaitHealthWith(WaitHealthOptions{Addr: "127.0.0.1:0", UnavailableAddr: busy.Addr().String()}); err == nil {
+		h.Stop()
+		t.Error("start succeeded with the listener port in use")
 	}
 }
 

@@ -397,9 +397,9 @@ check "an extra selector reaches the workloads' series" \
   "'login_broker_latched{site=\"powerschool\",namespace=\"glovebox\"}' in $ALERTS[\"GloveboxLoginBrokerLatched\"][\"expr\"]" \
   -f "$TMP/broker.yaml" --set metrics.prometheusRule.enabled=true --set-string 'metrics.prometheusRule.extraSelector=namespace="glovebox"'
 
-check "a connector without on-demand login still gets the session-wait alert (72h by default), and only that" \
+check "a connector without on-demand login still gets the session-wait alert (60h by default), and only that" \
   "sorted($ALERTS) == [\"GloveboxPowerSchoolWaitingForSession\"]
-   and $ALERTS[\"GloveboxPowerSchoolWaitingForSession\"][\"expr\"] == 'time() - max(powerschool_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\"}) > 259200'
+   and $ALERTS[\"GloveboxPowerSchoolWaitingForSession\"][\"expr\"] == 'time() - max(powerschool_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\"}) > 216000'
    and 'for' not in $ALERTS[\"GloveboxPowerSchoolWaitingForSession\"]" \
   --set connectors.powerschool.enabled=true --set metrics.prometheusRule.enabled=true
 
@@ -408,6 +408,17 @@ check "the session-wait threshold and the extra selector are honoured" \
    and '5h' in $ALERTS[\"GloveboxPowerSchoolWaitingForSession\"][\"annotations\"][\"summary\"]" \
   --set connectors.powerschool.enabled=true --set metrics.prometheusRule.enabled=true \
   --set metrics.prometheusRule.sessionWaitingHours=5 --set-string 'metrics.prometheusRule.extraSelector=namespace="glovebox"'
+
+check "the Schoology connector gets its own session-wait alert (14h by default), and only that" \
+  "sorted($ALERTS) == [\"GloveboxSchoologyWaitingForSession\"]
+   and $ALERTS[\"GloveboxSchoologyWaitingForSession\"][\"expr\"] == 'time() - max(schoology_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\"}) > 50400'" \
+  --set schoologyConnector.enabled=true --set metrics.prometheusRule.enabled=true
+
+check "the Schoology threshold and the extra selector are honoured; both connectors render both alerts" \
+  "$ALERTS[\"GloveboxSchoologyWaitingForSession\"][\"expr\"] == 'time() - max(schoology_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\",namespace=\"glovebox\"}) > 7200'
+   and sorted($ALERTS) == [\"GloveboxPowerSchoolWaitingForSession\", \"GloveboxSchoologyWaitingForSession\"]" \
+  --set schoologyConnector.enabled=true --set connectors.powerschool.enabled=true --set metrics.prometheusRule.enabled=true \
+  --set metrics.prometheusRule.schoologySessionWaitingHours=2 --set-string 'metrics.prometheusRule.extraSelector=namespace="glovebox"'
 
 check "enabled with nothing to alert on: no empty object" \
   '[d for d in docs if d["kind"] == "PrometheusRule"] == []' \

@@ -7,7 +7,7 @@ get a session -- an exit would be a restart loop that touches the portal --
 so a pod restart is no longer the alert. These rules are. One PrometheusRule
 object, with a group per enabled broker, one for the connector when it is
 wired to a broker, one for the connector's session wait, and one for the
-scheduled login Jobs.
+scheduled login Jobs; and one for the Schoology connector's session wait.
 
 A connector waiting for a new session is Ready (glovebox-wekc.17): readiness
 gates Helm upgrades and rollbacks of the whole release, and waiting is not a
@@ -78,7 +78,7 @@ several releases, narrow them through metrics.prometheusRule.extraSelector.
             "description" "Three polls in a day were skipped because the portal's answer was neither the home page nor the sign-in page (a server error, a gateway page, a network failure). No login is asked for in that state.")))) }}
 {{- end }}
 {{- if $conn.enabled }}
-{{- $waitHours := int ($pr.sessionWaitingHours | default 72) }}
+{{- $waitHours := int ($pr.sessionWaitingHours | default 60) }}
 {{- $groups = append $groups (dict
       "name" "glovebox-powerschool-connector-session"
       "rules" (list
@@ -88,7 +88,20 @@ several releases, narrow them through metrics.prometheusRule.extraSelector.
           "labels" (dict "severity" ($pr.severity | default "warning"))
           "annotations" (dict
             "summary" (printf "The PowerSchool connector has been waiting for a new session for more than %dh" $waitHours)
-            "description" "The portal refused the connector's session and no session it accepts has arrived since. The connector is up and Ready and sends the portal nothing while it waits; no school data is being read. The longest normal wait is a weekend (no scheduled login from Friday morning to Sunday evening), so this means logins are not replacing the session: check the login workload (its Jobs, its latch) and the session Secret's sync. /statusz on the connector shows when the wait began.")))) }}
+            "description" "The portal refused the connector's session and no session it accepts has arrived since. The connector is up and Ready and sends the portal nothing while it waits; no school data is being read. The longest normal wait is a weekend (no login or poll from Friday's 21:26 login to Monday's 05:56 one, about 56.5h), so this means logins are not replacing the session: check the login workload (its Jobs, its latch) and the session Secret's sync. /statusz on the connector shows when the wait began.")))) }}
+{{- end }}
+{{- if (.Values.schoologyConnector | default dict).enabled }}
+{{- $sWaitHours := int ($pr.schoologySessionWaitingHours | default 14) }}
+{{- $groups = append $groups (dict
+      "name" "glovebox-schoology-connector-session"
+      "rules" (list
+        (dict
+          "alert" "GloveboxSchoologyWaitingForSession"
+          "expr" (printf "time() - max(schoology_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\"%s}) > %d" $extra (mul $sWaitHours 3600))
+          "labels" (dict "severity" ($pr.severity | default "warning"))
+          "annotations" (dict
+            "summary" (printf "The Schoology connector has been waiting for a new session for more than %dh" $sWaitHours)
+            "description" "Schoology refused the connector's session and no different one has arrived since. The connector is up and Ready, answers its trigger port 503 and contacts Schoology not at all while it waits; no Schoology data is being read. The session refresher runs every few hours, so this means it is not replacing the session: check the refresher's Jobs and the credentials Secret's sync (docs/AUTH-RECOVERY.md). /statusz on the connector shows when the wait began.")))) }}
 {{- end }}
 {{- if .Values.powerschoolAuthRefresher.enabled }}
 {{- $groups = append $groups (dict

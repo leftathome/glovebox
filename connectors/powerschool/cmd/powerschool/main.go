@@ -42,8 +42,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
@@ -58,6 +60,10 @@ import (
 // (connector.Options.HealthPort defaults to 8080) and therefore where the
 // stand-in must listen while the binary waits for a session.
 const healthAddr = ":8080"
+
+// sessionStateFile, under GLOVEBOX_STATE_DIR, keeps the reported session
+// state and when it began (connector.SessionState.PersistTo).
+const sessionStateFile = "session-state"
 
 func main() {
 	// Logged with every escalation; read from the binary's build info so it
@@ -112,6 +118,12 @@ func main() {
 	if err != nil {
 		slog.Error("powerschool: register session state metrics", "error", err)
 		os.Exit(1)
+	}
+	// Kept in the state directory so a restart (a values change, an OOM
+	// kill) does not reset how long the connector has been waiting, in any
+	// login mode.
+	if stateDir != "" {
+		sessionState.PersistTo(filepath.Join(stateDir, sessionStateFile))
 	}
 
 	// The session belongs to a real parent account. Every request the
@@ -229,33 +241,9 @@ func main() {
 		// it should be doing) so the pod is neither restarted for waiting
 		// nor holding up a rollout, and release the port before
 		// connector.Run binds it.
-		var waitHealth *powerschool.WaitHealth
-		waited := false
-		_, err := powerschool.WaitForFreshSession(context.Background(), rejected,
+		_, err := waitForSession(context.Background(), rejected,
 			func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
-			time.Minute,
-			func() {
-				// The wait began when the session was refused, which may
-				// be several restarts ago: the marker's time says when.
-				waited = true
-				since, _ := rejected.MarkedAt()
-				sessionState.Set(connector.SessionStateWaiting, since,
-					"the portal refused this session; waiting for a different one, not contacting the portal")
-				h, err := powerschool.StartWaitHealth(healthAddr, status)
-				if err != nil {
-					slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
-					return
-				}
-				waitHealth = h
-			})
-		if waited && err == nil {
-			// A different session is in place; the first poll checks it.
-			sessionState.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
-		}
-		if stopErr := waitHealth.Stop(); stopErr != nil {
-			slog.Error("powerschool: could not release the health port", "error", stopErr)
-			os.Exit(1)
-		}
+			time.Minute, healthAddr, status, sessionState, nil)
 		if err != nil {
 			// Missing, malformed or expired: the login job must produce a
 			// fresh session before the connector can come up.
@@ -290,11 +278,56 @@ func main() {
 
 	c.SessionState = sessionState
 
-	connector.Run(connector.Options{
+	connector.Run(runOptions(c, configFile, status, os.Getenv))
+}
+
+// errReleasePort: the stand-in health server could not give its port back.
+var errReleasePort = errors.New("powerschool: could not release the health port")
+
+// waitForSession waits out a session the portal already refused
+// (powerschool.WaitForFreshSession). While it waits it serves the stand-in
+// health server on addr -- alive AND ready: waiting is what the process
+// should be doing, and readiness gates every rollout of the release -- and
+// reports the session as waiting since the refusal (the rejected-session
+// marker's time, so the wait's start survives restarts). When a different
+// session is in place it reports "unknown" (the first poll checks it) and
+// releases the port for connector.Run. gatherer serves /metrics; nil is the
+// default registry.
+func waitForSession(ctx context.Context, rejected connector.RejectedSession,
+	load func() (*pslib.SessionExport, error), interval time.Duration, addr string,
+	status *connector.Status, state *connector.SessionState, gatherer prometheus.Gatherer) (*pslib.SessionExport, error) {
+	var waitHealth *connector.WaitHealth
+	waited := false
+	session, err := powerschool.WaitForFreshSession(ctx, rejected, load, interval, func() {
+		waited = true
+		since, _ := rejected.MarkedAt()
+		state.Set(connector.SessionStateWaiting, since,
+			"the portal refused this session; waiting for a different one, not contacting the portal")
+		h, err := connector.StartWaitHealthWith(connector.WaitHealthOptions{
+			Addr: addr, Name: "powerschool", Status: status, Gatherer: gatherer})
+		if err != nil {
+			slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
+			return
+		}
+		waitHealth = h
+	})
+	if waited && err == nil {
+		state.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+	}
+	if stopErr := waitHealth.Stop(); stopErr != nil {
+		slog.Error("powerschool: could not release the health port", "error", stopErr)
+		return nil, errReleasePort
+	}
+	return session, err
+}
+
+// runOptions is what the binary hands connector.Run.
+func runOptions(c *powerschool.PowerSchoolConnector, configFile string, status *connector.Status, getenv func(string) string) connector.Options {
+	return connector.Options{
 		Name:       "powerschool",
 		Tier:       connector.TierPersonal,
-		StagingDir: os.Getenv("GLOVEBOX_STAGING_DIR"),
-		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
+		StagingDir: getenv("GLOVEBOX_STAGING_DIR"),
+		StateDir:   getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
 		// Ready once bootstrap succeeds, not after the first poll: the
@@ -312,5 +345,5 @@ func main() {
 		Setup: func(cc connector.ConnectorContext) error {
 			return c.Wire(cc)
 		},
-	})
+	}
 }

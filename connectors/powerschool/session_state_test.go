@@ -2,6 +2,7 @@ package powerschool
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -103,5 +104,110 @@ func TestBrokerLatchReportsWaitingThenUsable(t *testing.T) {
 	}
 	if cond, _ := st.Get(connector.SessionStateCondition); cond.Degraded {
 		t.Error("a usable session is still reported as degraded")
+	}
+}
+
+// restartState is what a restarted process does: a new SessionState on the
+// same state file.
+func restartState(t *testing.T, path string) (*connector.SessionState, *connector.Status) {
+	t.Helper()
+	ss, st := newTestSessionState(t)
+	ss.PersistTo(path)
+	return ss, st
+}
+
+// TestBrokerModeWaitSurvivesRestart: with a login broker the process does
+// not exit while it waits, but a values change, an OOM kill or an eviction
+// restarts it. The restarted process reports the wait from its original
+// start, before any poll, and the next poll does not move it.
+func TestBrokerModeWaitSurvivesRestart(t *testing.T) {
+	r, b, c, cp, _ := newBrokerPollRig(t)
+	path := filepath.Join(t.TempDir(), "session-state")
+	c.SessionState, _ = restartState(t, path)
+	r.file = r.session("old", SessionDead, ReasonSignInPage)
+	b.answer(&brokerapi.Response{Outcome: brokerapi.OutcomeLatched, Code: brokerapi.CodeCredentialsRejected})
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	cur, began := c.SessionState.Current()
+	if cur != connector.SessionStateWaiting {
+		t.Fatalf("state %q, want waiting", cur)
+	}
+
+	// Restart.
+	time.Sleep(10 * time.Millisecond)
+	r.restart()
+	c.Gate = r.gate
+	ss, st := restartState(t, path)
+	c.SessionState = ss
+	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
+		t.Fatalf("restarted process reports %q since %s before any poll, want waiting since %s", cur, at, began)
+	}
+	if cond, _ := st.Get(connector.SessionStateCondition); !cond.Degraded {
+		t.Error("restored wait is not degraded")
+	}
+	r.nextWindow(9 * time.Hour)
+	r.file = testSession("old", r.clock.Add(24*time.Hour))
+	b.answer(&brokerapi.Response{Outcome: brokerapi.OutcomeLatched, Code: brokerapi.CodeCredentialsRejected})
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
+		t.Errorf("after the first poll of the restarted process: %q since %s, want waiting since %s", cur, at, began)
+	}
+}
+
+// TestMailboxModeWaitSurvivesRestart: the same with the request mailbox.
+func TestMailboxModeWaitSurvivesRestart(t *testing.T) {
+	r := newGateRig(t, true)
+	cfg := windowConfig()
+	cfg.LoginOnDemand = r.gate.onDemand
+	cfg.FailureThreshold = 0
+	c, cp, _ := newWiredConnector(t, pollFixture("111111"), cfg)
+	c.client = nil
+	c.Gate = r.gate
+	c.now = func() time.Time { return r.clock }
+	r.cp = cp
+	path := filepath.Join(t.TempDir(), "session-state")
+	c.SessionState, _ = restartState(t, path)
+
+	// Dead; a login is asked for and no session arrives within the wait.
+	r.file = r.session("old", SessionDead, ReasonSignInPage)
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	cur, began := c.SessionState.Current()
+	if cur != connector.SessionStateWaiting {
+		t.Fatalf("state %q, want waiting", cur)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	ss, _ := restartState(t, path)
+	c.SessionState = ss
+	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
+		t.Fatalf("restarted process reports %q since %s, want waiting since %s", cur, at, began)
+	}
+	// The next poll asks again, gets nothing, and the mailbox stops asking:
+	// a permanent error, on which the process exits -- another restart.
+	r.nextWindow(time.Hour)
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil && !connector.IsPermanent(err) {
+		t.Fatal(err)
+	}
+	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
+		t.Errorf("after the next poll: %q since %s, want waiting since %s", cur, at, began)
+	}
+	ss, _ = restartState(t, path)
+	c.SessionState = ss
+	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
+		t.Errorf("after the second restart: %q since %s, want waiting since %s", cur, at, began)
+	}
+	// A session the portal accepts ends it.
+	r.nextWindow(9 * time.Hour)
+	r.file = r.session("new", SessionLive, ReasonSignedIn)
+	if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := ss.Current(); cur != connector.SessionStateUsable {
+		t.Errorf("state %q after a live session, want usable", cur)
 	}
 }

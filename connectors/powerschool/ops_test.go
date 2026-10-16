@@ -121,11 +121,12 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// As main.go wires it: one Status and one SessionState, on the default
-	// registry the stand-in's /metrics serves. (The only test in this
-	// package that registers there.)
+	// As main.go wires it: one Status and one SessionState, on the registry
+	// the stand-in's /metrics serves (a private one here, so the test can
+	// run more than once in a process).
+	reg := prometheus.NewRegistry()
 	status := connector.NewStatus()
-	state, err := connector.NewSessionState(prometheus.DefaultRegisterer, "powerschool", status)
+	state, err := connector.NewSessionState(reg, "powerschool", status)
 	if err != nil {
 		t.Fatalf("NewSessionState: %v", err)
 	}
@@ -146,9 +147,10 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 		s, err := WaitForFreshSession(context.Background(), rejected, load, 2*time.Millisecond, func() {
 			since, _ := rejected.MarkedAt()
 			state.Set(connector.SessionStateWaiting, since, "waiting")
-			h, err := StartWaitHealth("127.0.0.1:0", status)
+			h, err := connector.StartWaitHealthWith(connector.WaitHealthOptions{
+				Addr: "127.0.0.1:0", Name: "powerschool", Status: status, Gatherer: reg})
 			if err != nil {
-				t.Errorf("StartWaitHealth: %v", err)
+				t.Errorf("StartWaitHealthWith: %v", err)
 				return
 			}
 			mu.Lock()
