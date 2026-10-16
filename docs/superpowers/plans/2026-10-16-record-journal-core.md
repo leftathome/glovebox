@@ -7189,12 +7189,14 @@ func (j *Journal) storeSnapshot(ctx context.Context, tx *sql.Tx, n *record.Norma
 // set), with values returned to their canonical form. The rows are locked
 // (FOR UPDATE): a rescan batch (Task 21) also locks the rows it rewrites,
 // so neither can write verdicts computed from what the other replaced.
-// Lock order is safe: a rescan takes only row locks, never the subject or
-// event advisory locks an Apply holds.
+// Lock order is safe: rows are locked in primary-key order, as the rescan
+// batches lock them, and a rescan never takes the subject or event advisory
+// locks an Apply holds.
 func (j *Journal) loadCurrent(ctx context.Context, tx *sql.Tx, t record.Type, subject, key string) (map[string]diff.Current, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT key, scope, to_jsonb(audience), fields, removed, content_hash,
 		last_seen_at, last_confirmed_at, scan FROM record_current
-		WHERE record_type = $1 AND data_subject = $2 AND ($3 = '' OR key = $3) FOR UPDATE`, t.Name, subject, key)
+		WHERE record_type = $1 AND data_subject = $2 AND ($3 = '' OR key = $3)
+		ORDER BY record_type, data_subject, key FOR UPDATE`, t.Name, subject, key)
 	if err != nil {
 		return nil, err
 	}
@@ -8781,7 +8783,7 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 
 ## Task 21: Rescan
 
-4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`). `Apply` reads its rows `FOR UPDATE` too (Task 15's `loadCurrent`), so an Apply and a rescan batch touching the same row run one after the other and neither writes verdicts computed from a value the other replaced; the test below pins it. The rescan takes no advisory lock, so the lock order (Apply: subject lock, event lock, rows; rescan: rows only) cannot deadlock.
+4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`). `Apply` reads its rows `FOR UPDATE` too (Task 15's `loadCurrent`), so an Apply and a rescan batch touching the same row run one after the other and neither writes verdicts computed from a value the other replaced; the test below pins it. Both lock rows in primary-key order (`ORDER BY record_type, data_subject, key ... FOR UPDATE`), and the rescan takes no advisory lock, so the lock order (Apply: subject lock, rows, event lock; rescan: rows only, same order) cannot deadlock.
 
 **Files:**
 - Create: `internal/journal/rescan.go`
