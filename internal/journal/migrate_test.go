@@ -94,11 +94,65 @@ func TestMigrateRefusesANewerSchema(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO schema_migrations (version, name) VALUES (9999, 'from_the_future')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, name, checksum) VALUES (9999, 'from_the_future', '\x00')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := Migrate(ctx, db); err == nil || !strings.Contains(err.Error(), "newer") {
 		t.Fatalf("Migrate against a newer schema: %v", err)
+	}
+}
+
+// An applied migration that was edited or renamed since it ran is refused.
+func TestMigrateDetectsEditedOrRenamedMigration(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct{ name, stmt, want string }{
+		{"edited", `UPDATE schema_migrations SET checksum = '\x01' WHERE version = 1`, "edited"},
+		{"renamed", `UPDATE schema_migrations SET name = 'other' WHERE version = 1`, "renamed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := journaltest.NewDB(t)
+			if err := Migrate(ctx, db); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(tc.stmt); err != nil {
+				t.Fatal(err)
+			}
+			if err := Migrate(ctx, db); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Migrate after the migration was %s: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// The event-shape constraints reject rows no writer should produce.
+func TestRecordEventShapeConstraints(t *testing.T) {
+	db := journaltest.NewDB(t)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	const ins = `INSERT INTO record_event (record_type, data_subject, key, kind, schema_version, scope, prev_scope,
+		audience, observed_at, approximate, actor, importance, fields, changed)
+		VALUES ('t', 'e_child1', 'k', $1, 1, 'source=x', $2, '{subject}', now(), false, 'test', 'low', $3::jsonb, $4::jsonb)`
+	for _, tc := range []struct {
+		name               string
+		kind               string
+		prev, fields, chng any
+		ok                 bool
+	}{
+		{"created with fields", "created", nil, "{}", nil, true},
+		{"created without fields", "created", nil, nil, nil, false},
+		{"restored without fields", "restored", nil, nil, nil, false},
+		{"restored moving scope", "restored", "source=y", "{}", nil, true},
+		{"updated with changed", "updated", "source=y", nil, "{}", true},
+		{"updated without changed", "updated", nil, nil, nil, false},
+		{"removed without changed", "removed", nil, nil, nil, false},
+		{"removed with changed", "removed", nil, nil, "{}", true},
+		{"created moving scope", "created", "source=y", "{}", nil, false},
+	} {
+		_, err := db.Exec(ins, tc.kind, tc.prev, tc.fields, tc.chng)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.name, err, tc.ok)
+		}
 	}
 }
 
@@ -111,8 +165,8 @@ func TestRecordEventIsAppendOnly(t *testing.T) {
 	}
 	var seq int64
 	err := db.QueryRow(`INSERT INTO record_event (record_type, data_subject, key, kind, schema_version, scope, audience,
-		observed_at, approximate, actor, importance) VALUES ('t', 'e_child1', 'k', 'created', 1, 'source=x', '{subject}',
-		now(), false, 'test', 'low') RETURNING seq`).Scan(&seq)
+		observed_at, approximate, actor, importance, fields) VALUES ('t', 'e_child1', 'k', 'created', 1, 'source=x', '{subject}',
+		now(), false, 'test', 'low', '{}') RETURNING seq`).Scan(&seq)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,15 @@ fails when a migration or a column is not described here.
 Migrations are numbered SQL files in `internal/journal/migrations/`, embedded
 in the binary and applied at start under a session advisory lock
 (`hashtextextended('glovebox_journal:migrate', 0)`). A binary refuses a
-database whose schema is newer than its own. Database tests run against the
+database whose schema is newer than its own.
+
+`schema_migrations` records each applied migration's name and the SHA-256
+checksum of its file, and every start verifies them: an applied migration that
+was edited or renamed is refused, so migrations are immutable once released
+and changes go in a new one. Each migration runs inside one transaction
+together with its `schema_migrations` row, so a migration file must not
+contain `BEGIN`/`COMMIT` or statements that cannot run in a transaction such
+as `CREATE INDEX CONCURRENTLY`. Database tests run against the
 CloudNativePG image at the production PostgreSQL version
 (`scripts/journal-test-db.sh`); rerun them after any schema change.
 
@@ -21,6 +29,10 @@ CloudNativePG image at the production PostgreSQL version
   columns of its `record_current` row: `scope`, `audience`, `fields`,
   `removed`. Observation columns are not events. Property tests in
   `internal/journal/property_test.go` assert this.
+- **Event shape.** CHECK constraints: `created` and `restored` events carry
+  `fields`; `updated` and `removed` carry `changed`; `prev_scope` is set only
+  on `updated` and `restored` events (a removed record that returns in another
+  scope is restored there).
 - **Append-only events.** A trigger refuses any `UPDATE` of `record_event`
   that changes anything but `scan`. Rows are deleted only by erase.
 - **Ordered sequence numbers.** Every transaction that inserts events holds
@@ -39,6 +51,7 @@ CloudNativePG image at the production PostgreSQL version
 |---|---|---|
 | `version` | integer | Migration number. |
 | `name` | text | Migration name (file name without number and extension). |
+| `checksum` | bytea | SHA-256 of the migration file as applied. |
 | `applied_at` | timestamptz | When it ran. |
 
 ### `record_type`
@@ -81,8 +94,8 @@ stored status: a resend is answered from the original row.
 | `payload` | jsonb | The request body as received. Kept for every status. |
 | `stats` | jsonb | `{"created","updated","removed","restored","unchanged","stale"}` counts. For `held`, what applying would have done. |
 
-Indexes: `(record_type, scope, observed_at)`, `(data_subject)`, partial
-`(record_type, scope) WHERE status = 'held'`.
+Indexes: partial `(record_type, scope, observed_at) WHERE status = 'applied'`,
+`(data_subject)`, partial `(record_type, scope) WHERE status = 'held'`.
 
 ### `record_current`
 
@@ -160,9 +173,10 @@ Index: `(data_subject, erased_at)`.
 Choices this schema makes where the spec leaves room (also in the plan,
 `docs/superpowers/plans/2026-10-16-record-journal-core.md`):
 
-- `snapshot` is indexed by `(record_type, scope, observed_at)`, not
-  `(scope, observed_at)`: lateness, removal and `in_latest_snapshot` are per
-  record type and scope.
+- `snapshot` is indexed by `(record_type, scope, observed_at)` restricted to
+  applied snapshots, not `(scope, observed_at)`: the lateness check and
+  `in_latest_snapshot` look only at applied snapshots, per record type and
+  scope.
 - `record_current.last_confirmed_at` and `record_event.notify` are additions
   to the spec's column lists; neither is event-derived.
 - Locks: per subject for writes, one global lock around event inserts (see

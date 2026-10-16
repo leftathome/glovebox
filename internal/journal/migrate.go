@@ -7,7 +7,9 @@
 package journal
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -24,6 +26,7 @@ type migration struct {
 	version int
 	name    string
 	sql     string
+	sum     []byte // sha256 of the file
 }
 
 var migrationFile = regexp.MustCompile(`^(\d{4})_([a-z0-9_]+)\.sql$`)
@@ -44,7 +47,8 @@ func loadMigrations() ([]migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, migration{version: v, name: m[2], sql: string(body)})
+		sum := sha256.Sum256(body)
+		out = append(out, migration{version: v, name: m[2], sql: string(body), sum: sum[:]})
 	}
 	sort.Slice(out, func(i, k int) bool { return out[i].version < out[k].version })
 	for i, m := range out {
@@ -105,6 +109,7 @@ func MigrateTo(ctx context.Context, db *sql.DB, target int) error {
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    integer     PRIMARY KEY,
 		name       text        NOT NULL,
+		checksum   bytea       NOT NULL,
 		applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return err
 	}
@@ -114,6 +119,9 @@ func MigrateTo(ctx context.Context, db *sql.DB, target int) error {
 	}
 	if current > len(ms) {
 		return fmt.Errorf("journal: the database schema is at version %d, newer than this binary's %d; refusing to run against it", current, len(ms))
+	}
+	if err := verifyApplied(ctx, conn, ms); err != nil {
+		return err
 	}
 	for _, m := range ms {
 		if m.version <= current || m.version > target {
@@ -129,7 +137,7 @@ func MigrateTo(ctx context.Context, db *sql.DB, target int) error {
 			_ = tx.Rollback()
 			return fmt.Errorf("journal: migration %04d_%s: %w", m.version, m.name, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name) VALUES ($1, $2)`, m.version, m.name); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`, m.version, m.name, m.sum); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -138,6 +146,36 @@ func MigrateTo(ctx context.Context, db *sql.DB, target int) error {
 		}
 	}
 	return nil
+}
+
+// verifyApplied fails when an applied migration no longer matches the
+// embedded file of the same version: a migration is immutable once it has
+// run anywhere; changes go in a new migration.
+func verifyApplied(ctx context.Context, conn *sql.Conn, ms []migration) error {
+	rows, err := conn.QueryContext(ctx, `SELECT version, name, checksum FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v int
+		var name string
+		var sum []byte
+		if err := rows.Scan(&v, &name, &sum); err != nil {
+			return err
+		}
+		if v < 1 || v > len(ms) {
+			continue // newer schemas are refused by the caller
+		}
+		m := ms[v-1]
+		if name != m.name {
+			return fmt.Errorf("journal: migration %04d was applied as %q but this binary names it %q; applied migrations must not be renamed", v, name, m.name)
+		}
+		if !bytes.Equal(sum, m.sum) {
+			return fmt.Errorf("journal: migration %04d_%s was edited after it was applied (checksum mismatch); applied migrations are immutable, add a new one", v, name)
+		}
+	}
+	return rows.Err()
 }
 
 // SchemaVersion is the newest migration applied to db (0 for none).

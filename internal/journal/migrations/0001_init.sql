@@ -32,7 +32,9 @@ CREATE TABLE snapshot (
     FOREIGN KEY (record_type, schema_version) REFERENCES record_type (name, schema_version)
 );
 
-CREATE INDEX snapshot_scope_observed ON snapshot (record_type, scope, observed_at);
+-- The ordering queries (late check, in_latest_snapshot) look only at applied
+-- snapshots of one type and scope.
+CREATE INDEX snapshot_scope_observed ON snapshot (record_type, scope, observed_at) WHERE status = 'applied';
 CREATE INDEX snapshot_subject ON snapshot (data_subject);
 CREATE INDEX snapshot_held ON snapshot (record_type, scope) WHERE status = 'held';
 
@@ -83,7 +85,10 @@ CREATE TABLE record_event (
     rule             text,
     notify           jsonb,
     group_key        text,
-    written_at       timestamptz NOT NULL DEFAULT now()
+    written_at       timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT record_event_fields_shape  CHECK (kind NOT IN ('created', 'restored') OR fields IS NOT NULL),
+    CONSTRAINT record_event_changed_shape CHECK (kind NOT IN ('updated', 'removed') OR changed IS NOT NULL),
+    CONSTRAINT record_event_prev_scope_shape CHECK (prev_scope IS NULL OR kind IN ('updated', 'restored'))
 );
 
 CREATE INDEX record_event_subject_seq ON record_event (data_subject, seq);

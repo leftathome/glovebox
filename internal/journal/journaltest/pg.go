@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"sync"
@@ -35,6 +36,14 @@ var (
 	serverOnce sync.Once
 	serverErr  error
 )
+
+// appPassword is the test-only password of AppRole. It protects nothing (the
+// server is a throwaway container) but gives the role a password, so servers
+// that require password authentication (scram), such as a stock PostgreSQL
+// CI service container, work as well as trust-auth ones. It is the same in
+// every test binary, so binaries running in parallel never invalidate each
+// other's connections.
+const appPassword = "journal-test-only"
 
 // AdminURL returns JOURNAL_TEST_DATABASE_URL, skipping or failing the test
 // when it is not set.
@@ -73,7 +82,7 @@ func NewDB(t testing.TB) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u.User = url.User(AppRole)
+	u.User = url.UserPassword(AppRole, appPassword)
 	u.Path = "/" + name
 	db, err := sql.Open("pgx", u.String())
 	if err != nil {
@@ -112,11 +121,14 @@ func prepareServer(admin string) error {
 	if err != nil {
 		return err
 	}
-	// Several test binaries start at once; whichever loses the race to
-	// create the role sees duplicate_object or unique_violation.
-	_, err = db.Exec(`DO $$ BEGIN
-		CREATE ROLE journal_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
-	EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
-	END $$`)
+	// Several test binaries start at once and share the role; a transaction
+	// lock serialises whoever creates it.
+	_, err = db.Exec(fmt.Sprintf(`DO $$ BEGIN
+		PERFORM pg_advisory_xact_lock(7347001);
+		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'journal_app') THEN
+			CREATE ROLE journal_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+		END IF;
+		ALTER ROLE journal_app PASSWORD '%s';
+	END $$`, appPassword))
 	return err
 }
