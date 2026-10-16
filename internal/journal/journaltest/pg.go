@@ -95,7 +95,9 @@ func NewDB(t testing.TB) *sql.DB {
 			return
 		}
 		defer a.Close()
-		_, _ = a.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, _ = a.ExecContext(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
 	})
 	return db
 }
