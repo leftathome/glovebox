@@ -1523,7 +1523,7 @@ One package holds every type that crosses the wire, so the server (this plan), t
 - Create: `internal/journal/journalapi/api.go`
 - Test: `internal/journal/journalapi/api_test.go`
 
-- [ ] **Step 3.1: Write the failing test.**
+- [x] **Step 3.1: Write the failing test.**
 
 `internal/journal/journalapi/api_test.go`:
 
@@ -1589,11 +1589,11 @@ func TestHeldTarget(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3.2: Run; expect a build failure** (`undefined: Snapshot`).
+- [x] **Step 3.2: Run; expect a build failure** (`undefined: Snapshot`).
 
 Run: `go test ./internal/journal/journalapi/`
 
-- [ ] **Step 3.3: Write the package.**
+- [x] **Step 3.3: Write the package.**
 
 `internal/journal/journalapi/api.go`:
 
@@ -1860,11 +1860,11 @@ type RescanResult struct {
 }
 ```
 
-- [ ] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/journalapi/ -count=1`
 
-- [ ] **Step 3.5: Commit.**
+- [x] **Step 3.5: Commit.**
 
 ```bash
 git add internal/journal/journalapi
