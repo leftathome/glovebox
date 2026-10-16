@@ -185,6 +185,7 @@ assert this invariant and nothing broader.
   "schema_version": 1,
   "scope": [["source","powerschool"],["surface","assignments"],["data_subject","e_..."],["course","1234"]],
   "complete": true,
+  "complete_range": null,
   "observed_at": "2026-10-16T13:00:41Z",
   "approximate": false,
   "records": [
@@ -204,13 +205,23 @@ assert this invariant and nothing broader.
   truncated.
 - Every record's `data_subject` must equal the scope's `data_subject` part when
   the scope has one. `(data_subject, key)` must be unique within a snapshot.
+- `complete_range` (optional, only with `complete=true`):
+  `{"field": "<a date field of the type>", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}`.
+  It limits completeness to records whose `field` lies in `[from, to]`: only
+  those can be removed by this snapshot. Use it when a source page covers a
+  span of dates (an attendance grid for the current term) rather than
+  everything in the scope.
+- The scope's `source` part must equal the record type's `owner`, so one
+  connector cannot write another source's records even when they share a
+  ServiceAccount.
 - Responses (the connector's spool acts on these exactly, 4.14):
 
 | Code | Body `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | `200` | `applied`, `duplicate`, `late`, `held` | accepted (4.4) | delete the file |
 | `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at` | delete the file |
-| `403` | `policy` | the service may not write this type, scope or subject | move to `spool/rejected/` |
+| `403` | `policy` | the service may not write this type or scope | move to `spool/rejected/` |
+| `409` | `unknown_subject` | a `data_subject` is not in the current roster (4.9b) -- possibly a roster change in progress | keep, retry with backoff (bounded by the spool limits) |
 | `413` | `too_large` | over a limit | move to `spool/rejected/` |
 | `422` | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
 | `5xx`, network error | -- | try again later | keep, retry with backoff |
@@ -241,8 +252,9 @@ In one transaction, under a per-scope advisory lock:
      columns only (`last_seen_at`, `last_confirmed_snapshot`); no event
    - otherwise compare field by field -> `updated` with only the changed fields
 8. **Removal.** If `complete`, every live record whose stored `scope` equals
-   this snapshot's scope and whose key the snapshot does not contain is a
-   candidate `removed`. The removal guard (4.5) decides. A snapshot with
+   this snapshot's scope, whose key the snapshot does not contain, and -- when
+   `complete_range` is set -- whose range field lies within it, is a candidate
+   `removed`. The removal guard (4.5) decides. A snapshot with
    `complete=false` never removes anything.
 9. **Write.** Insert events (with scan verdicts, `importance`, `rule`,
    `group_key`, section 4.10), upsert `record_current`, insert the `snapshot`
@@ -376,19 +388,41 @@ and the isolation tests (section 8) are for.
   and reloads it when the file changes. A reload is atomic: a roster that fails
   to parse is ignored and the previous one kept, with an error metric and an
   alert.
-- An adapter selected by `format` turns the roster into grants per member. For
-  `openclaw-household-v1`: every member holds `(self, subject)` and
-  `(m, household)` for every member `m`; a guardian of a member `c` holds
-  `(c, guardians)`; a sibling of `c` holds `(c, siblings)`. The adapter is the
-  only code that knows these relationships; its exact mapping is pinned by
-  tests against a fixture of the file's documented format.
+- An adapter selected by `format` turns the roster into grants per member.
+  `openclaw-household-v1` is the file openclaw reads today:
+  `{"people": {"<id>": {"agent": ..., "guardian_of": [ids], "siblings": [ids]}},
+  "household_members": [ids]}`. Mapping for a member `m`:
+  - `(m, subject)`;
+  - `(c, guardians)` for every `c` in `m.guardian_of`, and `("", guardians)`
+    if `m.guardian_of` is non-empty (spec 11 section 3.4: standalone
+    `guardians` means the household's guardians);
+  - `(s, siblings)` for every `s` in `m.siblings` (`m` is a sibling of `s`);
+  - if `m` is in `household_members`: `(x, household)` for every `x` in
+    `household_members`, and `("", household)`.
+  No other grants exist; `caregivers` and `""`-subject `subject`/`siblings`
+  grants are never produced. The adapter is the only code that knows these
+  relationships; the mapping is pinned by tests against a fixture of this
+  format, and the openclaw format is documented where openclaw defines it.
+- **Roster changes.** A subject removed from the roster keeps its rows; with
+  no grants for it they are unreadable until it returns or an operator erases
+  it (4.13). Snapshots naming a subject not in the roster get `409` and stay
+  in the spool (a removal in progress, or a parse window during reload, loses
+  nothing). A household note written by a member later removed stays visible
+  to its fixed audience; its `actor` still names the writer.
+- **Reload timing.** The kubelet delivers a changed ConfigMap to each pod
+  within about two minutes, so glovebox and openclaw can briefly hold
+  different rosters. The consumer's pre-write check fails safe in that window
+  (abort and retry next run). Hash mismatches shorter than ten minutes are
+  expected and do not alert.
 - **Immutability is a deployment precondition, not an assumption.** The
   journal may be enabled only when all of the following hold, and the rollout
   (section 9 step 1) verifies each:
-  1. No ServiceAccount in the namespace may create, update, patch or delete
-     ConfigMaps (verified 2026-10-16 for every ServiceAccount in the
-     namespace). Any future Role that grants ConfigMap writes must use
-     `resourceNames` that exclude the roster.
+  1. No ServiceAccount in the namespace can create, update, patch or delete
+     **the roster ConfigMap** (`kubectl auth can-i ... configmap/openclaw-household`,
+     verified 2026-10-16 for every ServiceAccount in the namespace). The chart's
+     PowerSchool connector Role grants `update`/`patch` only on the
+     login-request ConfigMap by `resourceNames`; any future Role granting
+     ConfigMap writes must do the same.
   2. Both applications mount the roster read-only (the openclaw gateway does
      today, via a `readOnly` mount; ConfigMap volumes are read-only to the pod
      in any case).
@@ -529,17 +563,30 @@ record's identity (4.2), so siblings in the same course never collide.
 
 | Record type | Key | Fields | Scope (complete?) |
 |---|---|---|---|
-| `course_mark` | course id; else `number-period` | `course`, `period`, `teacher` string; per term `<term>_letter` string and `<term>_percent` number | `(powerschool, grades, subject)` -- yes |
-| `assignment` | `<course key>:<assignment_id>` (the `#n` suffix kept for rows shared by sections) | `course`, `category`, `title` string; `due` date; `score`, `max_score`, `percent` number; `letter` string; `missing`, `late`, `incomplete`, `exempt`, `collected` bool; `teacher_comment`, `description`, `category_description` text | `(powerschool, assignments, subject)` -- **one snapshot for all courses**, `complete=true` only when every course's list was read successfully in that poll, otherwise `complete=false`. A dropped course's assignments are therefore removed by the next complete snapshot. Today's lookback filter does not apply to records. |
-| `attendance_total` | course key | `course` string; `absences`, `tardies` int | `(powerschool, attendance_totals, subject)` -- yes |
-| `attendance_mark` | `<attendance course key>:<date>` -- the course key is the connector's existing `attendanceCourseKey` (course, expression, enrolment date), so a re-enrolment is a different record | `date` date; `course`, `period`, `code`, `code_description` string; `kind` string, one of the connector's configured kinds (`absence_unexcused`, `absence_excused`, `late_unexcused`, `late_excused`, `left_early_unexcused`, `left_early_excused`, `authorized`, `unknown`); `excused` bool | `(powerschool, attendance_marks, subject, school_year)` -- yes |
-| `attendance_day` | date | see below | `(powerschool, attendance_days, subject, school_year)` -- yes |
+| `course_mark` | course id; else `number-period` | `course`, `period`, `teacher` string; per term `<term>_letter` string and `<term>_percent` number | `(powerschool, grades, subject, course)` -- yes, one record per scope |
+| `assignment` | `<course key>:<assignment_id>` (the `#n` suffix kept for rows shared by sections) | `course`, `category`, `title` string; `due` date; `score`, `max_score`, `percent` number; `letter` string; `missing`, `late`, `incomplete`, `exempt`, `collected` bool; `teacher_comment`, `description`, `category_description` text | `(powerschool, assignments, subject, course)` -- yes: the connector sends the course's full list. Today's lookback filter does not apply to records. |
+| `attendance_total` | course key | `course` string; `absences`, `tardies` int | `(powerschool, attendance_totals, subject, course)` -- yes, one record per scope |
+| `attendance_mark` | `<attendance course key>:<date>` -- the course key is the connector's existing `attendanceCourseKey` (course, expression, enrolment date), so a re-enrolment is a different record | `date` date; `course`, `period`, `code`, `code_description` string; `kind` string, one of the connector's configured kinds (`absence_unexcused`, `absence_excused`, `late_unexcused`, `late_excused`, `left_early_unexcused`, `left_early_excused`, `authorized`, `unknown`); `excused` bool | `(powerschool, attendance_marks, subject, school_year)` -- yes, with `complete_range` over `date` = the first and last date the grid showed |
+| `attendance_day` | date | see below | `(powerschool, attendance_days, subject, school_year)` -- yes, with `complete_range` over `date` = the first and last settled date the grid showed |
 | `term_grade` | `<course_number>:<term>` (`#n` on collision, as today) | `course`, `term`, `grade` string; `earned`, `attempted` number | `(powerschool, term_grades, subject)` -- yes |
 | `term_comment` | `<course>:<term>` | `course`, `term` string; `comment` text | `(powerschool, term_comments, subject)` -- yes; audience **`guardians` only** |
 
 `school_year` is derived from the date (1 August to 31 July, written
 `2026-27`); the attendance page carries no term identifier, so scopes do not
 use one.
+
+**Term changes.** Pages are course- or term-shaped, so completeness is limited
+to what a page demonstrably covers:
+
+- The attendance grid shows the current term's days. `complete_range` limits
+  removal to the dates it showed, so at a term change last term's marks and
+  days are untouched -- not removed.
+- Assignment lists, course marks and attendance totals are scoped **per
+  course**. When a term ends and its courses leave the pages, those scopes
+  simply receive no more snapshots: their records stay as last seen, with
+  their `confirmed_at` date. Nothing is removed by a term change. The same
+  holds for a course dropped mid-term; readers see it as "last confirmed on
+  <date>" (4.12). A later scope-retirement mechanism can tidy this if needed.
 
 #### `attendance_day`
 
@@ -569,11 +616,11 @@ absence. `unknown` codes are counted and never ignored; a day with
 
 Two rules keep the signal clean:
 
-- **Settled days only.** A day becomes a record only once it is in the past
-  in the school's time zone (the observation date's previous days). Today's
-  cells are still filling in; they would otherwise read as `partial_day` and
-  then `full_day` and fire rules twice. Today's codes still arrive as
-  `attendance_mark` records.
+- **Settled days only.** A day becomes a record only once it is **settled**:
+  in the past in the school's time zone, and either it has no unmarked (`.`)
+  cells or it is at least three school days old. Days still filling in would
+  otherwise read as `partial_day` and then `full_day` and fire rules twice.
+  Their codes still arrive at once as `attendance_mark` records.
 - **Only days with at least one code are records.** A fully present day is not
   a record. If every code on a day is later cleared, the day drops out of the
   complete scope and the journal records `removed` -- which is exactly "no
@@ -661,8 +708,8 @@ for these three; noted here so later work starts from it.
   work can be collected. Whether and what to tell the school is a guardian
   decision; the agent does not raise it.
 - **Notes tool** (`attendance_note`): available to person-agents only; the
-  gateway adds the agent's grants and `on_behalf_of`; the journal enforces the
-  write rule.
+  gateway sends the agent's member id as `on_behalf_of` and nothing else about
+  access; the journal computes grants and enforces the write rule (4.9a).
 - The item fold, body-line parsing and evidence-age rules in the patrol's
   state projection are deleted once the journal path is verified (section 9).
 
@@ -708,10 +755,12 @@ snapshots, oldest first, per scope:
   from empty and from every previous version. Database-writing tests are rerun
   whenever the schema changes.
 - **Connector snapshot builders:** against the existing recorded, redacted
-  fixtures; attendance-day classification for full, partial, tardy-only,
-  no-meeting and corrected days; scope completeness per surface.
+  fixtures; attendance-day classification for full, partial, late-or-left-early,
+  no-meeting, unmarked-then-settled and corrected days; term rollover
+  with `complete_range` (last term's records are not removed); scope completeness per surface.
 - **Auth:** token audience, allow-list, fail-closed TokenReview, per-service
-  write types, scopes, subjects and grant tokens.
+  write types and scopes, record-type owner versus scope source, unknown
+  subjects (`409`), and allowed `readers`.
 - **Spool:** crash mid-write, replay order, overflow policy, `held` and
   `rejected` handling.
 - **Shadow comparison** (section 9 step 4) is the end-to-end test against live
@@ -752,8 +801,7 @@ affecting what came before.
 
 1. Exact CNPG cluster and backup/retention settings for the new database
    (decided in the gitops change).
-2. Whether `attendance_day` should also be emitted for `present` days that
-   follow a non-present one only within the same term (current rule) or for a
-   longer window.
+2. Whether three school days is the right settling time for days with unmarked
+   cells (5.1), or whether it should be configurable.
 3. Whether the three-school-day window for `attendance_followup` should be
    configurable per subject.
