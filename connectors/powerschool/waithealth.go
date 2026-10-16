@@ -1,87 +1,28 @@
 package powerschool
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/leftathome/glovebox/connector"
 )
 
 // WaitHealth is the stand-in health server for the time the binary spends
-// waiting for a fresh session (WaitForFreshSession).
-//
-// That wait happens before connector.Run, so the framework's health server
-// is not up yet. With nothing listening, the kubelet's liveness probe fails
-// and the pod is killed and restarted into CrashLoopBackOff -- for a
-// condition that is routine and that restarting cannot fix. WaitHealth
-// answers on the same port so the pod sits Running and NotReady instead:
-//
-//	/healthz  200  the process is alive and doing what it should (waiting)
-//	/readyz   503  it is not polling
-//
-// Stop must be called before connector.Run: the framework binds the same
-// port. Stop closes the listener and returns only once the port is free.
-type WaitHealth struct {
-	srv *http.Server
-	ln  net.Listener
-}
+// waiting for a fresh session (WaitForFreshSession); see
+// connector.WaitHealth. It answers /healthz 200 and /readyz 200 -- waiting,
+// by design, is healthy, and readiness gates every Helm upgrade and rollback
+// of the release (glovebox-wekc.17) -- and serves /statusz and /metrics, where
+// the session state (powerschool_session_state) says what it is waiting for
+// and since when.
+type WaitHealth = connector.WaitHealth
 
-// StartWaitHealth listens on addr (":8080", or "127.0.0.1:0" in tests) and
-// serves the two endpoints.
-func StartWaitHealth(addr string) (*WaitHealth, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("powerschool: wait health listen: %w", err)
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok: waiting for a fresh session\n"))
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("not ready: the session was rejected upstream; waiting for a new one\n"))
-	})
-	h := &WaitHealth{
-		srv: &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second},
-		ln:  ln,
-	}
-	go func() { _ = h.srv.Serve(ln) }()
-	return h, nil
-}
-
-// Addr returns the address the server is listening on.
-func (h *WaitHealth) Addr() string {
-	if h == nil || h.ln == nil {
-		return ""
-	}
-	return h.ln.Addr().String()
-}
-
-// Stop shuts the server down and releases the port. Safe on a nil receiver
-// and safe to call twice.
-func (h *WaitHealth) Stop() error {
-	if h == nil || h.srv == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := h.srv.Shutdown(ctx)
-	if err != nil {
-		// A probe connection that would not drain: close it under it.
-		err = h.srv.Close()
-	}
-	h.srv = nil
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
+// StartWaitHealth listens on addr (":8080", or "127.0.0.1:0" in tests).
+// status, which may be nil, is what /statusz and the /readyz body report.
+func StartWaitHealth(addr string, status *connector.Status) (*WaitHealth, error) {
+	return connector.StartWaitHealth(addr, "powerschool", status)
 }
 
 // SessionClock keeps, in the connector's state directory, when the

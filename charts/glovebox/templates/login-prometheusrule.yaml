@@ -6,7 +6,14 @@ With a login broker the PowerSchool connector no longer exits when it cannot
 get a session -- an exit would be a restart loop that touches the portal --
 so a pod restart is no longer the alert. These rules are. One PrometheusRule
 object, with a group per enabled broker, one for the connector when it is
-wired to a broker, and one for the scheduled login Jobs.
+wired to a broker, one for the connector's session wait, and one for the
+scheduled login Jobs.
+
+A connector waiting for a new session is Ready (glovebox-wekc.17): readiness
+gates Helm upgrades and rollbacks of the whole release, and waiting is not a
+fault. How long it has been waiting is the powerschool_session_state_since_
+timestamp_seconds{state="waiting_for_new_session"} series, and the
+GloveboxPowerSchoolWaitingForSession alert below.
 
 The expressions use only labels the workloads set themselves (site, outcome,
 reason) plus the release namespace on the kube-state-metrics series. If your
@@ -69,6 +76,19 @@ several releases, narrow them through metrics.prometheusRule.extraSelector.
           "annotations" (dict
             "summary" "The PowerSchool connector cannot tell whether its session is alive"
             "description" "Three polls in a day were skipped because the portal's answer was neither the home page nor the sign-in page (a server error, a gateway page, a network failure). No login is asked for in that state.")))) }}
+{{- end }}
+{{- if $conn.enabled }}
+{{- $waitHours := int ($pr.sessionWaitingHours | default 72) }}
+{{- $groups = append $groups (dict
+      "name" "glovebox-powerschool-connector-session"
+      "rules" (list
+        (dict
+          "alert" "GloveboxPowerSchoolWaitingForSession"
+          "expr" (printf "time() - max(powerschool_session_state_since_timestamp_seconds{state=\"waiting_for_new_session\"%s}) > %d" $extra (mul $waitHours 3600))
+          "labels" (dict "severity" ($pr.severity | default "warning"))
+          "annotations" (dict
+            "summary" (printf "The PowerSchool connector has been waiting for a new session for more than %dh" $waitHours)
+            "description" "The portal refused the connector's session and no session it accepts has arrived since. The connector is up and Ready and sends the portal nothing while it waits; no school data is being read. The longest normal wait is a weekend (no scheduled login from Friday morning to Sunday evening), so this means logins are not replacing the session: check the login workload (its Jobs, its latch) and the session Secret's sync. /statusz on the connector shows when the wait began.")))) }}
 {{- end }}
 {{- if .Values.powerschoolAuthRefresher.enabled }}
 {{- $groups = append $groups (dict

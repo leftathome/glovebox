@@ -17,6 +17,7 @@ import (
 
 	"github.com/leftathome/glovebox/connector"
 	pslib "github.com/leftathome/powerschool-go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // --- health while waiting for a session ---------------------------------
@@ -33,11 +34,13 @@ func httpStatus(t *testing.T, url string) int {
 	return resp.StatusCode
 }
 
-// TestWaitHealth_AliveNotReadyThenPortFree: while the binary waits for a
-// session it answers the kubelet -- alive, not ready -- and when the wait
-// ends the port is free again for the framework's own health server.
-func TestWaitHealth_AliveNotReadyThenPortFree(t *testing.T) {
-	h, err := StartWaitHealth("127.0.0.1:0")
+// TestWaitHealth_AliveAndReadyThenPortFree: while the binary waits for a
+// session it answers the kubelet -- alive AND ready, because waiting is
+// what it should be doing and readiness gates every Helm upgrade and
+// rollback of the release (glovebox-wekc.17) -- and when the wait ends the
+// port is free again for the framework's own health server.
+func TestWaitHealth_AliveAndReadyThenPortFree(t *testing.T) {
+	h, err := StartWaitHealth("127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatalf("StartWaitHealth: %v", err)
 	}
@@ -46,8 +49,8 @@ func TestWaitHealth_AliveNotReadyThenPortFree(t *testing.T) {
 	if got := httpStatus(t, "http://"+addr+"/healthz"); got != http.StatusOK {
 		t.Errorf("/healthz = %d, want 200 (the pod must not be killed for waiting)", got)
 	}
-	if got := httpStatus(t, "http://"+addr+"/readyz"); got != http.StatusServiceUnavailable {
-		t.Errorf("/readyz = %d, want 503 (the pod is not polling)", got)
+	if got := httpStatus(t, "http://"+addr+"/readyz"); got != http.StatusOK {
+		t.Errorf("/readyz = %d, want 200 (waiting is not a fault; a 503 here stalls helm upgrade and rollback)", got)
 	}
 	// A second server on the same port must fail while it is up...
 	if ln, err := net.Listen("tcp", addr); err == nil {
@@ -88,7 +91,7 @@ func TestStartWaitHealth_PortInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	if h, err := StartWaitHealth(ln.Addr().String()); err == nil {
+	if h, err := StartWaitHealth(ln.Addr().String(), nil); err == nil {
 		h.Stop()
 		t.Fatal("StartWaitHealth succeeded on a port that is in use")
 	}
@@ -118,6 +121,19 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// As main.go wires it: one Status and one SessionState, on the default
+	// registry the stand-in's /metrics serves. (The only test in this
+	// package that registers there.)
+	status := connector.NewStatus()
+	state, err := connector.NewSessionState(prometheus.DefaultRegisterer, "powerschool", status)
+	if err != nil {
+		t.Fatalf("NewSessionState: %v", err)
+	}
+	refusedAt, ok := rejected.MarkedAt()
+	if !ok {
+		t.Fatal("no marker time")
+	}
+
 	var mu sync.Mutex
 	var health *WaitHealth
 	started := make(chan string, 1)
@@ -128,7 +144,9 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 	done := make(chan result, 1)
 	go func() {
 		s, err := WaitForFreshSession(context.Background(), rejected, load, 2*time.Millisecond, func() {
-			h, err := StartWaitHealth("127.0.0.1:0")
+			since, _ := rejected.MarkedAt()
+			state.Set(connector.SessionStateWaiting, since, "waiting")
+			h, err := StartWaitHealth("127.0.0.1:0", status)
 			if err != nil {
 				t.Errorf("StartWaitHealth: %v", err)
 				return
@@ -150,8 +168,37 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 	if got := httpStatus(t, "http://"+addr+"/healthz"); got != http.StatusOK {
 		t.Errorf("/healthz while waiting = %d, want 200", got)
 	}
-	if got := httpStatus(t, "http://"+addr+"/readyz"); got != http.StatusServiceUnavailable {
-		t.Errorf("/readyz while waiting = %d, want 503", got)
+	if got := httpStatus(t, "http://"+addr+"/readyz"); got != http.StatusOK {
+		t.Errorf("/readyz while waiting = %d, want 200: waiting is healthy, and a NotReady pod stalls helm upgrade and rollback", got)
+	}
+	if body := httpBody(t, "http://"+addr+"/readyz"); !strings.Contains(body, "degraded: session=waiting_for_new_session") {
+		t.Errorf("/readyz body %q does not name the degraded session", body)
+	}
+	var doc struct {
+		Connector  string                         `json:"connector"`
+		Ready      bool                           `json:"ready"`
+		Degraded   bool                           `json:"degraded"`
+		Conditions map[string]connector.Condition `json:"conditions"`
+	}
+	if err := json.Unmarshal([]byte(httpBody(t, "http://"+addr+"/statusz")), &doc); err != nil {
+		t.Fatalf("/statusz is not JSON: %v", err)
+	}
+	cond := doc.Conditions["session"]
+	if doc.Connector != "powerschool" || !doc.Ready || !doc.Degraded ||
+		cond.State != connector.SessionStateWaiting || !cond.Degraded ||
+		!cond.Since.Equal(refusedAt.UTC().Truncate(0)) {
+		t.Errorf("/statusz = %+v, want ready, degraded, session waiting since the marker (%s)", doc, refusedAt.UTC())
+	}
+	metrics := httpBody(t, "http://"+addr+"/metrics")
+	for _, want := range []string{
+		`powerschool_session_state{state="waiting_for_new_session"} 1`,
+		`powerschool_session_state{state="usable"} 0`,
+		`powerschool_session_state{state="unknown"} 0`,
+		`powerschool_session_state_since_timestamp_seconds{state="waiting_for_new_session"} `,
+	} {
+		if !strings.Contains(metrics, want) {
+			t.Errorf("/metrics while waiting lacks %q", want)
+		}
 	}
 
 	// The Secret is updated in place.
@@ -176,6 +223,21 @@ func TestWaitForFreshSession_ServesHealthWhileWaiting(t *testing.T) {
 		t.Fatalf("health port still in use after the wait: %v", err)
 	}
 	ln.Close()
+}
+
+func httpBody(t *testing.T, url string) string {
+	t.Helper()
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read %s: %v", url, err)
+	}
+	return string(b)
 }
 
 // --- session delivery ---------------------------------------------------

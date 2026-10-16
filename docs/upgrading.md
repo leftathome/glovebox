@@ -10,6 +10,25 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to the next release (from 0.11.0)
+
+- **Helm's wait can be turned back on.** A PowerSchool connector waiting
+  for a new session used to be NotReady, which made `helm upgrade --wait`
+  and Flux's upgrade and rollback time out (glovebox-wekc.17). It is now
+  Ready while it waits; the state is in `powerschool_session_state`,
+  `/statusz` and the new `GloveboxPowerSchoolWaitingForSession` alert. If
+  you disabled the wait to work around it (Flux HelmRelease
+  `spec.upgrade.disableWait` / `spec.rollback.disableWait`), remove those
+  after this release's images are running, so the deploy health check
+  comes back. Re-enable it only once the connector pod runs the new image:
+  an old image still waiting would still be NotReady.
+- No chart value has to change. `metrics.prometheusRule.sessionWaitingHours`
+  (default 72) is new; with `metrics.prometheusRule.enabled` and the
+  PowerSchool connector enabled, the PrometheusRule gains one group,
+  `glovebox-powerschool-connector-session`, in every login mode.
+
+---
+
 ## Upgrading to 0.11.0 (from 0.10.3)
 
 No required changes: no chart value has to be added or changed, and a

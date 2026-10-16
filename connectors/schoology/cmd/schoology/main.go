@@ -46,7 +46,13 @@ import (
 	"github.com/leftathome/glovebox/connectors/schoology"
 	schoologylib "github.com/leftathome/schoology-go"
 	schoologyauth "github.com/leftathome/schoology-go/auth"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// healthAddr is where the framework's health server listens
+// (connector.Options.HealthPort defaults to 8080) and therefore where the
+// stand-in must listen while the binary waits for a session.
+const healthAddr = ":8080"
 
 // schoologyLibVersion is the version string embedded in parse-failure
 // receipts so operators can correlate breakage to a specific upstream
@@ -105,21 +111,54 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The session state -- unknown, or waiting for a new session -- is
+	// reported as schoology_session_state on /metrics and the "session"
+	// condition on /statusz. It is not readiness (glovebox-wekc.17).
+	status := connector.NewStatus()
+	sessionState, err := connector.NewSessionState(prometheus.DefaultRegisterer, "schoology", status)
+	if err != nil {
+		slog.Error("schoology: register session state metrics", "error", err)
+		os.Exit(1)
+	}
+
 	// If Schoology already refused this exact session, do not present it
 	// again: wait here, making no upstream requests, until the credentials
 	// file holds a different one (the refresher writes a new session and
-	// ESO updates the mounted Secret in place). The health endpoints are
-	// not up yet, so the pod reports unhealthy while it waits -- that is
-	// the operator signal.
+	// ESO updates the mounted Secret in place). The framework's health
+	// server is not up yet, so a stand-in answers the probes: alive and
+	// ready -- waiting is what the process should be doing, and readiness
+	// gates every Helm upgrade and rollback of the release. The operator
+	// signal is the ERROR line, schoology_session_state and /statusz.
 	rejected := schoology.NewRejectedSession(os.Getenv("GLOVEBOX_STATE_DIR"))
+	var waitHealth *connector.WaitHealth
+	waited := false
 	for rejected.IsRejected(schoology.SessionFingerprint(creds.SessID)) {
 		slog.Error("schoology: session was already rejected upstream; waiting for a new one, not polling",
 			"path", credsPath,
 			"recovery_doc", "docs/AUTH-RECOVERY.md")
+		if !waited {
+			waited = true
+			since, _ := rejected.MarkedAt()
+			sessionState.Set(connector.SessionStateWaiting, since,
+				"Schoology refused this session; waiting for a different one, not contacting Schoology")
+			h, err := connector.StartWaitHealth(healthAddr, "schoology", status)
+			if err != nil {
+				slog.Error("schoology: could not serve health endpoints while waiting", "error", err)
+			}
+			waitHealth = h
+		}
 		time.Sleep(time.Minute)
 		if fresh, err := schoologyauth.LoadCredentials(credsPath); err == nil {
 			creds = fresh
 		}
+	}
+	if waited {
+		sessionState.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+	}
+	// Release the port before connector.Run binds it.
+	if err := waitHealth.Stop(); err != nil {
+		slog.Error("schoology: could not release the health port", "error", err)
+		os.Exit(1)
 	}
 	sessionFP := schoology.SessionFingerprint(creds.SessID)
 
@@ -161,6 +200,7 @@ func main() {
 		os.Exit(1)
 	}
 	c.OnSessionRejected = func() {
+		sessionState.Set(connector.SessionStateWaiting, time.Time{}, "Schoology refused the session")
 		if err := rejected.Mark(sessionFP); err != nil {
 			slog.Error("schoology: could not record rejected session", "error", err)
 		}
@@ -173,6 +213,11 @@ func main() {
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
+		// Readiness stays ReadyAfterFirstPoll here: the catch-up poll is
+		// bounded work that returns nil on transient failures, so it cannot
+		// hold readiness false for a non-fault condition, and readiness also
+		// decides when the trigger listener's Service sends it traffic.
+		Status: status,
 		// The windowed schedule in Watch decides when to poll. The framework's
 		// periodic re-poll (default 5m) both called Poll and restarted Watch,
 		// which re-rolled the in-window splay each time and could skip a

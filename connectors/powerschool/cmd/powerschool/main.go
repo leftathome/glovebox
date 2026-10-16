@@ -51,6 +51,7 @@ import (
 	"github.com/leftathome/glovebox/internal/kubecm"
 	"github.com/leftathome/glovebox/internal/loginbroker/brokerapi"
 	pslib "github.com/leftathome/powerschool-go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // healthAddr is where the framework's health server listens
@@ -100,6 +101,18 @@ func main() {
 
 	stateDir := os.Getenv("GLOVEBOX_STATE_DIR")
 	clock := powerschool.SessionClock{Dir: stateDir}
+
+	// What the session is doing -- usable, unknown, or waiting for a new
+	// one -- is reported here: powerschool_session_state on /metrics and
+	// the "session" condition on /statusz. It is NOT readiness. Readiness
+	// gates every Helm upgrade and rollback of the release, and a wait for
+	// the next login is routine, not a fault (glovebox-wekc.17).
+	status := connector.NewStatus()
+	sessionState, err := connector.NewSessionState(prometheus.DefaultRegisterer, "powerschool", status)
+	if err != nil {
+		slog.Error("powerschool: register session state metrics", "error", err)
+		os.Exit(1)
+	}
 
 	// The session belongs to a real parent account. Every request the
 	// library makes goes through a transport pinned to this host that
@@ -212,21 +225,33 @@ func main() {
 		// of upstream traffic: none.
 		rejected := connector.NewRejectedSession(stateDir)
 		// While it waits the framework's health server is not up. Answer
-		// the kubelet's probes ourselves (alive, not ready) so the pod is
-		// not restarted for waiting, and release the port before
+		// the kubelet's probes ourselves (alive AND ready: waiting is what
+		// it should be doing) so the pod is neither restarted for waiting
+		// nor holding up a rollout, and release the port before
 		// connector.Run binds it.
 		var waitHealth *powerschool.WaitHealth
+		waited := false
 		_, err := powerschool.WaitForFreshSession(context.Background(), rejected,
 			func() (*pslib.SessionExport, error) { return powerschool.LoadSession(os.Getenv, time.Now()) },
 			time.Minute,
 			func() {
-				h, err := powerschool.StartWaitHealth(healthAddr)
+				// The wait began when the session was refused, which may
+				// be several restarts ago: the marker's time says when.
+				waited = true
+				since, _ := rejected.MarkedAt()
+				sessionState.Set(connector.SessionStateWaiting, since,
+					"the portal refused this session; waiting for a different one, not contacting the portal")
+				h, err := powerschool.StartWaitHealth(healthAddr, status)
 				if err != nil {
 					slog.Error("powerschool: could not serve health endpoints while waiting", "error", err)
 					return
 				}
 				waitHealth = h
 			})
+		if waited && err == nil {
+			// A different session is in place; the first poll checks it.
+			sessionState.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+		}
 		if stopErr := waitHealth.Stop(); stopErr != nil {
 			slog.Error("powerschool: could not release the health port", "error", stopErr)
 			os.Exit(1)
@@ -251,6 +276,7 @@ func main() {
 			c.PreviousRejectedAge = age
 		}
 		c.OnSessionRejected = func(age time.Duration) {
+			sessionState.Set(connector.SessionStateWaiting, time.Time{}, "the portal refused the session")
 			if fp := gate.Fingerprint(); fp != "" {
 				if err := rejected.Mark(fp); err != nil {
 					slog.Error("powerschool: could not record rejected session", "error", err)
@@ -262,6 +288,8 @@ func main() {
 		}
 	}
 
+	c.SessionState = sessionState
+
 	connector.Run(connector.Options{
 		Name:       "powerschool",
 		Tier:       connector.TierPersonal,
@@ -269,6 +297,12 @@ func main() {
 		StateDir:   os.Getenv("GLOVEBOX_STATE_DIR"),
 		ConfigFile: configFile,
 		Connector:  c,
+		// Ready once bootstrap succeeds, not after the first poll: the
+		// catch-up poll may block for minutes asking for a login
+		// (login_on_demand), or not happen at all. The session state is
+		// reported in Status and metrics instead (glovebox-wekc.17).
+		Readiness: connector.ReadyWhenServing,
+		Status:    status,
 		// The windowed schedule in Watch decides when to poll. The
 		// framework's periodic re-poll both calls Poll and restarts Watch;
 		// push it out past the pod's natural lifetime. Poll is also gated

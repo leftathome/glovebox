@@ -396,6 +396,7 @@ metrics:
   #                                GloveboxLoginBrokerLoginsFailing
   #   connectors.powerschool with  GloveboxPowerSchoolPollsSkippedNoSession
   #   loginBroker or loginOnDemand GloveboxPowerSchoolSessionStateUnknown
+  #   connectors.powerschool       GloveboxPowerSchoolWaitingForSession
   #   powerschoolAuthRefresher     GloveboxPowerSchoolLoginJobFailed (needs
   #                                kube-state-metrics; covers exit 8,
   #                                login_state_conflict: no login was made)
@@ -410,6 +411,17 @@ metrics:
     latchedFor: 5m
     # Polls skipped for want of a session, in 24h, before the alert fires.
     skippedPolls: 2
+    # Hours the PowerSchool connector may wait for a new session (after the
+    # portal refused its own) before GloveboxPowerSchoolWaitingForSession
+    # fires. The wait is normal and the pod stays Ready through it. Logins
+    # happen only on school days (the scheduled morning/evening runs and the
+    # on-request windows), so the longest routine wait is a weekend: a
+    # session refused on Friday is replaced by the Sunday-evening login,
+    # about 64h after Friday's morning login. 72h clears that with margin
+    # and still fires by Monday's first poll if Sunday's login did not
+    # replace it; on a weekday it means two or more scheduled logins in a
+    # row did not. (A holiday that suspends logins can still trip it.)
+    sessionWaitingHours: 72
     # Extra label matchers added to every expression on the workloads' own
     # series, e.g. 'namespace="glovebox"', when the scrape configuration
     # adds such a label and several releases share a Prometheus.
