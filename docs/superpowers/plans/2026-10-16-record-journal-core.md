@@ -174,7 +174,7 @@ The journal authenticates exactly as the login broker does (spec D9, 4.9): a pro
 - Test: `internal/satoken/satoken_test.go`
 - Modify: `internal/loginbroker/auth.go`, `internal/loginbroker/server.go`, `internal/loginbroker/server_test.go`
 
-- [ ] **Step 1.1: Write the fake TokenReview endpoint (test helper package).**
+- [x] **Step 1.1: Write the fake TokenReview endpoint (test helper package).**
 
 `internal/satoken/satokentest/fakeapi.go`:
 
@@ -299,7 +299,7 @@ func (f *FakeAPI) Requests() (requests, bearers []string, audiences [][]string) 
 }
 ```
 
-- [ ] **Step 1.2: Write the failing satoken tests (moved from the broker, against the fake).**
+- [x] **Step 1.2: Write the failing satoken tests (moved from the broker, against the fake).**
 
 `internal/satoken/satoken_test.go`:
 
@@ -455,12 +455,12 @@ func TestSafeName(t *testing.T) {
 }
 ```
 
-- [ ] **Step 1.3: Run them; expect a build failure.**
+- [x] **Step 1.3: Run them; expect a build failure.**
 
 Run: `go test ./internal/satoken/...`
 Expected: `undefined: NewTokenReviewer` (and the other satoken names) -- the package has no source yet.
 
-- [ ] **Step 1.4: Create `internal/satoken/satoken.go` by moving the broker's file.**
+- [x] **Step 1.4: Create `internal/satoken/satoken.go` by moving the broker's file.**
 
 ```bash
 mkdir -p internal/satoken
@@ -514,7 +514,7 @@ func SafeName(s string) string {
 
 Read the moved file once and fix any comment that still says "broker" where it now means "this service" (doc comments only; no code changes beyond the sed above).
 
-- [ ] **Step 1.5: Recreate `internal/loginbroker/auth.go` as aliases.**
+- [x] **Step 1.5: Recreate `internal/loginbroker/auth.go` as aliases.**
 
 ```go
 package loginbroker
@@ -545,18 +545,18 @@ func NewTokenReviewer(access *kubecm.Access, audience string, allowed []string) 
 }
 ```
 
-- [ ] **Step 1.6: Point the broker's server at the shared helpers and drop the moved tests.**
+- [x] **Step 1.6: Point the broker's server at the shared helpers and drop the moved tests.**
 
 In `internal/loginbroker/server.go`: replace every `bearerToken(` with `satoken.BearerToken(` and every `safeName(` with `satoken.SafeName(`; delete the two function definitions `bearerToken` and `safeName` at the end of the file; add the import `"github.com/leftathome/glovebox/internal/satoken"` and drop `"strings"`, which nothing else in the file uses.
 
 In `internal/loginbroker/server_test.go`: delete everything from the line `// --- TokenReview ----...` through the end of `TestTokenReviewerConfiguration` (the `brokerOwnToken` constant, `fakeAPI`, `newFakeAPI`, `access`, `saStatus`, `testAudience` and the three tests -- they now live in `internal/satoken`). Remove the imports the compiler then reports as unused.
 
-- [ ] **Step 1.7: Run everything that touches the move.**
+- [x] **Step 1.7: Run everything that touches the move.**
 
 Run: `go build ./... && go vet ./internal/satoken/... ./internal/loginbroker/... ./connectors/login-broker/... && go test ./internal/satoken/... ./internal/loginbroker/... ./connectors/login-broker/... -count=1 -race`
 Expected: PASS for all three package trees. Then the staticcheck line from "How to work this plan" on `./internal/satoken/... ./internal/loginbroker/...`: no findings.
 
-- [ ] **Step 1.8: Commit.**
+- [x] **Step 1.8: Commit.**
 
 ```bash
 git add internal/satoken internal/loginbroker

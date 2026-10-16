@@ -8,12 +8,12 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 
 	"golang.org/x/time/rate"
 
 	"github.com/leftathome/glovebox/internal/loginbroker/brokerapi"
+	"github.com/leftathome/glovebox/internal/satoken"
 )
 
 // maxRequestBytes bounds a request body. A valid one is under 100 bytes.
@@ -150,7 +150,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	token, ok := bearerToken(r.Header.Get("Authorization"))
+	token, ok := satoken.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		s.refuse(w, http.StatusUnauthorized, "unauthenticated")
@@ -174,7 +174,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		// The identity is the API server's word and is safe to log; it is
 		// what an operator needs to see when the allow-list is wrong.
 		s.refuse(w, http.StatusForbidden, "forbidden",
-			"caller_namespace", safeName(caller.Namespace), "caller_serviceaccount", safeName(caller.Name))
+			"caller_namespace", satoken.SafeName(caller.Namespace), "caller_serviceaccount", satoken.SafeName(caller.Name))
 		return
 	case err != nil:
 		s.refuse(w, http.StatusServiceUnavailable, "auth_unavailable")
@@ -207,7 +207,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("refresh requested",
-		"caller_namespace", safeName(caller.Namespace), "caller_serviceaccount", safeName(caller.Name), "reason", req.Reason)
+		"caller_namespace", satoken.SafeName(caller.Namespace), "caller_serviceaccount", satoken.SafeName(caller.Name), "reason", req.Reason)
 	resp, err := s.broker.Refresh(r.Context(), req)
 	if err != nil {
 		// The caller went away. The refresh goes on and its session, if
@@ -216,34 +216,4 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// bearerToken extracts the token of an "Authorization: Bearer" header.
-func bearerToken(header string) (string, bool) {
-	scheme, token, ok := strings.Cut(strings.TrimSpace(header), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", false
-	}
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxTokenBytes || strings.ContainsAny(token, " \t") {
-		return "", false
-	}
-	return token, true
-}
-
-// safeName bounds a Kubernetes name for a log line. Names from the API
-// server are already DNS labels; this only makes that independent of it.
-func safeName(s string) string {
-	var sb strings.Builder
-	for _, r := range s {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.' {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteRune('_')
-		}
-		if sb.Len() >= 80 {
-			break
-		}
-	}
-	return sb.String()
 }
