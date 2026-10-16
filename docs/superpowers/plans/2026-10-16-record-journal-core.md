@@ -1440,7 +1440,7 @@ Append-only change log; the reader cursor is `seq`.
 | `changed` | jsonb | `updated`: `{field: [old, new]}` (null for absent). `removed`: the last known fields. NULL otherwise. |
 | `scan` | jsonb | A verdict for every `text` value in this row: `{field: {"old": v, "new": v, "scanner_version": s}}`. |
 | `observed_at` | timestamptz | When the change was observed. |
-| `prev_observed_at` | timestamptz | When the old value was last confirmed; the change happened in `(prev_observed_at, observed_at]`. NULL for `created`. |
+| `prev_observed_at` | timestamptz | When the old value was last confirmed; the change happened in `(prev_observed_at, observed_at]`. NULL for `created`. For `restored` it is the `observed_at` of the snapshot that removed the record (the removal is its last confirmation). |
 | `approximate` | boolean | Seeded. |
 | `snapshot_id` | uuid | The snapshot that caused it; NULL for household writes. |
 | `actor` | text | Writer ServiceAccount; for notes also `;on_behalf_of=<member>`. |
@@ -1478,7 +1478,17 @@ Choices this schema makes where the spec leaves room (also in the plan,
 - `record_current.last_confirmed_at` and `record_event.notify` are additions
   to the spec's column lists; neither is event-derived.
 - Locks: per subject for writes, one global lock around event inserts (see
-  Invariants).
+  Invariants). The global lock serialises every transaction that writes
+  events, from its first event insert to its commit. That costs concurrency
+  only between writers of different subjects, and at household scale (a
+  handful of connectors, snapshots of at most a few thousand records) it is
+  not a bottleneck; if it ever is, the alternative is a reader-side
+  watermark (serve only seq below the oldest in-flight transaction's).
+- Rows are read `FOR UPDATE` by Apply and by each rescan batch, so verdicts
+  written by one are never overwritten from a stale read by the other.
+- Record types: a field keeps its type across versions, renames keep the
+  type, and a text field is never dropped (4.7); values that carry a scan
+  verdict are masked by it whatever the active type says (4.11).
 
 ## Migration history
 
@@ -1985,6 +1995,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/record"
 )
 
 // FieldType is the type of one field (spec section 3).
@@ -2492,6 +2503,7 @@ import (
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/record"
 )
 
 func parts(kv ...string) []journalapi.ScopePart {
@@ -2691,7 +2703,7 @@ git commit -m "feat(journal): scopes and their canonical form (glovebox-wekc.18)
 ---
 ## Task 6: Record types, schema versions and the rename chain
 
-Record types are configuration (spec section 3). A type's schema versions are numbered from 1 without gaps; version `v`'s `renames` map names of version `v-1` to names of `v` (4.7), so any old name can be mapped forward to the active version by applying the renames of each later version in turn. Household types (owner `household`) declare a fixed audience and a `date` field (4.9a, 5.3).
+Record types are configuration (spec section 3). The registry enforces 4.7's "a type change of an existing field requires a new field name": a kept name keeps its type, a rename keeps the type, and a `text` field is never dropped -- masking and rescans key on the type, so letting a text field become a string would serve stored values whose verdict failed. A type's schema versions are numbered from 1 without gaps; version `v`'s `renames` map names of version `v-1` to names of `v` (4.7), so any old name can be mapped forward to the active version by applying the renames of each later version in turn. Household types (owner `household`) declare a fixed audience and a `date` field (4.9a, 5.3).
 
 **Files:**
 - Modify: `internal/journal/record/types.go`
@@ -2793,6 +2805,13 @@ func TestRegistryRefusals(t *testing.T) {
 	badType.Fields = map[string]FieldDef{"title": {Type: "blob"}}
 	badToken := assignmentV1
 	badToken.DefaultAudience = []string{"Guardians"}
+	keptNameNewType := assignmentV2()
+	keptNameNewType.Fields["due"] = FieldDef{Type: String}
+	renameNewType := assignmentV2()
+	renameNewType.Fields["teacher_comment"] = FieldDef{Type: String}
+	textDropped := assignmentV2()
+	delete(textDropped.Fields, "teacher_comment")
+	textDropped.Renames = map[string]string{"title": "name"}
 	for name, types := range map[string][]Type{
 		"version gap":             {assignmentV1, gap},
 		"owner changes":           {assignmentV1, otherOwner},
@@ -2807,6 +2826,9 @@ func TestRegistryRefusals(t *testing.T) {
 		"bad field type":          {badType},
 		"bad audience token":      {badToken},
 		"duplicate version":       {assignmentV1, assignmentV1},
+		"kept name, new type":     {assignmentV1, keptNameNewType},
+		"rename changes type":     {assignmentV1, renameNewType},
+		"text field dropped":      {assignmentV1, textDropped},
 	} {
 		if _, err := NewRegistry(types); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -2998,9 +3020,34 @@ func NewRegistry(types []Type) (*Registry, error) {
 			if t.Owner != prev.Owner {
 				return nil, fmt.Errorf("record type %s: the owner cannot change between versions", name)
 			}
-			for from := range t.Renames {
-				if _, ok := prev.Fields[from]; !ok {
+			for from, to := range t.Renames {
+				old, ok := prev.Fields[from]
+				if !ok {
 					return nil, fmt.Errorf("record type %s v%d: renames %s, which v%d does not declare", name, t.SchemaVersion, from, prev.SchemaVersion)
+				}
+				if old.Type != t.Fields[to].Type {
+					return nil, fmt.Errorf("record type %s v%d: renaming %s to %s changes its type; a type change needs a new field name (4.7)", name, t.SchemaVersion, from, to)
+				}
+			}
+			// 4.7: a type change of an existing field requires a new field
+			// name. Masking and rescans key on the field type (4.11), so a
+			// text field turned string would be served unmasked.
+			for field, def := range t.Fields {
+				if old, ok := prev.Fields[field]; ok && old.Type != def.Type {
+					return nil, fmt.Errorf("record type %s v%d: field %s changes type from %s to %s; a type change needs a new field name (4.7)", name, t.SchemaVersion, field, old.Type, def.Type)
+				}
+			}
+			// A text field is never dropped: its stored values carry scan
+			// verdicts and must stay maskable and rescannable.
+			for field, def := range prev.Fields {
+				if def.Type != Text {
+					continue
+				}
+				if _, renamed := t.Renames[field]; renamed {
+					continue
+				}
+				if _, kept := t.Fields[field]; !kept {
+					return nil, fmt.Errorf("record type %s v%d: text field %s cannot be dropped (its stored values keep scan verdicts)", name, t.SchemaVersion, field)
 				}
 			}
 		}
@@ -5640,6 +5687,9 @@ func TestReadPolicy(t *testing.T) {
 	if ps.MayRead("e_child1") || admin.MayRead("e_parent1") || !admin.Admin {
 		t.Error("writers and operators read nothing")
 	}
+	if !ps.WritesSnapshots(reg(t)) || gw.WritesSnapshots(reg(t)) || dash.WritesSnapshots(reg(t)) || admin.WritesSnapshots(reg(t)) {
+		t.Error("WritesSnapshots: only source-type writers")
+	}
 	if _, ok := p.Service("openclaw/glovebox-glovebox-connector-rss"); ok {
 		t.Error("the RSS connector has a policy")
 	}
@@ -5827,6 +5877,18 @@ func (s Service) MayWrite(t record.Type, sc record.Scope) *record.Rejection {
 		}
 	}
 	return nil
+}
+
+// WritesSnapshots reports whether the service may write any source (not
+// household) record type: only such a service may use POST /v1/records at
+// all -- including the step-1 lookup, so others cannot probe snapshot ids.
+func (s Service) WritesSnapshots(reg *record.Registry) bool {
+	for _, name := range s.WriteTypes {
+		if t, ok := reg.Active(name); ok && !t.Household() {
+			return true
+		}
+	}
+	return false
 }
 
 // MayWriteNote decides POST /v1/notes for a type and its on_behalf_of.
@@ -7124,11 +7186,15 @@ func (j *Journal) storeSnapshot(ctx context.Context, tx *sql.Tx, n *record.Norma
 }
 
 // loadCurrent reads the rows of one subject and type (one key when key is
-// set), with values returned to their canonical form.
+// set), with values returned to their canonical form. The rows are locked
+// (FOR UPDATE): a rescan batch (Task 21) also locks the rows it rewrites,
+// so neither can write verdicts computed from what the other replaced.
+// Lock order is safe: a rescan takes only row locks, never the subject or
+// event advisory locks an Apply holds.
 func (j *Journal) loadCurrent(ctx context.Context, tx *sql.Tx, t record.Type, subject, key string) (map[string]diff.Current, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT key, scope, to_jsonb(audience), fields, removed, content_hash,
 		last_seen_at, last_confirmed_at, scan FROM record_current
-		WHERE record_type = $1 AND data_subject = $2 AND ($3 = '' OR key = $3)`, t.Name, subject, key)
+		WHERE record_type = $1 AND data_subject = $2 AND ($3 = '' OR key = $3) FOR UPDATE`, t.Name, subject, key)
 	if err != nil {
 		return nil, err
 	}
@@ -7518,7 +7584,7 @@ git commit -m "test(journal): removal, restore, scope moves, complete_range and 
 ---
 ## Task 17: Held snapshots -- holding, confirm, discard, automatic discard
 
-4.5: a complete snapshot that trips the guard is stored `held` with its payload and its would-be stats, nothing is applied, and the connector is told `held` (a resend gets `held` again from step 1). A later snapshot of the scope that does not trip the guard is applied normally and discards every older held one (Task 15 already does this). An operator confirms or discards through the admin endpoint (Task 27): confirming re-runs 4.4 from step 4 against current state without the guard, and discards older held snapshots of the scope; a held snapshot that is no longer held cannot be confirmed.
+4.5: a complete snapshot that trips the guard is stored `held` with its payload and its would-be stats, nothing is applied, and the connector is told `held` (a resend gets `held` again from step 1). A later snapshot of the scope that does not trip the guard is applied normally and discards every older held one (Task 15 already does this). An operator confirms or discards through the admin endpoint (Task 27): confirming re-runs 4.4 from step 4 against current state without the guard, and discards older held snapshots of the scope; a held snapshot that is no longer held cannot be confirmed. Confirming also re-checks the snapshot's writer against the **current** policy (`MayWrite`, passed in by the HTTP layer as a `WriteCheck`): a writer that has lost the right since gets a 403 `policy` refusal with nothing applied, and the operator discards the snapshot instead.
 
 **Files:**
 - Create: `internal/journal/hold.go`
@@ -7539,6 +7605,8 @@ import (
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
+
+func allowAll(string, record.Type, record.Scope) *record.Rejection { return nil }
 
 // five records in course c1 for e_child1, observed at t
 func five(r *rig, n int, t time.Time) {
@@ -7591,7 +7659,7 @@ func TestConfirmAppliesWithoutTheGuardAndDiscardsOlderHeld(t *testing.T) {
 	five(r, 1, T0.Add(-4*time.Hour))
 	r.apply(snap(2, "e_child1", "c1", T0.Add(-3*time.Hour), true, keep(3)...))
 	r.apply(snap(3, "e_child1", "c1", T0.Add(-2*time.Hour), true, keep(1)...))
-	out, err := r.j.ConfirmHeld(ctx, uid(3))
+	out, err := r.j.ConfirmHeld(ctx, uid(3), allowAll)
 	if err != nil || out.Status != journalapi.StatusApplied || out.Stats.Removed != 4 {
 		t.Fatalf("%+v %v", out, err)
 	}
@@ -7603,10 +7671,10 @@ func TestConfirmAppliesWithoutTheGuardAndDiscardsOlderHeld(t *testing.T) {
 			t.Errorf("c1:%d not removed", i)
 		}
 	}
-	if _, err := r.j.ConfirmHeld(ctx, uid(2)); !errors.Is(err, ErrNotHeld) {
+	if _, err := r.j.ConfirmHeld(ctx, uid(2), allowAll); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("confirming a discarded snapshot: %v", err)
 	}
-	if _, err := r.j.ConfirmHeld(ctx, uid(99)); !errors.Is(err, ErrNotFound) {
+	if _, err := r.j.ConfirmHeld(ctx, uid(99), allowAll); !errors.Is(err, ErrNotFound) {
 		t.Errorf("confirming nothing: %v", err)
 	}
 	if out, _, _ := r.j.Lookup(ctx, uid(3)); out.Status != journalapi.StatusDuplicate {
@@ -7624,7 +7692,7 @@ func TestConfirmingAnOvertakenHeldSnapshotMakesItLate(t *testing.T) {
 	if _, err := r.j.db.Exec(`UPDATE snapshot SET observed_at = $2 WHERE id = $1::uuid`, uid(1), T0.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	out, err := r.j.ConfirmHeld(ctx, uid(2))
+	out, err := r.j.ConfirmHeld(ctx, uid(2), allowAll)
 	if err != nil || out.Status != journalapi.StatusLate || r.snapshotStatus(2) != "late" {
 		t.Errorf("%+v %v %s", out, err, r.snapshotStatus(2))
 	}
@@ -7648,12 +7716,30 @@ func TestDiscard(t *testing.T) {
 	}
 }
 
+func TestConfirmRechecksTheWritersPolicy(t *testing.T) {
+	r := newRig(t)
+	five(r, 1, T0.Add(-3*time.Hour))
+	r.apply(snap(2, "e_child1", "c1", T0.Add(-2*time.Hour), true, keep(3)...))
+	var asked string
+	revoked := func(w string, _ record.Type, _ record.Scope) *record.Rejection {
+		asked = w
+		return &record.Rejection{Status: 403, Reason: journalapi.ReasonPolicy, Detail: "revoked"}
+	}
+	out, err := r.j.ConfirmHeld(ctx, uid(2), revoked)
+	if err != nil || out.Rejection == nil || out.Rejection.Status != 403 || asked != writer || r.snapshotStatus(2) != "held" {
+		t.Errorf("%+v %v asked=%q status=%s", out, err, asked, r.snapshotStatus(2))
+	}
+	if _, err := r.j.ConfirmHeld(ctx, uid(2), nil); err == nil {
+		t.Error("a confirm without a write check")
+	}
+}
+
 func TestConfirmRechecksTheRoster(t *testing.T) {
 	r := newRig(t)
 	five(r, 1, T0.Add(-3*time.Hour))
 	r.apply(snap(2, "e_child1", "c1", T0.Add(-2*time.Hour), true, keep(3)...))
 	r.ros.Store(nil)
-	out, err := r.j.ConfirmHeld(ctx, uid(2))
+	out, err := r.j.ConfirmHeld(ctx, uid(2), allowAll)
 	if err != nil || out.Rejection == nil || out.Rejection.Status != 409 || r.snapshotStatus(2) != "held" {
 		t.Errorf("%+v %v", out, err)
 	}
@@ -7697,9 +7783,18 @@ func (j *Journal) snapshotSubject(ctx context.Context, id string) (string, error
 	return subject, err
 }
 
+// WriteCheck decides, under the current policy, whether writer may still
+// write a snapshot of type t in scope sc (policy.Service.MayWrite).
+type WriteCheck func(writer string, t record.Type, sc record.Scope) *record.Rejection
+
 // ConfirmHeld applies a held snapshot: 4.4 from step 4 against current
-// state, without the removal guard (4.5).
-func (j *Journal) ConfirmHeld(ctx context.Context, id string) (Outcome, error) {
+// state, without the removal guard (4.5). The snapshot was authorised when
+// it arrived; mayWrite checks its writer again under today's policy, and a
+// writer that has lost the right gets nothing applied (discard it instead).
+func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteCheck) (Outcome, error) {
+	if mayWrite == nil {
+		return Outcome{}, errors.New("journal: ConfirmHeld needs a write check")
+	}
 	subject, err := j.snapshotSubject(ctx, id)
 	if err != nil {
 		return Outcome{}, err
@@ -7732,6 +7827,10 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string) (Outcome, error) {
 		n, rej := record.ValidateSnapshot(j.o.Registry, s, received)
 		if rej != nil {
 			out.Rejection = rej // the configuration changed since; discard it instead
+			return nil
+		}
+		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {
+			out.Rejection = rej
 			return nil
 		}
 		if rej := j.checkSubject(n.Subject); rej != nil {
@@ -8162,6 +8261,28 @@ func TestEventsMaskTextByEachValuesVerdict(t *testing.T) {
 	}
 }
 
+// Fail closed (4.11): a value that carries a verdict is masked by it even
+// where the active type does not call the field text.
+func TestValuesWithAVerdictAreMaskedWhateverTheActiveType(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"title": "A"}`)))
+	if _, err := r.j.db.Exec(`UPDATE record_current SET scan = '{"title": {"verdict": "quarantine", "scanner_version": "old"}}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.j.db.Exec(`UPDATE record_event SET scan = '{"title": {"new": "quarantine", "scanner_version": "old"}}'`); err != nil {
+		t.Fatal(err)
+	}
+	const withheld = `"withheld: failed content scan"`
+	rows, _ := r.j.State(ctx, StateQuery{Grants: r.grants("e_parent1")})
+	if len(rows) != 1 || string(rows[0].Fields["title"]) != withheld {
+		t.Errorf("state %+v", rows)
+	}
+	ev, _ := r.j.Events(ctx, EventsQuery{Grants: r.grants("e_parent1"), Limit: 10})
+	if len(ev) != 1 || string(ev[0].Fields["title"]) != withheld {
+		t.Errorf("events %+v", ev)
+	}
+}
+
 func TestEventsMapOldNamesForward(t *testing.T) {
 	r := newRig(t)
 	r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "x"}`)))
@@ -8296,7 +8417,9 @@ func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRo
 		_ = json.Unmarshal(scan, &sm)
 		s.Fields = map[string]json.RawMessage{}
 		for name, v := range f {
-			if t.IsText(name) {
+			// Fail closed (4.11): a value with a verdict is masked by it,
+			// whatever the active type now says.
+			if _, scanned := sm[name]; scanned || t.IsText(name) {
 				v = access.Text(v, sm[name].Verdict)
 			}
 			s.Fields[name] = v
@@ -8392,7 +8515,7 @@ func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, pr
 		verdicts[name(f)] = v
 	}
 	mask := func(f string, v json.RawMessage, verdict string) json.RawMessage {
-		if active.IsText(f) {
+		if _, scanned := verdicts[f]; scanned || active.IsText(f) {
 			return access.Text(v, verdict)
 		}
 		return v
@@ -8658,7 +8781,7 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 
 ## Task 21: Rescan
 
-4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`), so a concurrent `Apply` never has its fresh verdict overwritten.
+4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`). `Apply` reads its rows `FOR UPDATE` too (Task 15's `loadCurrent`), so an Apply and a rescan batch touching the same row run one after the other and neither writes verdicts computed from a value the other replaced; the test below pins it. The rescan takes no advisory lock, so the lock order (Apply: subject lock, event lock, rows; rescan: rows only) cannot deadlock.
 
 **Files:**
 - Create: `internal/journal/rescan.go`
@@ -8715,6 +8838,63 @@ func TestRescanReleasesValuesInBothTables(t *testing.T) {
 	all, _ := r.j.Rescan(ctx, true)
 	if all.CurrentRows != 1 || all.EventRows != 2 || all.Released != 0 {
 		t.Errorf("all: %+v", all)
+	}
+}
+
+func TestRescanCoversValuesWithAVerdictWhateverTheActiveType(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"title": "A"}`)))
+	if _, err := r.j.db.Exec(`UPDATE record_current SET scan = '{"title": {"verdict": "quarantine", "scanner_version": "old"}}'`); err != nil {
+		t.Fatal(err)
+	}
+	r.j.o.Scanner = releasingScanner{}
+	res, err := r.j.Rescan(ctx, false)
+	if err != nil || res.CurrentRows != 1 || res.Released != 1 {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+// An Apply that starts while a rescan batch holds a row waits for it (the
+// rows are read FOR UPDATE) and keeps the rescan's verdict for a value it
+// does not change.
+func TestApplyWaitsForARescanBatchAndKeepsItsVerdicts(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "INJECT"}`)))
+	tx, err := r.j.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`SELECT 1 FROM record_current WHERE key = 'k' FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		s := snap(2, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"title": "B", "comment": "INJECT"}`))
+		n, rej := record.ValidateSnapshot(r.reg, s, T0)
+		if rej != nil {
+			done <- rej
+			return
+		}
+		_, err := r.j.Apply(ctx, writer, n, []byte(`{}`))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Apply did not wait for the locked row: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := tx.Exec(`UPDATE record_current SET scan = '{"comment": {"verdict": "pass", "scanner_version": "scanner-2"}}' WHERE key = 'k'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	c, _ := r.current("assignment", "e_child1", "k")
+	if string(c.Fields["title"]) != `"B"` || c.Scan["comment"] != (record.ScanEntry{Verdict: "pass", ScannerVersion: "scanner-2"}) {
+		t.Errorf("the rescan's verdict was overwritten: %+v", c)
 	}
 }
 
@@ -8839,7 +9019,8 @@ func (j *Journal) rescanCurrent(ctx context.Context, after [3]string, all bool, 
 			t, _ := j.o.Registry.Active(r.pk[0])
 			changed := false
 			for f, v := range r.fields {
-				if !t.IsText(f) || (!all && r.scan[f].ScannerVersion == sv) {
+				_, scanned := r.scan[f]
+				if !(t.IsText(f) || scanned) || (!all && r.scan[f].ScannerVersion == sv) {
 					continue
 				}
 				if r.scan == nil {
@@ -8907,8 +9088,8 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, res *
 			}
 			changed := false
 			judgeField := func(f string, old, nw json.RawMessage) {
-				es := r.scan[f]
-				if !t.IsText(f) || (!all && es.ScannerVersion == sv) {
+				es, scanned := r.scan[f]
+				if !(t.IsText(f) || scanned) || (!all && es.ScannerVersion == sv) {
 					return
 				}
 				if old != nil && string(old) != "null" {
@@ -10540,6 +10721,11 @@ func TestRecordsResponseTable(t *testing.T) {
 	if code, resp := post("ps", ok); code != 200 || resp.Status != journalapi.StatusDuplicate {
 		t.Errorf("duplicate: %d %+v", code, resp)
 	}
+	for _, reader := range []string{"gw", "dash", "admin"} {
+		if code, resp := post(reader, ok); code != 403 || resp.Reason != journalapi.ReasonPolicy || resp.Stats != nil {
+			t.Errorf("%s probed a snapshot id: %d %+v", reader, code, resp)
+		}
+	}
 	late := assignments(2, "e_child1", "powerschool", T0.Add(-2*time.Hour))
 	if code, resp := post("ps", late); code != 200 || resp.Status != journalapi.StatusLate {
 		t.Errorf("late: %d %+v", code, resp)
@@ -10839,6 +11025,12 @@ import (
 const maxSnapshotBytes = 8 << 20 // 4.3
 
 func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request, c call) {
+	// Before anything else, the step-1 lookup included: a service that
+	// writes no snapshots learns nothing here, not even whether an id exists.
+	if !c.svc.WritesSnapshots(s.d.Registry) {
+		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "this service writes no snapshots")
+		return
+	}
 	if !isJSON(r) {
 		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "Content-Type must be application/json")
 		return
@@ -11444,7 +11636,7 @@ func (s *Server) handleHeld(w http.ResponseWriter, r *http.Request, c call) {
 	s.d.Log.Info("journal held snapshot decision", "caller", c.caller, "snapshot_id", id.String(), "action", action)
 	var out journal.Outcome
 	if action == journalapi.ActionConfirm {
-		out, err = s.d.Journal.ConfirmHeld(r.Context(), id.String())
+		out, err = s.d.Journal.ConfirmHeld(r.Context(), id.String(), s.writerMayWrite)
 	} else {
 		err = s.d.Journal.DiscardHeld(r.Context(), id.String())
 		out.Status = journalapi.StatusDiscarded
@@ -11461,6 +11653,21 @@ func (s *Server) handleHeld(w http.ResponseWriter, r *http.Request, c call) {
 	default:
 		writeJSON(w, http.StatusOK, journalapi.Response{Status: out.Status, Stats: &out.Stats})
 	}
+}
+
+// writerMayWrite re-checks a held snapshot's writer under the current
+// policy before an operator's confirmation applies it.
+func (s *Server) writerMayWrite(writer string, t record.Type, sc record.Scope) *record.Rejection {
+	svc, ok := s.d.Policy.Service(writer)
+	if !ok {
+		return &record.Rejection{Status: http.StatusForbidden, Reason: journalapi.ReasonPolicy,
+			Detail: "the snapshot's writer no longer has a journal policy; discard the snapshot"}
+	}
+	if rej := svc.MayWrite(t, sc); rej != nil {
+		return &record.Rejection{Status: http.StatusForbidden, Reason: journalapi.ReasonPolicy,
+			Detail: "the snapshot's writer may no longer write it (" + rej.Detail + "); discard the snapshot"}
+	}
+	return nil
 }
 
 func (s *Server) handleErase(w http.ResponseWriter, r *http.Request, c call) {
