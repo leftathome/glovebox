@@ -3,6 +3,11 @@
 // the request and response bodies, and the status and reason codes a
 // connector's spool acts on. The journal's server, connectors (Part B) and
 // readers (Part C) all build against these types.
+//
+// Conventions: every time.Time is RFC 3339 in UTC. The server rejects unknown
+// fields in request bodies (strict decoding happens in its handlers, not in
+// these types). List and map fields of responses are always encoded as [] or
+// {}, never null.
 package journalapi
 
 import (
@@ -49,6 +54,45 @@ const (
 	StatusRejected  = "rejected"
 )
 
+// StatusStarted answers POST /v1/admin/rescan (HTTP 202).
+const StatusStarted = "started"
+
+// Event kinds (Event.Kind).
+const (
+	KindCreated  = "created"
+	KindUpdated  = "updated"
+	KindRemoved  = "removed"
+	KindRestored = "restored"
+)
+
+// Event importance (Event.Importance).
+const (
+	ImportanceHigh   = "high"
+	ImportanceNormal = "normal"
+	ImportanceLow    = "low"
+)
+
+// Notice modes (Notice.Mode).
+const (
+	ModePush   = "push"
+	ModeDigest = "digest"
+	ModePrompt = "prompt"
+)
+
+// NoteResponse statuses.
+const (
+	NoteCreated   = "created"
+	NoteUpdated   = "updated"
+	NoteUnchanged = "unchanged"
+)
+
+// HealthOK is Healthz.Status when the journal is ready.
+const HealthOK = "ok"
+
+// WithheldPrefix starts every string that replaces a value the reader may
+// not see (4.8, 4.11).
+const WithheldPrefix = "withheld: "
+
 // Reasons accompany StatusRejected. The HTTP status says what the spool
 // does; see the table in docs/journal-api.md.
 const (
@@ -86,7 +130,7 @@ type Snapshot struct {
 }
 
 // CompleteRange limits a complete snapshot's removals to records whose
-// date field lies in [From, To] (4.3).
+// date field lies in [From, To] (4.3). From and To are YYYY-MM-DD dates.
 type CompleteRange struct {
 	Field string `json:"field"`
 	From  string `json:"from"`
@@ -130,8 +174,8 @@ type Note struct {
 	OnBehalfOf  string                     `json:"on_behalf_of"`
 }
 
-// NoteResponse answers POST /v1/notes. Status is "created", "updated" or
-// "unchanged".
+// NoteResponse answers POST /v1/notes. Status is NoteCreated, NoteUpdated or
+// NoteUnchanged; Seq is omitted when it is NoteUnchanged.
 type NoteResponse struct {
 	Status string `json:"status"`
 	Key    string `json:"key"`
@@ -157,14 +201,14 @@ type StateRow struct {
 	Approximate bool `json:"approximate"`
 }
 
-// StateResponse answers GET /v1/state.
+// StateResponse answers GET /v1/state. Rows is always [], never null.
 type StateResponse struct {
 	Rows         []StateRow `json:"rows"`
 	RosterSHA256 string     `json:"roster_sha256"`
 }
 
 // Change is one field of an "updated" event. A value the reader may not
-// see is the string "withheld: ..." (4.8, 4.11).
+// see is the string "withheld: ..." (WithheldPrefix; 4.8, 4.11).
 type Change struct {
 	Old json.RawMessage `json:"old"`
 	New json.RawMessage `json:"new"`
@@ -178,7 +222,9 @@ type Notice struct {
 	Purpose string `json:"purpose,omitempty"`
 }
 
-// Event is one change as GET /v1/events returns it.
+// Event is one change as GET /v1/events returns it. There is deliberately no
+// prev_audience on the wire (4.8): old values are masked for readers outside
+// the old audience, but the audience change itself is not exposed.
 type Event struct {
 	Seq            int64                      `json:"seq"`
 	RecordType     string                     `json:"record_type"`
@@ -202,7 +248,7 @@ type Event struct {
 	Notify         []Notice                   `json:"notify,omitempty"`
 }
 
-// EventsResponse answers GET /v1/events. Next is the cursor to send as
+// EventsResponse answers GET /v1/events. Events is always [], never null. Next is the cursor to send as
 // "after" next time: the last returned seq, or the request's "after".
 type EventsResponse struct {
 	Events []Event `json:"events"`
@@ -210,6 +256,7 @@ type EventsResponse struct {
 }
 
 // Count is one subject and record type in GET /v1/counts: no field values.
+// Events is always an object ({} when empty), never null.
 type Count struct {
 	DataSubject string         `json:"data_subject"`
 	RecordType  string         `json:"record_type"`
@@ -217,7 +264,7 @@ type Count struct {
 	Events      map[string]int `json:"events"` // by importance, since Since
 }
 
-// CountsResponse answers GET /v1/counts.
+// CountsResponse answers GET /v1/counts. Counts is always [], never null.
 type CountsResponse struct {
 	Since  time.Time `json:"since"`
 	Counts []Count   `json:"counts"`
