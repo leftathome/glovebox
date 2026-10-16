@@ -158,6 +158,12 @@ readOnlyRootFilesystem:
   # item's temp dir at a time and never comes close. Overridable per workload.
   tmpSizeLimit: 1Gi
 
+# The core service's ServiceAccount (default name <fullname>). Only the core
+# runs as it: every connector and importer has one of its own (below), so a
+# connector that has been taken over cannot act as the core or as another
+# connector. The token is mounted only with ingest.auth.enabled, for the
+# archive listener's Vault Kubernetes login; a Vault role for that login is
+# bound to this name.
 serviceAccount:
   create: true
   name: ""
@@ -478,6 +484,23 @@ connectors:
   # to a pre-existing Secret name (envFrom) or set externalSecret.enabled
   # to have ESO materialize one from Vault (see docs/connectors/<name>.md).
   # schoology is configured separately via schoologyConnector below.
+  #
+  # ServiceAccounts: every enabled connector runs as one of its own,
+  # <fullname>-connector-<name>, rendered by the chart with no API token
+  # mounted (and the pod says automountServiceAccountToken: false too). No
+  # connector shares the core's account or another connector's. The only
+  # connector that talks to the Kubernetes API is powerschool with
+  # loginOnDemand, and its Role is bound to its own account. Optional,
+  # per connector, same shape as the core's serviceAccount:
+  #
+  #   serviceAccount:
+  #     create: true      # false: the operator provides the account
+  #     name: ""          # default <fullname>-connector-<name>
+  #     annotations: {}
+  #
+  # A connector's account name is its identity to anything that checks one
+  # (the login broker's allowed callers; the record journal's write rights),
+  # so overriding it means updating those too.
 
   rss:
     enabled: false
@@ -1711,8 +1734,9 @@ connectors:
     #   - requires powerschoolAuthRefresher.enabled AND
     #     powerschoolAuthRefresher.onRequest.enabled (the chart refuses to
     #     render otherwise);
-    #   - gives this connector a ServiceAccount of its own, with its token
-    #     mounted, and a Role granting exactly get/update/patch on that one
+    #   - mounts this connector's API token (its ServiceAccount,
+    #     <fullname>-connector-powerschool, is its own either way) and
+    #     binds it a Role granting exactly get/update/patch on that one
     #     ConfigMap;
     #   - needs egress from the connector to the Kubernetes API server. The
     #     chart's own connector NetworkPolicy already allows all egress; in
@@ -1749,8 +1773,9 @@ connectors:
     # Enabling it:
     #   - requires loginBrokers.<name>.enabled, with connector: powerschool
     #     there (the chart refuses to render otherwise);
-    #   - gives this connector a ServiceAccount of its own with NO Role and
-    #     no API token mounted; the pod holds one token, projected for the
+    #   - makes this connector's own ServiceAccount
+    #     (<fullname>-connector-powerschool) the broker's allowed caller; it
+    #     has NO Role and no API token mounted; the pod holds one token, projected for the
     #     broker's audience, which nothing else accepts;
     #   - needs no access to the Kubernetes API, and egress only to the
     #     broker's Service (the chart's connector NetworkPolicy already
@@ -2414,6 +2439,13 @@ schoologyConnector:
     existingClaim: ""
   # Scheduler timezone (spec 12 §6.1).
   timezone: America/Los_Angeles
+  # This connector's own ServiceAccount, <fullname>-connector-schoology, with
+  # no API token (it never calls the Kubernetes API). Same shape as a
+  # connectors.<name>.serviceAccount; see the note under `connectors`.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
   # Name of an operator-provisioned Secret holding the bearer token for
   # POST /v1/poll under key SCHOOLOGY_TRIGGER_TOKEN. Empty leaves the
   # trigger token unset (the connector then accepts unauthenticated polls
@@ -2655,6 +2687,10 @@ ingest:
 # ingest it. Each is disabled by default; enable one and point `input.existingClaim`
 # at a PVC containing the archive, then `source` at its path inside the container.
 # See docs/connectors/importers.md.
+#
+# Each enabled importer Job runs as a ServiceAccount of its own,
+# <fullname>-importer-<name>, with no API token. Optional per importer, as for
+# a connector: serviceAccount: {create: true, name: "", annotations: {}}.
 importers:
   apple:
     enabled: false

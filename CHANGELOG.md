@@ -57,6 +57,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connector.SessionState`, `connector.WaitHealth` (moved from the
   PowerSchool package) and `RejectedSession.MarkedAt`.
 
+### Security
+
+- **One ServiceAccount per workload** (glovebox-wekc.19). The connectors
+  and importers no longer run as the core's ServiceAccount: each enabled
+  connector Deployment has `<fullname>-connector-<name>` and each importer
+  Job `<fullname>-importer-<name>`, rendered with no API token, and every
+  connector and importer pod states `automountServiceAccountToken: false`.
+  The core keeps `<fullname>` and mounts its token only with
+  `ingest.auth.enabled` (its Vault login). Under the shared account a
+  connector that had been taken over -- RSS parses whatever the open
+  internet sends it -- held the core's identity and, with
+  `ingest.auth.enabled`, its token; the record journal (spec 2026-10-16,
+  4.9c) authorises writes by ServiceAccount and needs connectors to be told
+  apart. The PowerSchool connector's account (rendered only with
+  `loginOnDemand` or `loginBroker`) is renamed from `<fullname>-powerschool`
+  to `<fullname>-connector-powerschool`; its RoleBinding and the login
+  broker's allowed caller follow it. New optional
+  `connectors.<name>.serviceAccount`, `schoologyConnector.serviceAccount`
+  and `importers.<name>.serviceAccount` (`create`, `name`, `annotations`).
+  `scripts/test-chart-serviceaccounts.sh` pins the identities and checks
+  that a render differs from the previous chart only in them.
+
+### Upgrade notes
+
+- Every connector Deployment and the core roll once. No Vault role is bound
+  to an account that changes: `glovebox-ingest` stays bound to the core's
+  unchanged `<fullname>`, and the refresher and broker roles to their own
+  unchanged accounts. See `docs/upgrading.md`.
+
 ## [0.11.0] - 2026-10-12
 
 ### Upgrade notes

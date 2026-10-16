@@ -22,7 +22,12 @@ spec:
         prometheus.io/path: "/metrics"
         {{- end }}
     spec:
+      # The core's own ServiceAccount; no connector or importer runs as it.
+      # Its token is mounted only for the ingest/archive listener's Vault
+      # Kubernetes login (ingest.auth.enabled); nothing else in the core
+      # calls the Kubernetes API.
       serviceAccountName: {{ include "glovebox.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}
       {{- with (include "glovebox.runtimeClassName" (dict "workload" dict "root" .)) }}
       runtimeClassName: {{ . | quote }}
       {{- end }}

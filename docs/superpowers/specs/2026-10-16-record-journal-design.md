@@ -344,12 +344,12 @@ journal:
       readers: "*"                         # may read as any member of the roster
       write_types: [attendance_note]       # household writes, on behalf of a member
       counts: true
-    openclaw/glovebox-connector-powerschool:   # one ServiceAccount per connector (4.9c)
+    openclaw/glovebox-glovebox-connector-powerschool:   # one ServiceAccount per connector (4.9c)
       write_types: [course_mark, assignment, attendance_mark, attendance_day,
                     attendance_total, term_grade, term_comment]
       write_scopes: {source: [powerschool]}
       write_subjects: roster_subjects      # roster members, plus "" for types that declare it (no school type does)
-    openclaw/glovebox-connector-schoology:
+    openclaw/glovebox-glovebox-connector-schoology:
       write_types: [lms_assignment, lms_assignment_detail]
       write_scopes: {source: [schoology]}
       write_subjects: roster_subjects
@@ -458,7 +458,8 @@ child, and could trigger pushed alerts to guardians. The journal therefore
 requires, before any connector is given write rights:
 
 - **One ServiceAccount per connector Deployment**, named
-  `<release>-connector-<name>` and rendered by the chart for every enabled
+  `<fullname>-connector-<name>` (`glovebox-glovebox-connector-rss` for a
+  release named `glovebox`) and rendered by the chart for every enabled
   connector, plus a separate one for the core. No connector uses the core's
   account or another connector's.
 - `automountServiceAccountToken: false` on every connector pod; a connector

@@ -72,23 +72,22 @@ spec:
         prometheus.io/path: "/metrics"
         {{- end }}
     spec:
+      # Every connector runs as a ServiceAccount of its own
+      # (connector-serviceaccount.yaml), never the core's or another
+      # connector's.
+      serviceAccountName: {{ include "glovebox.connectorServiceAccountName" (dict "name" $name "connector" $connector "root" $) }}
       {{- if and (eq $name "powerschool") ($connector.loginOnDemand | default dict).enabled }}
       # On-demand login: this connector writes a login request into one
-      # ConfigMap through the Kubernetes API, so it has a ServiceAccount of
-      # its own (see powerschool-connector-role.yaml for everything it may
-      # do) and, unlike every other connector, its token mounted.
-      serviceAccountName: {{ include "glovebox.fullname" $ }}-powerschool
+      # ConfigMap through the Kubernetes API (powerschool-connector-role.yaml
+      # is everything its account may do), so -- alone among connectors --
+      # it has its API token mounted.
       automountServiceAccountToken: true
-      {{- else if and (eq $name "powerschool") ($connector.loginBroker | default dict).enabled }}
-      # Login broker: this connector proves who it is to its broker with a
-      # ServiceAccount token, so it has a ServiceAccount of its own -- with
-      # no Role at all. The API token is NOT mounted: the only token in the
-      # pod is the one projected below, minted for the broker's audience,
-      # which the Kubernetes API itself would refuse.
-      serviceAccountName: {{ include "glovebox.fullname" $ }}-powerschool
-      automountServiceAccountToken: false
       {{- else }}
-      serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      # No API token. A connector that has to prove who it is to another
+      # service gets a token projected for that service's audience instead
+      # (the PowerSchool connector does for its login broker), which the
+      # Kubernetes API refuses.
+      automountServiceAccountToken: false
       {{- end }}
       {{- with (include "glovebox.runtimeClassName" (dict "workload" $connector "root" $)) }}
       runtimeClassName: {{ . | quote }}

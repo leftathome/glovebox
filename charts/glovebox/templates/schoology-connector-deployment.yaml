@@ -55,7 +55,11 @@ spec:
         prometheus.io/path: "/metrics"
         {{- end }}
     spec:
-      serviceAccountName: {{ include "glovebox.serviceAccountName" . }}
+      # Its own ServiceAccount (connector-serviceaccount.yaml), not the core's
+      # or another connector's. The connector never calls the Kubernetes API:
+      # its session arrives as a mounted Secret. No token.
+      serviceAccountName: {{ include "glovebox.connectorServiceAccountName" (dict "name" "schoology" "connector" .Values.schoologyConnector "root" .) }}
+      automountServiceAccountToken: false
       {{- with (include "glovebox.runtimeClassName" (dict "workload" .Values.schoologyConnector "root" .)) }}
       runtimeClassName: {{ . | quote }}
       {{- end }}

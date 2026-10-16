@@ -54,7 +54,11 @@ Image string with appVersion fallback for tag.
 {{- end }}
 
 {{/*
-ServiceAccount name.
+ServiceAccount of the core service (the scanner Deployment) and of nothing
+else. Its default name, <fullname>, is the name every pod used to share;
+the core keeps it so that a Vault Kubernetes-auth role bound to it (the
+ingest/archive listener's, ingest.auth.vault.k8sRole) keeps working across
+the upgrade that gave every other workload an account of its own.
 */}}
 {{- define "glovebox.serviceAccountName" -}}
 {{- if .Values.serviceAccount.name }}
@@ -62,6 +66,71 @@ ServiceAccount name.
 {{- else }}
 {{- include "glovebox.fullname" . }}
 {{- end }}
+{{- end }}
+
+{{/*
+One ServiceAccount per connector Deployment (glovebox-wekc.19).
+
+A connector is an identity: the record journal (spec 2026-10-16, section
+4.9c) authorises writes by ServiceAccount, and the RSS connector, which
+parses whatever the open internet sends it, must not share one with the
+connectors that write children's school records -- or with the core.
+
+These helpers take (dict "name" <connector key> "connector" <its values
+entry> "root" $). The entry's optional `serviceAccount` map follows the
+core's convention: `name` replaces the default <fullname>-connector-<name>,
+`create: false` leaves the object to the operator, `annotations` are copied
+onto it.
+*/}}
+{{- define "glovebox.connectorServiceAccountName" -}}
+{{- $sa := (.connector | default dict).serviceAccount | default dict -}}
+{{- if $sa.name -}}
+{{- $sa.name -}}
+{{- else -}}
+{{- printf "%s-connector-%s" (include "glovebox.fullname" .root) .name -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether the chart renders that connector's ServiceAccount: "true" or "".
+`hasKey` so that an explicit `create: false` survives.
+*/}}
+{{- define "glovebox.connectorServiceAccountCreate" -}}
+{{- $sa := (.connector | default dict).serviceAccount | default dict -}}
+{{- if or (not (hasKey $sa "create")) $sa.create -}}true{{- end -}}
+{{- end }}
+
+{{/*
+The ServiceAccount of the connector with key .name, wherever it is
+configured: connectors.<name>, or schoologyConnector for "schoology" (which
+has a template of its own). Takes (dict "name" <key> "root" $). Used where
+another workload has to name a connector's identity (the login broker's
+allowed callers).
+*/}}
+{{- define "glovebox.connectorServiceAccountByKey" -}}
+{{- $conns := .root.Values.connectors | default dict -}}
+{{- $entry := dict -}}
+{{- if hasKey $conns .name -}}
+{{- $entry = index $conns .name | default dict -}}
+{{- else if eq .name "schoology" -}}
+{{- $entry = .root.Values.schoologyConnector | default dict -}}
+{{- end -}}
+{{- include "glovebox.connectorServiceAccountName" (dict "name" .name "connector" $entry "root" .root) -}}
+{{- end }}
+
+{{/*
+One ServiceAccount per importer Job, for the same reason: an importer is a
+producer of records with an identity of its own, not the core's. Same
+(dict "name" "importer" "root") shape and the same `serviceAccount` map,
+default name <fullname>-importer-<name>.
+*/}}
+{{- define "glovebox.importerServiceAccountName" -}}
+{{- $sa := (.importer | default dict).serviceAccount | default dict -}}
+{{- if $sa.name -}}
+{{- $sa.name -}}
+{{- else -}}
+{{- printf "%s-importer-%s" (include "glovebox.fullname" .root) .name -}}
+{{- end -}}
 {{- end }}
 
 {{/*
