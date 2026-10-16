@@ -118,8 +118,11 @@ test:
 # with them red.
 #
 # Same pinned golang image as `test` (the one Zot is known to serve; see the
-# note there) rather than a helm image from Docker Hub; helm is installed at a
-# pinned, checksum-verified version by scripts/install-helm.sh. origin/main is
+# note there) rather than a helm image from Docker Hub. helm is built with
+# `go install` at the version scripts/install-helm.sh pins (the Go module
+# proxy and checksum database verify it): the build containers on this
+# instance's runner cannot resolve get.helm.sh (2026-10-16), while the module
+# proxy works, as the `test` job shows. GitHub uses install-helm.sh. origin/main is
 # fetched because test-chart-serviceaccounts.sh compares the render against it,
 # and fails rather than skips in CI when it cannot.
 # ---------------------------------------------------------------------------
@@ -129,7 +132,8 @@ chart-test:
   cache: []
   before_script:
     - "apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-yaml >/dev/null"
-    - "./scripts/install-helm.sh"
+    - 'HELM_VERSION=$(sed -n ''s/^HELM_VERSION="${HELM_VERSION:-\(v[0-9.]*\)}"$/\1/p'' scripts/install-helm.sh); test -n "$HELM_VERSION"; go install "helm.sh/helm/v4/cmd/helm@${HELM_VERSION}"'
+    - "helm version --short"
     - "git fetch --quiet --depth=50 origin +refs/heads/main:refs/remotes/origin/main"
   script:
     - "./scripts/chart-checks.sh"
