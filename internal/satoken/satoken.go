@@ -106,7 +106,7 @@ func NewTokenReviewer(access *kubecm.Access, audience string, allowed []string) 
 		set[a] = true
 	}
 	if len(set) == 0 {
-		return nil, errors.New("satoken: the caller allow-list is empty; nobody could ask for a login")
+		return nil, errors.New("satoken: the caller allow-list is empty; nobody could be authenticated")
 	}
 	return &TokenReviewer{
 		endpoint: "https://" + u.Host + "/apis/authentication.k8s.io/v1/tokenreviews",

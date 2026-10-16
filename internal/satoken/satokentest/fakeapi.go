@@ -16,6 +16,8 @@ import (
 const OwnToken = "the-reviewers-own-sa-token"
 
 // Status is what the fake API server answers about a presented token.
+// The wire structs below deliberately duplicate the TokenReview types: this is
+// an independent fake of the API server, not a reuse of satoken internals.
 type Status struct {
 	Authenticated bool     `json:"authenticated"`
 	Audiences     []string `json:"audiences"`

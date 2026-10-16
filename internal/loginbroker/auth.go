@@ -15,8 +15,11 @@ type (
 )
 
 var (
+	// ErrUnauthenticated: see satoken.ErrUnauthenticated.
 	ErrUnauthenticated = satoken.ErrUnauthenticated
-	ErrForbidden       = satoken.ErrForbidden
+	// ErrForbidden: see satoken.ErrForbidden.
+	ErrForbidden = satoken.ErrForbidden
+	// ErrAuthUnavailable: see satoken.ErrAuthUnavailable.
 	ErrAuthUnavailable = satoken.ErrAuthUnavailable
 )
 
