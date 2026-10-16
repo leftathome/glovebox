@@ -1,6 +1,6 @@
 # Design spec: record journal (stateful sources as keyed records and change events)
 
-- **Status:** draft (brainstorm converged 2026-10-16)
+- **Status:** reviewed (three independent passes, 2026-10-16); awaiting owner review
 - **Bead:** glovebox-wekc.18 (epic glovebox-wekc)
 - **Repos:** glovebox (Parts A and B), openclaw (Part C, the first consumer)
 - **Related:** spec 05 (connector framework), spec 08 (ingest API), spec 11
@@ -205,7 +205,12 @@ assert this invariant and nothing broader.
   truncated.
 - Every record's `data_subject` must equal the scope's `data_subject` part when
   the scope has one. `(data_subject, key)` must be unique within a snapshot.
-- `complete_range` (optional, only with `complete=true`):
+- `complete_range` (optional, only with `complete=true`). A connector sends it
+  only when the page showed at least one date: a page that parsed with no
+  dates at all gives no meaningful range, and is sent as `complete=false`. A
+  page that showed dates but no records (every code corrected away) is a
+  legitimate empty snapshot with a range; the removal guard (4.5) applies.
+  Shape:
   `{"field": "<a date field of the type>", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}`.
   It limits completeness to records whose `field` lies in `[from, to]`: only
   those can be removed by this snapshot. Use it when a source page covers a
@@ -264,7 +269,10 @@ In one transaction, under a per-scope advisory lock:
 
 If a complete snapshot would remove more than `removal_guard.max_fraction`
 (default 0.3) of the scope's live keys, or every key of a scope that had more
-than `removal_guard.min_keys` (default 3), the snapshot is **held**: nothing is
+than `removal_guard.min_keys` (default 3), the snapshot is **held**. When the
+snapshot has a `complete_range`, both tests count only the live keys whose
+range field lies inside that range -- the keys the snapshot could remove --
+not the whole scope. A held snapshot: nothing is
 applied, the `snapshot` row is stored with status `held` (payload kept), a
 metric and an alert fire, and the connector is told `held` (it deletes its
 spool file; a resend gets `held` again by step 1). An operator confirms or
@@ -341,7 +349,7 @@ journal:
                     attendance_total, term_grade, term_comment,
                     lms_assignment, lms_assignment_detail]
       write_scopes: {source: [powerschool, schoology]}
-      write_subjects: roster_subjects      # only data subjects present in the roster
+      write_subjects: roster_subjects      # roster members, plus "" for types that declare it (no school type does)
     trunchbull/trunchbull:
       read: true
       readers: [e_parent1, e_parent2]      # the dashboard reads only as guardians
@@ -533,7 +541,10 @@ operation that deletes event history.
   `<observed_at>-<snapshot_id>.json`, then sends pending files oldest first
   per scope and acts on each response as in the table in 4.3.
 - Bounds: `spool.max_age` (default 7 days) and `spool.max_bytes` (default
-  256 MiB), applied to `spool/` and `spool/rejected/` alike, so data at rest
+  256 MiB), applied to `spool/` and `spool/rejected/` alike. A file still
+  answered `409 unknown_subject` when it reaches `max_age` is deleted and
+  counted (a subject removed from the roster for good); `max_age` therefore
+  applies to every file, newest included, so data at rest
   is always bounded. On overflow the oldest intermediate snapshots of a scope
   are dropped; the newest of each scope is always kept. For complete scopes
   this loses only timing granularity. For windowed scopes a record that
@@ -574,6 +585,9 @@ record's identity (4.2), so siblings in the same course never collide.
 `school_year` is derived from the date (1 August to 31 July, written
 `2026-27`); the attendance page carries no term identifier, so scopes do not
 use one.
+
+Scopes with one record (`course_mark`, `attendance_total`) can never see a
+removal from `complete=true`; tests should not expect one.
 
 **Term changes.** Pages are course- or term-shaped, so completeness is limited
 to what a page demonstrably covers:
