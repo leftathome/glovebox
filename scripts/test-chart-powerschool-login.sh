@@ -505,7 +505,7 @@ ROLE='find("Role", "glovebox-glovebox-powerschool-login-on-demand")'
 BINDING='find("RoleBinding", "glovebox-glovebox-powerschool-login-on-demand")'
 RROLE='find("Role", "glovebox-glovebox-powerschool-login-request-reader")'
 RBINDING='find("RoleBinding", "glovebox-glovebox-powerschool-login-request-reader")'
-CONNSA='find("ServiceAccount", "glovebox-glovebox-powerschool")'
+CONNSA='find("ServiceAccount", "glovebox-glovebox-connector-powerschool")'
 PSPOD='find("Deployment", "glovebox-glovebox-powerschool")["spec"]["template"]["spec"]'
 PSCFG='__import__("json").loads(find("ConfigMap", "glovebox-glovebox-powerschool-config")["data"]["config.json"])'
 RBAC='[d["kind"] + "/" + d["metadata"]["name"] for d in docs if d["kind"] in ("Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding")]'
@@ -514,8 +514,8 @@ check "everything is off by default: no request ConfigMap, no Role or binding of
   "$CM is None and $RBAC == [] and reqcrons == {} and $CONNSA is None" \
   "${ON[@]}"
 
-check "the connector alone, on-demand off: shared ServiceAccount, no token, no request config" \
-  "$RBAC == [] and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox\" and \"automountServiceAccountToken\" not in $PSPOD
+check "the connector alone, on-demand off: own ServiceAccount, no token, no request config" \
+  "$RBAC == [] and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-connector-powerschool\" and $PSPOD[\"automountServiceAccountToken\"] is False
    and \"login_on_demand\" not in $PSCFG and $CM is None" \
   -f "$TMP/both.yaml"
 
@@ -555,16 +555,16 @@ check "those two Roles and their bindings are all the RBAC there is" \
 
 check "each Role is bound to its own ServiceAccount only" \
   "$BINDING[\"roleRef\"][\"name\"] == \"glovebox-glovebox-powerschool-login-on-demand\"
-   and $BINDING[\"subjects\"] == [{\"kind\": \"ServiceAccount\", \"name\": \"glovebox-glovebox-powerschool\", \"namespace\": \"glovebox\"}]
+   and $BINDING[\"subjects\"] == [{\"kind\": \"ServiceAccount\", \"name\": \"glovebox-glovebox-connector-powerschool\", \"namespace\": \"glovebox\"}]
    and $RBINDING[\"roleRef\"][\"name\"] == \"glovebox-glovebox-powerschool-login-request-reader\"
    and $RBINDING[\"subjects\"] == [{\"kind\": \"ServiceAccount\", \"name\": \"glovebox-glovebox-powerschool-auth-refresher\", \"namespace\": \"glovebox\"}]" \
   -f "$TMP/ondemand.yaml"
 
 check "the connector runs as its own ServiceAccount with its token mounted; other connectors do not" \
-  "$CONNSA is not None and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-powerschool\"
+  "$CONNSA is not None and $PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-connector-powerschool\"
    and $PSPOD[\"automountServiceAccountToken\"] is True
-   and find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"][\"serviceAccountName\"] == \"glovebox-glovebox\"
-   and \"automountServiceAccountToken\" not in find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"]" \
+   and find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"][\"serviceAccountName\"] == \"glovebox-glovebox-connector-rss\"
+   and find(\"Deployment\", \"glovebox-glovebox-rss\")[\"spec\"][\"template\"][\"spec\"][\"automountServiceAccountToken\"] is False" \
   -f "$TMP/ondemand.yaml" --set connectors.rss.enabled=true
 
 check "the connector is told which ConfigMap, namespace, wait (10 min) and interval" \

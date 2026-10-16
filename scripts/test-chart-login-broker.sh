@@ -202,7 +202,7 @@ check "policy settings reach the binary: site, interval, failure limit, blackout
 
 check "callers: a dedicated audience, and exactly the connector's ServiceAccount" \
   "env($DEP)[\"LOGIN_BROKER_AUDIENCE\"] == \"glovebox-glovebox-login-broker-powerschool.glovebox\"
-   and env($DEP)[\"LOGIN_BROKER_ALLOWED_CALLERS\"] == \"glovebox/glovebox-glovebox-powerschool\"" \
+   and env($DEP)[\"LOGIN_BROKER_ALLOWED_CALLERS\"] == \"glovebox/glovebox-glovebox-connector-powerschool\"" \
   -f "$TMP/broker.yaml"
 
 check "credentials come key by key from the broker's own Secret, never envFrom" \
@@ -294,7 +294,7 @@ check "two sites: same image; separate ServiceAccount, Vault role, credentials S
    and env($SDEP)[\"VAULT_K8S_ROLE\"] == \"glovebox-login-broker-schoology\" != env($DEP)[\"VAULT_K8S_ROLE\"]
    and env($SDEP)[\"LOGIN_BROKER_PASSWORD\"][0] == \"glovebox-glovebox-login-broker-schoology-credentials\" != env($DEP)[\"LOGIN_BROKER_PASSWORD\"][0]
    and env($SDEP)[\"LOGIN_BROKER_AUDIENCE\"] != env($DEP)[\"LOGIN_BROKER_AUDIENCE\"]
-   and env($SDEP)[\"LOGIN_BROKER_ALLOWED_CALLERS\"] == \"glovebox/glovebox-glovebox-schoology\"
+   and env($SDEP)[\"LOGIN_BROKER_ALLOWED_CALLERS\"] == \"glovebox/glovebox-glovebox-connector-schoology\"
    and \"POWERSCHOOL_HOSTNAME\" not in env($SDEP) and \"SCHOOLOGY_HOST\" not in env($DEP)" \
   -f "$TMP/two.yaml"
 
@@ -433,7 +433,7 @@ check "the connector is told where its broker is and which token to present" \
   -f "$TMP/wired.yaml"
 
 check "the connector's pod: own ServiceAccount, NO API token, one token projected for the broker's audience" \
-  "$PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-powerschool\" and $PSPOD[\"automountServiceAccountToken\"] is False
+  "$PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-connector-powerschool\" and $PSPOD[\"automountServiceAccountToken\"] is False
    and [v[\"projected\"][\"sources\"] for v in $PSPOD[\"volumes\"] if v[\"name\"] == \"login-broker-token\"] == [[{\"serviceAccountToken\": {
         \"audience\": \"glovebox-glovebox-login-broker-powerschool.glovebox\", \"expirationSeconds\": 600, \"path\": \"token\"}}]]
    and [m for m in $PSPOD[\"containers\"][0][\"volumeMounts\"] if m[\"name\"] == \"login-broker-token\"]
@@ -445,13 +445,14 @@ check "the audience the connector's token is minted for is the one the broker de
   -f "$TMP/wired.yaml"
 
 check "the connector's ServiceAccount exists, mounts nothing by default, and has no Role" \
-  'find("ServiceAccount", "glovebox-glovebox-powerschool")["automountServiceAccountToken"] is False
+  'find("ServiceAccount", "glovebox-glovebox-connector-powerschool")["automountServiceAccountToken"] is False
    and [d for d in docs if d["kind"] in ("Role", "RoleBinding")] == []
    and find("ConfigMap", "glovebox-glovebox-powerschool-login-request") is None' \
   -f "$TMP/wired.yaml"
 
-check "the broker is off for the connector by default: shared ServiceAccount, no token volume, no login_on_demand" \
-  "$PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox\" and \"login_on_demand\" not in $PSCFG
+check "the broker is off for the connector by default: own ServiceAccount, no token at all, no login_on_demand" \
+  "$PSPOD[\"serviceAccountName\"] == \"glovebox-glovebox-connector-powerschool\" and $PSPOD[\"automountServiceAccountToken\"] is False
+   and \"login_on_demand\" not in $PSCFG
    and [v for v in $PSPOD[\"volumes\"] if v[\"name\"] == \"login-broker-token\"] == []" \
   -f "$TMP/broker.yaml" --set connectors.powerschool.enabled=true
 

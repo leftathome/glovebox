@@ -45,7 +45,10 @@ spec:
         glovebox.io/importer: {{ $name }}
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "glovebox.serviceAccountName" $ }}
+      # Its own ServiceAccount (importer-serviceaccount.yaml), not the core's.
+      # An importer never calls the Kubernetes API: no token.
+      serviceAccountName: {{ include "glovebox.importerServiceAccountName" (dict "name" $name "importer" $importer "root" $) }}
+      automountServiceAccountToken: false
       {{- with (include "glovebox.runtimeClassName" (dict "workload" $importer "root" $)) }}
       runtimeClassName: {{ . | quote }}
       {{- end }}

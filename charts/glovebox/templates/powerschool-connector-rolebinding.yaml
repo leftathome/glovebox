@@ -16,6 +16,6 @@ roleRef:
   name: {{ include "glovebox.fullname" . }}-powerschool-login-on-demand
 subjects:
   - kind: ServiceAccount
-    name: {{ include "glovebox.fullname" . }}-powerschool
+    name: {{ include "glovebox.connectorServiceAccountName" (dict "name" "powerschool" "connector" $conn "root" $) }}
     namespace: {{ .Release.Namespace }}
 {{- end }}

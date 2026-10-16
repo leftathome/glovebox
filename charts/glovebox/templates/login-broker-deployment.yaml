@@ -31,7 +31,7 @@ one instance exposes one account.
 {{- /* Who may ask: the connector's own ServiceAccount, plus any named. */}}
 {{- $callers := list }}
 {{- if $b.connector }}
-{{- $callers = append $callers (printf "%s/%s-%s" $.Release.Namespace (include "glovebox.fullname" $) $b.connector) }}
+{{- $callers = append $callers (printf "%s/%s" $.Release.Namespace (include "glovebox.connectorServiceAccountByKey" (dict "name" $b.connector "root" $))) }}
 {{- end }}
 {{- range $b.extraAllowedCallers }}
 {{- $callers = append $callers (toString .) }}

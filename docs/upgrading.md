@@ -43,6 +43,118 @@ at 02:00 with uploads failing.
 - Both connectors keep a small `session-state` file in their state
   directory: the reported session state and when it began.
 
+### One ServiceAccount per workload (glovebox-wekc.19)
+
+No chart value has to be added or changed, and no Vault or gitops change has
+to land first. What changes in the render:
+
+- **Every enabled connector runs as a ServiceAccount of its own**,
+  `<fullname>-connector-<name>` (`glovebox-glovebox-connector-rss`,
+  `-connector-powerschool`, `-connector-schoology` for a release named
+  `glovebox`), rendered by the chart with `automountServiceAccountToken:
+  false`, and every connector pod states `automountServiceAccountToken:
+  false` too. Until now the connectors ran as the core's account,
+  `<fullname>`. Each enabled importer Job likewise gets
+  `<fullname>-importer-<name>`, with no token.
+- **The core keeps `<fullname>`** (or `serviceAccount.name`), now used by
+  the core alone. Its pod states `automountServiceAccountToken` explicitly:
+  `true` only with `ingest.auth.enabled`, which is the one thing in the core
+  that needs the token (the archive listener's Vault Kubernetes login).
+- **The PowerSchool connector's account is renamed** from
+  `<fullname>-powerschool` (rendered only with `loginOnDemand` or
+  `loginBroker`) to `<fullname>-connector-powerschool`. The chart moves the
+  on-demand RoleBinding and the login broker's allowed caller with it in the
+  same render.
+- Per-connector override, same shape as the core's:
+  `connectors.<name>.serviceAccount.{create,name,annotations}`,
+  `schoologyConnector.serviceAccount`, `importers.<name>.serviceAccount`.
+
+**What it costs.** Every connector Deployment rolls once (its pod template
+changes), and so does the core (the explicit `automountServiceAccountToken`).
+Nothing is lost: connectors keep their state PVCs. The PowerSchool connector
+is the one that matters -- let it roll outside its poll windows.
+
+**Who uses an in-cluster token, after the upgrade:**
+
+| Workload | Account | Token | Why |
+| --- | --- | --- | --- |
+| core | `<fullname>` | API token only with `ingest.auth.enabled` | Vault Kubernetes login (`ingest.auth.vault.k8sRole`) |
+| every connector | `<fullname>-connector-<name>` | none | -- |
+| PowerSchool connector, `loginOnDemand` | `<fullname>-connector-powerschool` | API token | get/update/patch on the one login-request ConfigMap (Role bound to this account only) |
+| PowerSchool connector, `loginBroker` | `<fullname>-connector-powerschool` | projected, audience = the broker's, 600 s; no API token | presented to the broker, which allow-lists this account |
+| login broker | `<fullname>-login-broker-<name>` | API token | TokenReview of callers; Vault Kubernetes login |
+| PowerSchool login CronJobs | `<fullname>-powerschool-auth-refresher` | API token | Vault Kubernetes login; with `onRequest`, get on the request ConfigMap |
+| Schoology refresher CronJob | `<fullname>-schoology-auth-refresher` | API token | Vault Kubernetes login |
+| importers | `<fullname>-importer-<name>` | none | -- |
+
+The three CronJob/broker accounts are unchanged by this release.
+
+**Vault.** Every Kubernetes-auth role the chart's workloads use:
+
+| Role | Bound to | Used by | Change |
+| --- | --- | --- | --- |
+| `glovebox-ingest` (`ingest.auth.vault.k8sRole`) | `glovebox-glovebox` in `glovebox` | the core's archive listener | none: the core keeps the name |
+| `glovebox-powerschool-refresher` | `glovebox-glovebox-powerschool-auth-refresher` in `openclaw` | PowerSchool login CronJobs | none |
+| `glovebox-schoology-refresher` | `glovebox-glovebox-schoology-auth-refresher` in `openclaw` | Schoology refresher CronJob | none |
+| `loginBrokers.<name>.vault.k8sRole` | `<fullname>-login-broker-<name>` | login broker | none |
+
+No connector or importer authenticates to Vault; their secrets reach them
+through ESO, under ESO's own role. So nothing bound to the old shared
+account breaks, and gitops does not have to merge first. **Check your own
+Vault** for any role bound to `<fullname>` that is not `glovebox-ingest` --
+anything outside the chart that relied on a connector holding the core's
+token stops working with this release; bind it to the connector's own
+account instead.
+
+`glovebox-ingest` exists in the `orac` Vault but was created by hand from
+`docs/runbooks/vault-spec-13-provisioning.md`; it is not in gitops'
+`clusters/orac/platform/vault/config`. Bringing it under the configurator is
+optional and independent of this upgrade (same values as the runbook):
+
+- `policies/glovebox-ingest-read.hcl`:
+
+  ```hcl
+  path "secret/data/glovebox/ingest-tokens/*" {
+    capabilities = ["read"]
+  }
+  path "secret/metadata/glovebox/ingest-tokens" {
+    capabilities = ["list"]
+  }
+  ```
+
+- `kustomization.yaml`, under the `vault-policies` configMapGenerator:
+  `- policies/glovebox-ingest-read.hcl`
+- `scripts/configure.sh`, beside the other glovebox roles:
+
+  ```bash
+  # Archive/ingest listener of the glovebox-namespace release: the core's own
+  # ServiceAccount (no connector runs as it from glovebox-wekc.19 on).
+  vault write auth/kubernetes/role/glovebox-ingest \
+    bound_service_account_names=glovebox-glovebox \
+    bound_service_account_namespaces=glovebox \
+    policies=glovebox-ingest-read \
+    ttl=24h
+  ```
+
+**Check anything outside the chart that names an account:** a Vault role, a
+RoleBinding, `loginBrokers.<name>.extraAllowedCallers`, or a policy engine
+that selects pods by ServiceAccount (the chart's own NetworkPolicies select
+by labels, which are unchanged). If you set `serviceAccount.name`, note that
+it now names the core's account only.
+
+**Verify after the rollout** (namespace `openclaw` in the `orac` install):
+
+```bash
+kubectl -n openclaw get pods -l app.kubernetes.io/instance=glovebox \
+  -o custom-columns=POD:.metadata.name,SA:.spec.serviceAccountName,TOKEN:.spec.automountServiceAccountToken
+kubectl auth can-i --list -n openclaw \
+  --as=system:serviceaccount:openclaw:glovebox-glovebox-connector-rss
+```
+
+Each connector pod should show its own account and `false`; the RSS
+connector's account should be allowed nothing beyond what every
+authenticated identity gets.
+
 ---
 
 ## Upgrading to 0.11.0 (from 0.10.3)

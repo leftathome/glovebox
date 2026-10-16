@@ -267,8 +267,9 @@ To make it ask again without that, set the connector's environment
 variable `POWERSCHOOL_LOGIN_BACKOFF_RESET` to any value it has not seen
 before (`connectors.powerschool.env`); it is honoured once.
 
-RBAC (rendered by the chart with `loginOnDemand.enabled`): a ServiceAccount
-for this connector alone, with its token mounted, and a Role granting
+RBAC (rendered by the chart with `loginOnDemand.enabled`): the connector's
+own ServiceAccount (`<fullname>-connector-powerschool`, which it has in every
+mode) gets its token mounted, and a Role bound to it alone grants
 exactly `get`, `update` and `patch` on the one ConfigMap
 `<fullname>-powerschool-login-request`. Nothing on Jobs, CronJobs, pods or
 Secrets, and no create or delete of anything.
@@ -369,8 +370,9 @@ on the connector's side:
   stop the asking. The count is in the checkpoint and survives a restart;
   a session the portal accepts, or `POWERSCHOOL_LOGIN_BACKOFF_RESET`,
   clears it.
-- The pod needs no access to the Kubernetes API. It presents a
-  ServiceAccount token projected for the broker's audience, to the broker's
+- The pod needs no access to the Kubernetes API. It presents a token of
+  its own ServiceAccount (`<fullname>-connector-powerschool`, the broker's
+  allowed caller) projected for the broker's audience, to the broker's
   address only.
 
 ## Read-only guarantee

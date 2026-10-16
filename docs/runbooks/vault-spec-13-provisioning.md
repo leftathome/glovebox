@@ -118,6 +118,11 @@ vault write auth/kubernetes/role/glovebox-ingest \
 > `kubectl get sa -n glovebox` after helm install — helm derives the
 > name as `{release}-{name}` = `glovebox-glovebox`, not the plain
 > `glovebox` an earlier draft of this runbook claimed).
+> It is the core service's own account (`serviceAccount.name`, default
+> `<fullname>`). From the release after 0.11.0 no connector or importer runs
+> as it -- each has `<fullname>-connector-<name>` /
+> `<fullname>-importer-<name>` -- so this role admits the core and nothing
+> else; the binding itself does not change.
 
 ## 5. Generate + write the recognizer's source-id token
 
