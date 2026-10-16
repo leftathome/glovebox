@@ -1880,7 +1880,7 @@ Every typed value is reduced to one canonical JSON encoding, so equality is byte
 - Create: `internal/journal/record/value.go`, `internal/journal/record/fields.go`
 - Test: `internal/journal/record/value_test.go`, `internal/journal/record/fields_test.go`
 
-- [ ] **Step 4.1: Write the failing value tests.**
+- [x] **Step 4.1: Write the failing value tests.**
 
 `internal/journal/record/value_test.go`:
 
@@ -1969,11 +1969,11 @@ func TestNamesAndTokens(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.2: Run; expect a build failure** (`undefined: NormalizeValue`).
+- [x] **Step 4.2: Run; expect a build failure** (`undefined: NormalizeValue`).
 
 Run: `go test ./internal/journal/record/`
 
-- [ ] **Step 4.3: Write `value.go`.**
+- [x] **Step 4.3: Write `value.go`.**
 
 `internal/journal/record/value.go`:
 
@@ -2205,11 +2205,11 @@ func encode(v any) json.RawMessage {
 func Encode(v any) json.RawMessage { return encode(v) }
 ```
 
-- [ ] **Step 4.4: Run the value tests; expect PASS.**
+- [x] **Step 4.4: Run the value tests; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -run 'NormalizeValue|NamesAndTokens' -count=1`
 
-- [ ] **Step 4.5: Write the failing fields tests.**
+- [x] **Step 4.5: Write the failing fields tests.**
 
 `internal/journal/record/fields_test.go`:
 
@@ -2293,7 +2293,7 @@ func TestFieldsJSONIsSortedAndEmptyIsObject(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.6: Run; expect a build failure** (`undefined: Type`, `undefined: Fields`). `Type` arrives in Task 6; to keep this task self-contained, create `types.go` now with only the two type declarations below (Task 6 adds the rest of the file).
+- [x] **Step 4.6: Run; expect a build failure** (`undefined: Type`, `undefined: Fields`). `Type` arrives in Task 6; to keep this task self-contained, create `types.go` now with only the two type declarations below (Task 6 adds the rest of the file).
 
 `internal/journal/record/types.go` (first version):
 
@@ -2319,7 +2319,7 @@ type Type struct {
 }
 ```
 
-- [ ] **Step 4.7: Write `fields.go`.**
+- [x] **Step 4.7: Write `fields.go`.**
 
 `internal/journal/record/fields.go`:
 
@@ -2470,11 +2470,11 @@ type EventScan struct {
 }
 ```
 
-- [ ] **Step 4.8: Run; expect PASS.**
+- [x] **Step 4.8: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 4.9: Commit.**
+- [x] **Step 4.9: Commit.**
 
 ```bash
 git add internal/journal/record
