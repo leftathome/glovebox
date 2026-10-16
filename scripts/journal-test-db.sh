@@ -36,4 +36,3 @@ if [ "$#" -eq 0 ]; then
   set -- ./internal/journal/...
 fi
 go test -count=1 -race "$@"
-```
