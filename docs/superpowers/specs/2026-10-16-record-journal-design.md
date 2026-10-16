@@ -47,7 +47,7 @@ of those events, and serves both through an audience-filtered read API.
 | D5 | Messaging | **No broker.** Postgres is the log; readers keep a cursor | Kafka or similar |
 | D6 | Household notes | Correctable; every version kept | Locked once written |
 | D7 | Outage handling | **Per-connector spool** of snapshot files, replayed in order | No buffering; core-side buffering |
-| D8 | Audience vocabulary | **Opaque tokens**; no household roles in code. Readers are described by **grants** that the **calling service supplies**, capped per service | Glovebox holds a relationship directory |
+| D8 | Audience vocabulary and reader grants | **Opaque tokens**; no household roles in journal code. Readers are described by **grants**. The caller names only the **reader**; glovebox **computes the grants** from the **same household roster ConfigMap openclaw reads**, which neither application can modify and only a gitops deployment can change (4.9). The consumer re-checks every row before writing (defence in depth). | Caller-supplied grants (first choice, revised 2026-10-16: a caller bug that mixed up subjects would go undetected); a separate glovebox-owned directory (drift) |
 | D9 | Service auth | Kubernetes ServiceAccount tokens checked by TokenReview (the login broker's pattern) | mTLS for the new endpoints |
 
 ### Prior art (open-source spike, 2026-10-15)
@@ -71,15 +71,16 @@ was observed informs section 4.6.
 | Term | Meaning |
 |---|---|
 | **Record type** | A named kind of record (`assignment`, `attendance_mark`) with a schema version and typed field definitions. Defined in configuration, owned by the connector that writes it (or by `household` for notes). |
-| **Record** | One instance of a type, identified by `(record_type, key)`. `key` is a string the source guarantees stable. |
+| **Record** | One instance of a type, identified by `(record_type, data_subject, key)`. `key` is a string the source guarantees stable **within one data subject**; two subjects may use the same key (two siblings in the same course). |
 | **Fields** | A flat map of typed values: `string`, `text` (untrusted free text, scanned), `int`, `number`, `bool`, `date`, `timestamp`, `string_list`. Every field is nullable. |
 | **Scope** | The unit a connector observes in one go, e.g. `(source=powerschool, surface=assignments, data_subject=X, course=Y)`. Written as an ordered list of `name=value` parts. |
 | **Snapshot** | One observation of one scope at one time: the records seen, plus `complete` -- whether absence from this snapshot means the record no longer exists. |
 | **Event** | One append-only change to one record: `created`, `updated`, `removed`, `restored`. |
 | **Current state** | The latest version of every record, including removed ones (tombstoned). Always equal to a fold of the events. |
-| **data_subject** | As in spec 11: the entity a record is about. Opaque string. |
+| **data_subject** | As in spec 11: the entity a record is about. Opaque string; `""` for records about no one in particular. Part of every record's identity. |
 | **Audience** | As in spec 11: a list of tokens naming who may see the record, relative to its `data_subject`. Opaque to the journal. |
-| **Grant** | A pair `(subject, token)` held by a reader. `subject` may be `*` (any) or `""` (records with no `data_subject`). |
+| **Reader** | A member of the household roster on whose behalf a read or household write is made. |
+| **Grant** | A pair `(subject, token)` held by a reader, **computed by the journal from the roster** (4.9b), never supplied by a caller. `subject` is a data subject or `""` (records with no `data_subject`). |
 
 ## 4. Part A -- the journal core (glovebox)
 
@@ -92,7 +93,7 @@ records lib  -- builds snapshot           /v1/records  (write, SA token)
 spool dir    -- one file per snapshot ->  journal.Apply (one transaction)  ---->  Postgres (CNPG)
                                           /v1/notes    (write, SA token)           record_type, snapshot,
                                           /v1/state, /v1/events,                   record_current, record_event,
-                                          /v1/counts   (read, SA token + grants)   erasure, held_snapshot
+                                          /v1/counts   (read, SA token + grants)   erasure
                                                                                  <- openclaw patrol, notes tool
                                                                                  <- dashboard
 ```
@@ -123,28 +124,38 @@ Tables (types abbreviated):
 - `renames jsonb` -- `{old_name: new_name}` applied before diffing (4.7)
 - `default_audience text[]`, `created_at`
 
-**`snapshot`**
+**`snapshot`** -- one row for **every** snapshot received, whatever its outcome
 - `id uuid` (assigned by the connector; idempotency key), `record_type`,
   `schema_version`
-- `scope text` (canonical form), `complete bool`, `approximate bool`
+- `scope text` (canonical form), `data_subject text` (the scope's subject
+  part, `""` if none), `complete bool`, `approximate bool`
 - `observed_at timestamptz`, `received_at timestamptz`, `writer text`
   (authenticated service)
-- `status` -- `applied | duplicate | late | held | discarded | rejected`
+- `status` -- `applied | duplicate | late | held | discarded`
+- `payload jsonb` -- the snapshot as received. Kept for every status: it is
+  the raw observation history, it lets a held snapshot be applied later, and
+  it lets a late snapshot be inspected. Volume is small (section 1).
 - `stats jsonb` -- counts created/updated/removed/restored/unchanged
 
-**`record_current`** -- primary key `(record_type, key)`
-- `scope text`, `data_subject text`, `audience text[]`
-- `fields jsonb`, `content_hash bytea`
-- `scan jsonb` -- per `text` field: `{verdict, scanner_version}`
-- `first_seen_at`, `last_seen_at`, `removed_at` (null unless tombstoned)
-- `last_event_seq bigint`
+Rejected snapshots (`4xx`) are not stored.
+
+**`record_current`** -- primary key `(record_type, data_subject, key)`
+- *event-derived columns:* `scope text`, `audience text[]`, `fields jsonb`,
+  `removed bool`
+- *observation columns (not event-derived):* `first_seen_at`, `last_seen_at`,
+  `last_confirmed_snapshot uuid`, `content_hash bytea`, `last_event_seq bigint`
+- `scan jsonb` -- per `text` field of the current value:
+  `{verdict, scanner_version}`
 
 **`record_event`** -- append-only, primary key `seq bigserial`
-- `record_type`, `key`, `scope`, `kind`
-- `data_subject`, `audience text[]`, `prev_audience text[]` (4.8)
+- `record_type`, `data_subject`, `key`, `kind`, `schema_version`
+- `scope text`, `prev_scope text` (set when a record moves scope)
+- `audience text[]`, `prev_audience text[]` (4.8)
 - `fields jsonb` -- full fields for `created` and `restored`; null otherwise
-- `changed jsonb` -- `{field: [old, new]}` for `updated`; last known fields for
-  `removed`
+- `changed jsonb` -- `{field: [old, new]}` for `updated`; the last known fields
+  for `removed`
+- `scan jsonb` -- a verdict for **every `text` value stored in this row**, old
+  and new: `{"<field>": {"old": verdict, "new": verdict}}` (4.11)
 - `observed_at`, `prev_observed_at` (4.6), `approximate bool`
 - `snapshot_id uuid` (null for household writes), `actor text` (writer service,
   and for notes the person-agent on whose behalf it wrote)
@@ -153,12 +164,17 @@ Tables (types abbreviated):
 **`erasure`** -- `data_subject`, `erased_at`, `actor`, `rows jsonb` (counts).
 Never erased itself; holds no field data.
 
-**`held_snapshot`** -- the full payload of a snapshot held by the removal guard
-(4.5), until confirmed or discarded.
-
 Indexes: `record_current (data_subject)`, `record_current (scope)`, GIN on
 `audience` in both record tables, `record_event (data_subject, seq)`,
-`record_event (record_type, key, seq)`.
+`record_event (record_type, data_subject, key, seq)`,
+`snapshot (scope, observed_at)`, `snapshot (data_subject)`.
+
+**The fold invariant.** For every record, folding its events in `seq` order --
+applying each event's `schema_version` renames (4.7) -- reproduces exactly the
+event-derived columns of `record_current`: `scope`, `audience`, `fields` and
+`removed`. Observation columns are bookkeeping about when the record was last
+confirmed and are deliberately not events. The property tests in section 8
+assert this invariant and nothing broader.
 
 ### 4.3 Wire format: `POST /v1/records`
 
@@ -187,51 +203,67 @@ Indexes: `record_current (data_subject)`, `record_current (scope)`, GIN on
   64 KiB. A snapshot that exceeds a limit is rejected whole (`413`/`422`), never
   truncated.
 - Every record's `data_subject` must equal the scope's `data_subject` part when
-  the scope has one.
-- Response: `200 {"status":"applied"|"duplicate"|"late"|"held", "stats":{...}}`,
-  `422` with a machine-readable reason for schema violations, `403` for policy
-  violations (4.9). `5xx` means "retry later" and the spool keeps the file.
+  the scope has one. `(data_subject, key)` must be unique within a snapshot.
+- Responses (the connector's spool acts on these exactly, 4.14):
+
+| Code | Body `status` / `reason` | Meaning | Spool action |
+|---|---|---|---|
+| `200` | `applied`, `duplicate`, `late`, `held` | accepted (4.4) | delete the file |
+| `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at` | delete the file |
+| `403` | `policy` | the service may not write this type, scope or subject | move to `spool/rejected/` |
+| `413` | `too_large` | over a limit | move to `spool/rejected/` |
+| `422` | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
+| `5xx`, network error | -- | try again later | keep, retry with backoff |
 
 ### 4.4 Applying a snapshot
 
 In one transaction, under a per-scope advisory lock:
 
-1. **Idempotency.** If `snapshot_id` exists, return `duplicate` with the stored
-   stats.
-2. **Erasure guard.** If any record's `data_subject` has an `erasure` row with
-   `erased_at > observed_at`, reject the snapshot (`rejected`, reason
-   `erased_subject`).
-3. **Ordering.** If a snapshot for the same scope with a later `observed_at`
-   is already applied, store this one as `late`: kept for history, not diffed,
-   no events. Current state never moves backwards.
-4. **Schema.** Validate fields against the type's declared schema version;
-   apply declared renames; reject on type mismatch; store undeclared fields
-   but flag them in `stats`.
-5. **Scan.** Run every `text` field through the existing scanner in-process;
-   record verdicts. Scanning never blocks the write (4.11).
-6. **Diff.** Load `record_current` for the scope. For each incoming record:
+1. **Idempotency.** If `snapshot_id` exists, return its stored status as
+   `duplicate` (or `held` if it is still held) with the stored stats.
+2. **Validation.** Schema, limits and policy; failures return `4xx` and
+   store nothing.
+3. **Erasure guard.** If any record's `data_subject` has an `erasure` row with
+   `erased_at > observed_at`, return `410 erased_subject` and store nothing.
+4. **Ordering.** If a snapshot for the same scope with a later `observed_at`
+   is already applied, store this one as `late` (payload kept, no diff, no
+   events). Current state never moves backwards.
+5. **Renames.** Map declared old field names to new ones (4.7).
+6. **Scan.** Run every `text` value through the existing scanner in-process;
+   keep the verdicts for step 9. Scanning never blocks the write (4.11).
+7. **Diff.** Load `record_current` rows for the scope's subject and type. For
+   each incoming record, looked up by `(record_type, data_subject, key)`:
    - not present -> `created`
-   - present and tombstoned -> `restored` (full fields)
-   - present, same `content_hash` and same audience -> touch `last_seen_at`
-     only; no event
+   - present and `removed` -> `restored` (full fields)
+   - present in a **different scope** -> `updated` with `prev_scope` set (plus
+     any changed fields); the record now belongs to the new scope
+   - present, same `content_hash`, same audience, same scope -> observation
+     columns only (`last_seen_at`, `last_confirmed_snapshot`); no event
    - otherwise compare field by field -> `updated` with only the changed fields
-7. **Removal.** If `complete`, every live key in the scope that the snapshot
-   does not contain is a candidate `removed`. The removal guard (4.5) decides.
-8. **Write.** Insert events (assigning `importance`, `rule` and `group_key`,
-   section 4.10), upsert `record_current`, insert the `snapshot` row.
-
-A snapshot with `complete=false` never removes anything.
+8. **Removal.** If `complete`, every live record whose stored `scope` equals
+   this snapshot's scope and whose key the snapshot does not contain is a
+   candidate `removed`. The removal guard (4.5) decides. A snapshot with
+   `complete=false` never removes anything.
+9. **Write.** Insert events (with scan verdicts, `importance`, `rule`,
+   `group_key`, section 4.10), upsert `record_current`, insert the `snapshot`
+   row as `applied`.
 
 ### 4.5 Removal guard
 
 If a complete snapshot would remove more than `removal_guard.max_fraction`
 (default 0.3) of the scope's live keys, or every key of a scope that had more
 than `removal_guard.min_keys` (default 3), the snapshot is **held**: nothing is
-applied, the payload goes to `held_snapshot`, a metric and an alert fire, and
-the connector is told `held` (it does not retry). An operator confirms (apply
-as received) or discards it through an admin endpoint. Later snapshots for the
-same scope apply normally only if they do not trip the guard; a held snapshot
-older than an applied one is discarded automatically as `late`.
+applied, the `snapshot` row is stored with status `held` (payload kept), a
+metric and an alert fire, and the connector is told `held` (it deletes its
+spool file; a resend gets `held` again by step 1). An operator confirms or
+discards it through an admin endpoint. Rules:
+
+- Later snapshots for the same scope are applied normally if they do not trip
+  the guard. When one is applied, every older held snapshot of that scope
+  becomes `discarded` automatically (it would now be `late`).
+- If several snapshots of one scope are held, confirming one applies it and
+  discards every older held snapshot of that scope. Confirming re-runs 4.4
+  from step 4 against current state.
 
 ### 4.6 Time
 
@@ -246,11 +278,15 @@ older than an applied one is discarded automatically as `late`.
 
 ### 4.7 Schema evolution
 
-A record type's schema version is bumped by a migration-like config change.
-`renames` map old field names to new ones before diffing, so a rename is not a
-remove-plus-add. A type change of an existing field requires a new field name.
-Old events are never rewritten; readers interpret them with the schema version
-recorded on their snapshot.
+A record type's schema version is bumped by adding a new `record_type` row.
+`renames` (`{old_name: new_name}`) belong to the new version. When the new
+version is activated, a migration step rewrites `record_current.fields` of
+that type under the new names, in one transaction and without events; after
+that, incoming snapshots of the old version are renamed before diffing (4.4
+step 5), so a rename never appears as a remove-plus-add. A type change of an
+existing field requires a new field name. Old events are never rewritten:
+each carries its `schema_version`, and the fold (and any reader) maps old
+names forward through the chain of renames.
 
 ### 4.8 Audience on a record that changes audience
 
@@ -278,46 +314,108 @@ broker.)
 
 ```yaml
 journal:
+  roster:                                  # 4.9b
+    configMap: openclaw-household
+    key: household.json
+    format: openclaw-household-v1
   services:
     openclaw/openclaw-gateway:
-      write_types: [attendance_note]          # household writes, on behalf of an agent
       read: true
-      grant_tokens: [subject, guardians, siblings, household]   # tokens it may present
-    openclaw/glovebox-glovebox-powerschool:
+      readers: "*"                         # may read as any member of the roster
+      write_types: [attendance_note]       # household writes, on behalf of a member
+      counts: true
+    openclaw/glovebox-glovebox:            # the connectors' ServiceAccount
       write_types: [course_mark, assignment, attendance_mark, attendance_day,
-                    attendance_total, term_grade, term_comment]
-      write_scopes: {source: powerschool}
-      write_subjects: [e_..., e_...]          # its configured subjects only
-    openclaw/glovebox-glovebox-schoology:
-      write_types: [lms_assignment, lms_assignment_detail]
-      write_scopes: {source: schoology}
-      write_subjects: [e_..., e_...]
+                    attendance_total, term_grade, term_comment,
+                    lms_assignment, lms_assignment_detail]
+      write_scopes: {source: [powerschool, schoology]}
+      write_subjects: roster_subjects      # only data subjects present in the roster
     trunchbull/trunchbull:
       read: true
-      grant_tokens: [guardians]
+      readers: [e_parent1, e_parent2]      # the dashboard reads only as guardians
       counts: true
 ```
 
-**Grants.** Every read and every household write carries the reader's or
-writer's grants, computed by the calling service from its own roster:
+(The connectors share one ServiceAccount today; if per-connector accounts are
+introduced later, the write policy splits per account with no change to the
+journal.)
+
+**Readers and grants.** Every read and every household write names **one
+reader** (a roster member id) and nothing else about access:
 
 ```json
-{"reader": "e_parent1", "grants": [["e_child1","guardians"],["e_child2","guardians"],["e_parent1","subject"]]}
+{"reader": "e_parent1"}
 ```
 
-- A grant whose token is not in the service's `grant_tokens` is rejected
-  (`403`), so a compromised dashboard cannot claim `subject` for anyone.
-- **Visibility rule:** a row is visible if and only if the reader holds a
-  grant `(s, t)` where `s` is the row's `data_subject` (or `*`) and `t` is in
+- The journal **computes** the reader's grants from the roster (4.9b). The
+  caller cannot add, remove or alter grants; a request carrying any access
+  field other than `reader` is rejected.
+- A reader not in the roster, or not in the service's `readers`, is rejected
+  (`403`).
+- **Visibility rule:** a row is visible if and only if one of the reader's
+  computed grants `(s, t)` has `s` equal to the row's `data_subject` and `t` in
   the row's `audience`. `public` in a row's audience is visible to any
-  authenticated reader. `household` is matched literally: callers that want
-  "household" visibility present `(s, household)` grants.
-- **Write rule:** a household write is allowed only if the writer's grants
-  cover the record's `data_subject` with at least one token in the record's
-  audience.
-- The journal never interprets tokens beyond this matching. The token
-  vocabulary for records is the spec 11 enum by default and is configurable;
-  the journal itself contains no household roles.
+  authenticated reader. The same rule filters `/v1/state`, `/v1/events` and
+  `/v1/counts`.
+- The journal still never interprets tokens beyond this matching: the mapping
+  from roster to grants lives in one adapter (4.9b), not in the journal's
+  visibility or apply code.
+
+**What this protects against.** A caller that names the wrong reader gets
+that reader's view, never more. A caller cannot claim access it was not
+given: with caller-supplied grants (the first design), a consumer bug that
+attached one child's grants to another child's request would have been
+served without complaint. Naming the wrong reader is still possible inside
+the calling service; that is what the consumer's own pre-write check (Part C)
+and the isolation tests (section 8) are for.
+
+#### 4.9b The household roster
+
+- Glovebox mounts the roster ConfigMap **read-only** as a volume (not
+  `subPath`, so changes from a gitops deployment reach the running process)
+  and reloads it when the file changes. A reload is atomic: a roster that fails
+  to parse is ignored and the previous one kept, with an error metric and an
+  alert.
+- An adapter selected by `format` turns the roster into grants per member. For
+  `openclaw-household-v1`: every member holds `(self, subject)` and
+  `(m, household)` for every member `m`; a guardian of a member `c` holds
+  `(c, guardians)`; a sibling of `c` holds `(c, siblings)`. The adapter is the
+  only code that knows these relationships; its exact mapping is pinned by
+  tests against a fixture of the file's documented format.
+- **Immutability is a deployment precondition, not an assumption.** The
+  journal may be enabled only when all of the following hold, and the rollout
+  (section 9 step 1) verifies each:
+  1. No ServiceAccount in the namespace may create, update, patch or delete
+     ConfigMaps (verified 2026-10-16 for every ServiceAccount in the
+     namespace). Any future Role that grants ConfigMap writes must use
+     `resourceNames` that exclude the roster.
+  2. Both applications mount the roster read-only (the openclaw gateway does
+     today, via a `readOnly` mount; ConfigMap volumes are read-only to the pod
+     in any case).
+  3. The ConfigMap is applied by Flux from gitops (verified: managed by the
+     `apps` Kustomization, `prune: true`, 10-minute drift correction).
+  4. **New:** a ValidatingAdmissionPolicy (Kubernetes 1.34 on this cluster)
+     denies `CREATE`, `UPDATE` and `DELETE` of that ConfigMap to every
+     requester except Flux's `flux-system/kustomize-controller`
+     ServiceAccount. Without it a cluster administrator could edit the roster
+     outside gitops until Flux reverts it; with it, the only path to a change
+     is a gitops commit. Break-glass is removing the policy through gitops.
+- The journal exposes the roster's content hash on `/v1/healthz` and as a
+  metric; openclaw logs the hash of the roster it read. Equal hashes show both
+  applications are using the same roster.
+
+#### 4.9a Household writes
+
+- The writer does **not** choose the audience. Each household record type
+  declares a fixed `audience` (for `attendance_note`: `[subject, guardians]`)
+  and the journal stamps it.
+- A write names `on_behalf_of` (a roster member) as its reader. It is allowed
+  only if that member's computed grants include `(data_subject, t)` for at
+  least one `t` in the type's fixed audience.
+- The record key includes the writer: `<date>:<on_behalf_of>` for
+  `attendance_note`. Each person keeps their own note for a date; nobody can
+  overwrite someone else's. Updating one's own note is an `updated` event
+  (decision D6).
 
 ### 4.10 Importance, grouping and notification rules
 
@@ -352,11 +450,14 @@ journal:
 
 ### 4.11 Untrusted text
 
-`text` fields go through the existing scanner during `Apply`. Each verdict is
-stored per field with the scanner version. On read, a field whose latest
-verdict is not `pass` is replaced by `"withheld: failed content scan"`, in both
-state and events. A rescan job re-scans stored text after a scanner upgrade and
-can release fields. `string` fields are not scanned and are therefore length-
+`text` values go through the existing scanner during `Apply` (and during
+household writes). A verdict is stored **per stored value**: per field in
+`record_current.scan`, and per old and new value in `record_event.scan`. On
+read, every value is masked by its own verdict -- a value whose verdict is not
+`pass` is replaced by `"withheld: failed content scan"` -- so an old value
+that failed stays withheld even after the current value passes. A rescan job
+re-scans every stored value after a scanner upgrade, updates the verdicts in
+both tables, and can release values. `string` fields are not scanned and are therefore length-
 and character-limited (4.3) and must not carry free text; the record type
 schema decides which is which.
 
@@ -365,23 +466,29 @@ schema decides which is which.
 All reads require a service token and grants.
 
 - `GET /v1/state?subject=...&type=...&scope=...&include_removed=false` --
-  visible `record_current` rows, with `first_seen_at`, `last_seen_at`,
-  `removed_at` and the snapshot `observed_at` that last confirmed them.
+  visible `record_current` rows, each with `first_seen_at`, `last_seen_at`,
+  `confirmed_at` (the `observed_at` of the snapshot that last confirmed it)
+  and `in_latest_snapshot` (whether the most recent applied snapshot of its
+  scope contained it). For windowed scopes, `in_latest_snapshot=false` means
+  "left the window; current status unknown" -- the record is not removed,
+  because nothing says it was (section 5.2).
 - `GET /v1/events?after=<seq>&subject=...&type=...&min_importance=...&limit=...`
   -- visible events with `seq > after`, ascending. The reader stores the last
   `seq` as its cursor. Gaps in visible `seq` are normal.
 - `GET /v1/counts?subject=...` -- per subject and record type: live record
   counts and events by importance for a period; no field values. For a
-  counts-only household view. Requires `counts: true` in the service policy.
+  counts-only household view. Requires `counts: true` in the service policy and
+  is filtered by the reader's grants like every other read.
 - Admin (operator ServiceAccount only): `POST /v1/admin/held/{id}:confirm|discard`,
   `POST /v1/admin/erase {data_subject}`, `POST /v1/admin/rescan`.
 
 ### 4.13 Erase
 
-`POST /v1/admin/erase` deletes, in one transaction, every `snapshot`,
-`record_current`, `record_event` and `held_snapshot` row for the subject, and
-writes an `erasure` row with counts. Later snapshots observed before the
-erasure are rejected (4.4 step 2), so a spool replay cannot bring data back.
+`POST /v1/admin/erase` deletes, in one transaction, every `snapshot` row whose
+`data_subject` is the subject (held ones included) and every `record_current`
+and `record_event` row for the subject, and writes an `erasure` row with
+counts. Later snapshots observed before the erasure get `410` (4.4 step 3) and
+the connector deletes them, so a spool replay cannot bring data back.
 Reader cursors stay valid (sequence numbers are not reused). This is the only
 operation that deletes event history.
 
@@ -390,14 +497,14 @@ operation that deletes event history.
 - Directory `spool/` on the connector's existing state volume. Each poll
   writes its snapshots there first (temp file then rename), named
   `<observed_at>-<snapshot_id>.json`, then sends pending files oldest first
-  per scope, deleting each on `applied | duplicate | late | held` and keeping
-  it on `5xx` or network failure.
+  per scope and acts on each response as in the table in 4.3.
 - Bounds: `spool.max_age` (default 7 days) and `spool.max_bytes` (default
-  256 MiB). On overflow the oldest intermediate snapshots of a scope are
-  dropped; the newest of each scope is always kept. Only timing granularity is
-  lost.
-- `4xx` other than `409` is not retried: the file moves to `spool/rejected/`
-  with the reason, and a metric fires.
+  256 MiB), applied to `spool/` and `spool/rejected/` alike, so data at rest
+  is always bounded. On overflow the oldest intermediate snapshots of a scope
+  are dropped; the newest of each scope is always kept. For complete scopes
+  this loses only timing granularity. For windowed scopes a record that
+  appeared only in a dropped snapshot is lost; the drop counter makes that
+  visible.
 - Metrics: `glovebox_journal_spool_files`, `..._spool_oldest_seconds`,
   `..._spool_dropped_total`, `..._spool_rejected_total`. Alert when the spool
   has been non-empty for over an hour.
@@ -417,30 +524,65 @@ Both connectors keep emitting today's items unchanged until rollout step 6
 
 ### 5.1 PowerSchool record types
 
+Keys are unique **within one data subject**; the subject is part of every
+record's identity (4.2), so siblings in the same course never collide.
+
 | Record type | Key | Fields | Scope (complete?) |
 |---|---|---|---|
-| `course_mark` | course id; else `number-period` | `course` string, `period` string, `teacher` string, `term_marks` per term: `<term>_letter` string, `<term>_percent` number | `(powerschool, grades, subject)` -- yes |
-| `assignment` | `<section>:<assignment_id>` (`#n` suffix kept for shared rows) | `course`, `category`, `title` string; `due` date; `score`, `max_score`, `percent` number; `letter` string; `missing`, `late`, `incomplete`, `exempt`, `collected` bool; `teacher_comment`, `description`, `category_description` text | `(powerschool, assignments, subject, course)` -- yes: the connector sends the course's full list. Today's lookback filter stops applying to records. |
-| `attendance_total` | course | `absences`, `tardies` int | `(powerschool, attendance_totals, subject)` -- yes |
-| `attendance_mark` | `<course>:<period>:<date>` | `date` date, `course`, `period`, `code`, `code_description` string, `kind` string (`absence_unexcused`, `absence_excused`, `tardy_unexcused`, `tardy_excused`, `left_early_excused`, ...), `excused` bool | `(powerschool, attendance_marks, subject, term)` -- yes |
-| `attendance_day` | date | `date` date, `periods_met`, `absent_unexcused`, `absent_excused`, `tardies`, `left_early` int, `classification` string (`full_day`, `partial_day`, `tardy_only`, `present`), `any_unexcused` bool | `(powerschool, attendance_days, subject, term)` -- yes |
-| `term_grade` | `<course_number>:<term>` | `course`, `term`, `grade` string; `earned`, `attempted` number | `(powerschool, term_grades, subject)` -- yes |
-| `term_comment` | `<course>:<term>` | `course`, `term` string, `comment` text | `(powerschool, term_comments, subject)` -- yes; audience **`guardians` only** |
+| `course_mark` | course id; else `number-period` | `course`, `period`, `teacher` string; per term `<term>_letter` string and `<term>_percent` number | `(powerschool, grades, subject)` -- yes |
+| `assignment` | `<course key>:<assignment_id>` (the `#n` suffix kept for rows shared by sections) | `course`, `category`, `title` string; `due` date; `score`, `max_score`, `percent` number; `letter` string; `missing`, `late`, `incomplete`, `exempt`, `collected` bool; `teacher_comment`, `description`, `category_description` text | `(powerschool, assignments, subject)` -- **one snapshot for all courses**, `complete=true` only when every course's list was read successfully in that poll, otherwise `complete=false`. A dropped course's assignments are therefore removed by the next complete snapshot. Today's lookback filter does not apply to records. |
+| `attendance_total` | course key | `course` string; `absences`, `tardies` int | `(powerschool, attendance_totals, subject)` -- yes |
+| `attendance_mark` | `<attendance course key>:<date>` -- the course key is the connector's existing `attendanceCourseKey` (course, expression, enrolment date), so a re-enrolment is a different record | `date` date; `course`, `period`, `code`, `code_description` string; `kind` string, one of the connector's configured kinds (`absence_unexcused`, `absence_excused`, `late_unexcused`, `late_excused`, `left_early_unexcused`, `left_early_excused`, `authorized`, `unknown`); `excused` bool | `(powerschool, attendance_marks, subject, school_year)` -- yes |
+| `attendance_day` | date | see below | `(powerschool, attendance_days, subject, school_year)` -- yes |
+| `term_grade` | `<course_number>:<term>` (`#n` on collision, as today) | `course`, `term`, `grade` string; `earned`, `attempted` number | `(powerschool, term_grades, subject)` -- yes |
+| `term_comment` | `<course>:<term>` | `course`, `term` string; `comment` text | `(powerschool, term_comments, subject)` -- yes; audience **`guardians` only** |
 
-`attendance_day` is derived in the connector from the attendance grid, which
-shows every period of every day (absence codes, present, no meeting):
+`school_year` is derived from the date (1 August to 31 July, written
+`2026-27`); the attendance page carries no term identifier, so scopes do not
+use one.
 
-- `periods_met` -- periods with a class meeting that day.
-- `full_day` -- every period that met has an absence code.
-- `partial_day` -- at least one, but not all, periods that met have an
-  absence code.
-- `tardy_only` -- no absence codes, at least one tardy or left-early code.
-- `present` -- none of the above. Present days are emitted only when they
-  replace an earlier non-present classification (so a correction is visible);
-  otherwise they are not records, to keep volume down.
+#### `attendance_day`
+
+Derived in the connector from the attendance grid it already reads. Each cell
+is one of: a **code** (`CellCode`, mapped to a kind through the configured
+`attendance_days.kinds`), **blank** (present), **`.`** (`CellUnmarked`:
+nothing marked) or **`-`** (`CellNoMeeting`: no class).
+
+Fields: `date` date; `periods_met` (cells that are not `-`),
+`periods_unmarked` (`.`), `absent_unexcused`, `absent_excused`,
+`late`, `left_early`, `authorized`, `unknown_codes` int; `any_unexcused` bool
+(any `*_unexcused` kind); `classification` string.
+
+Classification, over the periods that met and were marked
+(`periods_met - periods_unmarked`):
+
+- `full_day` -- at least one, and every one, of those periods has an absence
+  kind (`absence_unexcused` or `absence_excused`).
+- `partial_day` -- at least one, but not every one, has an absence kind.
+- `late_or_left_early` -- no absence kind; at least one `late_*` or
+  `left_early_*` kind.
+- `other` -- only `authorized` or `unknown` codes.
+
+`authorized` (a field trip, a student elsewhere in the building) is never an
+absence. `unknown` codes are counted and never ignored; a day with
+`unknown_codes > 0` is flagged so a person can map the code.
+
+Two rules keep the signal clean:
+
+- **Settled days only.** A day becomes a record only once it is in the past
+  in the school's time zone (the observation date's previous days). Today's
+  cells are still filling in; they would otherwise read as `partial_day` and
+  then `full_day` and fire rules twice. Today's codes still arrive as
+  `attendance_mark` records.
+- **Only days with at least one code are records.** A fully present day is not
+  a record. If every code on a day is later cleared, the day drops out of the
+  complete scope and the journal records `removed` -- which is exactly "no
+  longer an absence day". The connector keeps no memory for this.
 
 Classification is connector logic by design: the journal stays free of
-source-specific rules.
+source-specific rules. The importance rules (4.10) match `classification` and
+`any_unexcused`, so a full-day absence and a single-period absence or late
+arrival are distinct signals.
 
 ### 5.2 Schoology record types
 
@@ -449,18 +591,30 @@ source-specific rules.
 | `lms_assignment` | assignment id | `title`, `course`, `status`, `link` string; `due` timestamp | `(schoology, assignments, subject)` -- **no**: the overdue/upcoming listing is a window |
 | `lms_assignment_detail` | assignment id | `teacher` string; `description`, `comments` text | `(schoology, assignment_detail, subject)` -- **no**: detail reads are budgeted |
 
-Because snapshots carry the whole listing each poll, status changes are now
-captured (today the connector's seen-set suppresses them). Posts and messages
-remain ordinary items.
+What this does and does not capture, stated plainly:
+
+- A change **while the assignment is in the window** (its status, due date,
+  title) is captured as an `updated` event. Today the connector's seen-set
+  suppresses these entirely.
+- An assignment that **leaves the window** (typically because it was submitted
+  or its upcoming date passed) produces no event: the listing does not say
+  why it left. Its row keeps its last values with `in_latest_snapshot=false`
+  (4.12), and readers present it as "no longer listed; status unknown".
+- The authoritative record of submitted and scored work is PowerSchool's
+  `assignment`, which is a complete scope.
+
+Posts and messages remain ordinary items.
 
 ### 5.3 Household record type
 
 | Record type | Key | Fields | Written by |
 |---|---|---|---|
-| `attendance_note` | `<data_subject>:<date>` | `date` date; `what_happened` text; `heard_from` string (`subject`, `guardian`, ...); `explained_to_school` string (`not_yet`, `yes`, `not_needed`) | the openclaw gateway on behalf of a person-agent, via `POST /v1/notes`; default audience `[subject, guardians]` |
+| `attendance_note` | `<date>:<on_behalf_of>` | `date` date; `what_happened` text; `heard_from` string (`subject`, `guardian`, ...); `explained_to_school` string (`not_yet`, `yes`, `not_needed`) | the openclaw gateway on behalf of a person-agent, via `POST /v1/notes`; fixed audience `[subject, guardians]` (4.9a) |
 
-`POST /v1/notes` takes `{record_type, key, data_subject, audience, fields,
-on_behalf_of, grants}` and writes one `created` or `updated` event (actor =
+`POST /v1/notes` takes `{record_type, date, data_subject, fields,
+on_behalf_of}`; the journal computes `on_behalf_of`'s grants from the roster,
+forms the key, stamps the fixed audience and writes one `created` or `updated`
+event (actor =
 `openclaw/openclaw-gateway` plus `on_behalf_of`). It never spools: if the
 journal is down the caller gets an error and must say so.
 
@@ -475,9 +629,20 @@ for these three; noted here so later work starts from it.
 
 ## 6. Part C -- the first consumer (openclaw)
 
-- The **school patrol** reads `/v1/state` and `/v1/events` for each
-  person-agent, presenting that agent's grants (computed from
-  `household.json`), and stores one cursor per agent.
+- The **school patrol** reads `/v1/state` and `/v1/events` once per
+  person-agent, naming that agent's member id as `reader` (never a list, never
+  grants), and stores one cursor per agent.
+- **Pre-write check (kept from today's patrol).** Before writing anything into
+  an agent's workspace, the patrol re-checks every row and event it is about to
+  write against its own reading of `household.json`: the row's `data_subject`
+  and `audience` must entitle that agent. Any mismatch aborts that agent's
+  write entirely and raises an alert. This is independent of the journal's
+  filter, so a patrol bug that names the wrong reader is caught before it
+  reaches a workspace. The patrol logs the hash of the roster it read (4.9b).
+- **Isolation tests** in openclaw: with two child agents and two guardian
+  agents over a fixture journal, no child's files ever contain a row about the
+  other child or a guardians-only row; a deliberately wrong `reader` is caught
+  by the pre-write check.
 - **`state.md` / `state.json`** are written from `/v1/state`: every row gets
   its record type and key, `as_of` from the confirming snapshot, removed rows
   are dropped, and the household note for a date is shown next to the school's
@@ -525,9 +690,19 @@ snapshots, oldest first, per scope:
   - a late snapshot never changes current state;
   - the removal guard holds what it should and nothing else.
 - **Visibility (property tests):** no row or old value is ever returned without
-  a matching grant (including 4.8); a service cannot present tokens outside
-  its `grant_tokens`; after erase nothing remains for the subject and a replayed
-  older snapshot is rejected.
+  a matching grant (including 4.8); for every pair of distinct subjects in a
+  generated roster, no read as one subject's own reader returns a row about
+  the other unless the roster grants it; a guardians-only row never reaches a
+  subject's own reader; a service cannot read as a reader outside its
+  `readers`; a request carrying access fields other than `reader` is
+  rejected; the roster adapter's mapping is pinned by fixture tests; a roster
+  that fails to parse keeps the previous one; after erase nothing remains for
+  the subject and a replayed older snapshot is rejected.
+- **Roster immutability (deployment test, rollout step 1):** as a cluster
+  administrator, an update to the roster ConfigMap is denied by the admission
+  policy; every ServiceAccount in the namespace is denied ConfigMap writes
+  (`kubectl auth can-i`); the roster hash reported by glovebox equals the one
+  openclaw logs.
 - **Postgres in a container:** all journal tests run against a real Postgres
   (the CNPG image version in production) started in CI; migrations are tested
   from empty and from every previous version. Database-writing tests are rerun
@@ -547,9 +722,11 @@ snapshots, oldest first, per scope:
 Each step is its own reviewed change and release; each can stop without
 affecting what came before.
 
-1. **Journal core** (glovebox): schema, `Apply`, API, auth, guards, erase,
-   metrics; off by default. Gitops: database on CNPG, credentials via Vault and
-   ESO, policies and roles, NetworkPolicy.
+1. **Journal core** (glovebox): schema, `Apply`, API, auth, roster adapter,
+   guards, erase, metrics; off by default. Gitops: database on CNPG,
+   credentials via Vault and ESO, policies and roles, NetworkPolicy, and the
+   roster admission policy (4.9b item 4). The journal is enabled only after the
+   roster immutability test (section 8) passes on the cluster.
 2. **Connector records and spool** (glovebox): PowerSchool and Schoology emit
    snapshots in shadow, alongside today's items.
 3. **Seed** (Job).
