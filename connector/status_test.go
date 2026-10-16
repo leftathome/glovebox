@@ -376,3 +376,53 @@ func TestWaitHealth_ReadyAndServesStatus(t *testing.T) {
 		t.Errorf("/metrics = %d", code)
 	}
 }
+
+// TestSessionState_SubjectAndReplacement: the session a wait is about is
+// persisted with it; a restarted process ends the restored wait when a
+// different session is in place, keeps it when the same one is, and the
+// file is replaced atomically (no temporary left behind).
+func TestSessionState_SubjectAndReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-state")
+	ss, _ := NewSessionState(prometheus.NewRegistry(), "p2", nil)
+	ss.PersistTo(path)
+	began := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	ss.Set(SessionStateWaiting, began, "waiting")
+	ss.SetSubject("deadbeef")
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temporary file left behind: %v", err)
+	}
+
+	restart := func() *SessionState {
+		r, _ := NewSessionState(prometheus.NewRegistry(), "p2", nil)
+		r.PersistTo(path)
+		return r
+	}
+	r := restart()
+	if cur, at := r.Current(); cur != SessionStateWaiting || !at.Equal(began) || r.Subject() != "deadbeef" {
+		t.Fatalf("restored %q since %s subject %q", cur, at, r.Subject())
+	}
+	if r.EndWaitIfReplaced("deadbeef", "x") || r.EndWaitIfReplaced("", "x") {
+		t.Error("ended the wait for the same session / for no session")
+	}
+	if cur, _ := r.Current(); cur != SessionStateWaiting {
+		t.Fatalf("state %q", cur)
+	}
+	if !r.EndWaitIfReplaced("cafe", "replaced") {
+		t.Fatal("did not end the wait for a different session")
+	}
+	if cur, _ := r.Current(); cur != SessionStateUnknown || r.Subject() != "" {
+		t.Errorf("after replacement: %q subject %q", cur, r.Subject())
+	}
+	if cur, _ := restart().Current(); cur != SessionStateUnknown {
+		t.Errorf("an ended wait came back after another restart: %q", cur)
+	}
+
+	// No subject recorded (a file from before subjects): nothing to compare.
+	if err := os.WriteFile(path, []byte(SessionStateWaiting+" "+began.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := restart(); r.EndWaitIfReplaced("cafe", "x") {
+		t.Error("ended a wait whose subject is unknown")
+	}
+}

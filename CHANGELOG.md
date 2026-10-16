@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are weekday-only, so the longest routine wait is Friday's 21:26 login to
   Monday's 05:56 one, about 56.5h). The wait's start is kept in the state
   directory (`session-state`), so a restart -- a values change, an OOM kill,
-  an eviction -- does not reset it in any login mode. Existing
+  an eviction -- does not reset it in any login mode; a wait whose
+  session was replaced while no process ran ends at start-up. Existing
   rejected-session metrics and alerts are unchanged.
 - Alert `GloveboxSchoologyWaitingForSession` (with `schoologyConnector.enabled`),
   `metrics.prometheusRule.schoologySessionWaitingHours` (default 14: the

@@ -80,8 +80,16 @@ func WaitForFreshCredentials(ctx context.Context, rejected RejectedSession, cred
 			creds = fresh
 		}
 	}
-	if waited && err == nil {
-		o.State.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+	if err == nil {
+		if waited {
+			o.State.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+		} else if cur, _ := o.State.Current(); cur == connector.SessionStateWaiting {
+			// A wait restored from before a restart, and the refused
+			// session was replaced while no process ran. Nothing after
+			// this point would clear it: the wait is over.
+			o.State.Set(connector.SessionStateUnknown, time.Time{},
+				"the refused session was replaced while the connector was not running; not checked yet")
+		}
 	}
 	if stopErr := health.Stop(); stopErr != nil {
 		slog.Error("schoology: could not release the health port", "error", stopErr)

@@ -457,6 +457,9 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 	if authErr != nil {
 		c.SessionState.Set(connector.SessionStateWaiting, time.Time{},
 			"the portal stopped accepting the session during a poll")
+		if c.Gate != nil {
+			c.SessionState.SetSubject(c.Gate.Fingerprint())
+		}
 		if c.Gate.OnDemand() {
 			// The session died in the middle of the poll. With on-demand
 			// login that is not a reason to exit: the next poll's check
@@ -484,6 +487,13 @@ func (c *PowerSchoolConnector) reportSessionState(g GateResult) {
 	if c.SessionState == nil {
 		return
 	}
+	defer func() {
+		if cur, _ := c.SessionState.Current(); cur == connector.SessionStateWaiting {
+			// Which session the wait is about, so a restarted process can
+			// tell whether it has been replaced since.
+			c.SessionState.SetSubject(c.Gate.Fingerprint())
+		}
+	}()
 	switch g.Outcome {
 	case GateLive:
 		c.SessionState.Set(connector.SessionStateUsable, time.Time{}, "the portal accepted the session at the last check")

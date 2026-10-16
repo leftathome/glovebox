@@ -208,6 +208,17 @@ func main() {
 			requester := powerschool.ConfigMapRequester{Client: kube, ConfigMap: cfg.LoginOnDemand.ConfigMapName}
 			gate = powerschool.NewSessionGate(source, cfg.LoginOnDemand, requester)
 		}
+		// A wait restored from before a restart is about one session. If the
+		// session file now holds a different one, that wait is over: the
+		// first poll checks the new session. If it holds the same one, the
+		// wait goes on from its original start; the poll decides.
+		endRestoredWait(sessionState, func() string {
+			s, _, err := powerschool.LoadSessionAdvisory(os.Getenv, time.Now())
+			if err != nil {
+				return ""
+			}
+			return powerschool.SessionFingerprint(s)
+		})
 		// An operator's "try again" after the connector stopped asking.
 		gate.BackoffResetToken = os.Getenv("POWERSCHOOL_LOGIN_BACKOFF_RESET")
 		var err error
@@ -265,6 +276,7 @@ func main() {
 		}
 		c.OnSessionRejected = func(age time.Duration) {
 			sessionState.Set(connector.SessionStateWaiting, time.Time{}, "the portal refused the session")
+			sessionState.SetSubject(gate.Fingerprint())
 			if fp := gate.Fingerprint(); fp != "" {
 				if err := rejected.Mark(fp); err != nil {
 					slog.Error("powerschool: could not record rejected session", "error", err)
@@ -311,14 +323,32 @@ func waitForSession(ctx context.Context, rejected connector.RejectedSession,
 		}
 		waitHealth = h
 	})
-	if waited && err == nil {
-		state.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+	if err == nil {
+		if waited {
+			state.Set(connector.SessionStateUnknown, time.Time{}, "a new session is in place; not checked yet")
+		} else if cur, _ := state.Current(); cur == connector.SessionStateWaiting {
+			// A wait restored from before a restart, and the session that
+			// was refused has been replaced while no process ran: the wait
+			// is over (the marker is authoritative on this path).
+			state.Set(connector.SessionStateUnknown, time.Time{},
+				"the refused session was replaced while the connector was not running; not checked yet")
+		}
 	}
 	if stopErr := waitHealth.Stop(); stopErr != nil {
 		slog.Error("powerschool: could not release the health port", "error", stopErr)
 		return nil, errReleasePort
 	}
 	return session, err
+}
+
+// endRestoredWait ends a restored wait (login on demand) when the session
+// in place is not the one the wait is about. current returns the session
+// file's fingerprint, or "" when there is none.
+func endRestoredWait(state *connector.SessionState, current func() string) {
+	if cur, _ := state.Current(); cur != connector.SessionStateWaiting {
+		return
+	}
+	state.EndWaitIfReplaced(current(), "a different session is in place than the one found dead before the restart; not checked yet")
 }
 
 // runOptions is what the binary hands connector.Run.

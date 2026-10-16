@@ -426,8 +426,10 @@ metrics:
     sessionWaitingHours: 60
     # The same for the Schoology connector (GloveboxSchoologyWaitingForSession,
     # with schoologyConnector.enabled). In production its session refresher
-    # runs every day at 01:30, 13:30 and 22:30 (`30 1,13,22 * * *`), so the
-    # longest gap between refreshes is 12h (01:30 to 13:30); a refused
+    # runs every day at 01:30, 13:30 and 22:30 (`30 1,13,22 * * *`). That
+    # CronJob sets no timeZone, so those are cluster time (normally UTC), not
+    # Pacific; the gaps are the same either way. The longest gap between
+    # refreshes is 12h (01:30 to 13:30); a refused
     # session is normally replaced by the next refresh plus the Secret sync.
     # 14h fires when the next refresh did not replace it. With the chart's
     # default refresher schedule (every 12 days) a refused session waits for

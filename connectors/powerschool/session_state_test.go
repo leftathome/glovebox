@@ -155,6 +155,28 @@ func TestBrokerModeWaitSurvivesRestart(t *testing.T) {
 	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
 		t.Errorf("after the first poll of the restarted process: %q since %s, want waiting since %s", cur, at, began)
 	}
+	assertSubjectAndReplacement(t, path, SessionFingerprint(r.file))
+}
+
+// assertSubjectAndReplacement: the persisted wait names the dead session;
+// a restart with that session still in place keeps the wait, a restart with
+// a different one ends it.
+func assertSubjectAndReplacement(t *testing.T, path, deadFP string) {
+	t.Helper()
+	same, _ := restartState(t, path)
+	if same.Subject() != deadFP {
+		t.Fatalf("persisted subject %q, want the dead session's fingerprint", same.Subject())
+	}
+	if same.EndWaitIfReplaced(deadFP, "x") {
+		t.Error("the wait ended with the dead session still in place")
+	}
+	other, _ := restartState(t, path)
+	if !other.EndWaitIfReplaced(SessionFingerprint(testSession("replaced-while-down", time.Now().Add(time.Hour))), "replaced") {
+		t.Error("the wait did not end with a different session in place")
+	}
+	if cur, _ := other.Current(); cur != connector.SessionStateUnknown {
+		t.Errorf("state %q, want unknown", cur)
+	}
 }
 
 // TestMailboxModeWaitSurvivesRestart: the same with the request mailbox.
@@ -200,6 +222,9 @@ func TestMailboxModeWaitSurvivesRestart(t *testing.T) {
 	c.SessionState = ss
 	if cur, at := ss.Current(); cur != connector.SessionStateWaiting || !at.Equal(began) {
 		t.Errorf("after the second restart: %q since %s, want waiting since %s", cur, at, began)
+	}
+	if ss.Subject() != SessionFingerprint(r.file) {
+		t.Errorf("mailbox wait subject %q, want the dead session's fingerprint", ss.Subject())
 	}
 	// A session the portal accepts ends it.
 	r.nextWindow(9 * time.Hour)

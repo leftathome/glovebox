@@ -193,3 +193,41 @@ func TestWaitForFreshCredentials_NoWaitBindsNothing(t *testing.T) {
 		t.Error("something is listening on the health port")
 	}
 }
+
+// TestWaitForFreshCredentials_RestoredWaitEndsWhenReplacedWhileDown: the
+// file says "waiting" (an earlier process waited), but the credentials were
+// replaced while no process ran, so no wait starts. Nothing later would
+// clear the state on Schoology; the wait must end here, and stay ended
+// across another restart.
+func TestWaitForFreshCredentials_RestoredWaitEndsWhenReplacedWhileDown(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "session-state")
+	rejected := NewRejectedSession(dir)
+	if err := rejected.Mark(SessionFingerprint("synthetic-dead")); err != nil {
+		t.Fatal(err)
+	}
+	earlier, _ := connector.NewSessionState(prometheus.NewRegistry(), "schoology", nil)
+	earlier.PersistTo(statePath)
+	earlier.Set(connector.SessionStateWaiting, time.Now().Add(-20*time.Hour), "waiting")
+
+	state, _ := connector.NewSessionState(prometheus.NewRegistry(), "schoology", nil)
+	state.PersistTo(statePath)
+	if cur, _ := state.Current(); cur != connector.SessionStateWaiting {
+		t.Fatalf("not restored: %q", cur)
+	}
+	fresh := &schoologyauth.Credentials{SessID: "synthetic-fresh"}
+	got, err := WaitForFreshCredentials(context.Background(), rejected, fresh,
+		func() (*schoologyauth.Credentials, error) { return fresh, nil },
+		SessionWaitOptions{HealthAddr: waitFreeAddr(t), Interval: time.Millisecond, State: state})
+	if err != nil || got != fresh {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if cur, _ := state.Current(); cur != connector.SessionStateUnknown {
+		t.Errorf("state %q, want unknown: the refused session was replaced", cur)
+	}
+	again, _ := connector.NewSessionState(prometheus.NewRegistry(), "schoology", nil)
+	again.PersistTo(statePath)
+	if cur, _ := again.Current(); cur != connector.SessionStateUnknown {
+		t.Errorf("the ended wait came back after a restart: %q", cur)
+	}
+}

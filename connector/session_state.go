@@ -53,6 +53,9 @@ type SessionState struct {
 	cur  string
 	at   time.Time
 	path string
+	// subject is the fingerprint of the session the current state is about
+	// (SetSubject); empty when unknown. Cleared on every change of state.
+	subject string
 }
 
 // NewSessionState registers the gauges for prefix (e.g. "powerschool") on
@@ -100,11 +103,12 @@ func (s *SessionState) Set(state string, since time.Time, message string) {
 		}
 	}
 	changed := s.cur != state || !s.at.Equal(since)
+	if s.cur != state {
+		s.subject = ""
+	}
 	s.cur, s.at = state, since
-	if changed && s.path != "" {
-		// Best effort: a lost write costs the wait's start time after a
-		// restart, nothing else.
-		_ = os.WriteFile(s.path, []byte(state+" "+since.UTC().Format(time.RFC3339Nano)+"\n"), 0o600)
+	if changed {
+		s.persistLocked()
 	}
 	for _, st := range sessionStates {
 		v := 0.0
@@ -121,6 +125,62 @@ func (s *SessionState) Set(state string, since time.Time, message string) {
 		Degraded: state == SessionStateWaiting,
 		Message:  message,
 	})
+}
+
+// persistLocked writes the state file: a temporary file renamed over the
+// old one, so a crash mid-write leaves the previous state, not a torn one.
+// Best effort: a lost write costs the wait's start time after a restart,
+// nothing else. s.mu is held.
+func (s *SessionState) persistLocked() {
+	if s.path == "" {
+		return
+	}
+	line := s.cur + " " + s.at.UTC().Format(time.RFC3339Nano)
+	if s.subject != "" {
+		line += " " + s.subject
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(line+"\n"), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+// SetSubject records which session (an opaque fingerprint, never the
+// secret) the current state is about, so a restarted process can tell
+// whether a restored wait is still about the session in place
+// (EndWaitIfReplaced). It does not change the state or its start.
+func (s *SessionState) SetSubject(fingerprint string) {
+	if s == nil || strings.ContainsAny(fingerprint, " \t\r\n") {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subject == fingerprint {
+		return
+	}
+	s.subject = fingerprint
+	s.persistLocked()
+}
+
+// EndWaitIfReplaced ends a wait (restored or not) when the session in place
+// is known to differ from the one the wait is about: the state becomes
+// unknown until the next check. It does nothing when the state is not
+// waiting, when the wait's subject is not recorded, or when fingerprint is
+// empty (no session in place). Reports whether it ended the wait.
+func (s *SessionState) EndWaitIfReplaced(fingerprint, message string) bool {
+	if s == nil || fingerprint == "" {
+		return false
+	}
+	s.mu.Lock()
+	ended := s.cur == SessionStateWaiting && s.subject != "" && s.subject != fingerprint
+	s.mu.Unlock()
+	if ended {
+		s.Set(SessionStateUnknown, time.Time{}, message)
+	}
+	return ended
 }
 
 // PersistTo keeps the state in path (a file in the connector's state
@@ -143,7 +203,7 @@ func (s *SessionState) PersistTo(path string) {
 		return
 	}
 	fields := strings.Fields(string(raw))
-	if len(fields) != 2 || fields[0] != SessionStateWaiting {
+	if (len(fields) != 2 && len(fields) != 3) || fields[0] != SessionStateWaiting {
 		return
 	}
 	since, err := time.Parse(time.RFC3339Nano, fields[1])
@@ -151,6 +211,19 @@ func (s *SessionState) PersistTo(path string) {
 		return
 	}
 	s.Set(SessionStateWaiting, since, "restored: waiting for a new session since before this process started")
+	if len(fields) == 3 {
+		s.SetSubject(fields[2])
+	}
+}
+
+// Subject returns the fingerprint recorded with SetSubject, if any.
+func (s *SessionState) Subject() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subject
 }
 
 // Current returns the current state and when it was entered.

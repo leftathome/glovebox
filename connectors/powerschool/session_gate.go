@@ -268,6 +268,9 @@ func (g *SessionGate) Synchronous() bool { return g != nil && g.broker != nil }
 // Fingerprint returns the fingerprint of the session currently in use
 // ("" when there is none).
 func (g *SessionGate) Fingerprint() string {
+	if g == nil {
+		return ""
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.fingerprint

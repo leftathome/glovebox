@@ -193,3 +193,81 @@ func TestWaitForSession_ReadyAndCarriedAcrossRestart(t *testing.T) {
 	}
 	ln.Close()
 }
+
+// TestWaitForSession_RestoredWaitEndsWhenReplacedWhileDown: no on-demand
+// login. The state file says "waiting", but the session was replaced while
+// no process ran: no wait starts, and the restored wait ends (unknown).
+func TestWaitForSession_RestoredWaitEndsWhenReplacedWhileDown(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.json")
+	writeSession(t, sessionFile, "synthetic-fresh")
+	getenv := func(k string) string {
+		if k == "POWERSCHOOL_SESSION_FILE" {
+			return sessionFile
+		}
+		return ""
+	}
+	load := func() (*pslib.SessionExport, error) { return powerschool.LoadSession(getenv, time.Now()) }
+	rejected := connector.NewRejectedSession(dir)
+	if err := rejected.Mark("fingerprint-of-the-refused-session"); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, sessionStateFile)
+	earlier, _ := connector.NewSessionState(prometheus.NewRegistry(), "powerschool", nil)
+	earlier.PersistTo(statePath)
+	earlier.Set(connector.SessionStateWaiting, time.Now().Add(-10*time.Hour), "waiting")
+
+	state, _ := connector.NewSessionState(prometheus.NewRegistry(), "powerschool", nil)
+	state.PersistTo(statePath)
+	if cur, _ := state.Current(); cur != connector.SessionStateWaiting {
+		t.Fatalf("not restored: %q", cur)
+	}
+	addr := freePort(t)
+	if _, err := waitForSession(context.Background(), rejected, load, time.Millisecond, addr, nil, state, prometheus.NewRegistry()); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := state.Current(); cur != connector.SessionStateUnknown {
+		t.Errorf("state %q, want unknown", cur)
+	}
+	if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+		c.Close()
+		t.Error("a stand-in was started without a wait")
+	}
+}
+
+// TestEndRestoredWait_OnDemand: with login on demand the wait is decided at
+// poll time. A restored wait about the session still in the file goes on
+// (from its original start) until the first poll; one about a session that
+// has since been replaced ends at start-up. With no session in place, or
+// no recorded subject, it goes on.
+func TestEndRestoredWait_OnDemand(t *testing.T) {
+	began := time.Now().Add(-30 * time.Hour).UTC().Truncate(time.Second)
+	restored := func(subject string) *connector.SessionState {
+		path := filepath.Join(t.TempDir(), sessionStateFile)
+		earlier, _ := connector.NewSessionState(prometheus.NewRegistry(), "powerschool", nil)
+		earlier.PersistTo(path)
+		earlier.Set(connector.SessionStateWaiting, began, "waiting")
+		earlier.SetSubject(subject)
+		s, _ := connector.NewSessionState(prometheus.NewRegistry(), "powerschool", nil)
+		s.PersistTo(path)
+		return s
+	}
+	for _, tc := range []struct {
+		name, subject, file, want string
+	}{
+		{"same session still in place", "dead-fp", "dead-fp", connector.SessionStateWaiting},
+		{"replaced while down", "dead-fp", "new-fp", connector.SessionStateUnknown},
+		{"no session in place", "dead-fp", "", connector.SessionStateWaiting},
+		{"subject not recorded", "", "new-fp", connector.SessionStateWaiting},
+	} {
+		s := restored(tc.subject)
+		endRestoredWait(s, func() string { return tc.file })
+		cur, at := s.Current()
+		if cur != tc.want {
+			t.Errorf("%s: state %q, want %q", tc.name, cur, tc.want)
+		}
+		if cur == connector.SessionStateWaiting && !at.Equal(began) {
+			t.Errorf("%s: the wait's start moved to %s", tc.name, at)
+		}
+	}
+}
