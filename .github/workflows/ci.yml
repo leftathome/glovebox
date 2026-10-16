@@ -158,6 +158,31 @@ jobs:
             echo "No test report found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # helm lint and every scripts/test-chart-*.sh (scripts/chart-checks.sh), the
+  # same checks as the GitLab chart-test job. helm is pinned and verified by
+  # scripts/install-helm.sh rather than whatever the runner image carries.
+  # origin/main is fetched for test-chart-serviceaccounts.sh's render
+  # comparison, which fails rather than skips in CI without it.
+  chart-test:
+    name: Chart tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Fetch main for the render comparison
+        run: git fetch --quiet --depth=50 origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Install helm and PyYAML
+        run: |
+          sudo ./scripts/install-helm.sh
+          python3 -c 'import yaml' || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml; }
+
+      - name: Chart checks
+        run: ./scripts/chart-checks.sh
+
   build-binaries:
     name: Build binaries (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest

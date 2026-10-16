@@ -76,8 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broker's allowed caller follow it. New optional
   `connectors.<name>.serviceAccount`, `schoologyConnector.serviceAccount`
   and `importers.<name>.serviceAccount` (`create`, `name`, `annotations`).
-  `scripts/test-chart-serviceaccounts.sh` pins the identities and checks
-  that a render differs from the previous chart only in them.
+  The render fails if any two workloads (the core, connectors, importers,
+  login brokers, the refresher CronJobs) would resolve to one account, with
+  `create: false` or without. `scripts/test-chart-serviceaccounts.sh` pins
+  the identities and checks that a render differs from the previous chart
+  only in them.
+
+### Changed
+
+- CI runs `helm lint` and every `scripts/test-chart-*.sh`
+  (`scripts/chart-checks.sh`) on merge requests, main and tags: a new
+  `chart-test` job in GitLab CI and in the GitHub workflow, with helm pinned
+  and checksum-verified by `scripts/install-helm.sh`. Until now these were
+  run by hand.
 
 ### Upgrade notes
 

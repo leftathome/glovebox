@@ -119,6 +119,58 @@ allowed callers).
 {{- end }}
 
 {{/*
+Refuse a render in which two workloads would run as one ServiceAccount.
+
+Per-workload accounts are only worth having if they stay per-workload, and
+every one of them can be renamed: `connectors.rss.serviceAccount.name:
+glovebox-glovebox` would put RSS back on the core's account (and render that
+object twice), and naming another connector's account for the PowerSchool
+connector would bind its ConfigMap-write Role to that connector. With
+`create: false` nothing would even show the collision as a duplicate object.
+So every resolved name is collected here -- the core, each enabled
+connector (schoologyConnector included), importer and login broker, and both
+refresher CronJobs -- and any name claimed twice fails the render.
+
+Renders nothing. Included once, from serviceaccount.yaml.
+*/}}
+{{- define "glovebox.serviceAccountsUnique" -}}
+{{- $seen := dict -}}
+{{- $claims := list (list (include "glovebox.serviceAccountName" .) "the core (serviceAccount)") -}}
+{{- range $name, $c := .Values.connectors -}}
+{{- if and $c $c.enabled -}}
+{{- $claims = append $claims (list (include "glovebox.connectorServiceAccountName" (dict "name" $name "connector" $c "root" $)) (printf "connectors.%s" $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.schoologyConnector.enabled -}}
+{{- $claims = append $claims (list (include "glovebox.connectorServiceAccountName" (dict "name" "schoology" "connector" .Values.schoologyConnector "root" .)) "schoologyConnector") -}}
+{{- end -}}
+{{- range $name, $imp := .Values.importers -}}
+{{- if and $imp $imp.enabled -}}
+{{- $claims = append $claims (list (include "glovebox.importerServiceAccountName" (dict "name" $name "importer" $imp "root" $)) (printf "importers.%s" $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $b := .Values.loginBrokers -}}
+{{- if and $b $b.enabled -}}
+{{- $claims = append $claims (list (include "glovebox.loginBrokerName" (dict "name" $name "broker" $b "root" $)) (printf "loginBrokers.%s" $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.powerschoolAuthRefresher.enabled -}}
+{{- $claims = append $claims (list (printf "%s-powerschool-auth-refresher" (include "glovebox.fullname" .)) "powerschoolAuthRefresher") -}}
+{{- end -}}
+{{- if .Values.schoologyAuthRefresher.enabled -}}
+{{- $claims = append $claims (list (printf "%s-schoology-auth-refresher" (include "glovebox.fullname" .)) "schoologyAuthRefresher") -}}
+{{- end -}}
+{{- range $claim := $claims -}}
+{{- $sa := index $claim 0 -}}
+{{- $owner := index $claim 1 -}}
+{{- if hasKey $seen $sa -}}
+{{- fail (printf "ServiceAccount %q would be used by both %s and %s. Every workload runs as an account of its own: the account is its identity to RBAC, to the login broker and to the record journal, so sharing one hands each workload the other's rights. Give one of them a different serviceAccount.name" $sa (index $seen $sa) $owner) -}}
+{{- end -}}
+{{- $_ := set $seen $sa $owner -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 One ServiceAccount per importer Job, for the same reason: an importer is a
 producer of records with an identity of its own, not the core's. Same
 (dict "name" "importer" "root") shape and the same `serviceAccount` map,
