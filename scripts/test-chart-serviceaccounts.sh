@@ -386,6 +386,12 @@ PY
 if git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>&1; then
   mkdir -p "$TMP/base"
   git -C "$ROOT" archive "$BASE_REF" charts/glovebox | tar -x -C "$TMP/base"
+  # Render the base under this chart's version and appVersion: a release bump
+  # changes the chart labels, the default image tags and the checksums of
+  # every hashed object, none of which is an identity difference.
+  grep -E '^(version|appVersion):' "$CHART/Chart.yaml" >"$TMP/chart-version"
+  grep -vE '^(version|appVersion):' "$TMP/base/charts/glovebox/Chart.yaml" >"$TMP/chart-rest"
+  cat "$TMP/chart-rest" "$TMP/chart-version" >"$TMP/base/charts/glovebox/Chart.yaml"
   compare "vs $BASE_REF, default values: only identity differences"
   compare "vs $BASE_REF, every connector: only identity differences" "${ALL[@]}"
   compare "vs $BASE_REF, on-demand login: only identity differences" -f "$TMP/ondemand.yaml"
