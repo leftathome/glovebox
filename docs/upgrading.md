@@ -10,7 +10,7 @@ at 02:00 with uploads failing.
 
 ---
 
-## Upgrading to the next release (from 0.11.0)
+## Upgrading to 0.12.0 (from 0.11.0)
 
 - **Helm's wait can be turned back on.** A PowerSchool connector waiting
   for a new session used to be NotReady, which made `helm upgrade --wait`
@@ -77,7 +77,8 @@ to land first. What changes in the render:
 
 **What it costs.** Every connector Deployment rolls once (its pod template
 changes), and so does the core (the explicit `automountServiceAccountToken`).
-Nothing is lost: connectors keep their state PVCs. The PowerSchool connector
+With three connectors enabled, as in the `orac` `openclaw` release, that is
+four pods. Nothing is lost: connectors keep their state PVCs. The PowerSchool connector
 is the one that matters -- let it roll outside its poll windows.
 
 **Who uses an in-cluster token, after the upgrade:**
