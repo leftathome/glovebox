@@ -11,6 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/leftathome/powerschool-go v0.4.0
 	github.com/leftathome/schoology-go v0.3.0
 	github.com/pemistahl/lingua-go v1.4.0
@@ -55,6 +56,9 @@ require (
 	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
 	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

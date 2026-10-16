@@ -1,0 +1,185 @@
+# Record journal schema
+
+The record journal (spec `docs/superpowers/specs/2026-10-16-record-journal-design.md`)
+keeps its state in its own PostgreSQL database, `glovebox_journal`, on the
+CloudNativePG cluster. This document describes every table and column. **Every
+migration updates it in the same commit**; `internal/journal/schemadoc_test.go`
+fails when a migration or a column is not described here.
+
+Migrations are numbered SQL files in `internal/journal/migrations/`, embedded
+in the binary and applied at start under a session advisory lock
+(`hashtextextended('glovebox_journal:migrate', 0)`). A binary refuses a
+database whose schema is newer than its own. Database tests run against the
+CloudNativePG image at the production PostgreSQL version
+(`scripts/journal-test-db.sh`); rerun them after any schema change.
+
+## Invariants
+
+- **The fold invariant.** For every record, folding its `record_event` rows
+  in `seq` order -- mapping each event's field names forward through the
+  renames of later schema versions -- reproduces exactly the event-derived
+  columns of its `record_current` row: `scope`, `audience`, `fields`,
+  `removed`. Observation columns are not events. Property tests in
+  `internal/journal/property_test.go` assert this.
+- **Append-only events.** A trigger refuses any `UPDATE` of `record_event`
+  that changes anything but `scan`. Rows are deleted only by erase.
+- **Ordered sequence numbers.** Every transaction that inserts events holds
+  the advisory lock `glovebox_journal:events` from its first insert to its
+  commit, so a reader that has seen `seq = n` will never later see a
+  smaller `seq` appear.
+- **One writer per subject.** Apply, confirm, notes and erase for one
+  `data_subject` serialize on the advisory lock
+  `glovebox_journal:subject:<data_subject>`.
+
+## Tables
+
+### `schema_migrations`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `version` | integer | Migration number. |
+| `name` | text | Migration name (file name without number and extension). |
+| `applied_at` | timestamptz | When it ran. |
+
+### `record_type`
+
+One row per record type and schema version, written at start from the
+`journal.record_types` configuration. A row never changes: changing a type
+means adding a version. A version stored here must stay in the configuration.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `name` | text | Type name, `[a-z][a-z0-9_]{0,63}`. |
+| `schema_version` | integer | 1, 2, ... without gaps. The highest is the active version. |
+| `owner` | text | The source that may write it (`powerschool`), or `household` for types written through `/v1/notes`. A snapshot's scope `source` must equal it. |
+| `fields` | jsonb | `{name: {"type": t, "required": bool}}`; `t` is one of `string`, `text`, `int`, `number`, `bool`, `date`, `timestamp`, `string_list`. |
+| `renames` | jsonb | `{old_name: new_name}` from the previous version's names to this version's. |
+| `default_audience` | text[] | Audience stamped on a record that names none. |
+| `fixed_audience` | text[] | Household types only: the audience every note gets; writers cannot choose it. NULL otherwise. |
+| `allow_no_subject` | boolean | Whether records with `data_subject = ""` are accepted. |
+| `created_at` | timestamptz | When this version was first activated. |
+
+### `snapshot`
+
+One row for every snapshot received and accepted (status 200), whatever it
+did. Refused snapshots (4xx) are not stored. `duplicate` is a response, not a
+stored status: a resend is answered from the original row.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | uuid | Assigned by the connector; the idempotency key. |
+| `record_type` | text | |
+| `schema_version` | integer | The version the snapshot was written in (before renames). |
+| `scope` | text | Canonical scope: `name=value` parts joined by `/`, with `%`, `/` and `=` in names and values escaped as `%25`, `%2F`, `%3D`. |
+| `data_subject` | text | The scope's `data_subject` part, `""` if none. Every record in the snapshot has this subject. |
+| `complete` | boolean | Whether absence from the snapshot means removal. |
+| `approximate` | boolean | Seeded data (spec section 7). |
+| `observed_at` | timestamptz | When the connector read the source (connector clock). |
+| `received_at` | timestamptz | When the journal received it (core clock). |
+| `writer` | text | Authenticated ServiceAccount, `namespace/name`. |
+| `status` | text | `applied`, `late` (an applied snapshot of the scope was observed later; nothing changed), `held` (removal guard; waiting for an operator), `discarded` (a held snapshot overtaken or rejected). |
+| `payload` | jsonb | The request body as received. Kept for every status. |
+| `stats` | jsonb | `{"created","updated","removed","restored","unchanged","stale"}` counts. For `held`, what applying would have done. |
+
+Indexes: `(record_type, scope, observed_at)`, `(data_subject)`, partial
+`(record_type, scope) WHERE status = 'held'`.
+
+### `record_current`
+
+The latest version of every record, removed ones included (tombstones).
+Primary key `(record_type, data_subject, key)`.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `record_type` | text | |
+| `data_subject` | text | Part of the identity: two subjects may use the same key. |
+| `key` | text | Stable within one subject, chosen by the source. |
+| `scope` | text | Event-derived. The scope the record now belongs to. |
+| `audience` | text[] | Event-derived. Sorted, distinct tokens. |
+| `fields` | jsonb | Event-derived. Canonical values under the active version's names; null fields are absent. |
+| `removed` | boolean | Event-derived. Tombstone. |
+| `first_seen_at` | timestamptz | Observation. `observed_at` of the snapshot that created it. |
+| `last_seen_at` | timestamptz | Observation. Newest `observed_at` at which it was present. |
+| `last_confirmed_snapshot` | uuid | Observation. The snapshot that last confirmed this row (present, or removed by it). NULL for household notes. |
+| `last_confirmed_at` | timestamptz | Observation. That snapshot's `observed_at` (for notes, the write time). It is the `prev_observed_at` of the next event. |
+| `content_hash` | bytea | SHA-256 over the canonical fields; an unchanged record costs no event. |
+| `last_event_seq` | bigint | The newest event of this record. |
+| `scan` | jsonb | Per `text` field of the current value: `{"verdict": v, "scanner_version": s}`. |
+
+Indexes: `(data_subject)`, `(scope)`, GIN on `audience`.
+
+### `record_event`
+
+Append-only change log; the reader cursor is `seq`.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `seq` | bigint | Sequence number. Never reused, also not after erase. |
+| `record_type` | text | |
+| `data_subject` | text | |
+| `key` | text | |
+| `kind` | text | `created`, `updated`, `removed`, `restored`. |
+| `schema_version` | integer | The version whose field names this row uses. Old rows are never rewritten; readers map names forward. |
+| `scope` | text | Scope after the event. |
+| `prev_scope` | text | Set when the record moved scope. |
+| `audience` | text[] | Audience after the event. |
+| `prev_audience` | text[] | Set when the audience changed (4.8). |
+| `fields` | jsonb | Full fields for `created` and `restored`; NULL otherwise. |
+| `changed` | jsonb | `updated`: `{field: [old, new]}` (null for absent). `removed`: the last known fields. NULL otherwise. |
+| `scan` | jsonb | A verdict for every `text` value in this row: `{field: {"old": v, "new": v, "scanner_version": s}}`. |
+| `observed_at` | timestamptz | When the change was observed. |
+| `prev_observed_at` | timestamptz | When the old value was last confirmed; the change happened in `(prev_observed_at, observed_at]`. NULL for `created`. For `restored` it is the `observed_at` of the snapshot that removed the record (the removal is its last confirmation). |
+| `approximate` | boolean | Seeded. |
+| `snapshot_id` | uuid | The snapshot that caused it; NULL for household writes. |
+| `actor` | text | Writer ServiceAccount; for notes also `;on_behalf_of=<member>`. |
+| `importance` | text | `high`, `normal`, `low` (no rule matched). |
+| `rule` | text | Name of the matching rule. |
+| `notify` | jsonb | That rule's `notify` list as it was when the event was written. |
+| `group_key` | text | From the rule's `group_by`. |
+| `written_at` | timestamptz | Core clock at insert. |
+
+Indexes: `(data_subject, seq)`, `(record_type, data_subject, key, seq)`, GIN on
+`audience`.
+
+### `erasure`
+
+One row per erase (4.13). Never erased itself; holds no field data.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | bigint | |
+| `data_subject` | text | The erased subject. Snapshots of it observed before `erased_at` are refused with 410. |
+| `erased_at` | timestamptz | Core clock. |
+| `actor` | text | Admin ServiceAccount. |
+| `rows` | jsonb | `{"snapshot": n, "record_current": n, "record_event": n}` deleted. |
+
+Index: `(data_subject, erased_at)`.
+
+## Design notes
+
+Choices this schema makes where the spec leaves room (also in the plan,
+`docs/superpowers/plans/2026-10-16-record-journal-core.md`):
+
+- `snapshot` is indexed by `(record_type, scope, observed_at)`, not
+  `(scope, observed_at)`: lateness, removal and `in_latest_snapshot` are per
+  record type and scope.
+- `record_current.last_confirmed_at` and `record_event.notify` are additions
+  to the spec's column lists; neither is event-derived.
+- Locks: per subject for writes, one global lock around event inserts (see
+  Invariants). The global lock serialises every transaction that writes
+  events, from its first event insert to its commit. That costs concurrency
+  only between writers of different subjects, and at household scale (a
+  handful of connectors, snapshots of at most a few thousand records) it is
+  not a bottleneck; if it ever is, the alternative is a reader-side
+  watermark (serve only seq below the oldest in-flight transaction's).
+- Rows are read `FOR UPDATE` by Apply and by each rescan batch, so verdicts
+  written by one are never overwritten from a stale read by the other.
+- Record types: a field keeps its type across versions, renames keep the
+  type, and a text field is never dropped (4.7); values that carry a scan
+  verdict are masked by it whatever the active type says (4.11).
+
+## Migration history
+
+| Migration | Change |
+|---|---|
+| `0001_init` | All tables above, their indexes and the append-only trigger. |

@@ -576,7 +576,7 @@ Everything later writes to this schema, so it comes first, with the harness that
 - Test: `internal/journal/migrate_test.go`, `internal/journal/schemadoc_test.go`
 - Modify: `go.mod`, `go.sum`
 
-- [ ] **Step 2.1: Add the driver.**
+- [x] **Step 2.1: Add the driver.**
 
 ```bash
 go get github.com/jackc/pgx/v5@v5.11.0
@@ -584,7 +584,7 @@ go get github.com/jackc/pgx/v5@v5.11.0
 
 pgx is the PostgreSQL driver the spec names (4.1); v5.11.0 was released 2026-09-07. Nothing else is added: no ORM, no testcontainers (a 20-line script does the container).
 
-- [ ] **Step 2.2: Write the harness.**
+- [x] **Step 2.2: Write the harness.**
 
 `internal/journal/journaltest/pg.go`:
 
@@ -713,7 +713,7 @@ func prepareServer(admin string) error {
 }
 ```
 
-- [ ] **Step 2.3: Write the script that runs the database tests locally.**
+- [x] **Step 2.3: Write the script that runs the database tests locally.**
 
 `scripts/journal-test-db.sh`:
 
@@ -764,7 +764,7 @@ chmod +x scripts/journal-test-db.sh
 
 (The harness waits for the server, so the script does not.)
 
-- [ ] **Step 2.4: Write the failing migration tests.**
+- [x] **Step 2.4: Write the failing migration tests.**
 
 `internal/journal/migrate_test.go`:
 
@@ -932,12 +932,12 @@ func schemaDump(t *testing.T, db *sql.DB) string {
 }
 ```
 
-- [ ] **Step 2.5: Run; expect a build failure.**
+- [x] **Step 2.5: Run; expect a build failure.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: `undefined: Migrate`, `undefined: Migrations`, `undefined: SchemaVersion`, `undefined: MigrateTo`.
 
-- [ ] **Step 2.6: Write the schema.**
+- [x] **Step 2.6: Write the schema.**
 
 `internal/journal/migrations/0001_init.sql`:
 
@@ -1061,7 +1061,7 @@ CREATE TABLE erasure (
 CREATE INDEX erasure_subject ON erasure (data_subject, erased_at);
 ```
 
-- [ ] **Step 2.7: Write the migration runner.**
+- [x] **Step 2.7: Write the migration runner.**
 
 `internal/journal/migrate.go`:
 
@@ -1216,12 +1216,12 @@ func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 }
 ```
 
-- [ ] **Step 2.8: Run the migration tests; expect PASS.**
+- [x] **Step 2.8: Run the migration tests; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: `ok  github.com/leftathome/glovebox/internal/journal` with the five tests passing. Also run `go test ./internal/journal/` without the variable: every test `SKIP`s.
 
-- [ ] **Step 2.9: Write the failing schema-document tests.**
+- [x] **Step 2.9: Write the failing schema-document tests.**
 
 `internal/journal/schemadoc_test.go`:
 
@@ -1303,11 +1303,11 @@ func docSection(doc, heading string) string {
 }
 ```
 
-- [ ] **Step 2.10: Run; expect FAIL** (`open ../../docs/journal-schema.md: no such file or directory`).
+- [x] **Step 2.10: Run; expect FAIL** (`open ../../docs/journal-schema.md: no such file or directory`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 2.11: Write `docs/journal-schema.md`.**
+- [x] **Step 2.11: Write `docs/journal-schema.md`.**
 
 ````markdown
 # Record journal schema
@@ -1497,12 +1497,12 @@ Choices this schema makes where the spec leaves room (also in the plan,
 | `0001_init` | All tables above, their indexes and the append-only trigger. |
 ````
 
-- [ ] **Step 2.12: Run; expect PASS.**
+- [x] **Step 2.12: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: all seven tests pass.
 
-- [ ] **Step 2.13: Commit.**
+- [x] **Step 2.13: Commit.**
 
 ```bash
 git add go.mod go.sum internal/journal scripts/journal-test-db.sh docs/journal-schema.md
