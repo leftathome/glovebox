@@ -2709,7 +2709,7 @@ Record types are configuration (spec section 3). The registry enforces 4.7's "a 
 - Modify: `internal/journal/record/types.go`
 - Test: `internal/journal/record/types_test.go`
 
-- [ ] **Step 6.1: Write the failing test.**
+- [x] **Step 6.1: Write the failing test.**
 
 `internal/journal/record/types_test.go`:
 
@@ -2855,11 +2855,11 @@ func TestTypeCanonicalIgnoresNilVersusEmpty(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6.2: Run; expect a build failure** (`undefined: NewRegistry`).
+- [x] **Step 6.2: Run; expect a build failure** (`undefined: NewRegistry`).
 
 Run: `go test ./internal/journal/record/ -run 'Registry|Canonical'`
 
-- [ ] **Step 6.3: Complete `types.go`.**
+- [x] **Step 6.3: Complete `types.go`.**
 
 Replace `internal/journal/record/types.go` with:
 
@@ -3110,11 +3110,11 @@ func (r *Registry) Forward(name string, from int, f Fields) Fields {
 }
 ```
 
-- [ ] **Step 6.4: Run; expect PASS.**
+- [x] **Step 6.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 6.5: Commit.**
+- [x] **Step 6.5: Commit.**
 
 ```bash
 git add internal/journal/record
