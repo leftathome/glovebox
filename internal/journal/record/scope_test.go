@@ -1,6 +1,7 @@
 package record
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -72,4 +73,49 @@ func TestHouseholdScope(t *testing.T) {
 	if got := HouseholdScope("pantry_item", ""); got != "source=household/record_type=pantry_item" {
 		t.Errorf("HouseholdScope without subject = %s", got)
 	}
+}
+
+func TestScopeBoundariesAccepted(t *testing.T) {
+	kv := []string{"source", "x"}
+	for i := 1; i < MaxScopeParts; i++ {
+		kv = append(kv, "p"+strings.Repeat("a", i), "v")
+	}
+	if _, rej := ParseScope(parts(kv...)); rej != nil {
+		t.Errorf("exactly MaxScopeParts parts: %v", rej)
+	}
+	if _, rej := ParseScope(parts("source", strings.Repeat("v", MaxScopeValueBytes))); rej != nil {
+		t.Errorf("exactly MaxScopeValueBytes bytes: %v", rej)
+	}
+}
+
+func FuzzScopeInjective(f *testing.F) {
+	f.Add("a%2F/=b", "c=%", "x")
+	f.Fuzz(func(t *testing.T, v1, v2, v3 string) {
+		in := parts("source", v1, "a", v2, "b", v3)
+		s, rej := ParseScope(in)
+		if rej != nil {
+			return
+		}
+		var got []journalapi.ScopePart
+		for _, seg := range strings.Split(s.Canonical(), "/") {
+			kv := strings.Split(seg, "=")
+			if len(kv) != 2 {
+				t.Fatalf("bad segment %q", seg)
+			}
+			k, err1 := url.PathUnescape(kv[0])
+			v, err2 := url.PathUnescape(kv[1])
+			if err1 != nil || err2 != nil {
+				t.Fatalf("unescape %q", seg)
+			}
+			got = append(got, journalapi.ScopePart{k, v})
+		}
+		if len(got) != len(in) {
+			t.Fatalf("%d parts, want %d", len(got), len(in))
+		}
+		for i := range in {
+			if got[i] != in[i] {
+				t.Fatalf("%q != %q", got, in)
+			}
+		}
+	})
 }

@@ -19,7 +19,11 @@ const (
 	MaxScopeValueBytes = 256
 )
 
-// Scope is a validated scope (4.3).
+// Scope is a validated scope (4.3). The order of its parts is part of its
+// identity and is kept as given (never sorted). Values are compared
+// byte-for-byte with no Unicode normalisation: normalising would merge
+// byte-distinct values, against the refuse-don't-merge rule. The zero Scope{}
+// has an empty canonical form and is never valid input.
 type Scope struct {
 	parts []journalapi.ScopePart
 }
@@ -97,7 +101,8 @@ func (s Scope) Source() string { v, _ := s.Get(PartSource); return v }
 func (s Scope) Subject() string { v, _ := s.Get(PartSubject); return v }
 
 // HouseholdScope is the canonical scope of a household record (notes have
-// no snapshot, but every record has a scope).
+// no snapshot, but every record has a scope). Callers must already have
+// validated recordType and subject; this function does not.
 func HouseholdScope(recordType, subject string) string {
 	p := []journalapi.ScopePart{{PartSource, OwnerHousehold}, {"record_type", recordType}}
 	if subject != "" {
