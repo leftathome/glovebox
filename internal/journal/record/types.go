@@ -203,9 +203,9 @@ func NewRegistry(types []Type) (*Registry, error) {
 				if !ok {
 					return nil, fmt.Errorf("record type %s v%d: renames %s, which v%d does not declare", name, t.SchemaVersion, from, prev.SchemaVersion)
 				}
-				if _, used := prev.Fields[to]; used {
+				if _, used := ever[to]; used {
 					if _, away := t.Renames[to]; !away {
-						return nil, fmt.Errorf("record type %s v%d: renaming %s onto %s, a name v%d already uses, would merge two fields", name, t.SchemaVersion, from, to, prev.SchemaVersion)
+						return nil, fmt.Errorf("record type %s v%d: renaming %s onto %s, a name an earlier version used, would merge two fields", name, t.SchemaVersion, from, to)
 					}
 				}
 				if old.Type != t.Fields[to].Type {

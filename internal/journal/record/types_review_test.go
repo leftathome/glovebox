@@ -23,6 +23,11 @@ func TestRegistryRenameAndHistoryRefusals(t *testing.T) {
 			mk("x", 1, map[string]FieldType{"a": String, "b": String}, nil),
 			mk("x", 2, map[string]FieldType{"c": String}, map[string]string{"a": "c", "b": "c"}),
 		},
+		"rename onto a name dropped two versions ago": {
+			mk("x", 1, map[string]FieldType{"a": String, "b": String}, nil),
+			mk("x", 2, map[string]FieldType{"a": String}, nil),
+			mk("x", 3, map[string]FieldType{"b": String}, map[string]string{"a": "b"}),
+		},
 		"swap": {
 			mk("x", 1, map[string]FieldType{"a": String, "b": String}, nil),
 			mk("x", 2, map[string]FieldType{"a": String, "b": String}, map[string]string{"a": "b", "b": "a"}),
