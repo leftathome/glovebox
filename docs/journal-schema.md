@@ -173,6 +173,11 @@ Index: `(data_subject, erased_at)`.
 Choices this schema makes where the spec leaves room (also in the plan,
 `docs/superpowers/plans/2026-10-16-record-journal-core.md`):
 
+- Record type versions evolve additively: a later version may not add a
+  required field or make an optional one required (`NewRegistry` refuses it),
+  because writes from older versions are not checked against later
+  versions. An empty `audience` on a record takes the type default, since a
+  record visible to nobody is never intended.
 - `snapshot` is indexed by `(record_type, scope, observed_at)` restricted to
   applied snapshots, not `(scope, observed_at)`: the lateness check and
   `in_latest_snapshot` look only at applied snapshots, per record type and

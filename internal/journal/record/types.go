@@ -170,7 +170,10 @@ type Registry struct {
 	versions map[string][]Type // index i holds version i+1
 }
 
-// NewRegistry validates the types and their version chains.
+// NewRegistry validates the types and their version chains. Versions evolve
+// additively: a later version may not add a required field or make an
+// optional field required (writes from older versions could not be checked
+// against it).
 func NewRegistry(types []Type) (*Registry, error) {
 	by := map[string][]Type{}
 	for _, t := range types {
@@ -197,6 +200,24 @@ func NewRegistry(types []Type) (*Registry, error) {
 			prev := vs[i-1]
 			if t.Owner != prev.Owner {
 				return nil, fmt.Errorf("record type %s: the owner cannot change between versions", name)
+			}
+			// Schema evolution is additive: a field added or made required
+			// in a later version would not be enforced on writes from an
+			// older version, so a new version may not require anything the
+			// previous one did not already require.
+			for field, def := range t.Fields {
+				if !def.Required {
+					continue
+				}
+				src := field
+				for from, to := range t.Renames {
+					if to == field {
+						src = from
+					}
+				}
+				if !prev.Fields[src].Required {
+					return nil, fmt.Errorf("record type %s v%d: required field %s was not required in v%d; new and newly required fields must be optional", name, t.SchemaVersion, field, prev.SchemaVersion)
+				}
 			}
 			for from, to := range t.Renames {
 				old, ok := prev.Fields[from]

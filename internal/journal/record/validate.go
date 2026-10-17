@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -70,6 +71,9 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 	if err != nil {
 		return nil, schemaErr("snapshot_id must be a UUID")
 	}
+	if !ValidName(s.RecordType) {
+		return nil, schemaErr("invalid record_type")
+	}
 	t, ok := reg.Version(s.RecordType, s.SchemaVersion)
 	if !ok {
 		return nil, schemaErr("unknown record type %q version %d", s.RecordType, s.SchemaVersion)
@@ -109,8 +113,14 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 		if !s.Complete {
 			return nil, schemaErr("complete_range requires complete=true")
 		}
+		if !ValidName(cr.Field) {
+			return nil, schemaErr("invalid complete_range.field")
+		}
 		if t.Fields[cr.Field].Type != Date {
 			return nil, schemaErr("complete_range.field %q is not a date field of %s v%d", cr.Field, t.Name, t.SchemaVersion)
+		}
+		if af := reg.ForwardName(t.Name, t.SchemaVersion, cr.Field); active.Fields[af].Type != Date {
+			return nil, schemaErr("complete_range.field %q is not a date field of the active version of %s", cr.Field, t.Name)
 		}
 		if !ValidDate(cr.From) || !ValidDate(cr.To) || cr.From > cr.To {
 			return nil, schemaErr("complete_range needs from <= to, both YYYY-MM-DD")
@@ -118,8 +128,15 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 		n.Range = &Range{Field: reg.ForwardName(t.Name, t.SchemaVersion, cr.Field), From: cr.From, To: cr.To}
 	}
 	seen := make(map[string]bool, len(s.Records))
+	n.Records = make([]NormRecord, 0, len(s.Records))
+	// An absent or empty audience takes the type's default: a record
+	// visible to nobody is never intended.
+	defAud, drej := NormalizeAudience(active.DefaultAudience)
+	if drej != nil {
+		defAud = nil // a type without a default: records must name one
+	}
 	for i, rec := range s.Records {
-		if rec.Key == "" || len(rec.Key) > MaxKeyBytes || badText(rec.Key) {
+		if strings.TrimSpace(rec.Key) == "" || len(rec.Key) > MaxKeyBytes || badText(rec.Key) {
 			return nil, schemaErr("record %d: key must be 1 to %d bytes without control characters", i, MaxKeyBytes)
 		}
 		if rec.DataSubject != n.Subject {
@@ -130,13 +147,15 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 				Detail: "record " + strconv.Itoa(i) + ": (data_subject, key) repeats an earlier record"}
 		}
 		seen[rec.Key] = true
-		aud := rec.Audience
-		if len(aud) == 0 {
-			aud = active.DefaultAudience
-		}
-		aud, rej := NormalizeAudience(aud)
-		if rej != nil {
-			return nil, rej.prefixed("record " + strconv.Itoa(i) + ": ")
+		var aud []string
+		if len(rec.Audience) == 0 && defAud != nil {
+			aud = defAud
+		} else {
+			var arej *Rejection
+			aud, arej = NormalizeAudience(rec.Audience)
+			if arej != nil {
+				return nil, arej.prefixed("record " + strconv.Itoa(i) + ": ")
+			}
 		}
 		f, rej := NormalizeFields(t, rec.Fields)
 		if rej != nil {
@@ -191,6 +210,9 @@ type NormNote struct {
 // ValidateNote shapes POST /v1/notes (4.9a, 5.3). Whether on_behalf_of may
 // write for the subject needs the roster; the journal checks that.
 func ValidateNote(reg *Registry, in journalapi.Note) (*NormNote, *Rejection) {
+	if !ValidName(in.RecordType) {
+		return nil, schemaErr("invalid record_type")
+	}
 	t, ok := reg.Active(in.RecordType)
 	if !ok || !t.Household() {
 		return nil, schemaErr("%q is not a household record type", in.RecordType)
