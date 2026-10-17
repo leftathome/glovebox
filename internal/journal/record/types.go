@@ -204,9 +204,7 @@ func NewRegistry(types []Type) (*Registry, error) {
 					return nil, fmt.Errorf("record type %s v%d: renames %s, which v%d does not declare", name, t.SchemaVersion, from, prev.SchemaVersion)
 				}
 				if _, used := ever[to]; used {
-					if _, away := t.Renames[to]; !away {
-						return nil, fmt.Errorf("record type %s v%d: renaming %s onto %s, a name an earlier version used, would merge two fields", name, t.SchemaVersion, from, to)
-					}
+					return nil, fmt.Errorf("record type %s v%d: renaming %s onto %s, a name an earlier version used, would merge two fields", name, t.SchemaVersion, from, to)
 				}
 				if old.Type != t.Fields[to].Type {
 					return nil, fmt.Errorf("record type %s v%d: renaming %s to %s changes its type; a type change needs a new field name (4.7)", name, t.SchemaVersion, from, to)
@@ -292,10 +290,20 @@ func (r *Registry) ForwardName(name string, from int, field string) string {
 }
 
 // Forward maps every field name of f from version from to the active names.
+// Undeclared stored keys keep their names. If one of them collides with the
+// target of a rename, the renamed (declared) value wins and the undeclared
+// value is dropped, so the result never depends on map order.
 func (r *Registry) Forward(name string, from int, f Fields) Fields {
 	out := make(Fields, len(f))
 	for k, v := range f {
-		out[r.ForwardName(name, from, k)] = v
+		if r.ForwardName(name, from, k) == k {
+			out[k] = v
+		}
+	}
+	for k, v := range f {
+		if to := r.ForwardName(name, from, k); to != k {
+			out[to] = v
+		}
 	}
 	return out
 }

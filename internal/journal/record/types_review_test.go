@@ -86,6 +86,22 @@ func TestRegistryIsImmutable(t *testing.T) {
 	}
 }
 
+func TestForwardUndeclaredCollisionIsDeterministic(t *testing.T) {
+	r, err := NewRegistry([]Type{
+		mk("x", 1, map[string]FieldType{"a": String}, nil),
+		mk("x", 2, map[string]FieldType{"b": String}, map[string]string{"a": "b"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		f := r.Forward("x", 1, Fields{"a": raw(`"A"`), "b": raw(`"undeclared"`), "z": raw(`1`)})
+		if string(f["b"]) != `"A"` || string(f["z"]) != "1" || len(f) != 2 {
+			t.Fatalf("Forward = %v", f)
+		}
+	}
+}
+
 func TestForwardNameOutOfRange(t *testing.T) {
 	r, err := NewRegistry([]Type{assignmentV1, assignmentV2()})
 	if err != nil {
