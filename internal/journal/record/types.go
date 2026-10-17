@@ -39,7 +39,9 @@ type Type struct {
 // Household reports whether the type is written through /v1/notes.
 func (t Type) Household() bool { return t.Owner == OwnerHousehold }
 
-// IsText reports whether field is declared as text (scanned, maskable).
+// IsText reports whether field is declared as text (scanned, maskable). An
+// undeclared field is not text; masking also covers any value that carries a
+// scan verdict, whatever its declared type.
 func (t Type) IsText(field string) bool { return t.Fields[field].Type == Text }
 
 // Validate checks one type version on its own.
@@ -84,9 +86,19 @@ func (t Type) Validate() error {
 		}
 		targets[to] = true
 	}
-	for _, tok := range append(append([]string(nil), t.DefaultAudience...), t.FixedAudience...) {
-		if !ValidToken(tok) {
-			return fmt.Errorf("%s: invalid audience token %q", where, tok)
+	for label, aud := range map[string][]string{"default_audience": t.DefaultAudience, "fixed_audience": t.FixedAudience} {
+		if len(aud) > MaxAudienceTokens {
+			return fmt.Errorf("%s: %s has more than %d tokens", where, label, MaxAudienceTokens)
+		}
+		seen := map[string]bool{}
+		for _, tok := range aud {
+			if !ValidToken(tok) {
+				return fmt.Errorf("%s: invalid audience token %q", where, tok)
+			}
+			if seen[tok] {
+				return fmt.Errorf("%s: duplicate audience token %q in %s", where, tok, label)
+			}
+			seen[tok] = true
 		}
 	}
 	if t.Household() {
@@ -127,7 +139,33 @@ func sortedCopy(s []string) []string {
 	return out
 }
 
-// Registry holds every version of every configured record type.
+// clone returns a deep copy of t.
+func (t Type) clone() Type {
+	c := t
+	c.Fields = make(map[string]FieldDef, len(t.Fields))
+	for k, v := range t.Fields {
+		c.Fields[k] = v
+	}
+	if t.Renames != nil {
+		c.Renames = make(map[string]string, len(t.Renames))
+		for k, v := range t.Renames {
+			c.Renames[k] = v
+		}
+	}
+	c.DefaultAudience = append([]string(nil), t.DefaultAudience...)
+	c.FixedAudience = append([]string(nil), t.FixedAudience...)
+	if len(c.DefaultAudience) == 0 {
+		c.DefaultAudience = nil
+	}
+	if len(c.FixedAudience) == 0 {
+		c.FixedAudience = nil
+	}
+	return c
+}
+
+// Registry holds every version of every configured record type. It is
+// immutable after NewRegistry: it keeps deep copies of its input and hands
+// out deep copies, so no caller can change a type through it.
 type Registry struct {
 	versions map[string][]Type // index i holds version i+1
 }
@@ -139,15 +177,21 @@ func NewRegistry(types []Type) (*Registry, error) {
 		if err := t.Validate(); err != nil {
 			return nil, err
 		}
-		by[t.Name] = append(by[t.Name], t)
+		by[t.Name] = append(by[t.Name], t.clone())
 	}
 	for name, vs := range by {
 		sort.Slice(vs, func(i, k int) bool { return vs[i].SchemaVersion < vs[k].SchemaVersion })
+		// ever records the type every field name had in any earlier
+		// version, so a dropped name cannot return as another type.
+		ever := map[string]FieldType{}
 		for i, t := range vs {
 			if t.SchemaVersion != i+1 {
 				return nil, fmt.Errorf("record type %s: versions must run 1..n without gaps or repeats", name)
 			}
 			if i == 0 {
+				for f, d := range t.Fields {
+					ever[f] = d.Type
+				}
 				continue
 			}
 			prev := vs[i-1]
@@ -159,6 +203,11 @@ func NewRegistry(types []Type) (*Registry, error) {
 				if !ok {
 					return nil, fmt.Errorf("record type %s v%d: renames %s, which v%d does not declare", name, t.SchemaVersion, from, prev.SchemaVersion)
 				}
+				if _, used := prev.Fields[to]; used {
+					if _, away := t.Renames[to]; !away {
+						return nil, fmt.Errorf("record type %s v%d: renaming %s onto %s, a name v%d already uses, would merge two fields", name, t.SchemaVersion, from, to, prev.SchemaVersion)
+					}
+				}
 				if old.Type != t.Fields[to].Type {
 					return nil, fmt.Errorf("record type %s v%d: renaming %s to %s changes its type; a type change needs a new field name (4.7)", name, t.SchemaVersion, from, to)
 				}
@@ -167,8 +216,8 @@ func NewRegistry(types []Type) (*Registry, error) {
 			// name. Masking and rescans key on the field type (4.11), so a
 			// text field turned string would be served unmasked.
 			for field, def := range t.Fields {
-				if old, ok := prev.Fields[field]; ok && old.Type != def.Type {
-					return nil, fmt.Errorf("record type %s v%d: field %s changes type from %s to %s; a type change needs a new field name (4.7)", name, t.SchemaVersion, field, old.Type, def.Type)
+				if old, ok := ever[field]; ok && old != def.Type {
+					return nil, fmt.Errorf("record type %s v%d: field %s changes type from %s to %s; a type change needs a new field name (4.7)", name, t.SchemaVersion, field, old, def.Type)
 				}
 			}
 			// A text field is never dropped: its stored values carry scan
@@ -184,6 +233,9 @@ func NewRegistry(types []Type) (*Registry, error) {
 					return nil, fmt.Errorf("record type %s v%d: text field %s cannot be dropped (its stored values keep scan verdicts)", name, t.SchemaVersion, field)
 				}
 			}
+			for f, d := range t.Fields {
+				ever[f] = d.Type
+			}
 		}
 		by[name] = vs
 	}
@@ -196,7 +248,7 @@ func (r *Registry) Active(name string) (Type, bool) {
 	if len(vs) == 0 {
 		return Type{}, false
 	}
-	return vs[len(vs)-1], true
+	return vs[len(vs)-1].clone(), true
 }
 
 // Version returns one version of a type.
@@ -205,7 +257,7 @@ func (r *Registry) Version(name string, v int) (Type, bool) {
 	if v < 1 || v > len(vs) {
 		return Type{}, false
 	}
-	return vs[v-1], true
+	return vs[v-1].clone(), true
 }
 
 // Types returns every version of every type, by name then version.
@@ -217,7 +269,9 @@ func (r *Registry) Types() []Type {
 	sort.Strings(names)
 	var out []Type
 	for _, n := range names {
-		out = append(out, r.versions[n]...)
+		for _, t := range r.versions[n] {
+			out = append(out, t.clone())
+		}
 	}
 	return out
 }
@@ -226,6 +280,9 @@ func (r *Registry) Types() []Type {
 // version's name, through the renames of every later version.
 func (r *Registry) ForwardName(name string, from int, field string) string {
 	vs := r.versions[name]
+	if from < 1 {
+		from = 1 // out of range: treat as the first version
+	}
 	for v := from + 1; v <= len(vs); v++ {
 		if to, ok := vs[v-1].Renames[field]; ok {
 			field = to
