@@ -3131,7 +3131,7 @@ git commit -m "feat(journal): record types, schema versions and rename chains (g
 - Create: `internal/journal/record/validate.go`
 - Test: `internal/journal/record/validate_test.go`
 
-- [ ] **Step 7.1: Write the failing test.**
+- [x] **Step 7.1: Write the failing test.**
 
 `internal/journal/record/validate_test.go`:
 
@@ -3304,11 +3304,11 @@ func TestValidateNote(t *testing.T) {
 }
 ```
 
-- [ ] **Step 7.2: Run; expect a build failure** (`undefined: ValidateSnapshot`).
+- [x] **Step 7.2: Run; expect a build failure** (`undefined: ValidateSnapshot`).
 
 Run: `go test ./internal/journal/record/ -run Validate`
 
-- [ ] **Step 7.3: Write `validate.go`.**
+- [x] **Step 7.3: Write `validate.go`.**
 
 `internal/journal/record/validate.go`:
 
@@ -3548,11 +3548,11 @@ func hasControl(s string) bool {
 
 ```
 
-- [ ] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 7.5: Commit.**
+- [x] **Step 7.5: Commit.**
 
 ```bash
 git add internal/journal/record
