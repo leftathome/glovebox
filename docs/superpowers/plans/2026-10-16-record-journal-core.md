@@ -3578,7 +3578,7 @@ Rules implemented here, each with a test:
 - Create: `internal/journal/diff/diff.go`, `internal/journal/diff/guard.go`
 - Test: `internal/journal/diff/diff_test.go`, `internal/journal/diff/guard_test.go`
 
-- [ ] **Step 8.1: Write the failing diff tests.**
+- [x] **Step 8.1: Write the failing diff tests.**
 
 `internal/journal/diff/diff_test.go`:
 
@@ -3751,7 +3751,7 @@ func TestRemovalsAreSortedByKey(t *testing.T) {
 }
 ```
 
-- [ ] **Step 8.2: Write the failing guard test.**
+- [x] **Step 8.2: Write the failing guard test.**
 
 `internal/journal/diff/guard_test.go`:
 
@@ -3784,11 +3784,11 @@ func TestGuard(t *testing.T) {
 }
 ```
 
-- [ ] **Step 8.3: Run; expect a build failure** (`undefined: Diff`, `undefined: DefaultGuard`).
+- [x] **Step 8.3: Run; expect a build failure** (`undefined: Diff`, `undefined: DefaultGuard`).
 
 Run: `go test ./internal/journal/diff/`
 
-- [ ] **Step 8.4: Write `diff.go`.**
+- [x] **Step 8.4: Write `diff.go`.**
 
 `internal/journal/diff/diff.go`:
 
@@ -3981,7 +3981,7 @@ func equalStrings(a, b []string) bool {
 }
 ```
 
-- [ ] **Step 8.5: Write `guard.go`.**
+- [x] **Step 8.5: Write `guard.go`.**
 
 `internal/journal/diff/guard.go`:
 
@@ -4014,11 +4014,11 @@ func (g Guard) Hold(live, removals int) bool {
 }
 ```
 
-- [ ] **Step 8.6: Run; expect PASS.**
+- [x] **Step 8.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -count=1`
 
-- [ ] **Step 8.7: Commit.**
+- [x] **Step 8.7: Commit.**
 
 ```bash
 git add internal/journal/diff
