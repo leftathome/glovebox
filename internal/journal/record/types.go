@@ -210,6 +210,10 @@ func NewRegistry(types []Type) (*Registry, error) {
 					continue
 				}
 				src := field
+				if _, away := t.Renames[field]; away {
+					// The name was renamed away; reusing it is a new field.
+					src = ""
+				}
 				for from, to := range t.Renames {
 					if to == field {
 						src = from

@@ -94,6 +94,18 @@ func TestRegistryRefusesNewRequiredFields(t *testing.T) {
 	if _, err := NewRegistry([]Type{assignmentV1, v2}); err == nil {
 		t.Error("a field made required was accepted")
 	}
+	v2.Fields = map[string]FieldDef{"name": {Type: String, Required: true}, "comment": {Type: Text}}
+	v2.Renames = map[string]string{"title": "name"}
+	if _, err := NewRegistry([]Type{assignmentV1, v2}); err != nil {
+		t.Errorf("a plain rename of a required field: %v", err)
+	}
+	// title renamed to z, and the name title reused as a new required field.
+	v2.Fields = map[string]FieldDef{"title": {Type: String, Required: true}, "z": {Type: String, Required: true}, "comment": {Type: Text}}
+	v2.Renames = map[string]string{"title": "z"}
+	if _, err := NewRegistry([]Type{assignmentV1, v2}); err == nil {
+		t.Error("a reused, renamed-away name as a new required field was accepted")
+	}
+	v2.Renames = nil
 	v2.Fields = map[string]FieldDef{"title": {Type: String, Required: true}, "extra": {Type: String}, "comment": {Type: Text}}
 	if _, err := NewRegistry([]Type{assignmentV1, v2}); err != nil {
 		t.Errorf("a new optional field: %v", err)
