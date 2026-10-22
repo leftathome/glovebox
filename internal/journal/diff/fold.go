@@ -35,7 +35,19 @@ type FoldRow struct {
 type Rename func(recordType string, version int, field string) string
 
 // Fold replays events, in the order given (seq order), into current state.
-// It never mutates the events.
+// It never mutates the events, and the rows it returns share no map or
+// slice with them (field values are immutable json.RawMessage bytes).
+//
+// Fold assumes a well-formed history, the kind the store's Apply writes. On
+// an impossible sequence it does not fail; it behaves as follows:
+//   - created and restored are the same operation: they replace the row
+//     wholesale and make it live, whether or not the row existed or was live;
+//   - updated starts from the row's fields (empty if there is no row), applies
+//     its changes, and always yields a live row, even when the row was removed
+//     or never created;
+//   - removed marks the row removed and takes the event's scope and audience,
+//     keeping the fields; removing an absent row yields a removed row with
+//     no fields; removing a removed row changes nothing but scope and audience.
 func Fold(events []FoldEvent, rename Rename) map[Identity]FoldRow {
 	out := map[Identity]FoldRow{}
 	for _, e := range events {
@@ -46,26 +58,31 @@ func Fold(events []FoldEvent, rename Rename) map[Identity]FoldRow {
 			for _, k := range renameOrder(e.Fields, e.ID.RecordType, e.SchemaVersion, rename) {
 				fields[rename(e.ID.RecordType, e.SchemaVersion, k)] = e.Fields[k]
 			}
-			row = FoldRow{Scope: e.Scope, Audience: e.Audience, Fields: fields}
+			row = FoldRow{Scope: e.Scope, Audience: cloneStrings(e.Audience), Fields: fields}
 		case Updated:
 			fields := row.Fields.Clone()
 			keys := make([]string, 0, len(e.Changed))
 			for k := range e.Changed {
 				keys = append(keys, k)
 			}
-			for _, k := range orderKeys(keys, e.ID.RecordType, e.SchemaVersion, rename) {
-				name := rename(e.ID.RecordType, e.SchemaVersion, k)
-				if c := e.Changed[k]; c.New == nil {
-					delete(fields, name)
-				} else {
-					fields[name] = c.New
+			keys = orderKeys(keys, e.ID.RecordType, e.SchemaVersion, rename)
+			// Deletions first, then sets, so deleting a renamed key cannot
+			// drop an undeclared value set in the same event.
+			for _, k := range keys {
+				if e.Changed[k].New == nil {
+					delete(fields, rename(e.ID.RecordType, e.SchemaVersion, k))
 				}
 			}
-			row = FoldRow{Scope: e.Scope, Audience: e.Audience, Fields: fields}
+			for _, k := range keys {
+				if c := e.Changed[k]; c.New != nil {
+					fields[rename(e.ID.RecordType, e.SchemaVersion, k)] = c.New
+				}
+			}
+			row = FoldRow{Scope: e.Scope, Audience: cloneStrings(e.Audience), Fields: fields}
 		case Removed:
 			row.Removed = true
 			row.Scope = e.Scope
-			row.Audience = e.Audience
+			row.Audience = cloneStrings(e.Audience)
 		}
 		out[e.ID] = row
 	}
@@ -90,4 +107,11 @@ func orderKeys(keys []string, rt string, v int, rename Rename) []string {
 		return keys[i] < keys[j]
 	})
 	return keys
+}
+
+func cloneStrings(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string{}, s...)
 }
