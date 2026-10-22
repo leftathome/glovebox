@@ -38,6 +38,11 @@ type Rename func(recordType string, version int, field string) string
 // It never mutates the events, and the rows it returns share no map or
 // slice with them (field values are immutable json.RawMessage bytes).
 //
+// Each field name is renamed exactly once through rename. Applying a rename
+// twice could only differ if a later version reused a name an earlier version
+// renamed away; the registry refuses that (see
+// TestRegistryRefusesReusingARenamedAwayName), so it cannot be observed.
+//
 // Fold assumes a well-formed history, the kind the store's Apply writes. On
 // an impossible sequence it does not fail; it behaves as follows:
 //   - created and restored are the same operation: they replace the row
