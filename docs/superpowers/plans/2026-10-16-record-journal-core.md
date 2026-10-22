@@ -4755,7 +4755,7 @@ The journal computes every reader's grants from the roster openclaw reads (D8, 4
 - Create: `internal/journal/roster/roster.go`, `internal/journal/roster/holder.go`, `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/roster/roster_test.go`, `internal/journal/roster/holder_test.go`
 
-- [ ] **Step 11.1: Write the shared fixture.**
+- [x] **Step 11.1: Write the shared fixture.**
 
 `internal/journal/journaltest/fixtures.go` (first version; Tasks 14 and 25 add to it):
 
@@ -4777,7 +4777,7 @@ const HouseholdV1 = `{
 `
 ```
 
-- [ ] **Step 11.2: Write the failing adapter tests.**
+- [x] **Step 11.2: Write the failing adapter tests.**
 
 `internal/journal/roster/roster_test.go`:
 
@@ -4862,11 +4862,11 @@ func TestV1RefusesWhatOpenclawRefuses(t *testing.T) {
 
 The expected grant lists are sorted by (subject, token), `""` first.
 
-- [ ] **Step 11.3: Run; expect a build failure** (`undefined: roster.Parse`).
+- [x] **Step 11.3: Run; expect a build failure** (`undefined: roster.Parse`).
 
 Run: `go test ./internal/journal/roster/`
 
-- [ ] **Step 11.4: Write `roster.go`.**
+- [x] **Step 11.4: Write `roster.go`.**
 
 `internal/journal/roster/roster.go`:
 
@@ -5042,11 +5042,11 @@ func (r *Roster) Members() []string {
 func (r *Roster) SHA256() string { return r.sha }
 ```
 
-- [ ] **Step 11.5: Run the adapter tests; expect PASS.**
+- [x] **Step 11.5: Run the adapter tests; expect PASS.**
 
 Run: `go test ./internal/journal/roster/ -count=1`
 
-- [ ] **Step 11.6: Write the failing holder tests.**
+- [x] **Step 11.6: Write the failing holder tests.**
 
 `internal/journal/roster/holder_test.go`:
 
@@ -5123,11 +5123,11 @@ func TestHolderWatchReportsChangesAndErrors(t *testing.T) {
 }
 ```
 
-- [ ] **Step 11.7: Run; expect a build failure** (`undefined: roster.NewHolder`).
+- [x] **Step 11.7: Run; expect a build failure** (`undefined: roster.NewHolder`).
 
 Run: `go test ./internal/journal/roster/`
 
-- [ ] **Step 11.8: Write `holder.go`.**
+- [x] **Step 11.8: Write `holder.go`.**
 
 `internal/journal/roster/holder.go`:
 
@@ -5194,11 +5194,11 @@ func (h *Holder) Watch(ctx context.Context, every time.Duration, report func(r *
 }
 ```
 
-- [ ] **Step 11.9: Run; expect PASS.**
+- [x] **Step 11.9: Run; expect PASS.**
 
 Run: `go test ./internal/journal/roster/ -count=1 -race`
 
-- [ ] **Step 11.10: Commit.**
+- [x] **Step 11.10: Commit.**
 
 ```bash
 git add internal/journal/roster internal/journal/journaltest/fixtures.go
