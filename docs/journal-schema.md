@@ -173,6 +173,11 @@ Index: `(data_subject, erased_at)`.
 Choices this schema makes where the spec leaves room (also in the plan,
 `docs/superpowers/plans/2026-10-16-record-journal-core.md`):
 
+- Old values across an audience change fail closed. A NULL `prev_audience`
+  means the audience did not change; `access.OldValue` takes that as an
+  explicit `audienceChanged` flag, not as a nil slice. When the flag is set,
+  an empty or undecodable previous audience matches nobody, so the old value
+  is withheld (a decode failure while reading events is an error).
 - Record type versions evolve additively: a later version may not add a
   required field or make an optional one required (`NewRegistry` refuses it),
   because writes from older versions are not checked against later

@@ -62,17 +62,30 @@ func TestText(t *testing.T) {
 
 func TestOldValue(t *testing.T) {
 	old := json.RawMessage(`"secret"`)
-	if string(OldValue(child, "e_child1", []string{"subject"}, nil, old)) != `"secret"` {
+	const withheld = `"withheld: different audience"`
+	if string(OldValue(child, "e_child1", nil, false, old)) != `"secret"` {
 		t.Error("no audience change: the old value is the reader's")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, old)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, false, old)) != `"secret"` {
+		t.Error("prev is not consulted when the audience did not change")
+	}
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, old)) != withheld {
 		t.Error("a value from a guardians-only version reached the subject")
 	}
-	if string(OldValue(parent, "e_child1", []string{"subject", "guardians"}, []string{"guardians"}, old)) != `"secret"` {
+	if string(OldValue(parent, "e_child1", []string{"guardians"}, true, old)) != `"secret"` {
 		t.Error("a reader matching both audiences lost the old value")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, nil)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, nil)) != withheld {
 		t.Error("even a null old value is not the reader's to see")
+	}
+	// An empty or nil previous audience with a change matches nobody: it
+	// never releases the old value.
+	for _, prev := range [][]string{{}, nil} {
+		for _, g := range [][]roster.Grant{parent, child, nil} {
+			if string(OldValue(g, "e_child1", prev, true, old)) != withheld {
+				t.Errorf("changed with prev %#v released the old value to %v", prev, g)
+			}
+		}
 	}
 }
 

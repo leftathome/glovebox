@@ -84,14 +84,20 @@ func TestPropertyGrantsMatchRelationships(t *testing.T) {
 	for seed := int64(0); seed < 300; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		d := genRoster(r)
-		raw, _ := json.Marshal(d)
+		raw, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
 		ros, err := roster.Parse(roster.FormatOpenclawHouseholdV1, raw)
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
 		subjects := append(ros.Members(), "", "e_outsider")
 		for _, reader := range ros.Members() {
-			grants, _ := ros.Grants(reader)
+			grants, ok := ros.Grants(reader)
+			if !ok {
+				t.Fatalf("seed %d: member %s has no grants entry", seed, reader)
+			}
 			for _, subject := range subjects {
 				for mask := 1; mask < 1<<len(tokens); mask++ {
 					var aud []string

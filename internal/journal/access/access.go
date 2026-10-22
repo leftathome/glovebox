@@ -27,7 +27,11 @@ var (
 	withheldAudienceJSON = record.Encode(WithheldAudience)
 )
 
-// Visible is the visibility rule.
+// Visible is the visibility rule. Precondition: grants belong to an
+// authenticated reader who is present in the roster (an unknown reader has
+// no grants, and the request layer answers it with 403 before this is
+// called). A row whose audience contains "public" is visible to any such
+// reader.
 func Visible(grants []roster.Grant, subject string, audience []string) bool {
 	for _, t := range audience {
 		if t == Public {
@@ -71,12 +75,15 @@ func Text(v json.RawMessage, verdict string) json.RawMessage {
 	return withheldScanJSON
 }
 
-// OldValue returns an old value of an updated event as a reader may see
-// it. When the event changed the audience, only a reader matching the old
-// audience as well sees it (the event itself is visible only to readers of
-// the new one).
-func OldValue(grants []roster.Grant, subject string, audience, prevAudience []string, v json.RawMessage) json.RawMessage {
-	if prevAudience == nil || Visible(grants, subject, prevAudience) {
+// OldValue returns an old value of an updated event as a reader may see it.
+// audienceChanged says the event changed the audience (prev_audience is not
+// NULL) and prev is the audience before the change. When it changed, only a
+// reader matching the old audience as well sees the old value (the event
+// itself is visible only to readers of the new one). prev is not consulted
+// when audienceChanged is false; an empty prev with audienceChanged true
+// matches nobody, so it never releases the value (fail closed).
+func OldValue(grants []roster.Grant, subject string, prev []string, audienceChanged bool, v json.RawMessage) json.RawMessage {
+	if !audienceChanged || Visible(grants, subject, prev) {
 		return v
 	}
 	return withheldAudienceJSON

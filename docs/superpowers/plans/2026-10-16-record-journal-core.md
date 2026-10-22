@@ -5289,17 +5289,30 @@ func TestText(t *testing.T) {
 
 func TestOldValue(t *testing.T) {
 	old := json.RawMessage(`"secret"`)
-	if string(OldValue(child, "e_child1", []string{"subject"}, nil, old)) != `"secret"` {
+	const withheld = `"withheld: different audience"`
+	if string(OldValue(child, "e_child1", nil, false, old)) != `"secret"` {
 		t.Error("no audience change: the old value is the reader's")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, old)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, false, old)) != `"secret"` {
+		t.Error("prev is not consulted when the audience did not change")
+	}
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, old)) != withheld {
 		t.Error("a value from a guardians-only version reached the subject")
 	}
-	if string(OldValue(parent, "e_child1", []string{"subject", "guardians"}, []string{"guardians"}, old)) != `"secret"` {
+	if string(OldValue(parent, "e_child1", []string{"guardians"}, true, old)) != `"secret"` {
 		t.Error("a reader matching both audiences lost the old value")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, nil)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, nil)) != withheld {
 		t.Error("even a null old value is not the reader's to see")
+	}
+	// An empty or nil previous audience with a change matches nobody: it
+	// never releases the old value.
+	for _, prev := range [][]string{{}, nil} {
+		for _, g := range [][]roster.Grant{parent, child, nil} {
+			if string(OldValue(g, "e_child1", prev, true, old)) != withheld {
+				t.Errorf("changed with prev %#v released the old value to %v", prev, g)
+			}
+		}
 	}
 }
 
@@ -5354,7 +5367,11 @@ var (
 	withheldAudienceJSON = record.Encode(WithheldAudience)
 )
 
-// Visible is the visibility rule.
+// Visible is the visibility rule. Precondition: grants belong to an
+// authenticated reader who is present in the roster (an unknown reader has
+// no grants, and the request layer answers it with 403 before this is
+// called). A row whose audience contains "public" is visible to any such
+// reader.
 func Visible(grants []roster.Grant, subject string, audience []string) bool {
 	for _, t := range audience {
 		if t == Public {
@@ -5398,12 +5415,15 @@ func Text(v json.RawMessage, verdict string) json.RawMessage {
 	return withheldScanJSON
 }
 
-// OldValue returns an old value of an updated event as a reader may see
-// it. When the event changed the audience, only a reader matching the old
-// audience as well sees it (the event itself is visible only to readers of
-// the new one).
-func OldValue(grants []roster.Grant, subject string, audience, prevAudience []string, v json.RawMessage) json.RawMessage {
-	if prevAudience == nil || Visible(grants, subject, prevAudience) {
+// OldValue returns an old value of an updated event as a reader may see it.
+// audienceChanged says the event changed the audience (prev_audience is not
+// NULL) and prev is the audience before the change. When it changed, only a
+// reader matching the old audience as well sees the old value (the event
+// itself is visible only to readers of the new one). prev is not consulted
+// when audienceChanged is false; an empty prev with audienceChanged true
+// matches nobody, so it never releases the value (fail closed).
+func OldValue(grants []roster.Grant, subject string, prev []string, audienceChanged bool, v json.RawMessage) json.RawMessage {
+	if !audienceChanged || Visible(grants, subject, prev) {
 		return v
 	}
 	return withheldAudienceJSON
@@ -5519,14 +5539,20 @@ func TestPropertyGrantsMatchRelationships(t *testing.T) {
 	for seed := int64(0); seed < 300; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		d := genRoster(r)
-		raw, _ := json.Marshal(d)
+		raw, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
 		ros, err := roster.Parse(roster.FormatOpenclawHouseholdV1, raw)
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
 		subjects := append(ros.Members(), "", "e_outsider")
 		for _, reader := range ros.Members() {
-			grants, _ := ros.Grants(reader)
+			grants, ok := ros.Grants(reader)
+			if !ok {
+				t.Fatalf("seed %d: member %s has no grants entry", seed, reader)
+			}
 			for _, subject := range subjects {
 				for mask := 1; mask < 1<<len(tokens); mask++ {
 					var aud []string
@@ -8487,15 +8513,21 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 			j.o.Metrics.VisibilityMismatch()
 			continue
 		}
+		// prev_audience NULL means the audience did not change. A value that is
+		// present but does not decode must never release an old value, so it
+		// is an error, not "unchanged".
+		audienceChanged := prevAud != nil
 		var prevAudience []string
-		if prevAud != nil {
-			_ = json.Unmarshal(prevAud, &prevAudience)
+		if audienceChanged {
+			if err := json.Unmarshal(prevAud, &prevAudience); err != nil {
+				return nil, fmt.Errorf("event %d: prev_audience: %w", e.Seq, err)
+			}
 		}
 		if prevObs.Valid {
 			t := prevObs.Time
 			e.PrevObservedAt = &t
 		}
-		if err := j.fillEventValues(&e, q.Grants, prevAudience, fields, changed, scan); err != nil {
+		if err := j.fillEventValues(&e, q.Grants, prevAudience, audienceChanged, fields, changed, scan); err != nil {
 			return nil, err
 		}
 		if notify != nil {
@@ -8511,7 +8543,7 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 }
 
 // fillEventValues decodes, renames forward and masks an event's values.
-func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, prevAudience []string, fields, changed, scan []byte) error {
+func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, prevAudience []string, audienceChanged bool, fields, changed, scan []byte) error {
 	active, _ := j.o.Registry.Active(e.RecordType)
 	name := func(f string) string { return j.o.Registry.ForwardName(e.RecordType, e.SchemaVersion, f) }
 	var es map[string]record.EventScan
@@ -8547,7 +8579,7 @@ func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, pr
 			n := name(k)
 			old, nw := nilIfNull(pair[0]), nilIfNull(pair[1])
 			old = mask(n, old, verdicts[n].Old)
-			old = access.OldValue(grants, e.DataSubject, e.Audience, prevAudience, old)
+			old = access.OldValue(grants, e.DataSubject, prevAudience, audienceChanged, old)
 			e.Changed[n] = journalapi.Change{Old: old, New: mask(n, nw, verdicts[n].New)}
 		}
 	case "removed":
