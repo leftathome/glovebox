@@ -112,7 +112,11 @@ type Policy struct {
 
 var callerRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$`)
 
-// New validates the services against the record types.
+// New validates the services against the record types. A caller holding a
+// raw JSON document must use Parse, not json.Unmarshal followed by New:
+// plain json.Unmarshal into a map lets a repeated or case-variant caller key
+// win silently (the last one), which can drop a restricted entry before New
+// ever sees it.
 func New(in map[string]Service, reg *record.Registry) (*Policy, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("journal policy: no record types")

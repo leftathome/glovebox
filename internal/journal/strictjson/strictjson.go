@@ -3,7 +3,11 @@
 // case-insensitively and lets the last duplicate win, so
 // {"write_scopes":{...},"WRITE_SCOPES":null} silently drops a restriction.
 // Decode refuses any object with duplicate keys or keys equal under
-// strings.EqualFold, then refuses unknown fields and trailing data.
+// strings.EqualFold, then refuses unknown fields, struct keys that are not
+// exactly a declared json name, and trailing data.
+//
+// It deliberately refuses keys that differ only in case inside map values
+// too, which is stricter than Go's case-sensitive map keys but fails closed.
 package strictjson
 
 import (
@@ -11,12 +15,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 )
 
 // Decode parses b into v strictly.
 func Decode(b []byte, v any) error {
 	if err := walk(json.NewDecoder(bytes.NewReader(b))); err != nil {
+		return err
+	}
+	var generic any
+	if err := json.Unmarshal(b, &generic); err != nil {
+		return err
+	}
+	if err := checkExact(generic, reflect.TypeOf(v)); err != nil {
 		return err
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
