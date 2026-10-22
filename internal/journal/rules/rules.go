@@ -63,6 +63,19 @@ type Match struct {
 	FieldIn      map[string][]json.RawMessage `json:"field_in,omitempty"`
 }
 
+// UnmarshalJSON refuses unknown keys: a misspelled condition such as
+// "field_become" would otherwise vanish and leave a catch-all rule.
+func (m *Match) UnmarshalJSON(b []byte) error {
+	type bare Match
+	return strictDecode(b, (*bare)(m))
+}
+
+func strictDecode(b []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	return d.Decode(v)
+}
+
 // Rule is one configured rule.
 type Rule struct {
 	Name       string   `json:"name"`
@@ -70,6 +83,13 @@ type Rule struct {
 	Importance string   `json:"importance"`
 	Notify     []Notice `json:"notify,omitempty"`
 	GroupBy    []string `json:"group_by,omitempty"`
+}
+
+// UnmarshalJSON refuses unknown keys in the rule and, because the decoder
+// is strict throughout, in its notify entries.
+func (r *Rule) UnmarshalJSON(b []byte) error {
+	type bare Rule
+	return strictDecode(b, (*bare)(r))
 }
 
 type compiled struct {
@@ -86,6 +106,9 @@ type Set struct {
 
 // Compile validates rules against the active record types.
 func Compile(rs []Rule, reg *record.Registry) (*Set, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("rules: no record type registry")
+	}
 	s := &Set{}
 	names := map[string]bool{}
 	for _, r := range rs {
@@ -141,6 +164,8 @@ func Compile(rs []Rule, reg *record.Registry) (*Set, error) {
 			}
 		}
 		for _, n := range r.Notify {
+			// Syntax only: Compile has no roster, so a token no reader holds
+			// is not caught here.
 			if !record.ValidToken(n.Token) {
 				return nil, fmt.Errorf("rule %s: invalid notify token %q", r.Name, n.Token)
 			}
@@ -211,8 +236,12 @@ func (c compiled) matches(e EventView) bool {
 	if values == nil {
 		values = e.Before
 	}
-	for field, v := range c.becomes {
-		if e.Kind == journalapi.KindRemoved || !bytes.Equal(e.After[field], v) || bytes.Equal(e.Before[field], v) {
+	if len(c.becomes) > 0 {
+		// The conjunction of all field_becomes conditions must hold after
+		// the event and must not have held before it (nil Before: it did
+		// not). Removed events never become anything; the kind test is
+		// defence in depth, since After is nil there and nothing holds.
+		if e.Kind == journalapi.KindRemoved || !holdsAll(c.becomes, e.After) || holdsAll(c.becomes, e.Before) {
 			return false
 		}
 	}
@@ -225,6 +254,15 @@ func (c compiled) matches(e EventView) bool {
 			}
 		}
 		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func holdsAll(want map[string]json.RawMessage, have record.Fields) bool {
+	for field, v := range want {
+		if !bytes.Equal(have[field], v) {
 			return false
 		}
 	}
@@ -252,7 +290,15 @@ func (c compiled) groupKey(e EventView) string {
 		case "scope":
 			v = e.Scope
 		default:
-			v = plain(values[strings.TrimPrefix(g, "field:")])
+			raw, present := values[strings.TrimPrefix(g, "field:")]
+			if !present {
+				// "%00" cannot be produced by EscapeScopeValue (a literal
+				// % becomes %25), so an absent field never collides with
+				// an empty or any other value.
+				parts = append(parts, record.EscapeScopeValue(g)+"=%00")
+				continue
+			}
+			v = plain(raw)
 		}
 		parts = append(parts, record.EscapeScopeValue(g)+"="+record.EscapeScopeValue(v))
 	}

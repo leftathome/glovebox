@@ -197,6 +197,17 @@ Choices this schema makes where the spec leaves room (also in the plan,
   type, and a text field is never dropped (4.7); values that carry a scan
   verdict are masked by it whatever the active type says (4.11).
 
+- Rules (spec 4.10): the first matching rule in configured order wins. With
+  several `field_becomes` entries the condition is their conjunction: it
+  matches when all entries hold after the event and not all held before
+  (a missing before counts as not holding), so excused -> unexcused on a
+  full day fires and staying full-unexcused does not refire. `field_in`
+  tests the value after the event (last known value for `removed`). Rule
+  JSON is decoded strictly (unknown keys are errors). A `group_key` is
+  `entry=value` pairs joined by `/`, values escaped; an absent field is
+  `%00`; a key over 512 bytes is replaced by `sha256=<hex of the key>`.
+  Notify tokens are syntax-checked only.
+
 ## Migration history
 
 | Migration | Change |
