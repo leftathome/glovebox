@@ -1,0 +1,125 @@
+package journal
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/leftathome/glovebox/internal/journal/diff"
+	"github.com/leftathome/glovebox/internal/journal/record"
+	"github.com/leftathome/glovebox/internal/journal/roster"
+	"github.com/leftathome/glovebox/internal/journal/rules"
+)
+
+// Recorder receives what the journal reports for metrics (Task 23).
+type Recorder interface {
+	Snapshot(recordType, status string)
+	Event(recordType, kind, importance string)
+	ScanWithheld(recordType string, n int)
+	ApplyDuration(d time.Duration)
+	VisibilityMismatch()
+}
+
+type nopRecorder struct{}
+
+func (nopRecorder) Snapshot(string, string)      {}
+func (nopRecorder) Event(string, string, string) {}
+func (nopRecorder) ScanWithheld(string, int)     {}
+func (nopRecorder) ApplyDuration(time.Duration)  {}
+func (nopRecorder) VisibilityMismatch()          {}
+
+// Options configure a Journal.
+type Options struct {
+	Registry *record.Registry
+	Rules    *rules.Set // nil: every event is low importance
+	Guard    diff.Guard
+	Scanner  TextScanner
+	// Roster returns the roster in use, nil before the first load.
+	Roster  func() *roster.Roster
+	Now     func() time.Time
+	Metrics Recorder
+}
+
+// Journal is the record journal's store.
+type Journal struct {
+	db *sql.DB
+	o  Options
+}
+
+// New wraps an open database.
+func New(db *sql.DB, o Options) *Journal {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	if o.Metrics == nil {
+		o.Metrics = nopRecorder{}
+	}
+	if o.Roster == nil {
+		o.Roster = func() *roster.Roster { return nil }
+	}
+	return &Journal{db: db, o: o}
+}
+
+// Open opens the database lazily (nothing is dialled until first use). The
+// password is read again for every new connection, so a rotated Secret is
+// picked up without a restart.
+func Open(dsn string, password func() (string, error)) (*sql.DB, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("journal: database address: %w", err)
+	}
+	var opts []stdlib.OptionOpenDB
+	if password != nil {
+		opts = append(opts, stdlib.OptionBeforeConnect(func(_ context.Context, cc *pgx.ConnConfig) error {
+			p, err := password()
+			if err != nil {
+				return fmt.Errorf("journal: database password: %w", err)
+			}
+			cc.Password = p
+			return nil
+		}))
+	}
+	db := stdlib.OpenDB(*cfg, opts...)
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	return db, nil
+}
+
+// Migrate brings the schema up to date (see migrate.go).
+func (j *Journal) Migrate(ctx context.Context) error { return Migrate(ctx, j.db) }
+
+// SchemaVersion reports the applied schema version.
+func (j *Journal) SchemaVersion(ctx context.Context) (int, error) { return SchemaVersion(ctx, j.db) }
+
+// Close closes the database.
+func (j *Journal) Close() error { return j.db.Close() }
+
+func (j *Journal) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// lockSubject serialises every write for one data_subject (decision 2).
+func lockSubject(ctx context.Context, tx *sql.Tx, subject string) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "glovebox_journal:subject:"+subject)
+	return err
+}
+
+// lockEvents makes event sequence numbers become visible in order
+// (decision 3): taken before the first insert, held to commit.
+func lockEvents(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "glovebox_journal:events")
+	return err
+}
