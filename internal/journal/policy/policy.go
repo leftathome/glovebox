@@ -3,19 +3,27 @@
 // write, whom it may read as, and whether it may count or administer.
 // Grants are not here: the journal computes them from the roster for the
 // one reader a request names.
+//
+// Readers "*" and Allows do not consult the roster: the journal must
+// confirm that the reader (or on_behalf_of member) is a roster member before
+// it calls MayRead, MayCount or MayWriteNote.
+//
+// A Policy is immutable: New copies its input and Service returns copies.
 package policy
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/record"
+	"github.com/leftathome/glovebox/internal/journal/roster"
+	"github.com/leftathome/glovebox/internal/journal/strictjson"
 )
 
 // RosterSubjects: writes only for subjects in the current roster (plus ""
@@ -71,9 +79,30 @@ type Service struct {
 // (write_scope for write_scopes) would otherwise vanish and widen the grant.
 func (s *Service) UnmarshalJSON(b []byte) error {
 	type bare Service
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	return d.Decode((*bare)(s))
+	return strictjson.Decode(b, (*bare)(s))
+}
+
+// Parse decodes a policy document strictly (unknown, duplicate and
+// case-variant keys are errors, at the top level too) and validates it.
+func Parse(raw []byte, reg *record.Registry) (*Policy, error) {
+	var s map[string]Service
+	if err := strictjson.Decode(raw, &s); err != nil {
+		return nil, fmt.Errorf("journal policy: %w", err)
+	}
+	return New(s, reg)
+}
+
+func (s Service) clone() Service {
+	s.Readers.IDs = slices.Clone(s.Readers.IDs)
+	s.WriteTypes = slices.Clone(s.WriteTypes)
+	if s.WriteScopes != nil {
+		m := make(map[string][]string, len(s.WriteScopes))
+		for k, v := range s.WriteScopes {
+			m[k] = slices.Clone(v)
+		}
+		s.WriteScopes = m
+	}
+	return s
 }
 
 // Policy maps "namespace/serviceaccount" to its Service.
@@ -84,25 +113,51 @@ type Policy struct {
 var callerRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$`)
 
 // New validates the services against the record types.
-func New(services map[string]Service, reg *record.Registry) (*Policy, error) {
+func New(in map[string]Service, reg *record.Registry) (*Policy, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("journal policy: no record types")
+	}
+	services := make(map[string]Service, len(in))
+	for caller, s := range in {
+		services[caller] = s.clone()
+	}
 	for caller, s := range services {
-		if !callerRE.MatchString(caller) {
+		ns, name, _ := strings.Cut(caller, "/")
+		if !callerRE.MatchString(caller) || len(ns) > 63 || len(name) > 253 {
 			return nil, fmt.Errorf("journal policy: %q is not namespace/serviceaccount", caller)
 		}
-		household := false
-		for _, name := range s.WriteTypes {
-			t, ok := reg.Active(name)
+		household, snapshots := false, false
+		for _, tname := range s.WriteTypes {
+			t, ok := reg.Active(tname)
 			if !ok {
-				return nil, fmt.Errorf("journal policy %s: unknown record type %q", caller, name)
+				return nil, fmt.Errorf("journal policy %s: unknown record type %q", caller, tname)
 			}
 			if t.Household() {
 				household = true
-			} else if s.WriteSubjects != RosterSubjects {
-				return nil, fmt.Errorf("journal policy %s: a writer of %s states write_subjects: %s", caller, name, RosterSubjects)
+			} else {
+				snapshots = true
+				if s.WriteSubjects != RosterSubjects {
+					return nil, fmt.Errorf("journal policy %s: a writer of %s states write_subjects: %s", caller, tname, RosterSubjects)
+				}
 			}
 		}
 		if s.WriteSubjects != "" && s.WriteSubjects != RosterSubjects {
-			return nil, fmt.Errorf("journal policy %s: write_subjects is %s", caller, RosterSubjects)
+			return nil, fmt.Errorf("journal policy %s: write_subjects must be %s", caller, RosterSubjects)
+		}
+		if len(s.WriteScopes) > 0 && !snapshots {
+			return nil, fmt.Errorf("journal policy %s: write_scopes has no effect without a source write type", caller)
+		}
+		if !s.Read && !s.Counts && !household && !s.Readers.empty() {
+			return nil, fmt.Errorf("journal policy %s: readers has no effect without read, counts or a household write type", caller)
+		}
+		if !s.Readers.Any {
+			seen := map[string]bool{}
+			for _, id := range s.Readers.IDs {
+				if !roster.ValidID(id) || seen[id] {
+					return nil, fmt.Errorf("journal policy %s: readers entry %q is not a unique member id", caller, id)
+				}
+				seen[id] = true
+			}
 		}
 		for part, vals := range s.WriteScopes {
 			if !record.ValidName(part) || len(vals) == 0 {
@@ -132,7 +187,7 @@ func (p *Policy) Callers() []string {
 // Service returns a caller's policy.
 func (p *Policy) Service(caller string) (Service, bool) {
 	s, ok := p.services[caller]
-	return s, ok
+	return s.clone(), ok
 }
 
 func denied(format string, a ...any) *record.Rejection {

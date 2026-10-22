@@ -201,10 +201,12 @@ func TestCompileNeedsARegistry(t *testing.T) {
 
 func TestMisspelledKeysAreRefused(t *testing.T) {
 	for name, doc := range map[string]string{
-		"rule key":   `[{"name":"r","importance":"high","matches":{"record_type":"attendance_day"}}]`,
-		"match key":  `[{"name":"r","importance":"high","match":{"record_type":"attendance_day","field_become":{"classification":"full_day"}}}]`,
-		"kind typo":  `[{"name":"r","importance":"high","match":{"record_type":"attendance_day","kinds":["created"]}}]`,
-		"notice key": `[{"name":"r","importance":"high","match":{"record_type":"attendance_day"},"notify":[{"token":"guardians","mode":"push","purposes":"x"}]}]`,
+		"rule key":           `[{"name":"r","importance":"high","matches":{"record_type":"attendance_day"}}]`,
+		"match key":          `[{"name":"r","importance":"high","match":{"record_type":"attendance_day","field_become":{"classification":"full_day"}}}]`,
+		"kind typo":          `[{"name":"r","importance":"high","match":{"record_type":"attendance_day","kinds":["created"]}}]`,
+		"duplicate rule key": `[{"name":"r","importance":"high","importance":"low","match":{"record_type":"attendance_day"}}]`,
+		"case duplicate":     `[{"name":"r","importance":"high","match":{"record_type":"attendance_day","field_becomes":{"c":"x"},"FIELD_BECOMES":null}}]`,
+		"notice key":         `[{"name":"r","importance":"high","match":{"record_type":"attendance_day"},"notify":[{"token":"guardians","mode":"push","purposes":"x"}]}]`,
 	} {
 		var rs []Rule
 		if err := json.Unmarshal([]byte(doc), &rs); err == nil {

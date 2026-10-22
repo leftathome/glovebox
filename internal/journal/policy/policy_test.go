@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -131,12 +132,132 @@ func TestPolicyRefusals(t *testing.T) {
 		"bad readers":        `{"a/b": {"read": true, "readers": "everyone"}}`,
 		"bad scope part":     `{"a/b": {"write_types": ["assignment"], "write_subjects": "roster_subjects", "write_scopes": {"Source": ["x"]}}}`,
 	} {
-		var s map[string]Service
-		if err := json.Unmarshal([]byte(js), &s); err != nil {
-			continue // an unparseable readers value is a refusal too
-		}
-		if _, err := New(s, reg(t)); err == nil {
+		// Parse covers both decoding and validation: an unparseable
+		// readers value is a refusal too.
+		if _, err := Parse([]byte(js), reg(t)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestPolicyMoreRefusals(t *testing.T) {
+	long := strings.Repeat("a", 64)
+	for name, js := range map[string]string{
+		"empty reader id":       `{"a/b": {"read": true, "readers": [""]}}`,
+		"star in list":          `{"a/b": {"read": true, "readers": ["*"]}}`,
+		"duplicate reader":      `{"a/b": {"read": true, "readers": ["e_parent1", "e_parent1"]}}`,
+		"bad reader id":         `{"a/b": {"read": true, "readers": ["e parent"]}}`,
+		"null readers":          `{"a/b": {"read": true, "readers": null}}`,
+		"readers on admin":      `{"a/b": {"admin": true, "readers": ["e_parent1"]}}`,
+		"write_scopes on admin": `{"a/b": {"admin": true, "write_scopes": {"source": ["x"]}}}`,
+		"scopes, note only":     `{"a/b": {"write_types": ["attendance_note"], "readers": "*", "write_scopes": {"source": ["x"]}}}`,
+		"long namespace":        `{"` + long + `/b": {"admin": true}}`,
+		"case duplicate key":    `{"a/b": {"write_types": ["assignment"], "write_subjects": "roster_subjects", "write_scopes": {"source": ["powerschool"]}, "WRITE_SCOPES": null}}`,
+		"duplicate caller":      `{"a/b": {"admin": true}, "a/b": {"read": true, "readers": "*"}}`,
+		"case variant key":      `{"a/b": {"Admin": true, "admin": false}}`,
+	} {
+		if _, err := Parse([]byte(js), reg(t)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := New(nil, nil); err == nil {
+		t.Error("New accepted a nil registry")
+	}
+}
+
+func TestWriteScopesRestrictSubject(t *testing.T) {
+	r := reg(t)
+	asg, _ := r.Active("assignment")
+	p, err := Parse([]byte(`{"a/b": {"write_types": ["assignment"], "write_subjects": "roster_subjects", "write_scopes": {"data_subject": ["e_child1"]}}}`), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := p.Service("a/b")
+	if rej := s.MayWrite(asg, scope(t, "source", "powerschool", "data_subject", "e_child1")); rej != nil {
+		t.Errorf("allowed subject: %v", rej)
+	}
+	if rej := s.MayWrite(asg, scope(t, "source", "powerschool", "data_subject", "e_child2")); rej == nil || rej.Status != 403 {
+		t.Errorf("other subject: %v", rej)
+	}
+	if rej := s.MayWrite(asg, scope(t, "source", "powerschool")); rej == nil || rej.Status != 403 {
+		t.Errorf("missing scope part: %v", rej)
+	}
+}
+
+func TestNoteOnBehalfOfIsLimitedToReaders(t *testing.T) {
+	r := reg(t)
+	note, _ := r.Active("attendance_note")
+	p, err := Parse([]byte(`{"a/b": {"write_types": ["attendance_note"], "readers": ["e_parent1"]}}`), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := p.Service("a/b")
+	if rej := s.MayWriteNote(note, "e_parent1"); rej != nil {
+		t.Errorf("listed member: %v", rej)
+	}
+	if rej := s.MayWriteNote(note, "e_child1"); rej == nil || rej.Status != 403 {
+		t.Errorf("unlisted member: %v", rej)
+	}
+}
+
+func TestCountsDoNotImplyRead(t *testing.T) {
+	p, err := Parse([]byte(`{"a/b": {"counts": true, "readers": ["e_parent1"]}}`), reg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := p.Service("a/b")
+	if s.MayRead("e_parent1") {
+		t.Error("a counts-only service may read")
+	}
+	if !s.MayCount("e_parent1") || s.MayCount("e_child1") {
+		t.Error("counts-only service count decisions wrong")
+	}
+}
+
+func TestPolicyIsImmutable(t *testing.T) {
+	r := reg(t)
+	asg, _ := r.Active("assignment")
+	in := map[string]Service{"a/b": {
+		Read: true, Readers: Readers{IDs: []string{"e_parent1"}},
+		WriteTypes: []string{"assignment"}, WriteSubjects: RosterSubjects,
+		WriteScopes: map[string][]string{"source": {"powerschool"}},
+	}}
+	p, err := New(in, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in["a/b"].Readers.IDs[0] = "e_child1"
+	in["a/b"].WriteScopes["source"][0] = "schoology"
+	in["a/b"].WriteTypes[0] = "lms_assignment"
+	delete(in, "a/b")
+	check := func(when string) {
+		s, ok := p.Service("a/b")
+		if !ok || !s.MayRead("e_parent1") || s.MayRead("e_child1") ||
+			s.MayWrite(asg, scope(t, "source", "powerschool")) != nil {
+			t.Errorf("%s: decisions changed", when)
+		}
+	}
+	check("after mutating the input")
+	s, _ := p.Service("a/b")
+	s.Readers.IDs[0] = "e_child1"
+	s.WriteScopes["source"][0] = "schoology"
+	s.WriteTypes[0] = "lms_assignment"
+	check("after mutating a returned Service")
+}
+
+func TestUnlistedCallersAreDenied(t *testing.T) {
+	p := load(t)
+	r := reg(t)
+	asg, _ := r.Active("assignment")
+	note, _ := r.Active("attendance_note")
+	for _, caller := range []string{"openclaw/glovebox", "openclaw/glovebox-glovebox-connector-rss", ""} {
+		s, ok := p.Service(caller)
+		if ok {
+			t.Errorf("%q has a policy", caller)
+		}
+		if s.MayWrite(asg, scope(t, "source", "powerschool")) == nil || s.MayWriteNote(note, "e_parent1") == nil ||
+			s.MayRead("e_parent1") || s.MayCount("e_parent1") || s.WritesSnapshots(r) || s.Admin {
+			t.Errorf("%q: the zero Service allows something", caller)
 		}
 	}
 }

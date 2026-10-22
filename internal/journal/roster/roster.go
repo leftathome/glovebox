@@ -52,6 +52,10 @@ func Parse(format string, raw []byte) (*Roster, error) {
 // idPattern is openclaw's entityIDPattern.
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// ValidID reports whether s is a well-formed member id (the rule New applies
+// to roster ids); the policy uses it for the members it names.
+func ValidID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
+
 type v1Person struct {
 	Agent      string   `json:"agent"`
 	GuardianOf []string `json:"guardian_of"`

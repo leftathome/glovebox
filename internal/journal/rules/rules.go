@@ -13,6 +13,7 @@ import (
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/record"
+	"github.com/leftathome/glovebox/internal/journal/strictjson"
 )
 
 // Importance levels.
@@ -70,11 +71,9 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 	return strictDecode(b, (*bare)(m))
 }
 
-func strictDecode(b []byte, v any) error {
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	return d.Decode(v)
-}
+// strictDecode also refuses duplicate and case-variant keys, which
+// encoding/json would resolve silently (last wins).
+func strictDecode(b []byte, v any) error { return strictjson.Decode(b, v) }
 
 // Rule is one configured rule.
 type Rule struct {
