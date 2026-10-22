@@ -5220,7 +5220,7 @@ The property test checks the grant-based rule against an oracle written directly
 - Create: `internal/journal/access/access.go`
 - Test: `internal/journal/access/access_test.go`, `internal/journal/access/property_test.go`
 
-- [ ] **Step 12.1: Write the failing unit tests.**
+- [x] **Step 12.1: Write the failing unit tests.**
 
 `internal/journal/access/access_test.go`:
 
@@ -5317,11 +5317,11 @@ func TestNotices(t *testing.T) {
 }
 ```
 
-- [ ] **Step 12.2: Run; expect a build failure** (`undefined: Visible`).
+- [x] **Step 12.2: Run; expect a build failure** (`undefined: Visible`).
 
 Run: `go test ./internal/journal/access/`
 
-- [ ] **Step 12.3: Write `access.go`.**
+- [x] **Step 12.3: Write `access.go`.**
 
 `internal/journal/access/access.go`:
 
@@ -5424,11 +5424,11 @@ func Notices(grants []roster.Grant, subject string, in []rules.Notice) []rules.N
 }
 ```
 
-- [ ] **Step 12.4: Run; expect PASS.**
+- [x] **Step 12.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/access/ -count=1`
 
-- [ ] **Step 12.5: Write the property test against a relationship oracle.**
+- [x] **Step 12.5: Write the property test against a relationship oracle.**
 
 `internal/journal/access/property_test.go`:
 
@@ -5550,11 +5550,11 @@ func TestPropertyGrantsMatchRelationships(t *testing.T) {
 }
 ```
 
-- [ ] **Step 12.6: Run; expect PASS.**
+- [x] **Step 12.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/access/ -count=1 -race`
 
-- [ ] **Step 12.7: Commit.**
+- [x] **Step 12.7: Commit.**
 
 ```bash
 git add internal/journal/access
