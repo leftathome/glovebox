@@ -164,3 +164,44 @@ func TestRemovalsAreSortedByKey(t *testing.T) {
 		t.Errorf("%+v", p.Removals)
 	}
 }
+
+// A stored hash that disagrees with the reloaded fields must not produce an
+// "updated" event with nothing changed.
+func TestDisagreeingHashIsAConfirmation(t *testing.T) {
+	stale := cur("k", scopeA, f("title", `"T"`), false, t1)
+	stale.Hash = []byte("old-hash")
+	withNil := cur("n", scopeA, f("title", `"T"`), false, t1)
+	withNil.Fields = record.Fields{"title": json.RawMessage(`"T"`), "extra": nil}
+	p := Diff(Input{Scope: scopeA, ObservedAt: t2, Current: byKey(stale, withNil),
+		Records: []record.NormRecord{in("k", f("title", `"T"`)), in("n", f("title", `"T"`))}})
+	if len(p.Events) != 0 || len(p.Confirm) != 2 {
+		t.Errorf("events %+v confirm %v", p.Events, p.Confirm)
+	}
+}
+
+func TestStaleRowIsNotRemoved(t *testing.T) {
+	p := Diff(Input{Scope: scopeA, ObservedAt: t1, Complete: true,
+		Current: byKey(cur("k", scopeA, f("title", `"x"`), false, t2))})
+	if len(p.Removals) != 0 || p.LiveInRange != 1 || len(p.Stale) != 0 {
+		t.Errorf("%+v", p)
+	}
+}
+
+func TestRestoreThatMovesScope(t *testing.T) {
+	p := Diff(Input{Scope: scopeA, ObservedAt: t2,
+		Current: byKey(cur("k", scopeB, f("title", `"x"`), true, t1)),
+		Records: []record.NormRecord{in("k", f("title", `"x"`))}})
+	if len(p.Events) != 1 || p.Events[0].Kind != Restored || p.Events[0].PrevScope != scopeB {
+		t.Errorf("%+v", p.Events)
+	}
+}
+
+func TestAddedFieldIsReported(t *testing.T) {
+	p := Diff(Input{Scope: scopeA, ObservedAt: t2,
+		Current: byKey(cur("k", scopeA, f("title", `"x"`), false, t1)),
+		Records: []record.NormRecord{in("k", f("title", `"x"`, "score", `2`))}})
+	c := p.Events[0].Changed
+	if len(c) != 1 || c["score"].Old != nil || string(c["score"].New) != "2" {
+		t.Errorf("%+v", c)
+	}
+}

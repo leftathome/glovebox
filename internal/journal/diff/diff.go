@@ -42,7 +42,8 @@ type Change struct {
 	Old, New json.RawMessage
 }
 
-// Event is one planned change.
+// Event is one planned change. Audience, PrevAudience, After and Before alias
+// the maps and slices of the Input; callers must not mutate them.
 type Event struct {
 	Kind         Kind
 	Key          string
@@ -52,9 +53,11 @@ type Event struct {
 	PrevAudience []string // set when the audience changes
 	// After: the record's fields after the event (created, restored,
 	// updated). Before: before it (updated, restored, removed).
-	After, Before  record.Fields
-	Changed        map[string]Change // updated only
-	PrevObservedAt *time.Time        // nil for created
+	After, Before record.Fields
+	// Changed is updated only. It is a Go map with no defined order: writers
+	// must serialise it with sorted keys (json.Marshal does).
+	Changed        map[string]Change
+	PrevObservedAt *time.Time // nil for created
 }
 
 // Input is one snapshot against the current rows of its subject and type.
@@ -69,11 +72,15 @@ type Input struct {
 
 // Plan is what applying the snapshot would do.
 type Plan struct {
-	Events      []Event  // created, updated, restored: in snapshot order
-	Removals    []Event  // candidate removals, by key; the guard decides
-	Confirm     []string // present and unchanged: observation columns only
-	Stale       []string // confirmed later by another scope: left alone
-	LiveInRange int      // live keys of this scope (in range) before the snapshot
+	Events   []Event  // created, updated, restored: in snapshot order
+	Removals []Event  // candidate removals, by key; the guard decides
+	Confirm  []string // present and unchanged: observation columns only
+	// Stale lists snapshot records confirmed later by another scope: left
+	// alone. Only present records count; a row of this scope that is missing
+	// from the snapshot but confirmed after ObservedAt is neither removed nor
+	// counted.
+	Stale       []string
+	LiveInRange int // live keys of this scope (in range) before the snapshot
 }
 
 // Stats counts the plan as journalapi reports it.
@@ -95,7 +102,8 @@ func (p Plan) Stats() journalapi.Stats {
 	return s
 }
 
-// Diff plans the events of one snapshot.
+// Diff plans the events of one snapshot. The plan aliases in's maps and
+// slices; callers must not mutate them while the plan is in use.
 func Diff(in Input) Plan {
 	var p Plan
 	present := make(map[string]bool, len(in.Records))
@@ -128,8 +136,15 @@ func Diff(in Input) Plan {
 			p.Confirm = append(p.Confirm, r.Key)
 			continue
 		}
-		e.Kind = Updated
 		e.Changed = changes(c.Fields, r.Fields)
+		if len(e.Changed) == 0 && e.PrevScope == "" && !audChanged {
+			// The stored hash disagrees with the reloaded fields (stale
+			// hash after a type sync, a null value): nothing a reader
+			// could see changed, so this is a confirmation, not an update.
+			p.Confirm = append(p.Confirm, r.Key)
+			continue
+		}
+		e.Kind = Updated
 		p.Events = append(p.Events, e)
 	}
 	if !in.Complete {
