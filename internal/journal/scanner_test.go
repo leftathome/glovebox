@@ -30,8 +30,17 @@ func shippedScanner(t *testing.T) *scan.Scanner {
 	return sc
 }
 
+func mustScanner(t *testing.T, version string, timeout time.Duration) TextScanner {
+	t.Helper()
+	ts, err := NewTextScanner(shippedScanner(t), version, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
+}
+
 func TestEngineScannerVerdicts(t *testing.T) {
-	ts := NewTextScanner(shippedScanner(t), "v1+rules.abc", 10*time.Second)
+	ts := mustScanner(t, "v1+rules.abc", 10*time.Second)
 	if ts.Version() != "v1+rules.abc" {
 		t.Error("version")
 	}
@@ -43,7 +52,39 @@ func TestEngineScannerVerdicts(t *testing.T) {
 	}
 }
 
-func newFake(run func(string) (string, error), timeout time.Duration) TextScanner {
+func TestMapScan(t *testing.T) {
+	cases := []struct {
+		name string
+		res  engine.ScanResult
+		err  error
+		want string
+	}{
+		{"error", engine.ScanResult{}, errors.New("boom"), record.VerdictError},
+		{"error beats pass", engine.ScanResult{Verdict: engine.VerdictPass}, errors.New("boom"), record.VerdictError},
+		{"pass", engine.ScanResult{Verdict: engine.VerdictPass}, nil, record.VerdictPass},
+		{"quarantine", engine.ScanResult{Verdict: engine.VerdictQuarantine}, nil, "quarantine"},
+		{"reject", engine.ScanResult{Verdict: engine.VerdictReject}, nil, "reject"},
+		{"empty", engine.ScanResult{}, nil, record.VerdictError},
+	}
+	for _, c := range cases {
+		if got := mapScan(c.res, c.err); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNewTextScannerRefusesBadArguments(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		if _, err := NewTextScanner(shippedScanner(t), "v", d); err == nil {
+			t.Errorf("timeout %v accepted", d)
+		}
+	}
+	if _, err := NewTextScanner(nil, "v", time.Second); err == nil {
+		t.Error("a nil scanner accepted")
+	}
+}
+
+func newFake(run func(string) string, timeout time.Duration) TextScanner {
 	return &engineScanner{run: run, version: "v", timeout: timeout}
 }
 
@@ -51,20 +92,19 @@ func TestEngineScannerFailsClosed(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	cases := map[string]TextScanner{
-		"timeout": newFake(func(string) (string, error) { <-release; return record.VerdictPass, nil }, 20*time.Millisecond),
-		"error":   newFake(func(string) (string, error) { return "", errors.New("boom") }, time.Second),
-		"panic":   newFake(func(string) (string, error) { panic("boom") }, time.Second),
-		"empty":   newFake(func(string) (string, error) { return "", nil }, time.Second),
+		"timeout": newFake(func(string) string { <-release; return record.VerdictPass }, 20*time.Millisecond),
+		"panic":   newFake(func(string) string { panic("boom") }, time.Second),
+		"empty":   newFake(func(string) string { return "" }, time.Second),
 	}
 	for name, ts := range cases {
 		if v := ts.Verdict("text"); v != record.VerdictError {
 			t.Errorf("%s: verdict %q, want error", name, v)
 		}
 	}
-	if v := newFake(func(string) (string, error) { return record.VerdictPass, nil }, time.Second).Verdict("x"); v != record.VerdictPass {
+	if v := newFake(func(string) string { return record.VerdictPass }, time.Second).Verdict("x"); v != record.VerdictPass {
 		t.Errorf("a pass became %q", v)
 	}
-	if v := newFake(func(string) (string, error) { return "quarantine", nil }, time.Second).Verdict("x"); v != "quarantine" {
+	if v := newFake(func(string) string { return "quarantine" }, time.Second).Verdict("x"); v != "quarantine" {
 		t.Errorf("a quarantine became %q", v)
 	}
 }
@@ -72,7 +112,7 @@ func TestEngineScannerFailsClosed(t *testing.T) {
 // The real scanner under a nanosecond budget either finishes first (pass)
 // or times out (error); it never returns anything else for benign text.
 func TestEngineScannerRealTimeoutIsNeverReleased(t *testing.T) {
-	ts := NewTextScanner(shippedScanner(t), "v", time.Nanosecond)
+	ts := mustScanner(t, "v", time.Nanosecond)
 	if v := ts.Verdict(string(make([]byte, 60000))); v != record.VerdictError && v != record.VerdictPass {
 		t.Errorf("verdict %s", v)
 	}

@@ -67,15 +67,15 @@ func New(db *sql.DB, o Options) *Journal {
 // Open opens the database lazily (nothing is dialled until first use). The
 // password is read again for every new connection, so a rotated Secret is
 // picked up without a restart.
-func Open(dsn string, password func() (string, error)) (*sql.DB, error) {
+func Open(dsn string, password func(context.Context) (string, error)) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("journal: database address: %w", err)
 	}
 	var opts []stdlib.OptionOpenDB
 	if password != nil {
-		opts = append(opts, stdlib.OptionBeforeConnect(func(_ context.Context, cc *pgx.ConnConfig) error {
-			p, err := password()
+		opts = append(opts, stdlib.OptionBeforeConnect(func(ctx context.Context, cc *pgx.ConnConfig) error {
+			p, err := password(ctx)
 			if err != nil {
 				return fmt.Errorf("journal: database password: %w", err)
 			}
@@ -104,10 +104,19 @@ func (j *Journal) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
+	committed := false
+	defer func() {
+		// Covers a panic in fn as well as every error return: without it a
+		// panic recovered upstream would leave the transaction, and its
+		// advisory locks, open on a pooled connection.
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
+	committed = true
 	return tx.Commit()
 }
 

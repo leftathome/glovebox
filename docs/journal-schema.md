@@ -60,6 +60,14 @@ One row per record type and schema version, written at start from the
 `journal.record_types` configuration. A row never changes: changing a type
 means adding a version. A version stored here must stay in the configuration.
 
+Activating a version that has `renames` rewrites `record_current.fields`,
+`scan` and `content_hash` of that type to the new names, in one transaction
+under the migration lock, without events. Rolling-deploy hazard: a replica
+still running the previous configuration could apply a snapshot after the
+rewrite and write the old names back. Activate a version with renames only
+with the old replicas gone first (a single replica, or the Recreate
+strategy for that release).
+
 | Column | Type | Meaning |
 |---|---|---|
 | `name` | text | Type name, `[a-z][a-z0-9_]{0,63}`. |

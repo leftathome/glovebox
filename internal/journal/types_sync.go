@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/leftathome/glovebox/internal/journal/record"
 )
@@ -14,38 +15,59 @@ import (
 // version must still be configured, unchanged; a new version is inserted
 // and, when it renames fields, record_current of that type is rewritten
 // under the new names in the same transaction, without events (4.7).
+//
+// Rolling deploys: activation rewrites rows to the new names, and nothing
+// stops an old replica that still runs the previous configuration from
+// applying a v1 snapshot afterwards and writing v1 names back. Activating
+// a version with renames therefore requires the old replicas to be gone
+// first: run the journal with one replica or the Recreate strategy for
+// that release.
 func (j *Journal) SyncTypes(ctx context.Context) error {
 	if j.o.Registry == nil {
 		return fmt.Errorf("journal: no record type registry")
 	}
 	return j.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, migrateLockKey); err != nil {
-			return err
+			return fmt.Errorf("journal: sync types: lock: %w", err)
 		}
 		stored, err := loadStoredTypes(ctx, tx)
 		if err != nil {
-			return err
+			return fmt.Errorf("journal: sync types: load: %w", err)
 		}
-		for key, t := range stored {
+		keys := make([]string, 0, len(stored))
+		for k := range stored {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			t := stored[key]
 			want, ok := j.o.Registry.Version(t.Name, t.SchemaVersion)
 			if !ok {
-				return fmt.Errorf("journal: record type %s is in the database but not in the configuration; a version, once used, stays declared", key)
+				return fmt.Errorf("journal: sync types %s: the type is in the database but not in the configuration; a version, once used, stays declared", key)
 			}
 			if !bytes.Equal(want.Canonical(), t.Canonical()) {
-				return fmt.Errorf("journal: record type %s differs from the stored definition; changing a type means a new schema_version", key)
+				return fmt.Errorf("journal: sync types %s: differs from the stored definition; changing a type means a new schema_version", key)
 			}
 		}
+		// firstRenamed is, per type, the oldest new version that renames
+		// fields: the rows are at the version before it.
+		firstRenamed := map[string]int{}
+		var order []string
 		for _, t := range j.o.Registry.Types() {
 			if _, ok := stored[typeKey(t)]; ok {
 				continue
 			}
 			if err := insertType(ctx, tx, t); err != nil {
-				return err
+				return fmt.Errorf("journal: sync types %s: %w", typeKey(t), err)
 			}
-			if len(t.Renames) > 0 {
-				if err := rewriteFields(ctx, tx, t); err != nil {
-					return err
-				}
+			if _, seen := firstRenamed[t.Name]; len(t.Renames) > 0 && !seen {
+				firstRenamed[t.Name] = t.SchemaVersion
+				order = append(order, t.Name)
+			}
+		}
+		for _, name := range order {
+			if err := rewriteFields(ctx, tx, j.o.Registry, name, firstRenamed[name]-1); err != nil {
+				return fmt.Errorf("journal: sync types %s v%d: %w", name, firstRenamed[name], err)
 			}
 		}
 		return nil
@@ -101,15 +123,21 @@ func insertType(ctx context.Context, tx *sql.Tx, t record.Type) error {
 	return err
 }
 
-// rewriteFields renames record_current fields (and scan keys) of type t's
-// previous version to t's names and recomputes the hash.
-func rewriteFields(ctx context.Context, tx *sql.Tx, t record.Type) error {
+// rewriteFields moves record_current of one type from the field names of
+// version from to the active names, through the registry's own Forward
+// (so the result never depends on map order and matches how a late snapshot
+// is renamed), and recomputes the hash.
+func rewriteFields(ctx context.Context, tx *sql.Tx, reg *record.Registry, name string, from int) error {
+	active, ok := reg.Active(name)
+	if !ok {
+		return fmt.Errorf("no active version")
+	}
 	type row struct {
 		subject, key string
 		fields       record.Fields
 		scan         record.ScanMap
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT data_subject, key, fields, scan FROM record_current WHERE record_type = $1 FOR UPDATE`, t.Name)
+	rows, err := tx.QueryContext(ctx, `SELECT data_subject, key, fields, scan FROM record_current WHERE record_type = $1 ORDER BY data_subject, key FOR UPDATE`, name)
 	if err != nil {
 		return err
 	}
@@ -136,28 +164,21 @@ func rewriteFields(ctx context.Context, tx *sql.Tx, t record.Type) error {
 		return err
 	}
 	for _, r := range all {
-		fields := record.Fields{}
-		for k, v := range r.fields {
-			if to, ok := t.Renames[k]; ok {
-				k = to
-			}
-			fields[k] = v
-		}
-		fields, err := record.Reload(t, fields.JSON())
+		fields, err := record.Reload(active, reg.Forward(name, from, r.fields).JSON())
 		if err != nil {
 			return err
 		}
 		scan := record.ScanMap{}
 		for k, v := range r.scan {
-			if to, ok := t.Renames[k]; ok {
-				k = to
-			}
-			scan[k] = v
+			scan[reg.ForwardName(name, from, k)] = v
 		}
-		sj, _ := json.Marshal(scan)
+		sj, err := json.Marshal(scan)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE record_current SET fields = $4, scan = $5, content_hash = $6
 			WHERE record_type = $1 AND data_subject = $2 AND key = $3`,
-			t.Name, r.subject, r.key, fields.JSON(), sj, fields.Hash()); err != nil {
+			name, r.subject, r.key, fields.JSON(), sj, fields.Hash()); err != nil {
 			return err
 		}
 	}
