@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,5 +67,98 @@ func TestHolderWatchReportsChangesAndErrors(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`broken`), 0o600)
 	if r := <-got; r.err == nil {
 		t.Errorf("second report %+v", r)
+	}
+}
+
+func TestHolderConcurrentReloadNeverStoresAnOlderRoster(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "household.json")
+	older := journaltest.HouseholdV1
+	newer := `{"people": {"e_parent1": {"agent": "agent-parent1"}}, "household_members": ["e_parent1"]}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := roster.NewHolder(path, roster.FormatOpenclawHouseholdV1)
+	if _, err := h.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(newer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = h.Reload() }()
+		go func() { defer wg.Done(); _ = h.Current().Has("e_child1") }()
+	}
+	wg.Wait()
+	if h.Current().Has("e_child1") {
+		t.Error("the removed member is still in the roster")
+	}
+}
+
+func TestHolderCountsFailuresAndWatchDedupesErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "household.json")
+	if err := os.WriteFile(path, []byte(`broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := roster.NewHolder(path, roster.FormatOpenclawHouseholdV1)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var mu sync.Mutex
+	reports := 0
+	h.Watch(ctx, 10*time.Millisecond, func(_ *roster.Roster, _ bool, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			reports++
+		}
+	})
+	if reports != 1 {
+		t.Errorf("%d error reports, want 1", reports)
+	}
+	if h.Failures() < 3 {
+		t.Errorf("failures %d, want every failure counted", h.Failures())
+	}
+	var got error
+	h.Watch(context.Background(), 0, func(_ *roster.Roster, _ bool, err error) { got = err })
+	if got == nil {
+		t.Error("a zero interval was accepted")
+	}
+}
+
+func TestHolderFollowsASymlinkSwap(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name, doc string) {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name, "household.json"), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("v1", journaltest.HouseholdV1)
+	mk("v2", `{"people": {"e_parent1": {"agent": "agent-parent1"}}, "household_members": ["e_parent1"]}`)
+	data := filepath.Join(dir, "..data")
+	if err := os.Symlink("v1", data); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..data/household.json", filepath.Join(dir, "household.json")); err != nil {
+		t.Fatal(err)
+	}
+	h := roster.NewHolder(filepath.Join(dir, "household.json"), roster.FormatOpenclawHouseholdV1)
+	if _, err := h.Reload(); err != nil || !h.Current().Has("e_child1") {
+		t.Fatalf("v1: %v", err)
+	}
+	tmp := filepath.Join(dir, "..data_tmp")
+	if err := os.Symlink("v2", tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, data); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := h.Reload()
+	if err != nil || !changed || h.Current().Has("e_child1") {
+		t.Fatalf("after swap: %v %v", changed, err)
 	}
 }

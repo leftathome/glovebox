@@ -2,6 +2,14 @@
 // reads, which neither application can modify -- into each member's
 // grants (spec 2026-10-16 section 4.9b). It is the only journal code that
 // knows household relationships.
+//
+// Parsing mirrors openclaw's image/internal/household, including these
+// behaviours that follow from encoding/json: object keys match
+// case-insensitively, a person id repeated in "people" keeps the last
+// entry, and a person listing themselves in guardian_of or siblings is
+// accepted. Glovebox is stricter in three places, all failing closed: data
+// after the document is refused, and the ids "." and ".." are refused.
+// Every method of *Roster is safe on a nil receiver and grants nothing.
 package roster
 
 import (
@@ -10,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 )
@@ -60,7 +69,7 @@ func parseV1(raw []byte) (*Roster, error) {
 	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("roster: parse: %w", err)
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		return nil, fmt.Errorf("roster: parse: data after the document")
 	}
 	if len(doc.People) == 0 {
@@ -74,7 +83,7 @@ func parseV1(raw []byte) (*Roster, error) {
 	agents := map[string]string{}
 	for _, id := range ids {
 		p := doc.People[id]
-		if !idPattern.MatchString(id) {
+		if !idPattern.MatchString(id) || id == "." || id == ".." {
 			return nil, fmt.Errorf("roster: entity id %q is not path-safe", id)
 		}
 		if p.Agent == "" {
@@ -141,12 +150,18 @@ func sortGrants(gs []Grant) []Grant {
 
 // Has reports whether id is a member of the roster.
 func (r *Roster) Has(id string) bool {
+	if r == nil {
+		return false
+	}
 	_, ok := r.grants[id]
 	return ok
 }
 
 // Grants returns a copy of member's grants.
 func (r *Roster) Grants(member string) ([]Grant, bool) {
+	if r == nil {
+		return nil, false
+	}
 	gs, ok := r.grants[member]
 	if !ok {
 		return nil, false
@@ -156,6 +171,9 @@ func (r *Roster) Grants(member string) ([]Grant, bool) {
 
 // Members lists the roster's members, sorted.
 func (r *Roster) Members() []string {
+	if r == nil {
+		return nil
+	}
 	out := make([]string, 0, len(r.grants))
 	for m := range r.grants {
 		out = append(out, m)
@@ -166,4 +184,9 @@ func (r *Roster) Members() []string {
 
 // SHA256 is the hex SHA-256 of the roster file's bytes. openclaw logs the
 // same hash of the file it read; equal hashes mean the same roster.
-func (r *Roster) SHA256() string { return r.sha }
+func (r *Roster) SHA256() string {
+	if r == nil {
+		return ""
+	}
+	return r.sha
+}

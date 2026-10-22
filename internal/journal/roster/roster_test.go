@@ -65,6 +65,10 @@ func TestV1RefusesWhatOpenclawRefuses(t *testing.T) {
 		"shared agent":      `{"people": {"e_a": {"agent": "a"}, "e_b": {"agent": "a"}}, "household_members": []}`,
 		"no people":         `{"people": {}, "household_members": []}`,
 		"trailing data":     `{"people": {"e_a": {"agent": "a"}}, "household_members": []} {}`,
+		"trailing brace":    `{"people": {"e_a": {"agent": "a"}}, "household_members": []}}`,
+		"trailing bracket":  `{"people": {"e_a": {"agent": "a"}}, "household_members": []} ]`,
+		"dot id":            `{"people": {".": {"agent": "a"}}, "household_members": []}`,
+		"dotdot id":         `{"people": {"..": {"agent": "a"}}, "household_members": []}`,
 	} {
 		if _, err := roster.Parse(roster.FormatOpenclawHouseholdV1, []byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -72,5 +76,25 @@ func TestV1RefusesWhatOpenclawRefuses(t *testing.T) {
 	}
 	if _, err := roster.Parse("some-other-format", []byte(journaltest.HouseholdV1)); err == nil {
 		t.Error("an unknown format parsed")
+	}
+}
+
+func TestGuardianOutsideHouseholdStillGetsHouseholdGuardians(t *testing.T) {
+	doc := `{"people": {"e_g": {"agent": "a", "guardian_of": ["e_c"]}, "e_c": {"agent": "b"}}, "household_members": ["e_c"]}`
+	r, err := roster.Parse(roster.FormatOpenclawHouseholdV1, []byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Grants("e_g")
+	want := []roster.Grant{g("", "guardians"), g("e_c", "guardians"), g("e_g", "subject")}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v want %v", got, want)
+	}
+}
+
+func TestNilRosterGrantsNothing(t *testing.T) {
+	var r *roster.Roster
+	if _, ok := r.Grants("e_child1"); ok || r.Has("e_child1") || len(r.Members()) != 0 || r.SHA256() != "" {
+		t.Error("a nil roster granted something")
 	}
 }

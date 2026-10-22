@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -15,7 +17,12 @@ import (
 type Holder struct {
 	path, format string
 	cur          atomic.Pointer[Roster]
+	mu           sync.Mutex // serialises Reload so an older read never overwrites a newer one
+	failures     atomic.Uint64
 }
+
+// Failures counts every failed Reload (unreadable or unparsable file).
+func (h *Holder) Failures() uint64 { return h.failures.Load() }
 
 // NewHolder holds no roster until the first successful Reload.
 func NewHolder(path, format string) *Holder {
@@ -28,6 +35,13 @@ func (h *Holder) Current() *Roster { return h.cur.Load() }
 // Reload reads the file. changed is true when a different roster is now in
 // use. On error the previous roster stays.
 func (h *Holder) Reload() (changed bool, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	defer func() {
+		if err != nil {
+			h.failures.Add(1)
+		}
+	}()
 	raw, err := os.ReadFile(h.path)
 	if err != nil {
 		return false, err
@@ -44,13 +58,28 @@ func (h *Holder) Reload() (changed bool, err error) {
 	return true, nil
 }
 
-// Watch reloads every interval until ctx ends, reporting each attempt.
+// Watch reloads every interval until ctx ends, reporting each attempt
+// except that an error identical to the previous attempt's is not repeated.
+// Every failure is still counted (Failures). A non-positive interval is
+// refused with no reload.
 func (h *Holder) Watch(ctx context.Context, every time.Duration, report func(r *Roster, changed bool, err error)) {
+	if every <= 0 {
+		report(h.Current(), false, errors.New("roster: watch interval must be positive"))
+		return
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
+	var lastErr string
 	for {
 		changed, err := h.Reload()
-		report(h.Current(), changed, err)
+		switch {
+		case err == nil:
+			lastErr = ""
+			report(h.Current(), changed, nil)
+		case err.Error() != lastErr:
+			lastErr = err.Error()
+			report(h.Current(), changed, err)
+		}
 		select {
 		case <-ctx.Done():
 			return
