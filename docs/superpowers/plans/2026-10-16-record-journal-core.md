@@ -4301,7 +4301,7 @@ Rules are configuration evaluated when an event is written (4.10). The first mat
 - Create: `internal/journal/rules/rules.go`
 - Test: `internal/journal/rules/rules_test.go`
 
-- [ ] **Step 10.1: Write the failing test.**
+- [x] **Step 10.1: Write the failing test.**
 
 `internal/journal/rules/rules_test.go`:
 
@@ -4450,11 +4450,11 @@ func TestImportanceRank(t *testing.T) {
 }
 ```
 
-- [ ] **Step 10.2: Run; expect a build failure** (`undefined: Rule`).
+- [x] **Step 10.2: Run; expect a build failure** (`undefined: Rule`).
 
 Run: `go test ./internal/journal/rules/`
 
-- [ ] **Step 10.3: Write `rules.go`.**
+- [x] **Step 10.3: Write `rules.go`.**
 
 `internal/journal/rules/rules.go`:
 
@@ -4733,11 +4733,11 @@ func plain(v json.RawMessage) string {
 
 Note `EscapeScopeValue` does not escape `:`, so the key reads `field:date=2026-10-14`, as the test expects.
 
-- [ ] **Step 10.4: Run; expect PASS.**
+- [x] **Step 10.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/rules/ -count=1`
 
-- [ ] **Step 10.5: Commit.**
+- [x] **Step 10.5: Commit.**
 
 ```bash
 git add internal/journal/rules
