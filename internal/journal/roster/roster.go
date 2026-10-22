@@ -8,7 +8,8 @@
 // case-insensitively, a person id repeated in "people" keeps the last
 // entry, and a person listing themselves in guardian_of or siblings is
 // accepted. Glovebox is stricter in three places, all failing closed: data
-// after the document is refused, and the ids "." and ".." are refused.
+// after the document is refused, the ids "." and ".." are refused, and an
+// empty or missing "people" is refused.
 // Every method of *Roster is safe on a nil receiver and grants nothing.
 package roster
 
