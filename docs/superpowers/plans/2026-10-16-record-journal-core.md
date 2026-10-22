@@ -4038,7 +4038,7 @@ one of its few keys (a corrected absence day) is recorded, not held."
 - Create: `internal/journal/diff/fold.go`
 - Test: `internal/journal/diff/fold_test.go`, `internal/journal/diff/property_test.go`
 
-- [ ] **Step 9.1: Write the failing fold test.**
+- [x] **Step 9.1: Write the failing fold test.**
 
 `internal/journal/diff/fold_test.go`:
 
@@ -4076,11 +4076,11 @@ func TestFoldReplaysEventsAndRenames(t *testing.T) {
 }
 ```
 
-- [ ] **Step 9.2: Run; expect a build failure** (`undefined: Identity`, `undefined: Fold`).
+- [x] **Step 9.2: Run; expect a build failure** (`undefined: Identity`, `undefined: Fold`).
 
 Run: `go test ./internal/journal/diff/ -run Fold`
 
-- [ ] **Step 9.3: Write `fold.go`.**
+- [x] **Step 9.3: Write `fold.go`.**
 
 `internal/journal/diff/fold.go`:
 
@@ -4151,11 +4151,11 @@ func Fold(events []FoldEvent, rename Rename) map[Identity]FoldRow {
 }
 ```
 
-- [ ] **Step 9.4: Run; expect PASS.**
+- [x] **Step 9.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -run Fold -count=1`
 
-- [ ] **Step 9.5: Write the in-memory property test.**
+- [x] **Step 9.5: Write the in-memory property test.**
 
 `internal/journal/diff/property_test.go`:
 
@@ -4274,12 +4274,12 @@ func sameFields(a, b record.Fields) bool {
 }
 ```
 
-- [ ] **Step 9.6: Run; expect PASS.**
+- [x] **Step 9.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -count=1 -race`
 Expected: PASS. (If a seed fails, the message names it; fix the code, never the seed range.)
 
-- [ ] **Step 9.7: Commit.**
+- [x] **Step 9.7: Commit.**
 
 ```bash
 git add internal/journal/diff
