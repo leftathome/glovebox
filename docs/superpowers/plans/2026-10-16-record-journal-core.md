@@ -5600,7 +5600,7 @@ The chart's `journal.services` (4.9) in Go. A caller names only a reader; what t
 - Create: `internal/journal/policy/policy.go`
 - Test: `internal/journal/policy/policy_test.go`
 
-- [ ] **Step 13.1: Write the failing test.**
+- [x] **Step 13.1: Write the failing test.**
 
 `internal/journal/policy/policy_test.go`:
 
@@ -5749,11 +5749,11 @@ func TestPolicyRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 13.2: Run; expect a build failure** (`undefined: Service`).
+- [x] **Step 13.2: Run; expect a build failure** (`undefined: Service`).
 
 Run: `go test ./internal/journal/policy/`
 
-- [ ] **Step 13.3: Write `policy.go`.**
+- [x] **Step 13.3: Write `policy.go`.**
 
 `internal/journal/policy/policy.go`:
 
@@ -5936,11 +5936,11 @@ func (s Service) MayRead(reader string) bool { return s.Read && s.Readers.Allows
 func (s Service) MayCount(reader string) bool { return s.Counts && s.Readers.Allows(reader) }
 ```
 
-- [ ] **Step 13.4: Run; expect PASS.**
+- [x] **Step 13.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/policy/ -count=1`
 
-- [ ] **Step 13.5: Commit.**
+- [x] **Step 13.5: Commit.**
 
 ```bash
 git add internal/journal/policy
