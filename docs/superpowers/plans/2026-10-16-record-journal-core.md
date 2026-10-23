@@ -9015,11 +9015,19 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 
 **NOTE (Task 20 review).** Erase deletes `record_current` and `record_event` rows of a subject while holding the subject lock, and rescan locks rows in primary-key order without a subject lock. A bare `DELETE` locks rows in scan order, so the two could deadlock. Decision: Erase, not rescan, adapts (rescan stays lock-free of the subject lock, which keeps batches short): Erase locks the subject's `record_current` rows in primary-key order, then its `record_event` rows in seq order, with `SELECT ... ORDER BY ... FOR UPDATE` before deleting (committed in Task 20, test `TestEraseWaitsForRowLocks`). Rescan must lock `record_current` rows before `record_event` rows within a batch and events in seq order. Under that order Erase cannot deadlock with rescan (both acquire rows in the same global order: current by key, then events by seq), nor with Apply (subject lock first, same as Erase, then rows).
 
+**NOTE (Task 21 implementation).** `rescan.go` and `rescan_test.go` as committed differ from the draft below:
+
+- Scanning happens outside every lock. The draft scanned inside the transaction that held the batch's rows `FOR UPDATE`, stalling Apply and Erase of those rows for the length of up to 100 scans. A batch now reads its rows with no lock, scans, then opens a transaction, locks the rows (`record_current` by primary key, or `record_event` by seq, `FOR UPDATE`) and writes. A current row is written only if, once locked, its `content_hash`, `last_event_seq` and `scan` equal what was read; an event only if its `scan` does. A row an Apply changed, another rescan judged or Erase deleted is left alone (the write is an `UPDATE`, never an insert) and is not counted. Counts are added to the result after the batch commits. The rescan never holds current and event rows in one transaction.
+- Fail closed: a scanner answer other than the exact string `pass` never releases; an empty answer, a panic and a stored value that is not a string are verdict `error`. A nil `Options.Scanner` is an error, not a panic.
+- Text is decided as on read (`kindsOf`): a type the registry does not know has only text fields, and an event field's name is carried forward (`ForwardName`) before it is looked up in the active type. The draft skipped events of an unknown version and used the writing version's field kinds.
+- The scanner version is read once per rescan. Rows that fail to decode abort the rescan with an error naming the row.
+- Known limit, from Task 15: `buildEvent` stamps an updated event's `Old` verdict (copied from the current row) with the scanner version of the write, so a non-`all` rescan skips a field whose `Old` came from an older scanner. `all` judges it.
+
 **Files:**
 - Create: `internal/journal/rescan.go`
 - Test: `internal/journal/rescan_test.go`
 
-- [ ] **Step 21.1: Write the failing test.**
+- [x] **Step 21.1: Write the failing test.**
 
 `internal/journal/rescan_test.go`:
 
@@ -9147,11 +9155,11 @@ func TestRescanCanWithholdAndCoversRemovedEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 21.2: Run; expect a build failure** (`r.j.Rescan undefined`).
+- [x] **Step 21.2: Run; expect a build failure** (`r.j.Rescan undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 21.3: Write `rescan.go`.**
+- [x] **Step 21.3: Write `rescan.go`.**
 
 `internal/journal/rescan.go`:
 
@@ -9369,11 +9377,11 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, res *
 }
 ```
 
-- [ ] **Step 21.4: Run; expect PASS.**
+- [x] **Step 21.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 21.5: Commit.**
+- [x] **Step 21.5: Commit.**
 
 ```bash
 git add internal/journal
