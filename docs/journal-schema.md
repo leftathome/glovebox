@@ -169,7 +169,7 @@ One row per erase (4.13). Never erased itself; holds no field data.
 | Column | Type | Meaning |
 |---|---|---|
 | `id` | bigint | |
-| `data_subject` | text | The erased subject. Snapshots of it observed before `erased_at` are refused with 410. |
+| `data_subject` | text | The erased subject. Snapshots of it observed before `erased_at` plus the maximum future skew (10 minutes, the writer-clock allowance of validation) are refused with 410; one observed exactly `erased_at` plus the skew or later is accepted. |
 | `erased_at` | timestamptz | Core clock. |
 | `actor` | text | Admin ServiceAccount. |
 | `rows` | jsonb | `{"snapshot": n, "record_current": n, "record_event": n}` deleted. |

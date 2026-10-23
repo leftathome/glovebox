@@ -56,10 +56,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if r.count("record_event") != 1 || r.count("snapshot") != 1 {
 		t.Error("a resend wrote something")
 	}
-	if out, found, err := r.j.Lookup(ctx, uid(1)); err != nil || !found || out.Status != journalapi.StatusDuplicate {
+	if out, found, err := r.j.Lookup(ctx, uid(1), writer, "assignment", scopeKey("e_child1", "c1")); err != nil || !found || out.Status != journalapi.StatusDuplicate {
 		t.Errorf("Lookup: %+v %v %v", out, found, err)
 	}
-	if _, found, _ := r.j.Lookup(ctx, uid(99)); found {
+	if _, found, _ := r.j.Lookup(ctx, uid(99), writer, "assignment", scopeKey("e_child1", "c1")); found {
 		t.Error("Lookup found an unknown snapshot")
 	}
 }
@@ -119,7 +119,7 @@ func TestErasedSubjectIsRefusedForEarlierObservations(t *testing.T) {
 	if r.count("snapshot") != 0 {
 		t.Error("a refused snapshot was stored")
 	}
-	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(time.Minute), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
+	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(record.MaxFutureSkew), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
 		t.Errorf("an observation after the erase: %+v", out)
 	}
 }

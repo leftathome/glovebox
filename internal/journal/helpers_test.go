@@ -118,15 +118,22 @@ func snap(n int, subject, c string, observed time.Time, complete bool, recs ...j
 		Complete: complete, ObservedAt: observed, Records: recs}
 }
 
-// apply validates and applies, failing the test on a validation refusal.
-func (r *rig) apply(s journalapi.Snapshot) Outcome {
+// applyErr validates and applies, failing the test on a validation refusal
+// and returning the journal's error.
+func (r *rig) applyErr(s journalapi.Snapshot) (Outcome, error) {
 	r.t.Helper()
 	n, rej := record.ValidateSnapshot(r.reg, s, r.clock.Now().Add(time.Hour))
 	if rej != nil {
 		r.t.Fatalf("validate %s: %v", s.SnapshotID, rej)
 	}
 	payload, _ := json.Marshal(s)
-	out, err := r.j.Apply(ctx, writer, n, payload)
+	return r.j.Apply(ctx, writer, n, payload)
+}
+
+// apply validates and applies, failing the test on any error.
+func (r *rig) apply(s journalapi.Snapshot) Outcome {
+	r.t.Helper()
+	out, err := r.applyErr(s)
 	if err != nil {
 		r.t.Fatalf("apply %s: %v", s.SnapshotID, err)
 	}
