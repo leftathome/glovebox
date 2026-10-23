@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"net/http"
@@ -63,8 +64,12 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 			Records: []record.NormRecord{{Key: n.Key, DataSubject: n.Subject, Audience: n.Audience, Fields: n.Fields, Hash: n.Hash}}})
 		if len(plan.Stale) > 0 {
 			// The stored note was confirmed later than now (the core clock
-			// stepped back): the write cannot be ordered after it, and
-			// reporting "unchanged" would drop the correction. Retryable.
+			// stepped back). A byte-identical resend is already stored:
+			// unchanged. A changed note cannot be ordered after it, and
+			// reporting "unchanged" would drop the correction: retryable 409.
+			if c := cur[n.Key]; !c.Removed && bytes.Equal(c.Hash, n.Hash) && c.Scope == n.Scope {
+				return nil
+			}
 			refused = &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonConflict,
 				Detail: "the stored note is newer than the journal clock; retry later"}
 			return nil

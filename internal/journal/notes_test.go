@@ -232,8 +232,10 @@ func TestNoteTakesTheSubjectLock(t *testing.T) {
 	n := r.normNote("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
 	c, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 	defer cancel()
-	if _, _, err := r.j.WriteNote(c, gateway, n); err == nil {
+	if resp, _, err := r.j.WriteNote(c, gateway, n); err == nil {
 		t.Error("WriteNote did not wait for the subject lock")
+	} else if resp != (journalapi.NoteResponse{}) {
+		t.Errorf("an error carries a response: %+v", resp)
 	}
 	if r.count("record_event") != 0 || r.eventCount("created") != 0 {
 		t.Error("a note that could not take the lock left state or metrics")
@@ -282,6 +284,14 @@ func TestNoteClockBackIsARetryableConflict(t *testing.T) {
 	}
 	if r.eventCount("updated") != 0 || r.eventCount("created") != 1 {
 		t.Errorf("metrics %v", r.rec.events)
+	}
+	// A byte-identical resend under the same clock-back is already stored.
+	resp, rej = r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	if rej != nil || resp.Status != "unchanged" || resp.Seq != 0 || resp.Key != "2026-10-14:e_parent1" {
+		t.Errorf("identical resend under clock-back: %+v %v", resp, rej)
+	}
+	if len(r.events("e_child1")) != 1 || r.eventCount("updated") != 0 {
+		t.Error("an identical resend wrote something")
 	}
 	// Once the clock passes the stored note, the same write goes through.
 	r.clock.Set(T0.Add(time.Minute))

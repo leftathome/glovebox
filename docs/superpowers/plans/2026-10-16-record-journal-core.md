@@ -8215,7 +8215,7 @@ func policyRefusal(detail string) *record.Rejection {
 
 NOTE (Task 18 review): the code above differs from the shipped `notes.go` in three ways.
 
-- A note whose stored row was confirmed later than the core clock (the clock stepped back) is refused with a retryable 409 `conflict`, never reported `unchanged` (that silently dropped the correction); the same write succeeds once the clock passes the stored note. `journalapi.ReasonConflict` documents this use.
+- A note whose stored row was confirmed later than the core clock (the clock stepped back) is refused with a retryable 409 `conflict`, never reported `unchanged` (that silently dropped the correction); the same write succeeds once the clock passes the stored note. A byte-identical resend under clock-back is already stored and is reported `unchanged` (Seq omitted), not 409. `journalapi.ReasonConflict` documents this use.
 - Erasure is checked inside the transaction, after `lockSubject` and before the subject-in-roster (409) and grant (403) checks, so an erased subject that left the roster is 410, as in `Apply`.
 - Erasure uses strict semantics: 410 only when `erased_at` is after the note's own time (now). A note has no writer clock and the subject lock orders it against an erase, so there is no `MaxFutureSkew` allowance (`Apply` keeps it for snapshots). The roster is read once for the whole call, and an error returns a zero `NoteResponse`.
 
