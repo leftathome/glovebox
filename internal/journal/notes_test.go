@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -107,11 +108,11 @@ func (r *rig) eventCount(kind string) int {
 func TestNoteRejectionReasonsAndNothingWritten(t *testing.T) {
 	r := newRig(t)
 	_, rej := r.note("e_guest1", "e_child1", "2026-10-14", `{}`)
-	if rej == nil || rej.Status != 403 || rej.Reason != journalapi.ReasonPolicy {
+	if rej == nil || rej.Status != 403 || rej.Reason != journalapi.ReasonPolicy || !strings.Contains(rej.Detail, "holds no grant") {
 		t.Errorf("no grant: %v", rej)
 	}
 	_, rej = r.note("e_nobody", "e_child1", "2026-10-14", `{}`)
-	if rej == nil || rej.Status != 403 || rej.Reason != journalapi.ReasonPolicy {
+	if rej == nil || rej.Status != 403 || rej.Reason != journalapi.ReasonPolicy || !strings.Contains(rej.Detail, "on_behalf_of is not in the roster") {
 		t.Errorf("non-member: %v", rej)
 	}
 	_, rej = r.note("e_parent1", "e_stranger", "2026-10-14", `{}`)
@@ -159,21 +160,133 @@ func TestNoteWithoutARosterIsRefused(t *testing.T) {
 
 func TestNoteErasureGuard(t *testing.T) {
 	r := newRig(t)
-	r.eraseAt("e_child2", T0) // another subject's erasure does not matter
+	r.eraseAt("e_child2", T0.Add(time.Hour)) // another subject's erasure does not matter
 	if _, rej := r.note("e_parent1", "e_child1", "2026-10-14", `{}`); rej != nil {
 		t.Fatalf("unrelated erasure refused a note: %v", rej)
 	}
-	r.eraseAt("e_child1", T0.Add(-record.MaxFutureSkew+time.Microsecond))
-	_, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{}`)
-	if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject {
-		t.Errorf("inside the erasure skew window: %v", rej)
+	// A note is observed at the journal's own now: one written after the
+	// erasure is accepted, even inside the writers' clock-skew allowance.
+	r.eraseAt("e_child1", T0.Add(-time.Minute))
+	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{}`); rej != nil || resp.Status != "created" {
+		t.Errorf("a note after the erasure: %+v %v", resp, rej)
 	}
-	if _, ok := r.current("attendance_note", "e_child1", "2026-10-15:e_parent1"); ok || r.count("record_event") != 1 {
+	r.eraseAt("e_child1", T0) // erased_at == now: not after the note
+	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-16", `{}`); rej != nil || resp.Status != "created" {
+		t.Errorf("erased_at == now: %+v %v", resp, rej)
+	}
+	// An erasure after now (the clock stepped back) refuses the note.
+	r.eraseAt("e_child1", T0.Add(time.Microsecond))
+	_, rej := r.note("e_parent1", "e_child1", "2026-10-17", `{}`)
+	if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject {
+		t.Errorf("erased_at after now: %v", rej)
+	}
+	if _, ok := r.current("attendance_note", "e_child1", "2026-10-17:e_parent1"); ok || r.count("record_event") != 3 {
 		t.Error("a refused note was stored")
 	}
-	r.clock.Set(T0.Add(time.Microsecond)) // now == erased_at + MaxFutureSkew
-	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{}`); rej != nil || resp.Status != "created" {
-		t.Errorf("exactly erased_at + skew: %+v %v", resp, rej)
+	if r.eventCount("created") != 3 {
+		t.Errorf("created metric %d", r.eventCount("created"))
+	}
+	r.clock.Set(T0.Add(time.Microsecond)) // now == erased_at
+	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-17", `{}`); rej != nil || resp.Status != "created" {
+		t.Errorf("now == erased_at: %+v %v", resp, rej)
+	}
+}
+
+// An erased subject that has since left the roster is 410 (delete), not
+// the retryable 409, as in Apply.
+func TestNoteErasedSubjectOffTheRosterIs410(t *testing.T) {
+	r := newRig(t)
+	r.eraseAt("e_stranger", T0.Add(time.Hour))
+	_, rej := r.note("e_parent1", "e_stranger", "2026-10-14", `{}`)
+	if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject {
+		t.Errorf("erased and off the roster: %v", rej)
+	}
+	r.eraseAt("e_stranger2", T0.Add(-time.Hour))
+	_, rej = r.note("e_parent1", "e_stranger2", "2026-10-14", `{}`)
+	if rej == nil || rej.Status != 409 {
+		t.Errorf("erased long ago, off the roster: %v", rej)
+	}
+}
+
+func (r *rig) normNote(onBehalfOf, subject, date, fields string) *record.NormNote {
+	r.t.Helper()
+	var f map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(fields), &f)
+	n, rej := record.ValidateNote(r.reg, journalapi.Note{RecordType: "attendance_note", Date: date,
+		DataSubject: subject, Fields: f, OnBehalfOf: onBehalfOf})
+	if rej != nil {
+		r.t.Fatal(rej)
+	}
+	return n
+}
+
+func TestNoteTakesTheSubjectLock(t *testing.T) {
+	r := newRig(t)
+	holder, err := r.j.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockSubject(bounded(t), holder, "e_child1"); err != nil {
+		t.Fatal(err)
+	}
+	n := r.normNote("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
+	c, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	defer cancel()
+	if _, _, err := r.j.WriteNote(c, gateway, n); err == nil {
+		t.Error("WriteNote did not wait for the subject lock")
+	}
+	if r.count("record_event") != 0 || r.eventCount("created") != 0 {
+		t.Error("a note that could not take the lock left state or metrics")
+	}
+	if err := holder.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if resp, rej, err := r.j.WriteNote(bounded(t), gateway, n); err != nil || rej != nil || resp.Status != "created" {
+		t.Errorf("after the lock is released: %+v %v %v", resp, rej, err)
+	}
+}
+
+func TestNoteCrossMemberRefusals(t *testing.T) {
+	r := newRig(t)
+	for _, c := range []struct{ obo, subject string }{
+		{"e_child1", "e_parent1"},
+		{"e_parent1", "e_parent2"},
+		{"e_child1", "e_child2"},
+	} {
+		if _, rej := r.note(c.obo, c.subject, "2026-10-14", `{}`); rej == nil || rej.Status != 403 || rej.Reason != journalapi.ReasonPolicy {
+			t.Errorf("%s about %s: %v", c.obo, c.subject, rej)
+		}
+	}
+	if r.count("record_event") != 0 {
+		t.Error("a refused cross-member note was stored")
+	}
+	if resp, rej := r.note("e_parent1", "e_parent1", "2026-10-14", `{}`); rej != nil || resp.Status != "created" {
+		t.Errorf("parent about self: %+v %v", resp, rej)
+	}
+}
+
+// The core clock stepped back behind a stored note: a changed note cannot
+// be ordered after it. It is a retryable 409, never "unchanged" (which
+// would drop the correction).
+func TestNoteClockBackIsARetryableConflict(t *testing.T) {
+	r := newRig(t)
+	r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	r.clock.Set(T0.Add(-time.Minute))
+	resp, rej := r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "b"}`)
+	if rej == nil || rej.Status != 409 || rej.Reason != journalapi.ReasonConflict || resp.Status != "" {
+		t.Fatalf("clock back: %+v %v", resp, rej)
+	}
+	c, _ := r.current("attendance_note", "e_child1", "2026-10-14:e_parent1")
+	if string(c.Fields["what_happened"]) != `"a"` || len(r.events("e_child1")) != 1 {
+		t.Errorf("stored %v, %d events", c.Fields, len(r.events("e_child1")))
+	}
+	if r.eventCount("updated") != 0 || r.eventCount("created") != 1 {
+		t.Errorf("metrics %v", r.rec.events)
+	}
+	// Once the clock passes the stored note, the same write goes through.
+	r.clock.Set(T0.Add(time.Minute))
+	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "b"}`); rej != nil || resp.Status != "updated" {
+		t.Errorf("after the clock recovers: %+v %v", resp, rej)
 	}
 }
 

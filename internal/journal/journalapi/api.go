@@ -109,7 +109,7 @@ const (
 	ReasonAuthUnavailable  = "auth_unavailable"   // 503: TokenReview could not be asked
 	ReasonUnavailable      = "unavailable"        // 503: the journal is not ready
 	ReasonNotFound         = "not_found"          // 404
-	ReasonConflict         = "conflict"           // 409 on admin endpoints
+	ReasonConflict         = "conflict"           // 409 on admin endpoints; on POST /v1/notes, the stored note is newer than the journal clock (retry)
 	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
 )

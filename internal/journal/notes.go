@@ -24,12 +24,6 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 	if !ok {
 		return journalapi.NoteResponse{}, policyRefusal("on_behalf_of is not in the roster"), nil
 	}
-	if rej := j.checkSubject(n.Subject); rej != nil {
-		return journalapi.NoteResponse{}, rej, nil
-	}
-	if !coversAudience(grants, n.Subject, n.Audience) {
-		return journalapi.NoteResponse{}, policyRefusal("on_behalf_of holds no grant on this subject for the type's audience"), nil
-	}
 	now := j.o.Now().UTC()
 	resp := journalapi.NoteResponse{Status: "unchanged", Key: n.Key}
 	var refused *record.Rejection
@@ -38,9 +32,12 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
 		}
-		// A note is observed now: it is refused while the subject's erasure
-		// is within the clock-skew allowance (see Apply, 4.13).
-		erased, err := erasedAfter(ctx, tx, n.Subject, now)
+		// Erasure is checked first (as in Apply, 410 before 409). A note has no
+		// writer clock: it is observed at now, and the subject lock orders it
+		// against an erase, so only an erasure after now (the clock stepped
+		// back) refuses it -- no MaxFutureSkew allowance. erasedAfter widens
+		// by the skew, so shift now by the same amount to cancel it.
+		erased, err := erasedAfter(ctx, tx, n.Subject, now.Add(record.MaxFutureSkew))
 		if err != nil {
 			return err
 		}
@@ -49,12 +46,29 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 				Detail: "the subject was erased"}
 			return nil
 		}
+		if !r.Has(n.Subject) {
+			refused = &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonUnknownSubject,
+				Detail: "data_subject is not in the current roster"}
+			return nil
+		}
+		if !coversAudience(grants, n.Subject, n.Audience) {
+			refused = policyRefusal("on_behalf_of holds no grant on this subject for the type's audience")
+			return nil
+		}
 		cur, err := j.loadCurrent(ctx, tx, n.Type, n.Subject, n.Key)
 		if err != nil {
 			return err
 		}
 		plan := diff.Diff(diff.Input{Scope: n.Scope, ObservedAt: now, Current: cur,
 			Records: []record.NormRecord{{Key: n.Key, DataSubject: n.Subject, Audience: n.Audience, Fields: n.Fields, Hash: n.Hash}}})
+		if len(plan.Stale) > 0 {
+			// The stored note was confirmed later than now (the core clock
+			// stepped back): the write cannot be ordered after it, and
+			// reporting "unchanged" would drop the correction. Retryable.
+			refused = &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonConflict,
+				Detail: "the stored note is newer than the journal clock; retry later"}
+			return nil
+		}
 		if len(plan.Events) == 0 {
 			return nil
 		}
@@ -67,7 +81,7 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 			WHERE record_type = $1 AND data_subject = $2 AND key = $3`, n.Type.Name, n.Subject, n.Key).Scan(&resp.Seq)
 	})
 	if err != nil {
-		return resp, nil, err
+		return journalapi.NoteResponse{}, nil, err
 	}
 	if refused != nil {
 		return journalapi.NoteResponse{}, refused, nil
