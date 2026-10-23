@@ -7564,7 +7564,7 @@ The diff already plans these (Task 8); this task pins what the store writes for 
 **Files:**
 - Test: `internal/journal/apply_removal_test.go`
 
-- [ ] **Step 16.1: Write the tests.**
+- [x] **Step 16.1: Write the tests.**
 
 `internal/journal/apply_removal_test.go`:
 
@@ -7700,11 +7700,11 @@ func TestAudienceChangeRecordsBothAudiences(t *testing.T) {
 }
 ```
 
-- [ ] **Step 16.2: Run; expect PASS** (the behaviour was built in Tasks 8 and 15; a failure here is a bug in one of them).
+- [x] **Step 16.2: Run; expect PASS** (the behaviour was built in Tasks 8 and 15; a failure here is a bug in one of them).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 16.3: Commit.**
+- [x] **Step 16.3: Commit.**
 
 ```bash
 git add internal/journal/apply_removal_test.go
