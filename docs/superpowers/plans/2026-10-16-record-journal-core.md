@@ -8822,7 +8822,7 @@ readers of both audiences (spec 4.8)."
 - Create: `internal/journal/erase.go`
 - Test: `internal/journal/erase_test.go`
 
-- [ ] **Step 20.1: Write the failing test.**
+- [x] **Step 20.1: Write the failing test.**
 
 `internal/journal/erase_test.go`:
 
@@ -8881,11 +8881,11 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 }
 ```
 
-- [ ] **Step 20.2: Run; expect a build failure** (`r.j.Erase undefined`).
+- [x] **Step 20.2: Run; expect a build failure** (`r.j.Erase undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 20.3: Write `erase.go`.**
+- [x] **Step 20.3: Write `erase.go`.**
 
 `internal/journal/erase.go`:
 
@@ -8941,11 +8941,11 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 }
 ```
 
-- [ ] **Step 20.4: Run; expect PASS.**
+- [x] **Step 20.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 20.5: Commit.**
+- [x] **Step 20.5: Commit.**
 
 ```bash
 git add internal/journal
