@@ -8032,7 +8032,7 @@ git commit -m "feat(journal): hold, confirm and discard snapshots that trip the 
 - Create: `internal/journal/notes.go`
 - Test: `internal/journal/notes_test.go`
 
-- [ ] **Step 18.1: Write the failing tests.**
+- [x] **Step 18.1: Write the failing tests.**
 
 `internal/journal/notes_test.go`:
 
@@ -8123,11 +8123,11 @@ func TestNoteTextIsScanned(t *testing.T) {
 }
 ```
 
-- [ ] **Step 18.2: Run; expect a build failure** (`r.j.WriteNote undefined`).
+- [x] **Step 18.2: Run; expect a build failure** (`r.j.WriteNote undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 18.3: Write `notes.go`.**
+- [x] **Step 18.3: Write `notes.go`.**
 
 `internal/journal/notes.go`:
 
@@ -8215,11 +8215,11 @@ func policyRefusal(detail string) *record.Rejection {
 
 (A note whose last write is newer than the core clock -- the clock stepped back -- plans no event and is reported `unchanged`; the next write after the clock passes it goes through.)
 
-- [ ] **Step 18.4: Run; expect PASS.**
+- [x] **Step 18.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 18.5: Commit.**
+- [x] **Step 18.5: Commit.**
 
 ```bash
 git add internal/journal
