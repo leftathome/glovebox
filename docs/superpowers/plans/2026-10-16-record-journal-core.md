@@ -6847,7 +6847,7 @@ The core of 4.4, in one transaction under the subject lock: (1) idempotency, (3)
 - Create: `internal/journal/apply.go`
 - Test: `internal/journal/apply_test.go`
 
-- [ ] **Step 15.1: Write the failing tests.**
+- [x] **Step 15.1: Write the failing tests.**
 
 `internal/journal/apply_test.go`:
 
@@ -7038,11 +7038,11 @@ func TestRulesAreStampedOnEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 15.2: Run; expect a build failure** (`r.j.Apply undefined`).
+- [x] **Step 15.2: Run; expect a build failure** (`r.j.Apply undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 15.3: Write `apply.go`.**
+- [x] **Step 15.3: Write `apply.go`.**
 
 `internal/journal/apply.go`:
 
@@ -7443,11 +7443,11 @@ func upsertCurrent(ctx context.Context, tx *sql.Tx, recordType, subject string, 
 
 Notes for the implementer: `$8` (the event's `observed_at`) is both `first_seen_at` (kept on conflict) and `last_confirmed_at`; for a removal `last_seen_at` stays the last time the record was present while `last_confirmed_at` moves to the removing snapshot, which is the next event's `prev_observed_at`. Passing a nil `[]string` or nil `[]byte` sends NULL (pgx), which is what `prev_audience`, `fields`, `changed` and `notify` need when absent.
 
-- [ ] **Step 15.4: Run; expect PASS.**
+- [x] **Step 15.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 15.5: Commit.**
+- [x] **Step 15.5: Commit.**
 
 ```bash
 git add internal/journal

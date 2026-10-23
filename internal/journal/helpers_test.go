@@ -54,6 +54,8 @@ func (c *countingRecorder) ScanWithheld(_ string, n int) { c.mu.Lock(); c.withhe
 func (c *countingRecorder) ApplyDuration(time.Duration)  {}
 func (c *countingRecorder) VisibilityMismatch()          { c.mu.Lock(); c.mismatch++; c.mu.Unlock() }
 
+const writer = "openclaw/glovebox-glovebox-connector-powerschool"
+
 type rig struct {
 	t       *testing.T
 	j       *Journal
@@ -114,6 +116,21 @@ func scopeKey(subject, c string) string {
 func snap(n int, subject, c string, observed time.Time, complete bool, recs ...journalapi.Record) journalapi.Snapshot {
 	return journalapi.Snapshot{SnapshotID: uid(n), RecordType: "assignment", SchemaVersion: 1, Scope: course(subject, c),
 		Complete: complete, ObservedAt: observed, Records: recs}
+}
+
+// apply validates and applies, failing the test on a validation refusal.
+func (r *rig) apply(s journalapi.Snapshot) Outcome {
+	r.t.Helper()
+	n, rej := record.ValidateSnapshot(r.reg, s, r.clock.Now().Add(time.Hour))
+	if rej != nil {
+		r.t.Fatalf("validate %s: %v", s.SnapshotID, rej)
+	}
+	payload, _ := json.Marshal(s)
+	out, err := r.j.Apply(ctx, writer, n, payload)
+	if err != nil {
+		r.t.Fatalf("apply %s: %v", s.SnapshotID, err)
+	}
+	return out
 }
 
 type currentView struct {
