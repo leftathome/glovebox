@@ -50,6 +50,9 @@ type Journal struct {
 	o  Options
 	// visible overrides the Go half of the read visibility rule; tests only.
 	visible func(grants []roster.Grant, subject string, audience []string) bool
+	// beforeEraseLocks runs in every Erase attempt between the look-up of
+	// the subjects to lock and taking their locks; tests only.
+	beforeEraseLocks func()
 }
 
 // New wraps an open database.

@@ -102,10 +102,13 @@ func TestGoldenJSON(t *testing.T) {
 		{"healthz full", Healthz{Status: HealthOK, RosterSHA256: "ab", SchemaVersion: 2},
 			`{"status":"ok","roster_sha256":"ab","schema_version":2}`},
 		{"healthz zero", Healthz{}, `{"status":"","roster_sha256":"","schema_version":0}`},
-		{"erase full", EraseResponse{DataSubject: "e_child1", ErasedAt: ts, Snapshots: 1, Current: 2, Events: 3},
-			`{"data_subject":"e_child1","erased_at":"2026-10-16T13:00:41Z","snapshots":1,"record_current":2,"record_events":3}`},
+		{"erase full", EraseResponse{DataSubject: "e_child1", ErasedAt: ts, Snapshots: 1, Current: 2, Events: 3,
+			NotesDeletedAsAuthor: 4, NotesPseudonymised: 5},
+			`{"data_subject":"e_child1","erased_at":"2026-10-16T13:00:41Z","snapshots":1,"record_current":2,"record_events":3,` +
+				`"notes_deleted_as_author":4,"notes_pseudonymised":5}`},
 		{"erase zero", EraseResponse{},
-			`{"data_subject":"","erased_at":"0001-01-01T00:00:00Z","snapshots":0,"record_current":0,"record_events":0}`},
+			`{"data_subject":"","erased_at":"0001-01-01T00:00:00Z","snapshots":0,"record_current":0,"record_events":0,` +
+				`"notes_deleted_as_author":0,"notes_pseudonymised":0}`},
 		{"rescan full", RescanResult{CurrentRows: 1, EventRows: 2, Released: 3, Withheld: 4},
 			`{"current_rows":1,"event_rows":2,"released":3,"withheld":4}`},
 		{"rescan zero", RescanResult{}, `{"current_rows":0,"event_rows":0,"released":0,"withheld":0}`},

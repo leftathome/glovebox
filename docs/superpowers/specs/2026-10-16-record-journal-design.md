@@ -569,7 +569,28 @@ and `record_event` row for the subject, and writes an `erasure` row with
 counts. Later snapshots observed before the erasure get `410` (4.4 step 3) and
 the connector deletes them, so a spool replay cannot bring data back.
 Reader cursors stay valid (sequence numbers are not reused). This is the only
-operation that deletes event history.
+operation that deletes or rewrites event history.
+
+Household notes (decision 2026-10-23): a note belongs to its author, the
+`on_behalf_of` member in its key.
+
+- Erasing a member deletes every note they wrote, about anyone (other
+  subjects, the household, themselves).
+- Notes others wrote about the erased member are kept when their audience has
+  a `guardians` part: they move to the household (`data_subject` `''`), the
+  key gets the suffix `:erased:<token>`, the scope becomes the household
+  scope, the audience keeps only `guardians`, and their events are rewritten
+  in place (same `seq`, `group_key` cleared). The text is kept as written. The
+  token is 128 random bits per erasure, stored nowhere, so it cannot be
+  recomputed from the id. Guardians keep reading them through the household
+  grant `("", guardians)`; the visibility rule is unchanged. A note with no
+  `guardians` part has no reader left and is deleted.
+- Everything else of the member is deleted as above.
+
+Erase takes the subject's lock, the household's and those of every subject the
+member wrote about, in sorted order. The `erasure` row records counts,
+including `notes_deleted_as_author` and `notes_pseudonymised`, and no id but
+the erased one. `docs/journal-schema.md` has the details.
 
 ### 4.14 Spool (connector side)
 

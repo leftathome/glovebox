@@ -47,7 +47,10 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 				Detail: "the subject was erased"}
 			return nil
 		}
-		if !r.Has(n.Subject) {
+		// The household ("", only for a type that allows no subject, which
+		// ValidateNote checks) is not a roster member; the grant check
+		// below still needs a household grant ("", t), as in Apply.
+		if n.Subject != "" && !r.Has(n.Subject) {
 			refused = &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonUnknownSubject,
 				Detail: "data_subject is not in the current roster"}
 			return nil

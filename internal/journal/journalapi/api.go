@@ -283,13 +283,20 @@ type EraseRequest struct {
 	DataSubject string `json:"data_subject"`
 }
 
-// EraseResponse counts what an erase deleted.
+// EraseResponse counts what an erase did (4.13). Current and Events count
+// every row deleted: the subject's, and the notes the subject wrote about
+// anyone. NotesDeletedAsAuthor counts those notes (record_current rows) on
+// their own. NotesPseudonymised counts the notes others wrote about the
+// subject that were kept, moved to the household under a pseudonym; their
+// rows are not deleted and are in neither Current nor Events.
 type EraseResponse struct {
-	DataSubject string    `json:"data_subject"`
-	ErasedAt    time.Time `json:"erased_at"`
-	Snapshots   int64     `json:"snapshots"`
-	Current     int64     `json:"record_current"`
-	Events      int64     `json:"record_events"`
+	DataSubject          string    `json:"data_subject"`
+	ErasedAt             time.Time `json:"erased_at"`
+	Snapshots            int64     `json:"snapshots"`
+	Current              int64     `json:"record_current"`
+	Events               int64     `json:"record_events"`
+	NotesDeletedAsAuthor int64     `json:"notes_deleted_as_author"`
+	NotesPseudonymised   int64     `json:"notes_pseudonymised"`
 }
 
 // RescanRequest is the optional body of POST /v1/admin/rescan. All rescans

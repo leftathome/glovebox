@@ -21,8 +21,11 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 1 snapshot, 2 current rows (the record and the note), 2 events.
-	if resp.DataSubject != "e_child1" || resp.Snapshots != 1 || resp.Current != 2 || resp.Events != 2 || !resp.ErasedAt.Equal(T0.Add(-time.Hour)) {
+	// 1 snapshot, 1 current row and 1 event deleted (the record); the
+	// parent's note about the child is kept, pseudonymised (decision
+	// 2026-10-23; erase_notes_test.go).
+	if resp.DataSubject != "e_child1" || resp.Snapshots != 1 || resp.Current != 1 || resp.Events != 1 ||
+		resp.NotesPseudonymised != 1 || resp.NotesDeletedAsAuthor != 0 || !resp.ErasedAt.Equal(T0.Add(-time.Hour)) {
 		t.Errorf("%+v", resp)
 	}
 	for _, table := range []string{"snapshot", "record_current", "record_event"} {
@@ -43,7 +46,7 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 		t.Fatal("no erasure row:", err)
 	}
 	if actor != "openclaw/glovebox-journal-admin" || !at.Equal(T0.Add(-time.Hour)) ||
-		counts != `{"snapshot": 1, "record_event": 2, "record_current": 2}` {
+		counts != `{"snapshot": 1, "record_event": 1, "record_current": 1, "notes_pseudonymised": 1, "notes_deleted_as_author": 0}` {
 		t.Errorf("erasure row: %q %v %s", actor, at, counts)
 	}
 	// The spool replays the old snapshot: refused, and it stays gone.
@@ -109,6 +112,17 @@ func (r *rig) dump(subject string) string {
 	return b.String()
 }
 
+// withoutErased drops the dump lines of notes kept under a pseudonym.
+func withoutErased(dump string) string {
+	var b strings.Builder
+	for _, l := range strings.SplitAfter(dump, "\n") {
+		if !strings.Contains(l, ":erased:") {
+			b.WriteString(l)
+		}
+	}
+	return b.String()
+}
+
 // Snapshots of every status (applied, held, late, discarded) and their
 // payloads go; nothing of the subject survives anywhere; the other subject's
 // rows are byte-for-byte what they were; household rows (no subject) stay.
@@ -166,8 +180,10 @@ func TestEraseClearsEveryStatusAndTouchesNoOneElse(t *testing.T) {
 	if got := r.dump("e_child2"); got != other {
 		t.Errorf("another subject changed:\n%s\nwas\n%s", got, other)
 	}
-	if got := r.dump(""); got != household {
-		t.Errorf("household rows changed:\n%s\nwas\n%s", got, household)
+	// The household gains the parent's note about the child, kept under a
+	// pseudonym (erase_notes_test.go); its other rows are untouched.
+	if got := withoutErased(r.dump("")); got != household || r.dump("") == got {
+		t.Errorf("household rows changed:\n%s\nwas\n%s", r.dump(""), household)
 	}
 	// The subject's name survives nowhere, payloads included. (The household
 	// row above was cloned from a child1 row, so its scope still names child1.)
@@ -241,9 +257,19 @@ func TestEraseAndTheOtherWriters(t *testing.T) {
 				t.Errorf("%s still reads %s", reader, k)
 			}
 		}
+		// The guardian reads the parent's note only as the household's,
+		// under a pseudonym; the erased child reads nothing.
 		evs, err := r.j.Events(ctx, EventsQuery{Reader: reader, Limit: 1000})
-		if err != nil || len(evs) != 0 {
-			t.Errorf("%s still reads events: %v %v", reader, evs, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			if reader == "e_child1" || e.DataSubject != "" || !strings.Contains(e.Key, ":erased:") {
+				t.Errorf("%s still reads %+v", reader, e)
+			}
+		}
+		if want := map[string]int{"e_parent1": 1, "e_child1": 0}[reader]; len(evs) != want {
+			t.Errorf("%s reads %d events, want %d", reader, len(evs), want)
 		}
 	}
 	// The clock is at T0 == erased_at: the note is not refused (strict >),
