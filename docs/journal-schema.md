@@ -85,6 +85,11 @@ strategy for that release).
 One row for every snapshot received and accepted (status 200), whatever it
 did. Refused snapshots (4xx) are not stored. `duplicate` is a response, not a
 stored status: a resend is answered from the original row.
+A resend is a duplicate only when its writer, record type and canonical scope
+equal the stored row's. A resend whose canonical scope or writer name differs
+(a change of the scope's canonical form, a renamed connector ServiceAccount) is
+refused as an id reuse (422 `snapshot_id_reused`) rather than answered as a
+duplicate; the data was already applied.
 
 | Column | Type | Meaning |
 |---|---|---|

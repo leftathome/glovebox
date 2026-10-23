@@ -224,19 +224,23 @@ assert this invariant and nothing broader.
 | Code | Body `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | `200` | `applied`, `duplicate`, `late`, `held` | accepted (4.4) | delete the file |
-| `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at` | delete the file |
+| `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at`, or within the clock-skew allowance (10 minutes) before it | delete the file |
 | `403` | `policy` | the service may not write this type or scope | move to `spool/rejected/` |
 | `409` | `unknown_subject` | a `data_subject` is not in the current roster (4.9b) -- possibly a roster change in progress | keep, retry with backoff (bounded by the spool limits) |
 | `413` | `too_large` | over a limit | move to `spool/rejected/` |
 | `422` | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
+| `422` | `snapshot_id_reused` | the `snapshot_id` already identifies a snapshot of another writer, record type or scope: a sender bug that retrying cannot fix | move to `spool/rejected/` |
 | `5xx`, network error | -- | try again later | keep, retry with backoff |
 
 ### 4.4 Applying a snapshot
 
-In one transaction, under a per-scope advisory lock:
+In one transaction, under a per-subject advisory lock (every write for one `data_subject` serialises, not only those of one scope: step 7 loads every row of the subject and type):
 
-1. **Idempotency.** If `snapshot_id` exists, return its stored status as
-   `duplicate` (or `held` if it is still held) with the stored stats.
+1. **Idempotency.** If `snapshot_id` exists and its writer, record type and
+   canonical scope equal the stored snapshot's, return its stored status as
+   `duplicate` (or `held` if it is still held) with the stored stats. If any
+   of the three differs the id is reused: refuse with `422 snapshot_id_reused`
+   and reveal nothing about the stored snapshot.
 2. **Validation.** Schema, limits and policy; failures return `4xx` and
    store nothing.
 3. **Erasure guard.** If any record's `data_subject` has an `erasure` row with

@@ -94,7 +94,7 @@ func TestSnapshotIDReuseIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-		if out.Rejection == nil || out.Rejection.Status != 409 || !strings.Contains(out.Rejection.Detail, "snapshot_id reused") ||
+		if out.Rejection == nil || out.Rejection.Status != 422 || out.Rejection.Reason != journalapi.ReasonSnapshotIDReused || !strings.Contains(out.Rejection.Detail, "snapshot_id reused") ||
 			out.Status != "" || out.Stats != (journalapi.Stats{}) {
 			t.Errorf("%s: %+v (first %+v)", what, out, first)
 		}
@@ -130,7 +130,7 @@ func TestSnapshotIDReuseIsRefused(t *testing.T) {
 }
 
 // Two writers racing for one id on different subjects: one wins, the other
-// is refused with the 409, neither fails with an error.
+// is refused with the 422, neither fails with an error.
 func TestConcurrentSnapshotIDReuseIsRefusedNotAnError(t *testing.T) {
 	r := newRig(t)
 	for round := 1; round <= 6; round++ {
@@ -157,7 +157,7 @@ func TestConcurrentSnapshotIDReuseIsRefusedNotAnError(t *testing.T) {
 				t.Fatalf("round %d: error %v", round, x.err)
 			case x.out.Status == journalapi.StatusApplied:
 				applied++
-			case x.out.Rejection != nil && x.out.Rejection.Status == 409:
+			case x.out.Rejection != nil && x.out.Rejection.Status == 422 && x.out.Rejection.Reason == journalapi.ReasonSnapshotIDReused:
 				refused++
 			default:
 				t.Fatalf("round %d: %+v", round, x.out)

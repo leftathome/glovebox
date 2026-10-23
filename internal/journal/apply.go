@@ -33,18 +33,19 @@ type queryRower interface {
 var errSnapshotIDReused = errors.New("journal: snapshot_id reused")
 
 // reusedRejection answers a snapshot id that is already taken by a snapshot
-// of another writer, record type or scope. It is a 409 like the unknown
-// subject, but retrying cannot help: the sender must use a new id. It
-// reveals nothing about the stored snapshot (no stats, no status).
+// of another writer, record type or scope. It is a 422 (a permanent sender
+// bug: retrying cannot help, the sender must use a new id), not the
+// retryable 409 of an unknown subject. It reveals nothing about the stored
+// snapshot (no stats, no status).
 func reusedRejection() *record.Rejection {
-	return &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonConflict,
+	return &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSnapshotIDReused,
 		Detail: "snapshot_id reused: it identifies a snapshot of another writer, record type or scope"}
 }
 
 // Lookup is step 1 (idempotency): the stored outcome of a snapshot id,
 // reported as "duplicate" -- or "held" while it is still held. An id is a
 // duplicate only when writer, record type and canonical scope all match the
-// stored snapshot; otherwise the Outcome is the 409 refusal of an id reuse
+// stored snapshot; otherwise the Outcome is the 422 refusal of an id reuse
 // (found is true, and no stored detail is returned).
 func (j *Journal) Lookup(ctx context.Context, id, writer, recordType, scope string) (Outcome, bool, error) {
 	return lookup(ctx, j.db, id, writer, recordType, scope)
@@ -95,7 +96,7 @@ func (e *effects) emit() {
 // accepted.
 //
 // A snapshot id is a duplicate only if writer, record type and scope match
-// the stored snapshot; any other reuse is refused with 409 (also when two
+// the stored snapshot; any other reuse is refused with 422 (also when two
 // writers race for the id).
 func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized, payload []byte) (Outcome, error) {
 	start := time.Now()
@@ -118,7 +119,7 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 		}
 		if erased {
 			out.Rejection = &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject,
-				Detail: "the subject was erased after this snapshot was observed"}
+				Detail: "observed before, or within the clock-skew allowance after, the subject's erasure"}
 			return nil
 		}
 		if rej := j.checkSubject(n.Subject); rej != nil {

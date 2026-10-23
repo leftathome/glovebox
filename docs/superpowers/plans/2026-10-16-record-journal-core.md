@@ -1666,6 +1666,7 @@ const (
 	ReasonUnavailable      = "unavailable"        // 503: the journal is not ready
 	ReasonNotFound         = "not_found"          // 404
 	ReasonConflict         = "conflict"           // 409 on admin endpoints
+	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
 )
 
@@ -6910,10 +6911,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if r.count("record_event") != 1 || r.count("snapshot") != 1 {
 		t.Error("a resend wrote something")
 	}
-	if out, found, err := r.j.Lookup(ctx, uid(1)); err != nil || !found || out.Status != journalapi.StatusDuplicate {
+	if out, found, err := r.j.Lookup(ctx, uid(1), writer, "assignment", scopeKey("e_child1", "c1")); err != nil || !found || out.Status != journalapi.StatusDuplicate {
 		t.Errorf("Lookup: %+v %v %v", out, found, err)
 	}
-	if _, found, _ := r.j.Lookup(ctx, uid(99)); found {
+	if _, found, _ := r.j.Lookup(ctx, uid(99), writer, "assignment", scopeKey("e_child1", "c1")); found {
 		t.Error("Lookup found an unknown snapshot")
 	}
 }
@@ -6973,7 +6974,7 @@ func TestErasedSubjectIsRefusedForEarlierObservations(t *testing.T) {
 	if r.count("snapshot") != 0 {
 		t.Error("a refused snapshot was stored")
 	}
-	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(time.Minute), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
+	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(record.MaxFutureSkew), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
 		t.Errorf("an observation after the erase: %+v", out)
 	}
 }
@@ -7058,6 +7059,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/leftathome/glovebox/internal/journal/diff"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/record"
@@ -7075,21 +7078,42 @@ type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Lookup is step 1 (idempotency): the stored outcome of a snapshot id,
-// reported as "duplicate" -- or "held" while it is still held.
-func (j *Journal) Lookup(ctx context.Context, id string) (Outcome, bool, error) {
-	return lookup(ctx, j.db, id)
+// errSnapshotIDReused is the unique violation on snapshot_pkey: the id
+// belongs to a snapshot another writer, type or scope stored first.
+var errSnapshotIDReused = errors.New("journal: snapshot_id reused")
+
+// reusedRejection answers a snapshot id that is already taken by a snapshot
+// of another writer, record type or scope. It is a 422 (a permanent sender
+// bug: retrying cannot help, the sender must use a new id), not the
+// retryable 409 of an unknown subject. It reveals nothing about the stored
+// snapshot (no stats, no status).
+func reusedRejection() *record.Rejection {
+	return &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSnapshotIDReused,
+		Detail: "snapshot_id reused: it identifies a snapshot of another writer, record type or scope"}
 }
 
-func lookup(ctx context.Context, q queryRower, id string) (Outcome, bool, error) {
-	var status string
+// Lookup is step 1 (idempotency): the stored outcome of a snapshot id,
+// reported as "duplicate" -- or "held" while it is still held. An id is a
+// duplicate only when writer, record type and canonical scope all match the
+// stored snapshot; otherwise the Outcome is the 422 refusal of an id reuse
+// (found is true, and no stored detail is returned).
+func (j *Journal) Lookup(ctx context.Context, id, writer, recordType, scope string) (Outcome, bool, error) {
+	return lookup(ctx, j.db, id, writer, recordType, scope)
+}
+
+func lookup(ctx context.Context, q queryRower, id, writer, recordType, scope string) (Outcome, bool, error) {
+	var status, w, typ, sc string
 	var stats []byte
-	err := q.QueryRowContext(ctx, `SELECT status, stats FROM snapshot WHERE id = $1::uuid`, id).Scan(&status, &stats)
+	err := q.QueryRowContext(ctx, `SELECT status, stats, writer, record_type, scope FROM snapshot WHERE id = $1::uuid`, id).
+		Scan(&status, &stats, &w, &typ, &sc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outcome{}, false, nil
 	}
 	if err != nil {
 		return Outcome{}, false, err
+	}
+	if w != writer || typ != recordType || sc != scope {
+		return Outcome{Rejection: reusedRejection()}, true, nil
 	}
 	out := Outcome{Status: journalapi.StatusDuplicate}
 	if status == journalapi.StatusHeld {
@@ -7099,18 +7123,44 @@ func lookup(ctx context.Context, q queryRower, id string) (Outcome, bool, error)
 	return out, true, nil
 }
 
+// effects collects what a write reports to the Recorder. It is emitted only
+// after the transaction commits: a rolled-back write reports nothing.
+type effects struct{ fns []func() }
+
+func (e *effects) add(f func()) { e.fns = append(e.fns, f) }
+func (e *effects) emit() {
+	for _, f := range e.fns {
+		f()
+	}
+}
+
 // Apply runs 4.4 for a snapshot that passed validation and policy.
 // payload is the request body, stored as received.
+//
+// Erasure (4.13): a snapshot is refused with 410 when its observed_at is
+// less than record.MaxFutureSkew after an erasure of its subject, not only
+// when it is before it. The writer's clock may run ahead of the journal's by
+// up to the skew validation allows, so a snapshot stamped inside that window
+// after the erase may in fact have been observed before it; it is treated
+// as pre-erasure. One observed exactly erased_at+MaxFutureSkew or later is
+// accepted.
+//
+// A snapshot id is a duplicate only if writer, record type and scope match
+// the stored snapshot; any other reuse is refused with 422 (also when two
+// writers race for the id).
 func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized, payload []byte) (Outcome, error) {
 	start := time.Now()
 	var out Outcome
+	resend := false
+	ef := &effects{}
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
 		}
-		o, found, err := lookup(ctx, tx, n.ID)
+		o, found, err := lookup(ctx, tx, n.ID, writer, n.Type.Name, n.ScopeKey)
 		if err != nil || found {
 			out = o
+			resend = o.Rejection == nil
 			return err
 		}
 		erased, err := erasedAfter(ctx, tx, n.Subject, n.ObservedAt)
@@ -7119,29 +7169,40 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 		}
 		if erased {
 			out.Rejection = &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject,
-				Detail: "the subject was erased after this snapshot was observed"}
+				Detail: "observed before, or within the clock-skew allowance after, the subject's erasure"}
 			return nil
 		}
 		if rej := j.checkSubject(n.Subject); rej != nil {
 			out.Rejection = rej
 			return nil
 		}
-		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, "")
+		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, "", ef)
 		return err
 	})
+	if errors.Is(err, errSnapshotIDReused) {
+		out, err = Outcome{Rejection: reusedRejection()}, nil
+	}
 	j.o.Metrics.ApplyDuration(time.Since(start))
 	if err == nil && out.Rejection == nil {
-		j.o.Metrics.Snapshot(n.Type.Name, out.Status)
+		ef.emit()
+		status := out.Status
+		if resend {
+			status = journalapi.StatusDuplicate // a resend of a held snapshot is not a second hold
+		}
+		j.o.Metrics.Snapshot(n.Type.Name, status)
 	}
 	return out, err
 }
 
+// erasedAfter reports whether the subject was erased after the observation,
+// allowing for the writer's clock skew (see Apply).
 func erasedAfter(ctx context.Context, tx *sql.Tx, subject string, observed time.Time) (bool, error) {
 	if subject == "" {
 		return false, nil
 	}
 	var one int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = $1 AND erased_at > $2 LIMIT 1`, subject, observed).Scan(&one)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = $1 AND erased_at > $2 LIMIT 1`,
+		subject, observed.Add(-record.MaxFutureSkew)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -7164,7 +7225,7 @@ func (j *Journal) checkSubject(subject string) *record.Rejection {
 // applyFromOrdering is 4.4 from step 4 on. confirmID is set when an
 // operator confirms a held snapshot: the guard is skipped and the
 // snapshot's existing row is updated instead of inserted.
-func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.Normalized, writer string, payload []byte, confirmID string) (Outcome, error) {
+func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.Normalized, writer string, payload []byte, confirmID string, ef *effects) (Outcome, error) {
 	var later int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM snapshot
 		WHERE record_type = $1 AND scope = $2 AND status = 'applied' AND observed_at > $3`,
@@ -7188,7 +7249,7 @@ func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.N
 	}
 	src := eventSource{snapshotID: sql.NullString{String: n.ID, Valid: true}, actor: writer,
 		observedAt: n.ObservedAt, approximate: n.Approximate}
-	if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan); err != nil {
+	if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan, ef); err != nil {
 		return Outcome{}, err
 	}
 	if err := j.storeSnapshot(ctx, tx, n, writer, payload, confirmID, out); err != nil {
@@ -7212,6 +7273,10 @@ func (j *Journal) storeSnapshot(ctx context.Context, tx *sql.Tx, n *record.Norma
 		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		n.ID, n.Type.Name, n.Version, n.ScopeKey, n.Subject, n.Complete, n.Approximate, n.ObservedAt,
 		j.o.Now().UTC(), writer, out.Status, payload, stats)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "snapshot_pkey" {
+		return errSnapshotIDReused
+	}
 	return err
 }
 
@@ -7261,22 +7326,35 @@ type eventSource struct {
 }
 
 // writePlan is 4.4 step 9.
-func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subject string, src eventSource, cur map[string]diff.Current, plan diff.Plan) error {
+func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subject string, src eventSource, cur map[string]diff.Current, plan diff.Plan, ef *effects) error {
 	all := append(append([]diff.Event(nil), plan.Events...), plan.Removals...)
-	if len(all) > 0 {
+	// Scanning and rule evaluation happen first, under the subject lock only:
+	// a scan can take seconds, and the events lock below is global.
+	type built struct {
+		ev       diff.Event
+		row      eventRow
+		next     currentRow
+		withheld int
+	}
+	rows := make([]built, 0, len(all))
+	for _, ev := range all {
+		row, next, withheld := j.buildEvent(t, subject, src, cur[ev.Key], ev)
+		rows = append(rows, built{ev, row, next, withheld})
+	}
+	if len(rows) > 0 {
 		if err := lockEvents(ctx, tx); err != nil {
 			return err
 		}
 	}
-	for _, ev := range all {
-		row, next, withheld := j.buildEvent(t, subject, src, cur[ev.Key], ev)
+	for _, b := range rows {
+		ev, row, next := b.ev, b.row, b.next
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO record_event (record_type, data_subject, key, kind,
 			schema_version, scope, prev_scope, audience, prev_audience, fields, changed, scan, observed_at,
 			prev_observed_at, approximate, snapshot_id, actor, importance, rule, notify, group_key)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::uuid, $17, $18, $19, $20, $21)
 			RETURNING seq`,
-			t.Name, subject, ev.Key, string(ev.Kind), t.SchemaVersion, ev.Scope, row.prevScope, ev.Audience,
+			t.Name, subject, ev.Key, string(ev.Kind), t.SchemaVersion, ev.Scope, row.prevScope, nonNil(ev.Audience),
 			ev.PrevAudience, row.fields, row.changed, row.scan, src.observedAt, row.prevObserved, src.approximate,
 			src.snapshotID, src.actor, row.importance, row.rule, row.notify, row.groupKey).Scan(&seq); err != nil {
 			return fmt.Errorf("journal: insert event: %w", err)
@@ -7285,10 +7363,13 @@ func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subj
 		if err := upsertCurrent(ctx, tx, t.Name, subject, src, next); err != nil {
 			return err
 		}
-		j.o.Metrics.Event(t.Name, string(ev.Kind), row.importance)
-		if withheld > 0 {
-			j.o.Metrics.ScanWithheld(t.Name, withheld)
-		}
+		kind, importance, withheld := string(ev.Kind), row.importance, b.withheld
+		ef.add(func() {
+			j.o.Metrics.Event(t.Name, kind, importance)
+			if withheld > 0 {
+				j.o.Metrics.ScanWithheld(t.Name, withheld)
+			}
+		})
 	}
 	if len(plan.Confirm) > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE record_current
@@ -7435,13 +7516,30 @@ func upsertCurrent(ctx context.Context, tx *sql.Tx, recordType, subject string, 
 			last_seen_at = EXCLUDED.last_seen_at, last_confirmed_snapshot = EXCLUDED.last_confirmed_snapshot,
 			last_confirmed_at = EXCLUDED.last_confirmed_at, content_hash = EXCLUDED.content_hash,
 			last_event_seq = EXCLUDED.last_event_seq, scan = EXCLUDED.scan`,
-		recordType, subject, c.key, c.scope, c.audience, c.fields.JSON(), c.removed, src.observedAt, c.lastSeenAt,
+		recordType, subject, c.key, c.scope, nonNil(c.audience), c.fields.JSON(), c.removed, src.observedAt, c.lastSeenAt,
 		src.snapshotID, c.fields.Hash(), c.lastEventSeq, scan)
 	return err
+}
+
+// nonNil turns a nil list into an empty one: pgx sends a nil slice as NULL,
+// and audience columns are NOT NULL (lists are [], never null).
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 ```
 
 Notes for the implementer: `$8` (the event's `observed_at`) is both `first_seen_at` (kept on conflict) and `last_confirmed_at`; for a removal `last_seen_at` stays the last time the record was present while `last_confirmed_at` moves to the removing snapshot, which is the next event's `prev_observed_at`. Passing a nil `[]string` or nil `[]byte` sends NULL (pgx), which is what `prev_audience`, `fields`, `changed` and `notify` need when absent.
+
+**NOTE (Task 15 review).** The code above is `internal/journal/apply.go` as committed after review (e9b957b plus the follow-up). Differences from the first draft that later tasks must follow:
+
+- Scans and rule evaluation (`buildEvent`) run before `lockEvents`; the events lock is taken immediately before the first insert (decision 3), because a scan can take seconds and the lock is global. Lock order everywhere: `lockSubject`, then `lockEvents`.
+- `Lookup(ctx, id, writer, recordType, scope)` takes the writer, record type and canonical scope: an id is a duplicate only if all three equal the stored row's. Otherwise the Outcome carries a `Rejection` (422, `journalapi.ReasonSnapshotIDReused`) and nothing of the stored row. A unique violation on `snapshot_pkey` during the insert (a concurrent reuse) maps to the same refusal.
+- `applyFromOrdering` and `writePlan` take an `*effects`. Metrics (`Event`, `ScanWithheld`) are queued on it and emitted with `ef.emit()` only after `inTx` returns nil; the `Snapshot` metric follows. A resend, including a resend of a held snapshot, counts as `duplicate`, so `held` is counted once.
+- A snapshot observed within `record.MaxFutureSkew` after an erasure is treated as pre-erasure (410); exactly erased_at + skew is accepted.
+- Extra tests live in `apply_more_test.go` and `apply_review_test.go`; `helpers_test.go` has `applyErr` besides `apply`.
 
 - [x] **Step 15.4: Run; expect PASS.**
 
@@ -7709,7 +7807,7 @@ func TestConfirmAppliesWithoutTheGuardAndDiscardsOlderHeld(t *testing.T) {
 	if _, err := r.j.ConfirmHeld(ctx, uid(99), allowAll); !errors.Is(err, ErrNotFound) {
 		t.Errorf("confirming nothing: %v", err)
 	}
-	if out, _, _ := r.j.Lookup(ctx, uid(3)); out.Status != journalapi.StatusDuplicate {
+	if out, _, _ := r.j.Lookup(ctx, uid(3), writer, "assignment", scopeKey("e_child1", "c1")); out.Status != journalapi.StatusDuplicate {
 		t.Errorf("a resend after confirmation: %+v", out)
 	}
 }
@@ -7833,6 +7931,7 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 	}
 	var out Outcome
 	var recordType string
+	ef := &effects{} // NOTE (Task 15 review): metrics are emitted after the commit
 	err = j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
@@ -7869,10 +7968,11 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 			out.Rejection = rej
 			return nil
 		}
-		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, id)
+		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, id, ef)
 		return err
 	})
 	if err == nil && out.Rejection == nil {
+		ef.emit()
 		j.o.Metrics.Snapshot(recordType, out.Status)
 	}
 	return out, err
@@ -8049,6 +8149,7 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 	}
 	now := j.o.Now().UTC()
 	resp := journalapi.NoteResponse{Status: "unchanged", Key: n.Key}
+	ef := &effects{} // NOTE (Task 15 review): metrics are emitted after the commit
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
@@ -8063,13 +8164,16 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 			return nil
 		}
 		src := eventSource{actor: writer + ";on_behalf_of=" + n.OnBehalfOf, observedAt: now}
-		if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan); err != nil {
+		if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan, ef); err != nil {
 			return err
 		}
 		resp.Status = string(plan.Events[0].Kind)
 		return tx.QueryRowContext(ctx, `SELECT last_event_seq FROM record_current
 			WHERE record_type = $1 AND data_subject = $2 AND key = $3`, n.Type.Name, n.Subject, n.Key).Scan(&resp.Seq)
 	})
+	if err == nil {
+		ef.emit()
+	}
 	return resp, nil, err
 }
 
@@ -11092,16 +11196,26 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request, c call) {
 	}
 	// 4.4 step 1 before anything else: a resend is answered as it was,
 	// even if the configuration changed since it was first sent.
+	// NOTE (Task 15 review): an id is a duplicate only for the same caller,
+	// record type and canonical scope; without a parseable scope there is
+	// nothing to compare, so the lookup is skipped and validation refuses it.
 	if id, err := uuid.Parse(snap.SnapshotID); err == nil {
-		out, found, err := s.d.Journal.Lookup(r.Context(), id.String())
-		if err != nil {
-			s.internal(w, "lookup", err)
-			return
-		}
-		if found {
-			s.d.Metrics.Snapshot(snap.RecordType, out.Status)
-			writeJSON(w, http.StatusOK, journalapi.Response{Status: out.Status, Stats: &out.Stats})
-			return
+		if sc, rej := record.ParseScope(snap.Scope); rej == nil {
+			out, found, err := s.d.Journal.Lookup(r.Context(), id.String(), c.caller, snap.RecordType, sc.Canonical())
+			if err != nil {
+				s.internal(w, "lookup", err)
+				return
+			}
+			if found {
+				if out.Rejection != nil { // snapshot_id_reused: 422
+					reject(w, out.Rejection)
+					return
+				}
+				// A resend, held or not, is a duplicate: "held" counts once.
+				s.d.Metrics.Snapshot(snap.RecordType, journalapi.StatusDuplicate)
+				writeJSON(w, http.StatusOK, journalapi.Response{Status: out.Status, Stats: &out.Stats})
+				return
+			}
 		}
 	}
 	n, rej := record.ValidateSnapshot(s.d.Registry, snap, s.d.Now())
@@ -12840,6 +12954,7 @@ Answers -- the spool acts on exactly these:
 | 409 | `unknown_subject` | a subject is not in the current roster | keep, retry with backoff |
 | 413 | `too_large` | over a limit | move to `spool/rejected/` |
 | 422 | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
+| 422 | `snapshot_id_reused` | the id already identifies a snapshot of another writer, record type or scope | move to `spool/rejected/` |
 | 5xx | -- | try again later | keep, retry with backoff |
 
 A 200 body: `{"status": "applied", "stats": {"created": 1, "updated": 0,
