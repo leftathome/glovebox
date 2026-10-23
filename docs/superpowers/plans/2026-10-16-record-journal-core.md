@@ -7720,7 +7720,7 @@ git commit -m "test(journal): removal, restore, scope moves, complete_range and 
 - Create: `internal/journal/hold.go`
 - Test: `internal/journal/hold_test.go`
 
-- [ ] **Step 17.1: Write the failing tests.**
+- [x] **Step 17.1: Write the failing tests.**
 
 `internal/journal/hold_test.go`:
 
@@ -7876,11 +7876,11 @@ func TestConfirmRechecksTheRoster(t *testing.T) {
 }
 ```
 
-- [ ] **Step 17.2: Run; expect a build failure** (`r.j.ConfirmHeld undefined`, `ErrNotHeld`, `ErrNotFound`).
+- [x] **Step 17.2: Run; expect a build failure** (`r.j.ConfirmHeld undefined`, `ErrNotHeld`, `ErrNotFound`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 17.3: Write `hold.go`.**
+- [x] **Step 17.3: Write `hold.go`.**
 
 `internal/journal/hold.go`:
 
@@ -7994,11 +7994,11 @@ func (j *Journal) DiscardHeld(ctx context.Context, id string) error {
 }
 ```
 
-- [ ] **Step 17.4: Run; expect PASS.**
+- [x] **Step 17.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 17.5: Commit.**
+- [x] **Step 17.5: Commit.**
 
 ```bash
 git add internal/journal
