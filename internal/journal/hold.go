@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -49,12 +50,12 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
 		}
-		var status, writer string
+		var status, writer, storedScope string
 		var payload []byte
 		var received time.Time
-		err := tx.QueryRowContext(ctx, `SELECT record_type, status, writer, payload, received_at
+		err := tx.QueryRowContext(ctx, `SELECT record_type, scope, status, writer, payload, received_at
 			FROM snapshot WHERE id = $1::uuid FOR UPDATE`, id).
-			Scan(&recordType, &status, &writer, &payload, &received)
+			Scan(&recordType, &storedScope, &status, &writer, &payload, &received)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -71,6 +72,18 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 		n, rej := record.ValidateSnapshot(j.o.Registry, s, received)
 		if rej != nil {
 			out.Rejection = rej // the configuration changed since; discard it instead
+			return nil
+		}
+		// The payload is only trusted if it still describes the row it is stored in.
+		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
+			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
+				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
+			return nil
+		}
+		// The payload is only trusted if it still describes the row it is stored in.
+		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
+			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
+				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
 			return nil
 		}
 		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {

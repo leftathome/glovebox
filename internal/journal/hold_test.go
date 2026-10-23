@@ -3,6 +3,7 @@ package journal
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +89,7 @@ func TestConfirmAppliesWithoutTheGuardAndDiscardsOlderHeld(t *testing.T) {
 	if _, err := r.j.ConfirmHeld(ctx, uid(99), allowAll); !errors.Is(err, ErrNotFound) {
 		t.Errorf("confirming nothing: %v", err)
 	}
-	if out, _, _ := r.j.Lookup(ctx, uid(3), writer, "assignment", scopeKey("e_child1", "c1")); out.Status != journalapi.StatusDuplicate {
+	if out, _, _ := r.j.Lookup(ctx, uid(3), writer, "assignment", scopeKey("e_child1", "c1")); out.Status != journalapi.StatusDuplicate || out.Stats.Removed != 4 {
 		t.Errorf("a resend after confirmation: %+v", out)
 	}
 }
@@ -179,11 +180,15 @@ func TestAppliedSnapshotDiscardsOnlyStrictlyOlderHeldOfSameScopeAndType(t *testi
 	r.insertHeld(12, "assignment", sc, "e_child1", at.Add(time.Minute))
 	r.insertHeld(13, "assignment", scopeKey("e_child1", "c2"), "e_child1", at.Add(-time.Minute))
 	r.insertHeld(14, "lms_assignment", sc, "e_child1", at.Add(-time.Minute))
+	r.insertHeld(15, "assignment", sc, "e_child1", at.Add(-2*time.Minute))
+	if _, err := r.j.db.Exec(`UPDATE snapshot SET status = 'late' WHERE id = $1::uuid`, uid(15)); err != nil {
+		t.Fatal(err)
+	}
 	out := r.apply(snap(1, "e_child1", "c1", at, true, keep(2)...))
 	if out.Status != journalapi.StatusApplied {
 		t.Fatalf("%+v", out)
 	}
-	want := map[int]string{10: "discarded", 11: "held", 12: "held", 13: "held", 14: "held"}
+	want := map[int]string{10: "discarded", 11: "held", 12: "held", 13: "held", 14: "held", 15: "late"}
 	for n, w := range want {
 		if got := r.snapshotStatus(n); got != w {
 			t.Errorf("snapshot %d is %s, want %s", n, got, w)
@@ -220,11 +225,15 @@ func TestConfirmReportsAfterCommitOnly(t *testing.T) {
 	five(r, 1, T0.Add(-3*time.Hour))
 	r.apply(snap(2, "e_child1", "c1", T0.Add(-2*time.Hour), true, keep(3)...))
 	before := len(r.rec.events)
+	snapsBefore := map[string]int{}
+	for k, v := range r.rec.snapshots {
+		snapsBefore[k] = v
+	}
 	r.ros.Store(nil)
 	if _, err := r.j.ConfirmHeld(ctx, uid(2), allowAll); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.rec.events) != before || r.rec.snapshots["applied"] != 1 {
+	if len(r.rec.events) != before || !reflect.DeepEqual(r.rec.snapshots, snapsBefore) {
 		t.Errorf("a refused confirm reported: %v %v", r.rec.events, r.rec.snapshots)
 	}
 	r.ros.Store(journaltest.Roster(t))

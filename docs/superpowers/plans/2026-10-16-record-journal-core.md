@@ -7730,10 +7730,14 @@ package journal
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/journaltest"
+	"github.com/leftathome/glovebox/internal/journal/record"
 )
 
 func allowAll(string, record.Type, record.Scope) *record.Rejection { return nil }
@@ -7769,8 +7773,14 @@ func TestGuardHoldsAndAResendIsHeldAgain(t *testing.T) {
 	if again := r.apply(s); again.Status != journalapi.StatusHeld || again.Stats.Removed != 2 {
 		t.Errorf("resend: %+v", again)
 	}
-	if r.rec.snapshots["held"] != 2 { // every answer is counted by its status
-		t.Errorf("held answers counted %d", r.rec.snapshots["held"])
+	// NOTE (Task 15 review): a held snapshot counts once when stored; its
+	// resend counts as a duplicate.
+	if r.rec.snapshots["held"] != 1 || r.rec.snapshots["duplicate"] != 1 {
+		t.Errorf("recorder %v", r.rec.snapshots)
+	}
+	var payload []byte
+	if err := r.j.db.QueryRow(`SELECT payload FROM snapshot WHERE id = $1::uuid`, uid(2)).Scan(&payload); err != nil || len(payload) < 10 {
+		t.Errorf("held payload %q %v", payload, err)
 	}
 }
 
@@ -7892,6 +7902,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -7936,12 +7947,12 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
 		}
-		var status, writer string
+		var status, writer, storedScope string
 		var payload []byte
 		var received time.Time
-		err := tx.QueryRowContext(ctx, `SELECT record_type, status, writer, payload, received_at
+		err := tx.QueryRowContext(ctx, `SELECT record_type, scope, status, writer, payload, received_at
 			FROM snapshot WHERE id = $1::uuid FOR UPDATE`, id).
-			Scan(&recordType, &status, &writer, &payload, &received)
+			Scan(&recordType, &storedScope, &status, &writer, &payload, &received)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -7958,6 +7969,12 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 		n, rej := record.ValidateSnapshot(j.o.Registry, s, received)
 		if rej != nil {
 			out.Rejection = rej // the configuration changed since; discard it instead
+			return nil
+		}
+		// The payload is only trusted if it still describes the row it is stored in.
+		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
+			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
+				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
 			return nil
 		}
 		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {
@@ -9912,6 +9929,8 @@ git commit -m "test(journal): property tests for the fold, idempotence, lateness
 
 ---
 ## Task 23: Metrics and the gauges the alerts need
+
+**NOTE (Task 17 review).** Two observability gaps are deferred to this task: `ConfirmHeld` does not report `ApplyDuration`, and a discard (`DiscardHeld`, or the automatic discard of older held snapshots) changes a snapshot's status without any `glovebox_journal_snapshots_total` increment. Decide here whether either needs a metric. Task 17 also added a consistency check to `ConfirmHeld`: a stored payload whose id, record type or scope differs from its row is refused with 422 `schema` and stays held. Its tests are in `hold_test.go` and `hold_concurrency_test.go`.
 
 4.15's metrics, through the core's existing OpenTelemetry provider and Prometheus exporter (`internal/metrics`), so they appear on the core's `/metrics` with no new scrape target:
 
