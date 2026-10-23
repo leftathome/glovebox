@@ -185,8 +185,16 @@ func Compile(rs []Rule, reg *record.Registry) (*Set, error) {
 			switch {
 			case g == "data_subject", g == "record_type", g == "key", g == "scope":
 			case strings.HasPrefix(g, "field:"):
-				if _, ok := t.Fields[strings.TrimPrefix(g, "field:")]; !ok {
+				def, ok := t.Fields[strings.TrimPrefix(g, "field:")]
+				if !ok {
 					return nil, fmt.Errorf("rule %s: group_by %s names no field of %s", r.Name, g, t.Name)
+				}
+				// A group key is stored and returned as written, outside
+				// the per-value scan verdicts (4.11): it must never carry
+				// untrusted text, or a withheld value (or the sha256 of a
+				// long one, which confirms a guess) reaches a reader.
+				if def.Type == record.Text {
+					return nil, fmt.Errorf("rule %s: group_by %s names a text field; group keys carry no untrusted text", r.Name, g)
 				}
 			default:
 				return nil, fmt.Errorf("rule %s: group_by entries are data_subject, record_type, key, scope or field:<name>", r.Name)

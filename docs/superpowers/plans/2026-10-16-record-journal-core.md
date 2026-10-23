@@ -8245,6 +8245,18 @@ git commit -m "feat(journal): household notes with a fixed audience, keyed by wr
 - Create: `internal/journal/read.go`
 - Test: `internal/journal/read_test.go`
 
+NOTE (Task 19 review): the code below was built differently where it matters,
+and the code in the repository wins. `StateQuery`, `EventsQuery` and `Counts`
+take a `Reader` (a roster member id), not `Grants`: the journal computes the
+grants from the roster and confirms membership on every read (`ErrUnknownReader`
+for a stranger, `ErrNoRoster` while no roster is loaded, `ErrBadQuery` for a
+limit outside 1..10000, a negative cursor or an unknown importance).
+`State` has a sibling `StateWithRoster` that also returns the roster hash that
+filtered the rows. Counts are grouped by audience and re-checked in Go;
+`rules.Compile` refuses `group_by` on a text field; and the read tests live
+in `read_test.go` and `read_review_test.go` (asymmetric roster, group keys,
+decode errors, prev_scope masking). Tasks 22 and 24 below are adjusted.
+
 - [x] **Step 19.1: Write the failing tests.**
 
 `internal/journal/read_test.go`:
@@ -9779,8 +9791,13 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 		}
 		sortedAud := func(a []string) []string { b := slices.Clone(a); slices.Sort(b); return slices.Compact(b) }
 		for _, reader := range ros.Members() {
-			grants, _ := ros.Grants(reader)
-			rows, err := r.j.State(ctx, StateQuery{Grants: grants, Type: "assignment"})
+			// NOTE (Task 19 review): reads take a Reader, not Grants. Delete the
+			// `grants, _ := ros.Grants(reader)` line, use
+			// StateQuery{Reader: reader, Type: "assignment"} and
+			// EventsQuery{Reader: reader, Limit: 1000}, fail on any error, and keep
+			// r.ros.Store(ros). Also cover the asymmetric roster member of
+			// read_review_test.go (a guardian of one child only).
+			rows, err := r.j.State(ctx, StateQuery{Reader: reader, Type: "assignment"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -9799,7 +9816,7 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 					t.Fatalf("seed %d: %s entitled=%v to %s/%s (%v), returned=%v", seed, reader, want, w.subject, w.key, w.aud, got[w.subject+"/"+w.key])
 				}
 			}
-			events, err := r.j.Events(ctx, EventsQuery{Grants: grants, Limit: 1000})
+			events, err := r.j.Events(ctx, EventsQuery{Reader: reader, Limit: 1000})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -9874,12 +9891,13 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 		}(si, subject)
 	}
 	go func() { wg.Wait(); close(done) }()
-	grants := r.grants("e_parent1")
+	// NOTE (Task 19 review): Reader: "e_parent1" replaces grants; the r.grants
+	// helper no longer exists.
 	seen := map[int64]bool{}
 	var cursor int64
 	follow := func() {
 		for {
-			evs, err := r.j.Events(ctx, EventsQuery{Grants: grants, After: cursor, Limit: 7})
+			evs, err := r.j.Events(ctx, EventsQuery{Reader: "e_parent1", After: cursor, Limit: 7})
 			if err != nil {
 				t.Error(err)
 				return
@@ -9905,7 +9923,7 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 		follow()
 	}
 	follow()
-	all, _ := r.j.Events(ctx, EventsQuery{Grants: grants, Limit: 10000})
+	all, _ := r.j.Events(ctx, EventsQuery{Reader: "e_parent1", Limit: 10000})
 	if len(all) != len(subjects)*perSubject {
 		t.Fatalf("%d events written", len(all))
 	}
@@ -11121,28 +11139,36 @@ func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Reques
 	})
 }
 
-// readerGrants resolves the one access field a request may carry. allowed
-// is the service's policy for this reader. It writes the refusal itself.
-func (s *Server) readerGrants(w http.ResponseWriter, reader string, allowed bool) ([]roster.Grant, bool) {
+// readerOK checks the one access field a request may carry. allowed is the
+// service's policy for this reader. It writes the refusal itself. NOTE (Task
+// 19 review): the journal computes grants and confirms roster membership on
+// every read, so this no longer resolves grants; it returns the reader id.
+// Roster errors from the journal are mapped by readErr below.
+func (s *Server) readerOK(w http.ResponseWriter, reader string, allowed bool) (string, bool) {
 	if reader == "" {
 		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "reader is required")
-		return nil, false
+		return "", false
 	}
 	if !allowed {
 		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "this service may not act for that reader")
-		return nil, false
+		return "", false
 	}
-	r := s.d.Roster()
-	if r == nil {
-		refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "no roster is loaded")
-		return nil, false
-	}
-	grants, ok := r.Grants(reader)
-	if !ok {
+	return reader, true
+}
+
+// readErr maps a journal read error (NOTE, Task 19 review): ErrUnknownReader
+// is 403 policy, ErrNoRoster is 503, ErrBadQuery is 400, anything else 500.
+func (s *Server) readErr(w http.ResponseWriter, what string, err error) {
+	switch {
+	case errors.Is(err, journal.ErrUnknownReader):
 		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "the reader is not in the roster")
-		return nil, false
+	case errors.Is(err, journal.ErrNoRoster):
+		refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "no roster is loaded")
+	case errors.Is(err, journal.ErrBadQuery):
+		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "bad query")
+	default:
+		s.internal(w, what, err)
 	}
-	return grants, true
 }
 
 // queryParams admits only the named parameters, each at most once. A
@@ -11533,23 +11559,24 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayRead(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayRead(reader)); !ok {
 		return
 	}
-	sq := journal.StateQuery{Grants: grants, Subject: optional(q, "subject"), Type: q.Get("type"), Scope: q.Get("scope")}
+	sq := journal.StateQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"), Scope: q.Get("scope")}
 	if v := q.Get("include_removed"); v != "" {
 		if sq.IncludeRemoved, err = strconv.ParseBool(v); err != nil {
 			refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "include_removed is true or false")
 			return
 		}
 	}
-	rows, err := s.d.Journal.State(r.Context(), sq)
+	// NOTE (Task 19 review): the roster hash comes from the journal's result, so
+	// it is that of the roster which filtered the rows.
+	rows, sha, err := s.d.Journal.StateWithRoster(r.Context(), sq)
 	if err != nil {
-		s.internal(w, "state", err)
+		s.readErr(w, "state", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, journalapi.StateResponse{Rows: rows, RosterSHA256: s.d.Roster().SHA256()})
+	writeJSON(w, http.StatusOK, journalapi.StateResponse{Rows: rows, RosterSHA256: sha})
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
@@ -11559,11 +11586,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayRead(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayRead(reader)); !ok {
 		return
 	}
-	eq := journal.EventsQuery{Grants: grants, Subject: optional(q, "subject"), Type: q.Get("type"),
+	eq := journal.EventsQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"),
 		MinImportance: rules.Low, Limit: defaultEventLimit}
 	if v := q.Get("after"); v != "" {
 		if eq.After, err = strconv.ParseInt(v, 10, 64); err != nil || eq.After < 0 {
@@ -11586,7 +11612,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
 	}
 	events, err := s.d.Journal.Events(r.Context(), eq)
 	if err != nil {
-		s.internal(w, "events", err)
+		s.readErr(w, "events", err)
 		return
 	}
 	next := eq.After
@@ -11603,8 +11629,7 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayCount(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayCount(reader)); !ok {
 		return
 	}
 	since := s.d.Now().Add(-defaultCountsDays * 24 * time.Hour)
@@ -11614,9 +11639,9 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 			return
 		}
 	}
-	counts, err := s.d.Journal.Counts(r.Context(), grants, optional(q, "subject"), since)
+	counts, err := s.d.Journal.Counts(r.Context(), reader, optional(q, "subject"), since)
 	if err != nil {
-		s.internal(w, "counts", err)
+		s.readErr(w, "counts", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, journalapi.CountsResponse{Since: since, Counts: counts})

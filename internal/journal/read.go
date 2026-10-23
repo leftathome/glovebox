@@ -17,29 +17,43 @@ import (
 )
 
 // ErrUnknownReader is returned by a read for a reader who is not a member of
-// the roster in use (or when no roster is loaded). Such a reader has no
-// grants, and "public" rows are visible only to roster members, so the read
-// returns no rows at all. The request layer answers it with 403.
+// the roster in use. Such a reader has no grants, and "public" rows are
+// visible only to roster members, so the read returns no rows at all. The
+// request layer answers it with 403.
 var ErrUnknownReader = errors.New("journal: reader is not in the roster")
 
+// ErrNoRoster is returned by a read while no roster is loaded: nobody can be
+// confirmed as a member, so nothing is readable. It is the journal not being
+// ready, not the reader being refused; the request layer answers it with 503.
+var ErrNoRoster = errors.New("journal: no roster is loaded")
+
+// MaxEventsLimit is the largest Limit Events accepts.
+const MaxEventsLimit = 10000
+
 // ErrBadQuery is returned for a query the journal cannot run: a limit below
-// 1, a negative cursor or an unknown importance. The request layer validates
-// these first; the journal refuses them anyway.
+// 1 or above MaxEventsLimit, a negative cursor or an unknown importance. The
+// request layer validates these first; the journal refuses them anyway.
 var ErrBadQuery = errors.New("journal: bad query")
 
-// grantsOf computes a reader's grants from the roster in use. The roster is
-// the only source: the journal confirms membership here, before any query.
-func (j *Journal) grantsOf(reader string) ([]roster.Grant, error) {
-	g, ok := j.o.Roster().Grants(reader) // safe on a nil roster
-	if !ok {
-		return nil, ErrUnknownReader
+// grantsOf computes a reader's grants from the roster in use and returns the
+// SHA-256 of that same roster, so a caller reports the roster that actually
+// filtered the read. The roster is the only source: the journal confirms
+// membership here, before any query.
+func (j *Journal) grantsOf(reader string) ([]roster.Grant, string, error) {
+	ros := j.o.Roster()
+	if ros == nil {
+		return nil, "", ErrNoRoster
 	}
-	return g, nil
+	g, ok := ros.Grants(reader)
+	if !ok {
+		return nil, "", ErrUnknownReader
+	}
+	return g, ros.SHA256(), nil
 }
 
-// rowVisible is the Go half of the visibility rule, run on every row the SQL
-// half returned. The journal field exists so a test can make the two
-// disagree.
+// rowVisible is the Go half of the visibility rule, run on every row (or, for
+// counts, every group) the SQL half returned. The journal field exists so a
+// test can make the two disagree.
 func (j *Journal) rowVisible(grants []roster.Grant, subject string, audience []string) bool {
 	if j.visible != nil {
 		return j.visible(grants, subject, audience)
@@ -48,12 +62,17 @@ func (j *Journal) rowVisible(grants []roster.Grant, subject string, audience []s
 }
 
 // visibleSQL is the visibility rule over table alias a, with the grants as
-// $1 (subjects) and $2 (tokens). The GIN index on audience serves the
-// overlap test; the EXISTS is the rule itself.
+// $1 (subjects) and $2 (tokens). The first line is an index-usable
+// necessary condition (the GIN index on audience serves the && overlap with
+// the reader's tokens plus "public"); the rest is the rule itself, which the
+// = ANY and unnest forms cannot push into an index. At household scale the
+// state and counts scans over the remaining rows are cheap, which is
+// accepted.
 func visibleSQL(a string) string {
-	return fmt.Sprintf(`('public' = ANY(%[1]s.audience) OR EXISTS (
+	return fmt.Sprintf(`(%[1]s.audience && array_append($2::text[], 'public') AND
+		('public' = ANY(%[1]s.audience) OR EXISTS (
 		SELECT 1 FROM unnest($1::text[], $2::text[]) AS g(s, t)
-		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience)))`, a)
+		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience))))`, a)
 }
 
 func nullable(s *string) sql.NullString {
@@ -90,10 +109,18 @@ type StateQuery struct {
 
 // State returns the visible record_current rows. The result is never nil.
 func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRow, error) {
-	out := []journalapi.StateRow{}
-	grants, err := j.grantsOf(q.Reader)
+	rows, _, err := j.StateWithRoster(ctx, q)
+	return rows, err
+}
+
+// StateWithRoster is State plus the SHA-256 of the roster the read was
+// filtered by, for StateResponse.RosterSHA256: it cannot differ from the
+// roster that decided visibility, as a later j.o.Roster() call could.
+func (j *Journal) StateWithRoster(ctx context.Context, q StateQuery) ([]journalapi.StateRow, string, error) {
+	none := []journalapi.StateRow{}
+	grants, sha, err := j.grantsOf(q.Reader)
 	if err != nil {
-		return out, err
+		return none, "", err
 	}
 	subs, toks := access.Pairs(grants)
 	rows, err := j.db.QueryContext(ctx, `SELECT c.record_type, c.data_subject, c.key, c.scope, to_jsonb(c.audience),
@@ -111,19 +138,20 @@ func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRo
 		ORDER BY c.record_type, c.data_subject, c.key`,
 		subs, toks, nullable(q.Subject), q.Type, q.Scope, q.IncludeRemoved)
 	if err != nil {
-		return out, err
+		return none, "", err
 	}
 	defer rows.Close()
+	out := []journalapi.StateRow{}
 	for rows.Next() {
 		var s journalapi.StateRow
 		var aud, fields, scan []byte
 		var inLatest sql.NullBool
 		if err := rows.Scan(&s.RecordType, &s.DataSubject, &s.Key, &s.Scope, &aud, &fields, &s.Removed,
 			&s.FirstSeenAt, &s.LastSeenAt, &s.ConfirmedAt, &scan, &inLatest, &s.Approximate); err != nil {
-			return []journalapi.StateRow{}, err
+			return none, "", err
 		}
 		if err := json.Unmarshal(aud, &s.Audience); err != nil {
-			return []journalapi.StateRow{}, err
+			return none, "", err
 		}
 		if !j.rowVisible(grants, s.DataSubject, s.Audience) {
 			j.o.Metrics.VisibilityMismatch()
@@ -133,10 +161,10 @@ func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRo
 		var f map[string]json.RawMessage
 		var sm record.ScanMap
 		if err := json.Unmarshal(fields, &f); err != nil {
-			return []journalapi.StateRow{}, err
+			return none, "", err
 		}
 		if err := json.Unmarshal(scan, &sm); err != nil {
-			return []journalapi.StateRow{}, fmt.Errorf("record %s/%s: scan: %w", s.DataSubject, s.Key, err)
+			return none, "", fmt.Errorf("record %s/%s: scan: %w", s.DataSubject, s.Key, err)
 		}
 		s.Fields = map[string]json.RawMessage{}
 		for name, v := range f {
@@ -155,9 +183,9 @@ func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRo
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return []journalapi.StateRow{}, err
+		return none, "", err
 	}
-	return out, nil
+	return out, sha, nil
 }
 
 // EventsQuery selects GET /v1/events.
@@ -167,23 +195,28 @@ type EventsQuery struct {
 	Subject       *string
 	Type          string
 	MinImportance string // "" means low
-	Limit         int    // at least 1
+	Limit         int    // 1 to MaxEventsLimit
 }
 
 // Events returns visible events with seq > After, ascending, at most Limit.
 // The result is never nil.
+//
+// A page whose every row the Go re-check drops (SQL and Go disagree) comes
+// back empty although later events exist: it fails closed, the reader's
+// cursor does not advance past it, and the VisibilityMismatch alert fires.
+// That is intended; the disagreement is a bug to fix, not to page around.
 func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event, error) {
-	out := []journalapi.Event{}
-	grants, err := j.grantsOf(q.Reader)
+	none := []journalapi.Event{}
+	grants, _, err := j.grantsOf(q.Reader)
 	if err != nil {
-		return out, err
+		return none, err
 	}
 	min := q.MinImportance
 	if min == "" {
 		min = rules.Low
 	}
-	if q.Limit < 1 || q.After < 0 || rules.ImportanceRank(min) == 0 {
-		return out, ErrBadQuery
+	if q.Limit < 1 || q.Limit > MaxEventsLimit || q.After < 0 || rules.ImportanceRank(min) == 0 {
+		return none, ErrBadQuery
 	}
 	subs, toks := access.Pairs(grants)
 	rows, err := j.db.QueryContext(ctx, `SELECT e.seq, e.record_type, e.data_subject, e.key, e.kind, e.schema_version,
@@ -197,9 +230,10 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 		ORDER BY e.seq LIMIT $7`,
 		subs, toks, q.After, nullable(q.Subject), q.Type, rules.AtLeast(min), q.Limit)
 	if err != nil {
-		return out, err
+		return none, err
 	}
 	defer rows.Close()
+	out := []journalapi.Event{}
 	for rows.Next() {
 		var e journalapi.Event
 		var aud, prevAud, fields, changed, scan, notify []byte
@@ -207,10 +241,10 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 		if err := rows.Scan(&e.Seq, &e.RecordType, &e.DataSubject, &e.Key, &e.Kind, &e.SchemaVersion, &e.Scope,
 			&e.PrevScope, &aud, &prevAud, &fields, &changed, &scan, &e.ObservedAt, &prevObs, &e.Approximate,
 			&e.Actor, &e.Importance, &e.Rule, &notify, &e.GroupKey); err != nil {
-			return []journalapi.Event{}, err
+			return none, err
 		}
 		if err := json.Unmarshal(aud, &e.Audience); err != nil {
-			return []journalapi.Event{}, err
+			return none, err
 		}
 		if !j.rowVisible(grants, e.DataSubject, e.Audience) {
 			j.o.Metrics.VisibilityMismatch()
@@ -223,20 +257,27 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 		var prevAudience []string
 		if audienceChanged {
 			if err := json.Unmarshal(prevAud, &prevAudience); err != nil {
-				return []journalapi.Event{}, fmt.Errorf("event %d: prev_audience: %w", e.Seq, err)
+				return none, fmt.Errorf("event %d: prev_audience: %w", e.Seq, err)
 			}
 		}
 		if prevObs.Valid {
 			t := prevObs.Time
 			e.PrevObservedAt = &t
 		}
+		// Across an audience change the previous scope and the previous
+		// observation time belong to the old audience: a reader outside it
+		// gets neither (4.8).
+		if audienceChanged && !access.Visible(grants, e.DataSubject, prevAudience) {
+			e.PrevScope = ""
+			e.PrevObservedAt = nil
+		}
 		if err := j.fillEventValues(&e, grants, prevAudience, audienceChanged, fields, changed, scan); err != nil {
-			return []journalapi.Event{}, fmt.Errorf("event %d: %w", e.Seq, err)
+			return none, fmt.Errorf("event %d: %w", e.Seq, err)
 		}
 		if notify != nil {
 			var ns []rules.Notice
 			if err := json.Unmarshal(notify, &ns); err != nil {
-				return []journalapi.Event{}, fmt.Errorf("event %d: notify: %w", e.Seq, err)
+				return none, fmt.Errorf("event %d: notify: %w", e.Seq, err)
 			}
 			// rules.Notice is journalapi.Notice, so the filtered list is the wire form.
 			e.Notify = access.Notices(grants, e.DataSubject, ns)
@@ -244,12 +285,18 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return []journalapi.Event{}, err
+		return none, err
 	}
 	return out, nil
 }
 
 // fillEventValues decodes, renames forward and masks an event's values.
+//
+// group_key is derived from field values when the event is written. Rule
+// compilation refuses group_by entries that name a text field, so a group key
+// carries no untrusted text; as defence in depth the key is dropped here
+// whenever any text value of the event is withheld by its scan verdict, so a
+// withheld value (or a digest of it) cannot reach a reader through the key.
 func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, prevAudience []string, audienceChanged bool, fields, changed, scan []byte) error {
 	k := j.kindsOf(e.RecordType)
 	name := func(f string) string { return j.o.Registry.ForwardName(e.RecordType, e.SchemaVersion, f) }
@@ -261,8 +308,12 @@ func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, pr
 	for f, v := range es {
 		verdicts[name(f)] = v
 	}
+	withheldText := false
 	mask := func(f string, v json.RawMessage, verdict string) json.RawMessage {
 		if _, scanned := verdicts[f]; scanned || k.isText(f) {
+			if v != nil && verdict != record.VerdictPass {
+				withheldText = true
+			}
 			return access.Text(v, verdict)
 		}
 		return v
@@ -304,6 +355,9 @@ func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, pr
 	default:
 		return fmt.Errorf("unknown event kind %q", e.Kind)
 	}
+	if withheldText {
+		e.GroupKey = ""
+	}
 	return nil
 }
 
@@ -317,10 +371,16 @@ func nilIfNull(v json.RawMessage) json.RawMessage {
 // Counts returns live records and events by importance since since, per
 // subject and record type, for the visible rows only (4.12). No values. The
 // result is never nil.
+//
+// The queries group by audience as well, so each group can be checked again
+// with the Go visibility rule before it is added to a total; a group that
+// fails the check is dropped and counted (VisibilityMismatch), as in State
+// and Events.
 func (j *Journal) Counts(ctx context.Context, reader string, subject *string, since time.Time) ([]journalapi.Count, error) {
-	grants, err := j.grantsOf(reader)
+	none := []journalapi.Count{}
+	grants, _, err := j.grantsOf(reader)
 	if err != nil {
-		return []journalapi.Count{}, err
+		return none, err
 	}
 	subs, toks := access.Pairs(grants)
 	type key struct{ s, t string }
@@ -332,43 +392,62 @@ func (j *Journal) Counts(ctx context.Context, reader string, subject *string, si
 		}
 		return acc[k]
 	}
-	live, err := j.db.QueryContext(ctx, `SELECT c.data_subject, c.record_type, count(*) FROM record_current c
+	live, err := j.db.QueryContext(ctx, `SELECT c.data_subject, c.record_type, to_jsonb(c.audience), count(*) FROM record_current c
 		WHERE NOT c.removed AND `+visibleSQL("c")+` AND ($3::text IS NULL OR c.data_subject = $3)
-		GROUP BY 1, 2`, subs, toks, nullable(subject))
+		GROUP BY c.data_subject, c.record_type, c.audience`, subs, toks, nullable(subject))
 	if err != nil {
-		return []journalapi.Count{}, err
+		return none, err
 	}
 	for live.Next() {
 		var s, t string
+		var aud []byte
 		var n int
-		if err := live.Scan(&s, &t, &n); err != nil {
+		if err := live.Scan(&s, &t, &aud, &n); err != nil {
 			live.Close()
-			return []journalapi.Count{}, err
+			return none, err
 		}
-		get(s, t).Live = n
+		var audience []string
+		if err := json.Unmarshal(aud, &audience); err != nil {
+			live.Close()
+			return none, err
+		}
+		if !j.rowVisible(grants, s, audience) {
+			j.o.Metrics.VisibilityMismatch()
+			continue
+		}
+		get(s, t).Live += n
 	}
 	err = live.Err()
 	live.Close()
 	if err != nil {
-		return []journalapi.Count{}, err
+		return none, err
 	}
-	evs, err := j.db.QueryContext(ctx, `SELECT e.data_subject, e.record_type, e.importance, count(*) FROM record_event e
+	evs, err := j.db.QueryContext(ctx, `SELECT e.data_subject, e.record_type, to_jsonb(e.audience), e.importance, count(*) FROM record_event e
 		WHERE e.observed_at >= $4 AND `+visibleSQL("e")+` AND ($3::text IS NULL OR e.data_subject = $3)
-		GROUP BY 1, 2, 3`, subs, toks, nullable(subject), since)
+		GROUP BY e.data_subject, e.record_type, e.audience, e.importance`, subs, toks, nullable(subject), since)
 	if err != nil {
-		return []journalapi.Count{}, err
+		return none, err
 	}
 	defer evs.Close()
 	for evs.Next() {
 		var s, t, imp string
+		var aud []byte
 		var n int
-		if err := evs.Scan(&s, &t, &imp, &n); err != nil {
-			return []journalapi.Count{}, err
+		if err := evs.Scan(&s, &t, &aud, &imp, &n); err != nil {
+			return none, err
 		}
-		get(s, t).Events[imp] = n
+		var audience []string
+		if err := json.Unmarshal(aud, &audience); err != nil {
+			return none, err
+		}
+		if !j.rowVisible(grants, s, audience) {
+			j.o.Metrics.VisibilityMismatch()
+			continue
+		}
+		get(s, t).Events[imp] += n
 	}
 	if err := evs.Err(); err != nil {
-		return []journalapi.Count{}, err
+		return none, err
 	}
 	out := make([]journalapi.Count, 0, len(acc))
 	for _, c := range acc {

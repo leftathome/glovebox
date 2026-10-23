@@ -104,6 +104,7 @@ func TestStateIsFilteredByTheReadersGrants(t *testing.T) {
 	if got := r.stateKeys("e_parent1", StateQuery{Subject: strp("e_nobody")}); len(got) != 0 {
 		t.Errorf("unknown subject: %v", got)
 	}
+	r.noMismatch()
 }
 
 // Every audience token against every reader, in state, events and counts.
@@ -149,6 +150,7 @@ func TestAudienceGrantsAcrossEveryReader(t *testing.T) {
 			t.Errorf("counts as %s: %d live, want %d", reader, got, len(keys))
 		}
 	}
+	r.noMismatch()
 }
 
 func TestReadersOutsideTheRosterSeeNothing(t *testing.T) {
@@ -156,32 +158,32 @@ func TestReadersOutsideTheRosterSeeNothing(t *testing.T) {
 	pub := rec("k", "e_child1", `{"title": "A"}`)
 	pub.Audience = []string{"public"}
 	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, pub))
-	check := func(label string) {
+	check := func(label string, want error) {
 		t.Helper()
 		for _, who := range []string{"e_stranger", "", "E_PARENT1", " e_parent1"} {
 			rows, err := r.j.State(ctx, StateQuery{Reader: who})
-			if !errors.Is(err, ErrUnknownReader) || len(rows) != 0 || rows == nil {
+			if !errors.Is(err, want) || len(rows) != 0 || rows == nil {
 				t.Errorf("%s: state as %q: %v %v", label, who, rows, err)
 			}
 			evs, err := r.j.Events(ctx, EventsQuery{Reader: who, Limit: 10})
-			if !errors.Is(err, ErrUnknownReader) || len(evs) != 0 || evs == nil {
+			if !errors.Is(err, want) || len(evs) != 0 || evs == nil {
 				t.Errorf("%s: events as %q: %v %v", label, who, evs, err)
 			}
 			cs, err := r.j.Counts(ctx, who, nil, T0.Add(-time.Hour*24))
-			if !errors.Is(err, ErrUnknownReader) || len(cs) != 0 || cs == nil {
+			if !errors.Is(err, want) || len(cs) != 0 || cs == nil {
 				t.Errorf("%s: counts as %q: %v %v", label, who, cs, err)
 			}
 		}
 	}
-	check("roster loaded")
+	check("roster loaded", ErrUnknownReader)
 	// A public row is visible to members only; the guest is a member.
 	if got := r.stateKeys("e_guest1", StateQuery{}); len(got) != 1 {
 		t.Errorf("a member sees public rows: %v", got)
 	}
 	r.j.o.Roster = func() *roster.Roster { return nil }
-	check("nil roster")
+	check("nil roster", ErrNoRoster)
 	for _, who := range []string{"e_parent1", "e_child1"} {
-		if _, err := r.j.State(ctx, StateQuery{Reader: who}); !errors.Is(err, ErrUnknownReader) {
+		if _, err := r.j.State(ctx, StateQuery{Reader: who}); !errors.Is(err, ErrNoRoster) {
 			t.Errorf("nil roster, member %s: %v", who, err)
 		}
 	}
@@ -416,6 +418,7 @@ func TestEventsPagingVisitsEverythingOnceAscendingAcrossHiddenGaps(t *testing.T)
 			t.Errorf("child sees %s", e.Key)
 		}
 	}
+	r.noMismatch()
 }
 
 // 4.8: a value from the old audience reaches only readers of both.
@@ -461,6 +464,7 @@ func TestEventsWithholdOldValuesAcrossAnAudienceChange(t *testing.T) {
 	if got := r.stateKeys("e_child1", StateQuery{}); len(got) != 0 {
 		t.Errorf("child state %v", got)
 	}
+	r.noMismatch()
 }
 
 // An unchanged audience releases old values; a changed one is judged by the
@@ -751,6 +755,7 @@ func TestCountsHaveNoValuesAndFollowGrants(t *testing.T) {
 	if counts, _ := r.j.Counts(ctx, "e_guest1", nil, T0.Add(-24*time.Hour)); len(counts) != 0 {
 		t.Errorf("guest %+v", counts)
 	}
+	r.noMismatch()
 }
 
 func TestCountsWindowAndRemoval(t *testing.T) {

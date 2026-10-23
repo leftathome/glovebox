@@ -224,7 +224,27 @@ Choices this schema makes where the spec leaves room (also in the plan,
   JSON is decoded strictly (unknown keys are errors). A `group_key` is
   `entry=value` pairs joined by `/`, values escaped; an absent field is
   `%00`; a key over 512 bytes is replaced by `sha256=<hex of the key>`.
-  Notify tokens are syntax-checked only.
+  Notify tokens are syntax-checked only. `group_by` may not name a `text`
+  field (`rules.Compile` refuses it): a group key is stored and returned as
+  written, outside the per-value scan verdicts, so it must carry no untrusted
+  text and no digest of it. As defence in depth the read path drops an
+  event's `group_key` when any text value of the event is withheld.
+
+- Reads (spec 4.12): the reader is a roster member; the journal computes the
+  grants from the roster in use and refuses a reader who is not in it
+  (`ErrUnknownReader`, 403) or any read while no roster is loaded
+  (`ErrNoRoster`, 503). Every row is filtered in SQL and checked again in Go
+  (counts per group of subject, type, audience); a disagreement drops the
+  row and counts `VisibilityMismatch`. A page the re-check empties entirely
+  fails closed, stalls that reader's cursor and fires the alert. The state,
+  events and counts scans over the rows the audience index leaves are
+  accepted as cheap at household scale.
+- Shape leaks the spec accepts (4.8): a reader who matches the new audience
+  but not the old one still sees, on an `updated` event, which field names
+  changed (the keys of `changed`), and a rule's `rule`, `importance` and
+  `notify` advice fires on a `field_becomes` match whose before-value that
+  reader may not see. Their old values, `prev_scope` and `prev_observed_at`
+  are withheld, and `prev_audience` is never on the wire.
 
 ## Migration history
 
