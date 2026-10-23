@@ -8245,7 +8245,7 @@ git commit -m "feat(journal): household notes with a fixed audience, keyed by wr
 - Create: `internal/journal/read.go`
 - Test: `internal/journal/read_test.go`
 
-- [ ] **Step 19.1: Write the failing tests.**
+- [x] **Step 19.1: Write the failing tests.**
 
 `internal/journal/read_test.go`:
 
@@ -8477,11 +8477,11 @@ func (r *rig) withVersion(t *testing.T, v record.Type) {
 }
 ```
 
-- [ ] **Step 19.2: Run; expect a build failure** (`undefined: StateQuery`).
+- [x] **Step 19.2: Run; expect a build failure** (`undefined: StateQuery`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 19.3: Write `read.go`.**
+- [x] **Step 19.3: Write `read.go`.**
 
 `internal/journal/read.go`:
 
@@ -8786,11 +8786,11 @@ func (j *Journal) Counts(ctx context.Context, grants []roster.Grant, subject *st
 }
 ```
 
-- [ ] **Step 19.4: Run; expect PASS.**
+- [x] **Step 19.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 19.5: Commit.**
+- [x] **Step 19.5: Commit.**
 
 ```bash
 git add internal/journal

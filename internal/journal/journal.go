@@ -48,6 +48,8 @@ type Options struct {
 type Journal struct {
 	db *sql.DB
 	o  Options
+	// visible overrides the Go half of the read visibility rule; tests only.
+	visible func(grants []roster.Grant, subject string, audience []string) bool
 }
 
 // New wraps an open database.
