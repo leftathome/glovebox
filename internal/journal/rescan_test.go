@@ -397,6 +397,12 @@ func TestRescanBatches(t *testing.T) {
 				+ (SELECT count(*) FROM record_event WHERE scan->'comment'->>'new' <> 'pass')`).Scan(&notPass); err != nil || notPass != 0 {
 				t.Errorf("%d values left unjudged: %v", notPass, err)
 			}
+			// A second pass over everything judges each row exactly once: a
+			// cursor that repeats the last row of a batch counts it twice.
+			again := r.rescan(t, true)
+			if again.CurrentRows != n || again.EventRows != n || again.Released != 0 || again.Withheld != 0 {
+				t.Errorf("all: %+v", again)
+			}
 		})
 	}
 }
@@ -538,25 +544,29 @@ func TestRescanScansWithoutHoldingLocks(t *testing.T) {
 }
 
 // A change that lands between the rescan's read and its write is never
-// overwritten with a verdict computed from the value it replaced.
+// overwritten with a verdict computed from the value it replaced; the row is
+// judged again from what it is now (unless the change already judged it with
+// the current scanner).
 func TestRescanDoesNotWriteAStaleVerdict(t *testing.T) {
 	cases := []struct {
-		name   string
-		change func(t *testing.T, r *rig)
-		want   record.ScanEntry
+		name     string
+		change   func(t *testing.T, r *rig)
+		want     record.ScanEntry
+		rows     int
+		withheld int
 	}{
 		{"an Apply replaced the value", func(t *testing.T, r *rig) {
 			r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Minute), true, rec("k", "e_child1", `{"comment": "INJECT replaced"}`)))
-		}, record.ScanEntry{Verdict: "quarantine", ScannerVersion: "scanner-2"}},
+		}, record.ScanEntry{Verdict: "quarantine", ScannerVersion: "scanner-2"}, 0, 0},
 		{"the content hash moved", func(t *testing.T, r *rig) {
-			r.exec(t, `UPDATE record_current SET content_hash = decode('00', 'hex')`)
-		}, record.ScanEntry{Verdict: "pass", ScannerVersion: "scanner-1"}},
+			r.exec(t, `UPDATE record_current SET content_hash = decode('00', 'hex'), fields = '{"comment": "INJECT x"}'`)
+		}, record.ScanEntry{Verdict: "quarantine", ScannerVersion: "scanner-2"}, 1, 1},
 		{"the event sequence moved", func(t *testing.T, r *rig) {
-			r.exec(t, `UPDATE record_current SET last_event_seq = last_event_seq + 1000`)
-		}, record.ScanEntry{Verdict: "pass", ScannerVersion: "scanner-1"}},
+			r.exec(t, `UPDATE record_current SET last_event_seq = last_event_seq + 1000, fields = '{"comment": "INJECT x"}'`)
+		}, record.ScanEntry{Verdict: "quarantine", ScannerVersion: "scanner-2"}, 1, 1},
 		{"the verdicts moved", func(t *testing.T, r *rig) {
-			r.exec(t, `UPDATE record_current SET scan = '{"comment": {"verdict": "error", "scanner_version": "scanner-9"}}'`)
-		}, record.ScanEntry{Verdict: "error", ScannerVersion: "scanner-9"}},
+			r.exec(t, `UPDATE record_current SET scan = '{"comment": {"verdict": "error", "scanner_version": "scanner-2"}}'`)
+		}, record.ScanEntry{Verdict: "error", ScannerVersion: "scanner-2"}, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -571,8 +581,8 @@ func TestRescanDoesNotWriteAStaleVerdict(t *testing.T) {
 			}
 			r.j.o.Scanner = s
 			res := r.rescan(t, false)
-			if res.CurrentRows != 0 || res.Released != 0 || res.Withheld != 0 {
-				t.Errorf("a stale row was counted: %+v", res)
+			if res.CurrentRows != tc.rows || res.Released != 0 || res.Withheld != tc.withheld {
+				t.Errorf("counts %+v", res)
 			}
 			if got := r.commentVerdict("e_child1", "k"); got != tc.want {
 				t.Errorf("verdict %+v, want %+v", got, tc.want)
@@ -581,25 +591,105 @@ func TestRescanDoesNotWriteAStaleVerdict(t *testing.T) {
 	}
 }
 
-// Events keep their own stale-write guard: verdicts changed under the
-// rescan (by another rescan, say) are not replaced by what it computed.
-func TestRescanDoesNotWriteAStaleEventVerdict(t *testing.T) {
+// An Apply that changes only title while the rescan is in the middle of the
+// row makes the rescan skip its write. Apply copies the verdict of comment,
+// with its scanner version, so comment still holds the old scanner's pass: the
+// rescan must read the row again and judge it, not return with that pass.
+func TestProbeSkippedRowKeepsOldVersionPass(t *testing.T) {
 	r := newRig(t)
-	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "INJECT"}`)))
+	// scanner-1 passed it (a false negative of the old scanner).
+	r.exec(t, `UPDATE record_current SET scan = '{"comment": {"verdict": "pass", "scanner_version": "scanner-1"}}'`)
+	r.exec(t, `UPDATE record_event SET scan = '{"comment": {"new": "pass", "scanner_version": "scanner-1"}}'`)
 	var once firstOnly
-	s := newFuncScanner(passAll)
-	s.hook = func(call int) {
-		if call == 2 && once.first() { // the first scan is the current row's, the second the event's
-			r.exec(t, `UPDATE record_event SET scan = '{"comment": {"new": "error", "scanner_version": "scanner-9"}}'`)
+	s := newFuncScanner(injectAware) // scanner-2 rejects INJECT
+	s.hook = func(int) {
+		if once.first() {
+			r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"title": "B", "comment": "INJECT"}`)))
 		}
 	}
 	r.j.o.Scanner = s
 	res := r.rescan(t, false)
-	if res.EventRows != 0 || res.CurrentRows != 1 || res.Released != 1 {
+	if got := r.commentVerdict("e_child1", "k"); got != (record.ScanEntry{Verdict: "quarantine", ScannerVersion: "scanner-2"}) {
+		t.Errorf("a value scanner-2 rejects keeps its old pass after Rescan returned nil: %+v", got)
+	}
+	if res.CurrentRows != 1 || res.Withheld < 1 {
 		t.Errorf("%+v", res)
 	}
-	if got := evScan(r.events("e_child1")[0])["comment"]; got != (record.EventScan{New: "error", ScannerVersion: "scanner-9"}) {
-		t.Errorf("event scan %+v", got)
+}
+
+// A row that keeps changing is retried a bounded number of times and then
+// fails the rescan: it never reports success with such a row left.
+func TestRescanFailsWhenARowKeepsChanging(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-3*time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "x"}`)))
+	n := 1
+	s := newFuncScanner(passAll)
+	s.hook = func(int) {
+		n++
+		r.apply(snap(n, "e_child1", "c1", T0.Add(-2*time.Hour+time.Duration(n)*time.Second), true,
+			rec("k", "e_child1", fmt.Sprintf(`{"title": "T%d", "comment": "x"}`, n))))
+	}
+	r.j.o.Scanner = s
+	_, err := r.j.Rescan(rescanCtx(t), false)
+	if err == nil || !strings.Contains(err.Error(), "kept changing") {
+		t.Fatalf("error %v", err)
+	}
+	if calls := s.count(); calls != rescanRetries+1 {
+		t.Errorf("%d attempts, want %d", calls, rescanRetries+1)
+	}
+}
+
+// Events keep their own stale-write guard, and a retry: verdicts changed under
+// the rescan (by another rescan, say) are not replaced by what it computed from
+// the old read. An event the other writer judged with the current version is
+// left as it is; one it left with another version is judged again.
+func TestRescanDoesNotWriteAStaleEventVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name, version string
+		want          record.EventScan
+		rows          int
+	}{
+		{"judged by the current version", "scanner-2", record.EventScan{New: "error", ScannerVersion: "scanner-2"}, 0},
+		{"left with another version", "scanner-9", record.EventScan{New: "pass", ScannerVersion: "scanner-2"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+			var once firstOnly
+			s := newFuncScanner(passAll)
+			s.hook = func(call int) {
+				if call == 2 && once.first() { // the first scan is the current row's, the second the event's
+					r.exec(t, `UPDATE record_event SET scan = '{"comment": {"new": "error", "scanner_version": "`+tc.version+`"}}'`)
+				}
+			}
+			r.j.o.Scanner = s
+			res := r.rescan(t, false)
+			if res.EventRows != tc.rows || res.CurrentRows != 1 {
+				t.Errorf("%+v", res)
+			}
+			if got := evScan(r.events("e_child1")[0])["comment"]; got != tc.want {
+				t.Errorf("event scan %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// An event that keeps changing fails the rescan too.
+func TestRescanFailsWhenAnEventKeepsChanging(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "x"}`)))
+	n := 0
+	s := newFuncScanner(passAll)
+	s.hook = func(call int) {
+		if call > 1 { // the first scan is the current row's
+			n++
+			r.exec(t, `UPDATE record_event SET scan = '{"comment": {"new": "error", "scanner_version": "scanner-`+fmt.Sprint(10+n)+`"}}'`)
+		}
+	}
+	r.j.o.Scanner = s
+	if _, err := r.j.Rescan(rescanCtx(t), false); err == nil || !strings.Contains(err.Error(), "kept changing") {
+		t.Fatalf("error %v", err)
 	}
 }
 
@@ -768,19 +858,20 @@ func TestRescanFinishesCurrentRowsBeforeLockingEvents(t *testing.T) {
 // not the one it read: the lock is what makes compare-then-write atomic.
 func TestRescanWaitsForAConcurrentWriterAndSkipsItsRow(t *testing.T) {
 	for _, tc := range []struct{ name, change, read string }{
-		{"current", `UPDATE record_current SET content_hash = decode('00', 'hex'), last_event_seq = last_event_seq + 1`,
-			`SELECT scan->'comment'->>'scanner_version' FROM record_current`},
-		{"events", `UPDATE record_event SET scan = '{"comment": {"new": "error", "scanner_version": "scanner-9"}}'`,
-			`SELECT scan->'comment'->>'scanner_version' FROM record_event`},
+		{"current", `UPDATE record_current SET content_hash = decode('00', 'hex'), last_event_seq = last_event_seq + 1,
+			fields = '{"comment": "INJECT x"}', scan = '{"comment": {"verdict": "quarantine", "scanner_version": "scanner-2"}}'`,
+			`SELECT scan->'comment'->>'verdict' FROM record_current`},
+		{"events", `UPDATE record_event SET scan = '{"comment": {"new": "error", "scanner_version": "scanner-2"}}'`,
+			`SELECT scan->'comment'->>'new' FROM record_event`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
-			r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+			r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "fine"}`)))
 			if tc.name == "events" {
 				// the current row must not be the one that waits
 				r.exec(t, `UPDATE record_current SET scan = '{"comment": {"verdict": "pass", "scanner_version": "scanner-2"}}'`)
 			}
-			r.j.o.Scanner = releasingScanner{}
+			r.j.o.Scanner = newFuncScanner(injectAware)
 			holder, err := r.j.db.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -809,15 +900,15 @@ func TestRescanWaitsForAConcurrentWriterAndSkipsItsRow(t *testing.T) {
 			if o.err != nil {
 				t.Fatal(o.err)
 			}
-			var sv string
-			if err := r.j.db.QueryRow(tc.read).Scan(&sv); err != nil {
+			var got string
+			if err := r.j.db.QueryRow(tc.read).Scan(&got); err != nil {
 				t.Fatal(err)
 			}
-			if tc.name == "current" && (o.res.CurrentRows != 0 || sv != "scanner-1") {
-				t.Errorf("the rescan overwrote a row changed under it: %+v %q", o.res, sv)
+			if tc.name == "current" && (o.res.CurrentRows != 0 || got != "quarantine") {
+				t.Errorf("the rescan overwrote a row changed under it: %+v %q", o.res, got)
 			}
-			if tc.name == "events" && (o.res.EventRows != 0 || sv != "scanner-9") {
-				t.Errorf("the rescan overwrote an event changed under it: %+v %q", o.res, sv)
+			if tc.name == "events" && (o.res.EventRows != 0 || got != "error") {
+				t.Errorf("the rescan overwrote an event changed under it: %+v %q", o.res, got)
 			}
 		})
 	}
@@ -845,5 +936,136 @@ func TestRescanJudgesAnOldEventsFieldByItsActiveName(t *testing.T) {
 	}
 	if got := evScan(r.events("e_child1")[0])["comment"]; got != (record.EventScan{New: "pass", ScannerVersion: "scanner-2"}) {
 		t.Errorf("event scan %s", r.events("e_child1")[0].Scan)
+	}
+}
+
+// The old and the new value of an updated event are judged on their own: the
+// old one is INJECT and ends withheld, the new one is clean and ends released,
+// and a value the update added (no old value) gets no old verdict.
+func TestRescanJudgesOldAndNewOfAnUpdatedEventSeparately(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true,
+		rec("k", "e_child1", `{"comment": "INJECT"}`), rec("j", "e_child1", `{"title": "t"}`)))
+	r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Hour), true,
+		rec("k", "e_child1", `{"comment": "ok"}`), rec("j", "e_child1", `{"title": "t", "comment": "ok"}`)))
+	// As if an older scanner had it the wrong way round.
+	r.exec(t, `UPDATE record_event SET scan = '{"comment": {"old": "pass", "new": "quarantine", "scanner_version": "scanner-1"}}'
+		WHERE key = 'k' AND kind = 'updated'`)
+	r.j.o.Scanner = newFuncScanner(injectAware)
+	res := r.rescan(t, false)
+	if res.Withheld < 1 || res.Released < 1 {
+		t.Errorf("%+v", res)
+	}
+	for _, e := range r.events("e_child1") {
+		if e.Kind != "updated" {
+			continue
+		}
+		got := evScan(e)["comment"]
+		switch e.Key {
+		case "k":
+			if got != (record.EventScan{Old: "quarantine", New: "pass", ScannerVersion: "scanner-2"}) {
+				t.Errorf("k: %+v", got)
+			}
+		case "j":
+			if got.Old != "" || got.New != "pass" {
+				t.Errorf("j: an added value has an old verdict: %+v", got)
+			}
+		}
+	}
+}
+
+// Created, removed and restored events all carry values to judge.
+func TestRescanCoversRestoredEvents(t *testing.T) {
+	r := newRig(t)
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-3*time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+	r.apply(snap(2, "e_child1", "c1", T0.Add(-2*time.Hour), true))
+	r.apply(snap(3, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT again"}`)))
+	ev := r.events("e_child1")
+	if len(ev) != 3 || ev[2].Kind != "restored" {
+		t.Fatalf("events %+v", ev)
+	}
+	r.j.o.Scanner = releasingScanner{}
+	res := r.rescan(t, false)
+	if res.EventRows != 3 || res.CurrentRows != 1 || res.Released != 4 { // current, created new, removed old, restored new
+		t.Errorf("release: %+v", res)
+	}
+	if got := evScan(r.events("e_child1")[2])["comment"]; got != (record.EventScan{New: "pass", ScannerVersion: "scanner-2"}) {
+		t.Errorf("restored: %+v", got)
+	}
+	s3 := newFuncScanner(injectAware)
+	s3.version = "scanner-3"
+	r.j.o.Scanner = s3
+	res = r.rescan(t, false)
+	if res.EventRows != 3 || res.Withheld != 4 || res.Released != 0 {
+		t.Errorf("withhold: %+v", res)
+	}
+	if got := evScan(r.events("e_child1")[2])["comment"]; got != (record.EventScan{New: "quarantine", ScannerVersion: "scanner-3"}) {
+		t.Errorf("restored: %+v", got)
+	}
+}
+
+// Rows the rescan cannot decode abort it with an error; they are not skipped
+// and not guessed at.
+func TestRescanFailsOnUndecodableRows(t *testing.T) {
+	for name, q := range map[string]string{
+		"current scan":   `UPDATE record_current SET scan = '{"comment": 5}'`,
+		"current fields": `UPDATE record_current SET fields = '[]'`,
+		"event scan":     `UPDATE record_event SET scan = '{"comment": 5}'`,
+		"event fields":   `UPDATE record_event SET fields = '[]'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+			if name == "event fields" {
+				r.exec(t, `ALTER TABLE record_event DISABLE TRIGGER USER`) // the append-only guard forbids the corruption below
+			}
+			r.exec(t, q)
+			r.j.o.Scanner = releasingScanner{}
+			if _, err := r.j.Rescan(rescanCtx(t), true); err == nil {
+				t.Error("an undecodable row did not fail the rescan")
+			}
+		})
+	}
+}
+
+// 4.11: an updated event's old value carries the verdict, and the scanner
+// version, of the scan that judged it; the event does not claim the current
+// version for an old verdict it only copied.
+func TestProbeOldVerdictStampedWithNewVersion(t *testing.T) {
+	for _, tc := range []struct{ name, prev, wantVersion string }{
+		{"an older scanner judged it", `{"comment": {"verdict": "pass", "scanner_version": "scanner-1"}}`, "scanner-1"},
+		{"no verdict", `{}`, ""},
+		{"the current scanner judged it", `{"comment": {"verdict": "pass", "scanner_version": "scanner-2"}}`, "scanner-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "INJECT"}`)))
+			// scanner-1 passed INJECT (a false negative of the old scanner).
+			r.exec(t, `UPDATE record_current SET scan = '`+tc.prev+`'`)
+			r.j.o.Scanner = newFuncScanner(injectAware) // the upgrade
+			r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"title": "A", "comment": "ok"}`)))
+			upd := r.events("e_child1")[1]
+			got := evScan(upd)["comment"]
+			wantOld := "pass"
+			if tc.prev == `{}` {
+				wantOld = ""
+			}
+			if got != (record.EventScan{Old: wantOld, New: "pass", ScannerVersion: tc.wantVersion}) {
+				t.Fatalf("updated event scan %+v", got)
+			}
+			// The next rescan (not all) judges the old value again.
+			res := r.rescan(t, false)
+			got = evScan(r.events("e_child1")[1])["comment"]
+			if tc.wantVersion == "scanner-2" {
+				// Judged by the current version already: trusted, left alone.
+				if got != (record.EventScan{Old: "pass", New: "pass", ScannerVersion: "scanner-2"}) {
+					t.Errorf("%+v %+v", res, got)
+				}
+				return
+			}
+			if got != (record.EventScan{Old: "quarantine", New: "pass", ScannerVersion: "scanner-2"}) {
+				t.Errorf("INJECT stays released to readers: %+v (%+v)", got, res)
+			}
+		})
 	}
 }

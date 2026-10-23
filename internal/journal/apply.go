@@ -406,7 +406,17 @@ func (j *Journal) buildEvent(t record.Type, subject string, src eventSource, pre
 			}
 			es := record.EventScan{ScannerVersion: sv}
 			if c.Old != nil {
-				es.Old = prev.Scan[f].Verdict // a missing verdict stays "": withheld
+				// The old value keeps the verdict, and the scanner version,
+				// of the scan that judged it. The event carries one version
+				// for both sides: when the old value's came from another
+				// scanner (or it has none, and stays "": withheld), the
+				// event says so, and the next rescan judges both sides
+				// again instead of taking the old verdict for current.
+				old := prev.Scan[f]
+				es.Old = old.Verdict
+				if old.ScannerVersion != sv {
+					es.ScannerVersion = old.ScannerVersion
+				}
 			}
 			if c.New != nil {
 				es.New = scanNew(c.New)

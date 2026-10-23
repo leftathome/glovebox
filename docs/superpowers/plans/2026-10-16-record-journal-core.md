@@ -7541,6 +7541,8 @@ Notes for the implementer: `$8` (the event's `observed_at`) is both `first_seen_
 - A snapshot observed within `record.MaxFutureSkew` after an erasure is treated as pre-erasure (410); exactly erased_at + skew is accepted.
 - Extra tests live in `apply_more_test.go` and `apply_review_test.go`; `helpers_test.go` has `applyErr` besides `apply`.
 
+**NOTE (Task 15, fixed in the Task 21 review).** An updated event's `old` verdict is copied from the current row, so it carries the scanner version that judged it, not the version of the write: the event's `scanner_version` is the old verdict's version when that differs from the write's (`""` when the row had no verdict for the field), and the write's version otherwise. The one version covers both sides, so a later rescan that is not `all` re-judges the old and the new value of such an event instead of taking a copied verdict for current. Test `TestProbeOldVerdictStampedWithNewVersion`.
+
 - [x] **Step 15.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
@@ -9017,11 +9019,11 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 
 **NOTE (Task 21 implementation).** `rescan.go` and `rescan_test.go` as committed differ from the draft below:
 
-- Scanning happens outside every lock. The draft scanned inside the transaction that held the batch's rows `FOR UPDATE`, stalling Apply and Erase of those rows for the length of up to 100 scans. A batch now reads its rows with no lock, scans, then opens a transaction, locks the rows (`record_current` by primary key, or `record_event` by seq, `FOR UPDATE`) and writes. A current row is written only if, once locked, its `content_hash`, `last_event_seq` and `scan` equal what was read; an event only if its `scan` does. A row an Apply changed, another rescan judged or Erase deleted is left alone (the write is an `UPDATE`, never an insert) and is not counted. Counts are added to the result after the batch commits. The rescan never holds current and event rows in one transaction.
+- Scanning happens outside every lock. The draft scanned inside the transaction that held the batch's rows `FOR UPDATE`, stalling Apply and Erase of those rows for the length of up to 100 scans. A batch now reads its rows with no lock, scans, then opens a transaction, locks the rows (`record_current` by primary key, or `record_event` by seq, `FOR UPDATE`) and writes. A current row is written only if, once locked, its `content_hash`, `last_event_seq` and `scan` equal what was read; an event only if its `scan` does. A row Erase deleted stays deleted (the write is an `UPDATE`, never an insert). A row that still exists but changed (an Apply rewrote it, another rescan judged it) is not written from the stale read: it is read, scanned and written again, up to 5 times, because Apply copies the verdicts of the fields it did not change together with their scanner version, so the row may still hold an old scanner's pass (the version filter keeps what that Apply already judged from being scanned again). A row still changing after the last retry fails the rescan with an error, so `Rescan` never returns nil while a row it could not judge remains; a writer that outpaces the batches can starve a rescan this way, and a later run continues. Counts are added to the result after the batch commits. The rescan never holds current and event rows in one transaction.
 - Fail closed: a scanner answer other than the exact string `pass` never releases; an empty answer, a panic and a stored value that is not a string are verdict `error`. A nil `Options.Scanner` is an error, not a panic.
 - Text is decided as on read (`kindsOf`): a type the registry does not know has only text fields, and an event field's name is carried forward (`ForwardName`) before it is looked up in the active type. The draft skipped events of an unknown version and used the writing version's field kinds.
 - The scanner version is read once per rescan. Rows that fail to decode abort the rescan with an error naming the row.
-- Known limit, from Task 15: `buildEvent` stamps an updated event's `Old` verdict (copied from the current row) with the scanner version of the write, so a non-`all` rescan skips a field whose `Old` came from an older scanner. `all` judges it.
+- The Task 15 limit that an updated event's `Old` verdict was stamped with the write's scanner version is fixed in `buildEvent` (see the Task 15 note), so a non-`all` rescan selects such events.
 
 **Files:**
 - Create: `internal/journal/rescan.go`

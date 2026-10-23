@@ -18,6 +18,10 @@ import (
 // one transaction.
 const rescanBatch = 100
 
+// rescanRetries bounds how often a batch re-reads rows that changed under
+// it before the rescan gives up with an error.
+const rescanRetries = 5
+
 // Rescan re-judges stored text values (4.11) after a scanner or ruleset
 // upgrade and updates their verdicts in record_current and record_event,
 // releasing values the scanner now passes and withholding those it now
@@ -41,10 +45,18 @@ const rescanBatch = 100
 //
 // A row is written only if, once locked, it is exactly what was read: the
 // same content_hash, last_event_seq and scan for a current row, the same
-// scan for an event. A row an Apply changed meanwhile keeps the verdicts that
-// Apply gave it (it scanned the new value with the current scanner), a row
-// Erase deleted stays deleted (the write is an UPDATE, never an insert), and
-// a row another rescan updated is left as it now is.
+// scan for an event. A row Erase deleted stays deleted (the write is an
+// UPDATE, never an insert). A row that still exists but changed (an Apply
+// rewrote it, another rescan judged it) is not written from the stale read:
+// it is read, scanned and written again, up to rescanRetries times, because
+// an Apply copies the verdicts of the fields it did not change together with
+// the scanner version that judged them, so such a row may still hold an old
+// scanner's pass. The version filter keeps what the Apply already judged
+// from being scanned again. A row still changing after the last retry makes
+// Rescan fail: it never returns nil while a row it could not judge remains.
+// (A writer that changes the same rows faster than a batch can be re-judged
+// can starve the rescan this way; the error says so and a later run
+// continues.)
 func (j *Journal) Rescan(ctx context.Context, all bool) (journalapi.RescanResult, error) {
 	var res journalapi.RescanResult
 	if j.o.Scanner == nil {
@@ -113,55 +125,109 @@ func tally(t *journalapi.RescanResult, before, after string) {
 	}
 }
 
+func addResult(res *journalapi.RescanResult, b journalapi.RescanResult) {
+	res.CurrentRows += b.CurrentRows
+	res.EventRows += b.EventRows
+	res.Released += b.Released
+	res.Withheld += b.Withheld
+}
+
 // rescanUpdate is one row's new verdicts and what it must still look like
 // when it is locked.
 type rescanUpdate struct {
-	pk       [3]string
-	seq      int64 // current: last_event_seq; events: seq
-	hash     []byte
-	was      []byte // scan as read
-	scan     []byte // scan to write
-	counts   journalapi.RescanResult
-	isEvents bool
+	pk     [3]string
+	seq    int64 // current: last_event_seq; events: seq
+	hash   []byte
+	was    []byte // scan as read
+	scan   []byte // scan to write
+	counts journalapi.RescanResult
 }
 
+// ---- current rows ----------------------------------------------------
+
+type curRead struct {
+	pk                 [3]string
+	fields, scan, hash []byte
+	seq                int64
+}
+
+func (j *Journal) readCurrent(ctx context.Context, query string, args ...any) ([]curRead, error) {
+	rows, err := j.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []curRead
+	for rows.Next() {
+		var c curRead
+		if err := rows.Scan(&c.pk[0], &c.pk[1], &c.pk[2], &c.fields, &c.scan, &c.hash, &c.seq); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+const curColumns = `SELECT record_type, data_subject, key, fields, scan, content_hash, last_event_seq FROM record_current `
+
 func (j *Journal) rescanCurrent(ctx context.Context, after [3]string, all bool, sv string, res *journalapi.RescanResult) (int, [3]string, error) {
-	rows, err := j.db.QueryContext(ctx, `SELECT record_type, data_subject, key, fields, scan, content_hash, last_event_seq
-		FROM record_current WHERE (record_type, data_subject, key) > ($1, $2, $3)
+	rows, err := j.readCurrent(ctx, curColumns+`WHERE (record_type, data_subject, key) > ($1, $2, $3)
 		ORDER BY record_type, data_subject, key LIMIT $4`, after[0], after[1], after[2], rescanBatch)
 	if err != nil {
 		return 0, after, err
 	}
-	defer rows.Close()
-	n := 0
+	n := len(rows)
 	last := after
+	if n > 0 {
+		last = rows[n-1].pk
+	}
+	for attempt := 0; len(rows) > 0; attempt++ {
+		stale, err := j.judgeCurrent(ctx, rows, all, sv, res)
+		if err != nil {
+			return 0, after, err
+		}
+		if len(stale) == 0 {
+			break
+		}
+		if attempt == rescanRetries {
+			return 0, after, fmt.Errorf("journal: rescan: %d record_current rows kept changing under the rescan (first: %v); run it again", len(stale), stale[0])
+		}
+		var rt, ds, key []string
+		for _, pk := range stale {
+			rt, ds, key = append(rt, pk[0]), append(ds, pk[1]), append(key, pk[2])
+		}
+		rows, err = j.readCurrent(ctx, curColumns+`WHERE (record_type, data_subject, key) IN
+			(SELECT * FROM unnest($1::text[], $2::text[], $3::text[])) ORDER BY record_type, data_subject, key`, rt, ds, key)
+		if err != nil {
+			return 0, after, err
+		}
+	}
+	return n, last, nil
+}
+
+// judgeCurrent scans the rows and writes their verdicts. It returns the keys
+// of rows that exist but changed since they were read.
+func (j *Journal) judgeCurrent(ctx context.Context, rows []curRead, all bool, sv string, res *journalapi.RescanResult) ([][3]string, error) {
 	var updates []rescanUpdate
-	for rows.Next() {
-		var pk [3]string
-		var fieldsRaw, scanRaw, hash []byte
-		var seq int64
-		if err := rows.Scan(&pk[0], &pk[1], &pk[2], &fieldsRaw, &scanRaw, &hash, &seq); err != nil {
-			return 0, after, err
-		}
-		n++
-		last = pk
+	for _, r := range rows {
 		if err := ctx.Err(); err != nil {
-			return 0, after, err
+			return nil, err
 		}
+		pk := r.pk
 		var fields map[string]json.RawMessage
 		var scan record.ScanMap
-		if err := json.Unmarshal(fieldsRaw, &fields); err != nil {
-			return 0, after, fmt.Errorf("journal: rescan: %s/%s/%s: fields: %w", pk[0], pk[1], pk[2], err)
+		if err := json.Unmarshal(r.fields, &fields); err != nil {
+			return nil, fmt.Errorf("journal: rescan: %s/%s/%s: fields: %w", pk[0], pk[1], pk[2], err)
 		}
-		if err := json.Unmarshal(scanRaw, &scan); err != nil {
-			return 0, after, fmt.Errorf("journal: rescan: %s/%s/%s: scan: %w", pk[0], pk[1], pk[2], err)
+		if err := json.Unmarshal(r.scan, &scan); err != nil {
+			return nil, fmt.Errorf("journal: rescan: %s/%s/%s: scan: %w", pk[0], pk[1], pk[2], err)
 		}
 		k := j.kindsOf(pk[0])
 		next := maps.Clone(scan)
 		if next == nil {
 			next = record.ScanMap{}
 		}
-		u := rescanUpdate{pk: pk, seq: seq, hash: hash, was: scanRaw}
+		u := rescanUpdate{pk: pk, seq: r.seq, hash: r.hash, was: r.scan}
 		changed := false
 		for _, f := range slices.Sorted(maps.Keys(fields)) {
 			cur, scanned := scan[f]
@@ -179,16 +245,13 @@ func (j *Journal) rescanCurrent(ctx context.Context, after [3]string, all bool, 
 		u.scan, _ = json.Marshal(next)
 		updates = append(updates, u)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, after, err
-	}
-	_ = rows.Close()
 	if len(updates) == 0 {
-		return n, last, nil
+		return nil, nil
 	}
 	var batch journalapi.RescanResult
-	err = j.inTx(ctx, func(tx *sql.Tx) error {
-		batch = journalapi.RescanResult{}
+	var stale [][3]string
+	err := j.inTx(ctx, func(tx *sql.Tx) error {
+		batch, stale = journalapi.RescanResult{}, nil
 		var rt, ds, key []string
 		for _, u := range updates {
 			rt, ds, key = append(rt, u.pk[0]), append(ds, u.pk[1]), append(key, u.pk[2])
@@ -221,8 +284,12 @@ func (j *Journal) rescanCurrent(ctx context.Context, after [3]string, all bool, 
 		}
 		for _, u := range updates {
 			s, ok := now[u.pk]
-			if !ok || s.seq != u.seq || !bytes.Equal(s.hash, u.hash) || !bytes.Equal(s.scan, u.was) {
-				continue // deleted, or changed since it was read: its writer's verdicts stand
+			if !ok {
+				continue // erased: nothing to judge, nothing to bring back
+			}
+			if s.seq != u.seq || !bytes.Equal(s.hash, u.hash) || !bytes.Equal(s.scan, u.was) {
+				stale = append(stale, u.pk) // changed since it was read: judge it again
+				continue
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE record_current SET scan = $4
 				WHERE record_type = $1 AND data_subject = $2 AND key = $3`, u.pk[0], u.pk[1], u.pk[2], u.scan); err != nil {
@@ -235,70 +302,106 @@ func (j *Journal) rescanCurrent(ctx context.Context, after [3]string, all bool, 
 		return nil
 	})
 	if err != nil {
-		return 0, after, err
+		return nil, err
 	}
 	addResult(res, batch)
-	return n, last, nil
+	return stale, nil
 }
 
-func addResult(res *journalapi.RescanResult, b journalapi.RescanResult) {
-	res.CurrentRows += b.CurrentRows
-	res.EventRows += b.EventRows
-	res.Released += b.Released
-	res.Withheld += b.Withheld
+// ---- events ----------------------------------------------------------
+
+type evRead struct {
+	seq                   int64
+	rt, kind              string
+	version               int
+	fields, changed, scan []byte
 }
+
+func (j *Journal) readEvents(ctx context.Context, query string, args ...any) ([]evRead, error) {
+	rows, err := j.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []evRead
+	for rows.Next() {
+		var e evRead
+		if err := rows.Scan(&e.seq, &e.rt, &e.version, &e.kind, &e.fields, &e.changed, &e.scan); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+const evColumns = `SELECT seq, record_type, schema_version, kind, fields, changed, scan FROM record_event `
 
 func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, sv string, res *journalapi.RescanResult) (int, int64, error) {
-	rows, err := j.db.QueryContext(ctx, `SELECT seq, record_type, schema_version, kind, fields, changed, scan
-		FROM record_event WHERE seq > $1 ORDER BY seq LIMIT $2`, after, rescanBatch)
+	rows, err := j.readEvents(ctx, evColumns+`WHERE seq > $1 ORDER BY seq LIMIT $2`, after, rescanBatch)
 	if err != nil {
 		return 0, after, err
 	}
-	defer rows.Close()
-	n := 0
+	n := len(rows)
 	last := after
+	if n > 0 {
+		last = rows[n-1].seq
+	}
+	for attempt := 0; len(rows) > 0; attempt++ {
+		stale, err := j.judgeEvents(ctx, rows, all, sv, res)
+		if err != nil {
+			return 0, after, err
+		}
+		if len(stale) == 0 {
+			break
+		}
+		if attempt == rescanRetries {
+			return 0, after, fmt.Errorf("journal: rescan: %d record_event rows kept changing under the rescan (first: seq %d); run it again", len(stale), stale[0])
+		}
+		rows, err = j.readEvents(ctx, evColumns+`WHERE seq = ANY($1) ORDER BY seq`, stale)
+		if err != nil {
+			return 0, after, err
+		}
+	}
+	return n, last, nil
+}
+
+// judgeEvents scans the events and writes their verdicts. It returns the
+// seq of events that exist but whose verdicts changed since they were read.
+func (j *Journal) judgeEvents(ctx context.Context, rows []evRead, all bool, sv string, res *journalapi.RescanResult) ([]int64, error) {
 	var updates []rescanUpdate
-	for rows.Next() {
-		var seq int64
-		var rt, kind string
-		var version int
-		var fieldsRaw, changedRaw, scanRaw []byte
-		if err := rows.Scan(&seq, &rt, &version, &kind, &fieldsRaw, &changedRaw, &scanRaw); err != nil {
-			return 0, after, err
-		}
-		n++
-		last = seq
+	for _, r := range rows {
 		if err := ctx.Err(); err != nil {
-			return 0, after, err
+			return nil, err
 		}
+		seq, rt, version := r.seq, r.rt, r.version
 		var scan map[string]record.EventScan
-		if err := json.Unmarshal(scanRaw, &scan); err != nil {
-			return 0, after, fmt.Errorf("journal: rescan: event %d: scan: %w", seq, err)
+		if err := json.Unmarshal(r.scan, &scan); err != nil {
+			return nil, fmt.Errorf("journal: rescan: event %d: scan: %w", seq, err)
 		}
 		// Old and new value of every field the event carries; nil is absent.
 		type pair struct{ old, new json.RawMessage }
 		values := map[string]pair{}
-		switch kind {
+		switch r.kind {
 		case "created", "restored":
 			var f map[string]json.RawMessage
-			if err := json.Unmarshal(fieldsRaw, &f); err != nil {
-				return 0, after, fmt.Errorf("journal: rescan: event %d: fields: %w", seq, err)
+			if err := json.Unmarshal(r.fields, &f); err != nil {
+				return nil, fmt.Errorf("journal: rescan: event %d: fields: %w", seq, err)
 			}
 			for name, v := range f {
 				values[name] = pair{new: v}
 			}
 		case "updated":
 			var ch map[string][2]json.RawMessage
-			if err := json.Unmarshal(changedRaw, &ch); err != nil {
-				return 0, after, fmt.Errorf("journal: rescan: event %d: changed: %w", seq, err)
+			if err := json.Unmarshal(r.changed, &ch); err != nil {
+				return nil, fmt.Errorf("journal: rescan: event %d: changed: %w", seq, err)
 			}
 			for name, p := range ch {
 				values[name] = pair{old: nilIfNull(p[0]), new: nilIfNull(p[1])}
 			}
 		case "removed":
 			var f map[string]json.RawMessage
-			if err := json.Unmarshal(changedRaw, &f); err != nil {
-				return 0, after, fmt.Errorf("journal: rescan: event %d: changed: %w", seq, err)
+			if err := json.Unmarshal(r.changed, &f); err != nil {
+				return nil, fmt.Errorf("journal: rescan: event %d: changed: %w", seq, err)
 			}
 			for name, v := range f {
 				values[name] = pair{old: v}
@@ -313,7 +416,7 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, sv st
 		if next == nil {
 			next = map[string]record.EventScan{}
 		}
-		u := rescanUpdate{seq: seq, was: scanRaw, isEvents: true}
+		u := rescanUpdate{seq: seq, was: r.scan}
 		changed := false
 		for _, f := range slices.Sorted(maps.Keys(values)) {
 			es, scanned := scan[f]
@@ -340,16 +443,13 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, sv st
 		u.scan, _ = json.Marshal(next)
 		updates = append(updates, u)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, after, err
-	}
-	_ = rows.Close()
 	if len(updates) == 0 {
-		return n, last, nil
+		return nil, nil
 	}
 	var batch journalapi.RescanResult
-	err = j.inTx(ctx, func(tx *sql.Tx) error {
-		batch = journalapi.RescanResult{}
+	var stale []int64
+	err := j.inTx(ctx, func(tx *sql.Tx) error {
+		batch, stale = journalapi.RescanResult{}, nil
 		seqs := make([]int64, 0, len(updates))
 		for _, u := range updates {
 			seqs = append(seqs, u.seq)
@@ -375,8 +475,12 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, sv st
 		}
 		for _, u := range updates {
 			s, ok := now[u.seq]
-			if !ok || !bytes.Equal(s, u.was) {
-				continue // erased, or judged by someone else since it was read
+			if !ok {
+				continue // erased
+			}
+			if !bytes.Equal(s, u.was) {
+				stale = append(stale, u.seq) // judged by someone else since it was read
+				continue
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE record_event SET scan = $2 WHERE seq = $1`, u.seq, u.scan); err != nil {
 				return err
@@ -388,8 +492,8 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, sv st
 		return nil
 	})
 	if err != nil {
-		return 0, after, err
+		return nil, err
 	}
 	addResult(res, batch)
-	return n, last, nil
+	return stale, nil
 }
