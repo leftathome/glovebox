@@ -27,7 +27,9 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 	}
 	for _, table := range []string{"snapshot", "record_current", "record_event"} {
 		var n int
-		_ = r.j.db.QueryRow(`SELECT count(*) FROM ` + table + ` WHERE data_subject = 'e_child1'`).Scan(&n)
+		if err := r.j.db.QueryRow(`SELECT count(*) FROM ` + table + ` WHERE data_subject = 'e_child1'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
 		if n != 0 {
 			t.Errorf("%s still has %d rows of the erased subject", table, n)
 		}
@@ -187,7 +189,7 @@ func TestEraseClearsEveryStatusAndTouchesNoOneElse(t *testing.T) {
 }
 
 // A second erase is allowed: it counts nothing, adds its own erasure row and
-// moves the refusal window forward to the second erase.
+// keeps the refusal window at the later of the two erasures.
 func TestEraseTwiceAndOfAnUnknownSubject(t *testing.T) {
 	r := newRig(t)
 	five(r, 1, T0.Add(-3*time.Hour))

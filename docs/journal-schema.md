@@ -181,6 +181,13 @@ One row per erase (4.13). Never erased itself; holds no field data.
 
 Index: `(data_subject, erased_at)`.
 
+Erase is by `data_subject`. A roster member's id survives as an author
+reference (note key `<date>:<on_behalf_of>`, actor `writer;on_behalf_of=<id>`)
+in notes that member wrote about other subjects, and free text in household
+notes is not scrubbed. Spec 4.13 allows this. OPEN QUESTION for Steve, not a
+decision: should erasing a member also remove their authorship of notes about
+others, and should note text be scrubbed?
+
 ## Design notes
 
 Choices this schema makes where the spec leaves room (also in the plan,

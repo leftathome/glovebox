@@ -8904,16 +8904,57 @@ import (
 // ErrNoSubject refuses an erase without a subject.
 var ErrNoSubject = errors.New("journal: erase needs a data_subject")
 
-// Erase deletes everything the journal holds about one subject (4.13).
+// Erase deletes everything the journal holds about one subject (4.13): every
+// snapshot (applied, late, held and discarded, payloads included), every
+// record_current row and every record_event row, and records the erasure
+// (erased_at is the journal clock) so that snapshots observed before it, or
+// within the clock-skew allowance after it, are refused with 410 (Apply).
 // It is the only operation that deletes event history.
+//
+// Everything happens in one transaction under the subject lock, so it is
+// ordered against Apply, WriteNote and ConfirmHeld of the same subject.
+// Deleting events does not take the events lock: it publishes no sequence
+// numbers (they are never reused), so readers' cursors stay valid. The
+// household (the empty data_subject) is not a subject and is refused.
+//
+// A second erase of the same subject is allowed: it deletes whatever was
+// written since, and writes another erasure row. Apply refuses against
+// the latest erased_at of any row, so the refusal window never moves
+// backward: a second erase made after the clock stepped back is a no-op for
+// the guard. Erasing a subject that holds no data still records the
+// erasure, so a spool replay that has not arrived yet is refused.
+//
+// Erase reports nothing to the Recorder: it has no metric (Task 20).
 func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.EraseResponse, error) {
 	if subject == "" {
 		return journalapi.EraseResponse{}, ErrNoSubject
 	}
-	resp := journalapi.EraseResponse{DataSubject: subject, ErasedAt: j.o.Now().UTC()}
+	resp := journalapi.EraseResponse{DataSubject: subject}
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
+		}
+		// Read after the lock, so erased_at is never earlier than the deletion.
+		resp.ErasedAt = j.o.Now().UTC()
+		// Take the row locks in the order rescan does (record_current by
+		// primary key, then events by seq) before deleting, so Erase and a
+		// rescan batch, which holds row locks but no subject lock, cannot
+		// deadlock; DELETE alone locks in scan order.
+		for _, q := range []string{
+			`SELECT 1 FROM record_current WHERE data_subject = $1 ORDER BY record_type, data_subject, key FOR UPDATE`,
+			`SELECT 1 FROM record_event WHERE data_subject = $1 ORDER BY seq FOR UPDATE`,
+		} {
+			rs, err := tx.QueryContext(ctx, q, subject)
+			if err != nil {
+				return err
+			}
+			for rs.Next() {
+			}
+			if err := rs.Err(); err != nil {
+				_ = rs.Close()
+				return err
+			}
+			_ = rs.Close()
 		}
 		del := func(q string) (int64, error) {
 			res, err := tx.ExecContext(ctx, q, subject)
@@ -8932,14 +8973,28 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 		if resp.Events, err = del(`DELETE FROM record_event WHERE data_subject = $1`); err != nil {
 			return err
 		}
-		rows, _ := json.Marshal(map[string]int64{"snapshot": resp.Snapshots, "record_current": resp.Current, "record_event": resp.Events})
+		rows, err := json.Marshal(map[string]int64{"snapshot": resp.Snapshots, "record_current": resp.Current, "record_event": resp.Events})
+		if err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO erasure (data_subject, erased_at, actor, rows) VALUES ($1, $2, $3, $4)`,
 			subject, resp.ErasedAt, actor, rows)
 		return err
 	})
-	return resp, err
+	if err != nil {
+		return journalapi.EraseResponse{}, err
+	}
+	return resp, nil
 }
 ```
+
+**NOTE (Task 20 review).** The code above is `erase.go` as committed. Differences from the first draft:
+- On error Erase returns a zero `EraseResponse`, and the `json.Marshal` error is checked.
+- It does not take `lockEvents`: deleting events publishes no sequence numbers (they are never reused), so the subject lock is enough.
+- It reports nothing to the Recorder: 4.15 lists no erase metric.
+- `erased_at` is read after `lockSubject`. Every erase, including a repeat, writes its own `erasure` row; Apply refuses against the latest `erased_at`, so the refusal window never moves backward (a stepped-back repeat erase is a no-op for the guard).
+- Before deleting, Erase locks the subject's `record_current` rows (primary-key order) and `record_event` rows (seq order) `FOR UPDATE`, to match rescan's lock order (see the note under Task 21).
+- Tests also cover removed records, the clock step-back, row-lock waits and a table-set check over `information_schema`.
 
 - [x] **Step 20.4: Run; expect PASS.**
 
@@ -8957,6 +9012,8 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 ## Task 21: Rescan
 
 4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`). `Apply` reads its rows `FOR UPDATE` too (Task 15's `loadCurrent`), so an Apply and a rescan batch touching the same row run one after the other and neither writes verdicts computed from a value the other replaced; the test below pins it. Both lock rows in primary-key order (`ORDER BY record_type, data_subject, key ... FOR UPDATE`), and the rescan takes no advisory lock, so the lock order (Apply: subject lock, rows, event lock; rescan: rows only, same order) cannot deadlock.
+
+**NOTE (Task 20 review).** Erase deletes `record_current` and `record_event` rows of a subject while holding the subject lock, and rescan locks rows in primary-key order without a subject lock. A bare `DELETE` locks rows in scan order, so the two could deadlock. Decision: Erase, not rescan, adapts (rescan stays lock-free of the subject lock, which keeps batches short): Erase locks the subject's `record_current` rows in primary-key order, then its `record_event` rows in seq order, with `SELECT ... ORDER BY ... FOR UPDATE` before deleting (committed in Task 20, test `TestEraseWaitsForRowLocks`). Rescan must lock `record_current` rows before `record_event` rows within a batch and events in seq order. Under that order Erase cannot deadlock with rescan (both acquire rows in the same global order: current by key, then events by seq), nor with Apply (subject lock first, same as Erase, then rows).
 
 **Files:**
 - Create: `internal/journal/rescan.go`

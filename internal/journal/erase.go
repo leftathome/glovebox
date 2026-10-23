@@ -26,8 +26,10 @@ var ErrNoSubject = errors.New("journal: erase needs a data_subject")
 // household (the empty data_subject) is not a subject and is refused.
 //
 // A second erase of the same subject is allowed: it deletes whatever was
-// written since, and writes another erasure row, which moves the refusal
-// window forward. Erasing a subject that holds no data still records the
+// written since, and writes another erasure row. Apply refuses against
+// the latest erased_at of any row, so the refusal window never moves
+// backward: a second erase made after the clock stepped back is a no-op for
+// the guard. Erasing a subject that holds no data still records the
 // erasure, so a spool replay that has not arrived yet is refused.
 //
 // Erase reports nothing to the Recorder: it has no metric (Task 20).
@@ -35,10 +37,32 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 	if subject == "" {
 		return journalapi.EraseResponse{}, ErrNoSubject
 	}
-	resp := journalapi.EraseResponse{DataSubject: subject, ErasedAt: j.o.Now().UTC()}
+	resp := journalapi.EraseResponse{DataSubject: subject}
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
+		}
+		// Read after the lock, so erased_at is never earlier than the deletion.
+		resp.ErasedAt = j.o.Now().UTC()
+		// Take the row locks in the order rescan does (record_current by
+		// primary key, then events by seq) before deleting, so Erase and a
+		// rescan batch, which holds row locks but no subject lock, cannot
+		// deadlock; DELETE alone locks in scan order.
+		for _, q := range []string{
+			`SELECT 1 FROM record_current WHERE data_subject = $1 ORDER BY record_type, data_subject, key FOR UPDATE`,
+			`SELECT 1 FROM record_event WHERE data_subject = $1 ORDER BY seq FOR UPDATE`,
+		} {
+			rs, err := tx.QueryContext(ctx, q, subject)
+			if err != nil {
+				return err
+			}
+			for rs.Next() {
+			}
+			if err := rs.Err(); err != nil {
+				_ = rs.Close()
+				return err
+			}
+			_ = rs.Close()
 		}
 		del := func(q string) (int64, error) {
 			res, err := tx.ExecContext(ctx, q, subject)
