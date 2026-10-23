@@ -8255,7 +8255,7 @@ limit outside 1..10000, a negative cursor or an unknown importance).
 filtered the rows. Counts are grouped by audience and re-checked in Go;
 `rules.Compile` refuses `group_by` on a text field; and the read tests live
 in `read_test.go` and `read_review_test.go` (asymmetric roster, group keys,
-decode errors, prev_scope masking). Tasks 22 and 24 below are adjusted.
+decode errors, prev_scope masking). Tasks 22 (property and cursor tests), 25 (readerOK/readErr) and 26 (handlers) below are adjusted.
 
 - [x] **Step 19.1: Write the failing tests.**
 
