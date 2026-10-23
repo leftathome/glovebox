@@ -21,6 +21,9 @@ func TestRemovalAndRestore(t *testing.T) {
 	if !c.Removed || string(c.Fields["title"]) != `"B"` || !c.LastSeen.Equal(t1) || !c.LastConfirmedAt.Equal(t2) {
 		t.Errorf("tombstone %+v", c)
 	}
+	if c.Scan["comment"].Verdict != "pass" {
+		t.Errorf("tombstone scan %+v", c.Scan)
+	}
 	rm := r.events("e_child1")[2]
 	var last map[string]json.RawMessage
 	_ = json.Unmarshal(rm.Changed, &last)
@@ -64,6 +67,9 @@ func TestScopeMoveAndNoRemovalFromTheOldScope(t *testing.T) {
 	r := newRig(t)
 	r.apply(snap(1, "e_child1", "c1", T0.Add(-3*time.Hour), true, rec("k", "e_child1", `{"title": "A"}`)))
 	r.apply(snap(2, "e_child1", "c2", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"title": "A"}`)))
+	if c, _ := r.current("assignment", "e_child1", "k"); c.Scope != scopeKey("e_child1", "c2") {
+		t.Errorf("current scope %q", c.Scope)
+	}
 	ev := r.events("e_child1")[1]
 	if ev.Kind != "updated" || ev.PrevScope != scopeKey("e_child1", "c1") || ev.Scope != scopeKey("e_child1", "c2") || string(ev.Changed) != "{}" {
 		t.Errorf("move %+v changed %s", ev, ev.Changed)
@@ -71,6 +77,9 @@ func TestScopeMoveAndNoRemovalFromTheOldScope(t *testing.T) {
 	out := r.apply(snap(3, "e_child1", "c1", T0.Add(-time.Hour), true))
 	if out.Stats.Removed != 0 {
 		t.Errorf("the old scope removed a record that moved away: %+v", out)
+	}
+	if c, _ := r.current("assignment", "e_child1", "k"); c.Removed || c.Scope != scopeKey("e_child1", "c2") {
+		t.Errorf("row after the empty old-scope snapshot: %+v", c)
 	}
 }
 
@@ -124,6 +133,9 @@ func TestAudienceChangeRecordsBothAudiences(t *testing.T) {
 	a.Fields = map[string]json.RawMessage{"title": json.RawMessage(`"B"`)}
 	r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Hour), true, a))
 	ev := r.events("e_child1")[1]
+	if c, _ := r.current("assignment", "e_child1", "k"); len(c.Audience) != 1 || c.Audience[0] != "guardians" {
+		t.Errorf("current audience %v", c.Audience)
+	}
 	if len(ev.PrevAudience) != 2 || len(ev.Audience) != 1 || ev.Audience[0] != "guardians" {
 		t.Errorf("%+v", ev)
 	}

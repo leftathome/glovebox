@@ -18,9 +18,16 @@ func TestGuard(t *testing.T) {
 		{10, 3, false}, // exactly 0.3 is not "more than"
 		{10, 4, true},
 		{100, 0, false},
+		{13, 4, true}, // 0.307: kills a MaxFraction of 0.31
+		{20, 7, true}, // 0.35: kills a MaxFraction of 0.39
 	} {
 		if got := g.Hold(c.live, c.removals); got != c.hold {
 			t.Errorf("Hold(%d, %d) = %v", c.live, c.removals, got)
 		}
+	}
+	// removals == live holds even when the fraction cannot.
+	all := Guard{MaxFraction: 1, MinKeys: 3}
+	if !all.Hold(4, 4) || all.Hold(3, 3) {
+		t.Error("removals == live branch")
 	}
 }
