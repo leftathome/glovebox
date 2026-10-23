@@ -82,6 +82,10 @@ func TestNewTextScannerRefusesBadArguments(t *testing.T) {
 	if _, err := NewTextScanner(nil, "v", time.Second); err == nil {
 		t.Error("a nil scanner accepted")
 	}
+	// "" is the re-judge sentinel of stored verdicts; a scanner cannot claim it.
+	if _, err := NewTextScanner(shippedScanner(t), "", time.Second); err == nil {
+		t.Error("an empty scanner version accepted")
+	}
 }
 
 func newFake(run func(string) string, timeout time.Duration) TextScanner {

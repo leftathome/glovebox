@@ -1004,6 +1004,20 @@ func TestRescanCoversRestoredEvents(t *testing.T) {
 	}
 }
 
+// Mixed scanner versions in one deployment: a replica still on the older
+// scanner applies an update to a value judged by a newer one. The event must
+// not carry either version, whichever is older: "" makes every rescan judge
+// both sides.
+func TestUpdatedEventOfMixedScannerVersionsIsMarkedForRejudging(t *testing.T) {
+	r := newRig(t) // the applying replica runs scanner-1
+	r.apply(snap(1, "e_child1", "c1", T0.Add(-2*time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
+	r.exec(t, `UPDATE record_current SET scan = '{"comment": {"verdict": "pass", "scanner_version": "scanner-3"}}'`)
+	r.apply(snap(2, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "ok"}`)))
+	if got := evScan(r.events("e_child1")[1])["comment"]; got != (record.EventScan{Old: "pass", New: "pass", ScannerVersion: ""}) {
+		t.Errorf("updated event scan %+v", got)
+	}
+}
+
 // Rows the rescan cannot decode abort it with an error; they are not skipped
 // and not guessed at.
 func TestRescanFailsOnUndecodableRows(t *testing.T) {
@@ -1033,7 +1047,7 @@ func TestRescanFailsOnUndecodableRows(t *testing.T) {
 // version for an old verdict it only copied.
 func TestProbeOldVerdictStampedWithNewVersion(t *testing.T) {
 	for _, tc := range []struct{ name, prev, wantVersion string }{
-		{"an older scanner judged it", `{"comment": {"verdict": "pass", "scanner_version": "scanner-1"}}`, "scanner-1"},
+		{"an older scanner judged it", `{"comment": {"verdict": "pass", "scanner_version": "scanner-1"}}`, ""},
 		{"no verdict", `{}`, ""},
 		{"the current scanner judged it", `{"comment": {"verdict": "pass", "scanner_version": "scanner-2"}}`, "scanner-2"},
 	} {

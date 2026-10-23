@@ -406,16 +406,22 @@ func (j *Journal) buildEvent(t record.Type, subject string, src eventSource, pre
 			}
 			es := record.EventScan{ScannerVersion: sv}
 			if c.Old != nil {
-				// The old value keeps the verdict, and the scanner version,
-				// of the scan that judged it. The event carries one version
-				// for both sides: when the old value's came from another
-				// scanner (or it has none, and stays "": withheld), the
-				// event says so, and the next rescan judges both sides
-				// again instead of taking the old verdict for current.
+				// The old value keeps the verdict of the scan that judged
+				// it. The event carries one version for both sides: when
+				// the old value's came from another scanner (or it has
+				// none, and stays "": withheld), the sides were judged by
+				// different scanners, and the event says "" (mixed). A
+				// rescan judges "" again, both sides, instead of taking
+				// the old verdict for current. Naming the old version
+				// would not do: in a deployment running two scanner
+				// versions, the replica holding the older one would label
+				// a newer New verdict with the older version, and the
+				// replica holding the newer one would take the old pass
+				// for its own.
 				old := prev.Scan[f]
 				es.Old = old.Verdict
 				if old.ScannerVersion != sv {
-					es.ScannerVersion = old.ScannerVersion
+					es.ScannerVersion = ""
 				}
 			}
 			if c.New != nil {

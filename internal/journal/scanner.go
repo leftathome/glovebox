@@ -50,6 +50,11 @@ func NewTextScanner(sc *scan.Scanner, version string, timeout time.Duration) (Te
 	if sc == nil {
 		return nil, errors.New("journal: text scanner: no scanner")
 	}
+	if version == "" {
+		// "" in a stored verdict means "judged by more than one scanner, or
+		// by none": rescan judges it again. A scanner must not claim it.
+		return nil, errors.New("journal: text scanner: version must not be empty")
+	}
 	if timeout <= 0 {
 		return nil, fmt.Errorf("journal: text scanner: timeout must be positive, got %v", timeout)
 	}

@@ -155,7 +155,10 @@ Rejected snapshots (`4xx`) are not stored.
 - `changed jsonb` -- `{field: [old, new]}` for `updated`; the last known fields
   for `removed`
 - `scan jsonb` -- a verdict for **every `text` value stored in this row**, old
-  and new: `{"<field>": {"old": verdict, "new": verdict}}` (4.11)
+  and new: `{"<field>": {"old": verdict, "new": verdict, "scanner_version": v}}`
+  (4.11). One `scanner_version` covers both sides; it is `""` when the two
+  were judged by different scanner versions (or the old value has no verdict),
+  which a rescan always judges again. A scanner version is never empty.
 - `observed_at`, `prev_observed_at` (4.6), `approximate bool`
 - `snapshot_id uuid` (null for household writes), `actor text` (writer service,
   and for notes the person-agent on whose behalf it wrote)
