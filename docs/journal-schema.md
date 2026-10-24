@@ -38,7 +38,9 @@ CloudNativePG image at the production PostgreSQL version
   kept note (see `erasure` below), admitted only inside a transaction that set
   `glovebox_journal.erase_rewrite = on` (transaction-local) and only in its
   exact shape (migration `0002_erase_rewrite`). Rows are deleted only by
-  erase.
+  erase. The flag guards against application mistakes (a stray `UPDATE`); it
+  is not a permission boundary, since any role that can run SQL on this
+  database can set it, or drop the trigger.
 - **Ordered sequence numbers.** Every transaction that inserts events holds
   the advisory lock `glovebox_journal:events` from its first insert to its
   commit, so a reader that has seen `seq = n` will never later see a
@@ -46,10 +48,14 @@ CloudNativePG image at the production PostgreSQL version
 - **One writer per subject.** Apply, confirm, notes and erase for one
   `data_subject` serialize on the advisory lock
   `glovebox_journal:subject:<data_subject>` (the household's is
-  `glovebox_journal:subject:`). Erase is the only writer that takes more than
-  one: the erased subject's, the household's and those of every subject the
-  erased member wrote notes about, all in sorted order before any row lock,
-  so it cannot deadlock with Apply, notes or another erase.
+  `glovebox_journal:subject:`). Notes also take the author lock
+  `glovebox_journal:author:<on_behalf_of>`, before their subject lock. Erase
+  takes the erased member's author lock first, then more than one subject
+  lock: the erased subject's, the household's and those of every subject the
+  member wrote notes about, sorted, before any row lock. Author locks always
+  come before subject locks and no transaction takes two author locks, so
+  nothing can deadlock; and under the author lock no note by the member can
+  be written while their erase runs.
 
 ## Tables
 
@@ -206,7 +212,13 @@ in its events' actor `writer;on_behalf_of=<id>`).
    the scope). The fields, the free text included, are kept exactly as
    written: text that names the member is the author's observation and is not
    scrubbed. A note with no `guardians` part has no reader left once its
-   subject part is gone and is deleted.
+   subject part is gone and is deleted. So is each event of a kept note whose
+   own audience had no `guardians` part (written under a type version with
+   another fixed audience), rather than kept as text nobody can read; the
+   note's newest event has the note's audience and always stays. For such a
+   note the fold invariant holds for `scope`, `audience` and
+   `last_event_seq`, but its remaining events may no longer fold to its
+   `fields`: the history before the first kept event is gone.
 3. Everything else of the member is deleted, as before.
 
 The pseudonym is `erased:` and 128 random bits (32 hex digits), drawn per
@@ -218,7 +230,21 @@ the id at all. It can still be linked by elimination: the `erasure` row names
 the member and its time, so with one erasure in the database its kept notes
 are evidently that member's. The pseudonym guarantees that the id is gone from
 the rows, not that a reader with database access cannot infer whom a kept note
-was about, and the text itself may say so.
+was about, and the text itself may say so. At the database level it is also
+linkable through `xmin`: the kept rows, their rewritten events and the
+`erasure` row are written by one transaction and share its id until the rows
+are next changed or frozen. The old tuple versions, which still hold the id,
+stay in the table files until VACUUM removes them, and WAL archives and base
+backups keep them for the backup retention window (the `databases-app`
+cluster's object store keeps 30 days, `retentionPolicy: "30d"` in gitops
+`clusters/orac/foundation/databases-app/objectstore-cnpg-app.yaml`, as of
+2026-10-23). Erase removes the id from the live rows, not from storage history
+within that window.
+
+After an erase, new notes by or about the member are accepted as new data (a
+note about them observed before `erased_at` is refused, like a snapshot), and
+copies a reader already took from the events feed (any reader past those
+cursors) are outside the journal: erase does not reach them.
 
 Kept notes are read under the unchanged visibility rule: a household row with
 audience `[guardians]` is visible to holders of the grant `("", guardians)`,
@@ -227,7 +253,7 @@ pseudonym, so nothing else matches it, and no member holds `("", subject)` (a
 subject grant names the member's own id). The erased member reads it only if
 they are still in the roster as a guardian; erase is meant for members who
 have left it. Readers' cursors stay valid: the events keep their `seq`, and
-the fold invariant holds for the moved record. The new keys cannot collide:
+the fold invariant holds for the moved record (with the exception above). The new keys cannot collide:
 the moved rows' keys were unique per (type, subject), the token is new for
 each erasure, and no note written through `POST /v1/notes` has a key with a
 third `:`-part (roster ids contain no `:`).

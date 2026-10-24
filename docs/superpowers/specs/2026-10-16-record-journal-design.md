@@ -587,8 +587,11 @@ Household notes (decision 2026-10-23): a note belongs to its author, the
   `guardians` part has no reader left and is deleted.
 - Everything else of the member is deleted as above.
 
-Erase takes the subject's lock, the household's and those of every subject the
-member wrote about, in sorted order. The `erasure` row records counts,
+Erase takes the member's author lock (which every note write takes for its
+`on_behalf_of`, before its subject lock), then the subject's lock, the
+household's and those of every subject the member wrote about, in sorted
+order. New notes by or about the member after the erase are accepted, and
+copies readers already took from the events feed are not reached. The `erasure` row records counts,
 including `notes_deleted_as_author` and `notes_pseudonymised`, and no id but
 the erased one. `docs/journal-schema.md` has the details.
 

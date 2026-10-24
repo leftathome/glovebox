@@ -131,6 +131,16 @@ func lockSubject(ctx context.Context, tx *sql.Tx, subject string) error {
 	return err
 }
 
+// lockAuthor serializes the notes of one author with that author's erase:
+// WriteNote takes it for its on_behalf_of, Erase for the erased member.
+// Each transaction takes at most one, always before any subject lock, so
+// the two kinds cannot form a cycle. Its key cannot equal a subject lock's
+// (a different prefix).
+func lockAuthor(ctx context.Context, tx *sql.Tx, member string) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "glovebox_journal:author:"+member)
+	return err
+}
+
 // lockEvents makes event sequence numbers become visible in order
 // (decision 3): taken before the first insert, held to commit.
 func lockEvents(ctx context.Context, tx *sql.Tx) error {

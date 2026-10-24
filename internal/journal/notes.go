@@ -30,6 +30,12 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 	var refused *record.Rejection
 	ef := &effects{} // NOTE (Task 15 review): metrics are emitted after the commit
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
+		// The author lock first, then the subject lock (lockAuthor): an erase
+		// of the author, which deletes every note they wrote, never runs
+		// beside a write of one.
+		if err := lockAuthor(ctx, tx, n.OnBehalfOf); err != nil {
+			return err
+		}
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
 		}

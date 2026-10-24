@@ -17,15 +17,6 @@ import (
 // ErrNoSubject refuses an erase without a subject.
 var ErrNoSubject = errors.New("journal: erase needs a data_subject")
 
-// errRelock ends an erase attempt that found, under its locks, a note of the
-// author about a subject whose lock it does not hold.
-var errRelock = errors.New("journal: erase: the author wrote about another subject meanwhile")
-
-// maxEraseAttempts bounds the restarts after errRelock. Each restart locks
-// every subject the author has written about by then, so it ends as soon as
-// the author stops writing about new subjects; a household has a handful.
-const maxEraseAttempts = 10
-
 // erasedPrefix starts every pseudonym. Roster ids cannot contain ':', so a
 // pseudonym never equals or collides with a member id or a note key.
 const erasedPrefix = "erased:"
@@ -68,12 +59,16 @@ const authoredSQL = `(t.record_type IN (SELECT name FROM record_type WHERE owner
 // (WriteNote). It is the only operation that deletes or rewrites event
 // history.
 //
-// Locks: the subject's, the household's and those of every subject the
-// member wrote notes about, all taken in sorted order before anything else
-// (Apply and WriteNote take one subject lock, so neither they nor another
-// erase can deadlock with it). The set is looked up before locking and
-// again under the locks; a note about a new subject written in between
-// restarts the attempt with that subject added. Then the rows are locked in
+// Locks: first the member's author lock (WriteNote takes the author lock of
+// its on_behalf_of before its subject lock), so no note by the member can be
+// written or changed while the erase runs; then the subject's, the
+// household's and those of every subject the member wrote notes about, in
+// sorted order, before any row lock. Author locks always come before subject
+// locks and every writer takes at most one author lock, so Erase cannot
+// deadlock with Apply, WriteNote or another erase. Under the author lock the
+// set of subjects the member wrote about cannot grow: only WriteNote by the
+// member adds to it, and another erase can only move such a note to the
+// household, whose lock is always taken. Then the rows are locked in
 // rescan's order: record_current by primary key, then record_event by seq.
 // Deleting or rewriting events does not take the events lock: it publishes
 // no sequence numbers (they are never reused), so readers' cursors stay
@@ -87,6 +82,11 @@ const authoredSQL = `(t.record_type IN (SELECT name FROM record_type WHERE owner
 // data still records the erasure, so a spool replay that has not arrived
 // yet is refused.
 //
+// After the erase, new notes by or about the member are accepted as new
+// data (a note about them observed before erased_at is refused), and copies
+// a reader already took from the events feed are outside the journal: erase
+// does not reach them.
+//
 // Erase reports nothing to the Recorder: it has no metric (Task 20).
 func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.EraseResponse, error) {
 	if subject == "" {
@@ -96,58 +96,21 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 	if err != nil {
 		return journalapi.EraseResponse{}, err
 	}
-	for attempt := 1; ; attempt++ {
-		resp, err := j.eraseOnce(ctx, actor, subject, pseudonym)
-		if errors.Is(err, errRelock) && attempt < maxEraseAttempts {
-			continue
-		}
-		if err != nil {
-			return journalapi.EraseResponse{}, err
-		}
-		return resp, nil
-	}
-}
-
-func newPseudonym() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("journal: erase: pseudonym: %w", err)
-	}
-	return erasedPrefix + hex.EncodeToString(b), nil
-}
-
-// eraseOnce is one attempt. The next attempt after errRelock needs no hint:
-// the note that caused it is committed (its writer held the lock Erase did
-// not), so the next look-up finds it, and only an erase, which holds the
-// author's subject locks, deletes notes.
-func (j *Journal) eraseOnce(ctx context.Context, actor, subject, pseudonym string) (journalapi.EraseResponse, error) {
 	resp := journalapi.EraseResponse{DataSubject: subject}
-	err := j.inTx(ctx, func(tx *sql.Tx) error {
+	err = j.inTx(ctx, func(tx *sql.Tx) error {
+		if err := lockAuthor(ctx, tx, subject); err != nil {
+			return err
+		}
 		authored, err := authoredSubjects(ctx, tx, subject)
 		if err != nil {
 			return err
 		}
-		locks := sortedSet(append([]string{subject, ""}, authored...))
 		if j.beforeEraseLocks != nil {
 			j.beforeEraseLocks()
 		}
-		for _, s := range locks {
+		for _, s := range sortedSet(append([]string{subject, ""}, authored...)) {
 			if err := lockSubject(ctx, tx, s); err != nil {
 				return err
-			}
-		}
-		// Under the locks no note about a locked subject can appear; one
-		// about another subject can, and is caught here.
-		if authored, err = authoredSubjects(ctx, tx, subject); err != nil {
-			return err
-		}
-		held := map[string]bool{}
-		for _, s := range locks {
-			held[s] = true
-		}
-		for _, s := range authored {
-			if !held[s] {
-				return errRelock
 			}
 		}
 		// Read after the locks, so erased_at is never earlier than the deletion.
@@ -158,6 +121,14 @@ func (j *Journal) eraseOnce(ctx context.Context, actor, subject, pseudonym strin
 		return journalapi.EraseResponse{}, err
 	}
 	return resp, nil
+}
+
+func newPseudonym() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("journal: erase: pseudonym: %w", err)
+	}
+	return erasedPrefix + hex.EncodeToString(b), nil
 }
 
 func (j *Journal) eraseLocked(ctx context.Context, tx *sql.Tx, actor, subject, pseudonym string, resp *journalapi.EraseResponse) error {
@@ -197,7 +168,8 @@ func (j *Journal) eraseLocked(ctx context.Context, tx *sql.Tx, actor, subject, p
 		return err
 	}
 	// Rule 2: others' notes about the member that guardians can read.
-	if resp.NotesPseudonymised, err = j.keepNotes(ctx, tx, subject, pseudonym); err != nil {
+	var evK int64
+	if resp.NotesPseudonymised, evK, err = j.keepNotes(ctx, tx, subject, pseudonym); err != nil {
 		return err
 	}
 	// Rule 3: everything else of the subject.
@@ -211,7 +183,7 @@ func (j *Journal) eraseLocked(ctx context.Context, tx *sql.Tx, actor, subject, p
 		return err
 	}
 	resp.Current += resp.NotesDeletedAsAuthor
-	resp.Events += evA
+	resp.Events += evA + evK
 	// Counts only: neither the pseudonym nor any author is recorded.
 	rows, err := json.Marshal(map[string]int64{"snapshot": resp.Snapshots, "record_current": resp.Current,
 		"record_event": resp.Events, "notes_deleted_as_author": resp.NotesDeletedAsAuthor,
@@ -227,75 +199,95 @@ func (j *Journal) eraseLocked(ctx context.Context, tx *sql.Tx, actor, subject, p
 // keepNotes moves the subject's household records written by others (rule 1
 // has already deleted the subject's own) that have a guardians part to the
 // household under the pseudonym, events first, and returns how many records
-// it kept. Visibility stays the existing rule: a row of the household with
+// it kept and how many of their events it deleted. Visibility stays the existing rule: a row of the household with
 // audience [guardians] is read by holders of ("", guardians), the
 // household's guardians (spec 11 3.4); the subject part, which named the
 // erased member, is gone, and no grant names a pseudonym.
-func (j *Journal) keepNotes(ctx context.Context, tx *sql.Tx, subject, pseudonym string) (int64, error) {
+func (j *Journal) keepNotes(ctx context.Context, tx *sql.Tx, subject, pseudonym string) (int64, int64, error) {
 	const kept = `data_subject = $1 AND $2 = ANY(audience)
 		AND record_type IN (SELECT name FROM record_type WHERE owner = $3)`
 	rs, err := tx.QueryContext(ctx, `SELECT DISTINCT record_type FROM record_current WHERE `+kept+` ORDER BY 1`,
 		subject, guardiansToken, record.OwnerHousehold)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var types []string
 	for rs.Next() {
 		var t string
 		if err := rs.Scan(&t); err != nil {
 			_ = rs.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		types = append(types, t)
 	}
 	if err := rs.Err(); err != nil {
 		_ = rs.Close()
-		return 0, err
+		return 0, 0, err
 	}
 	_ = rs.Close()
 	if len(types) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	// The trigger admits this rewrite only with the flag set (migration
-	// 0002); it is transaction-local and cleared again below.
+	// 0002). set_config(..., true) is transaction-local: the setting reverts
+	// at commit or rollback, so it never outlives this transaction on the
+	// pooled connection. The rest of the transaction only deletes and
+	// inserts the erasure row, which the trigger does not see. The flag
+	// guards against application mistakes; it is not a permission boundary
+	// (anyone who can run SQL here can set it, or drop the trigger).
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('glovebox_journal.erase_rewrite', 'on', true)`); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var n int64
+	var n, gone int64
 	for _, t := range types {
 		scope := record.HouseholdScope(t, "")
-		// Events: an event keeps the guardians part of its audience and
-		// nothing else (an event without one is read by nobody), its
-		// prev_audience likewise; group_key may embed the subject or the
-		// scope and is cleared.
+		const keys = `record_type = $6 AND data_subject = $1 AND key IN (
+				SELECT key FROM record_current WHERE record_type = $6 AND ` + kept + `)`
+		// An event whose audience has no guardians part (written under a
+		// type version with another fixed audience) would be read by
+		// nobody: it is deleted rather than kept as unreadable text. The
+		// newest event of a kept note has the row's audience, so it stays,
+		// and last_event_seq still names it.
+		res, err := tx.ExecContext(ctx, `DELETE FROM record_event WHERE NOT ($2 = ANY(audience))
+			AND record_type = $4 AND data_subject = $1 AND key IN (
+				SELECT key FROM record_current WHERE record_type = $4 AND `+kept+`)`,
+			subject, guardiansToken, record.OwnerHousehold, t)
+		if err != nil {
+			return 0, 0, err
+		}
+		d, err := res.RowsAffected()
+		if err != nil {
+			return 0, 0, err
+		}
+		gone += d
+		// The others keep the guardians part of their audience and nothing
+		// else, their prev_audience likewise (empty when it had none: an old
+		// value across that change matches nobody); group_key may embed the
+		// subject or the scope and is cleared.
 		if _, err := tx.ExecContext(ctx, `UPDATE record_event SET data_subject = '', key = key || ':' || $4, scope = $5,
 			prev_scope = CASE WHEN prev_scope IS NULL THEN NULL ELSE $5 END,
-			audience = CASE WHEN $2 = ANY(audience) THEN ARRAY[$2]::text[] ELSE '{}'::text[] END,
+			audience = ARRAY[$2]::text[],
 			prev_audience = CASE WHEN prev_audience IS NULL THEN NULL
 				WHEN $2 = ANY(prev_audience) THEN ARRAY[$2]::text[] ELSE '{}'::text[] END,
 			group_key = NULL
-			WHERE record_type = $6 AND data_subject = $1 AND key IN (
-				SELECT key FROM record_current WHERE record_type = $6 AND `+kept+`)`,
+			WHERE `+keys,
 			subject, guardiansToken, record.OwnerHousehold, pseudonym, scope, t); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE record_current SET data_subject = '', key = key || ':' || $4, scope = $5,
+		res, err = tx.ExecContext(ctx, `UPDATE record_current SET data_subject = '', key = key || ':' || $4, scope = $5,
 			audience = ARRAY[$2]::text[]
 			WHERE record_type = $6 AND `+kept,
 			subject, guardiansToken, record.OwnerHousehold, pseudonym, scope, t)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		k, err := res.RowsAffected()
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		n += k
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('glovebox_journal.erase_rewrite', 'off', true)`); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return n, gone, nil
 }
 
 // authoredSubjects lists the subjects ("" for the household) of the notes

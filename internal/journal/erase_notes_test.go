@@ -2,6 +2,7 @@ package journal
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/journaltest"
 	"github.com/leftathome/glovebox/internal/journal/record"
+	"github.com/leftathome/glovebox/internal/journal/roster"
 )
 
 // Erase and household notes (decision 2026-10-23, spec 4.13): an author's
@@ -147,10 +149,11 @@ func (r *rig) readsEverywhere() string {
 }
 
 // foldBroken counts record_current rows whose last_event_seq is not the
-// newest event of their key, or whose scope or audience differs from it.
+// newest event of their key, or whose scope or audience differs from it,
+// plus orphan events: events whose key has no record_current row.
 func (r *rig) foldBroken() int {
 	r.t.Helper()
-	var n int
+	var n, orphans int
 	if err := r.j.db.QueryRow(`SELECT count(*) FROM record_current c LEFT JOIN LATERAL (
 			SELECT e.seq, e.scope, e.audience FROM record_event e
 			WHERE e.record_type = c.record_type AND e.data_subject = c.data_subject AND e.key = c.key
@@ -158,7 +161,24 @@ func (r *rig) foldBroken() int {
 		WHERE l.seq IS DISTINCT FROM c.last_event_seq OR l.scope IS DISTINCT FROM c.scope OR l.audience IS DISTINCT FROM c.audience`).Scan(&n); err != nil {
 		r.t.Fatal(err)
 	}
-	return n
+	if err := r.j.db.QueryRow(`SELECT count(*) FROM record_event e WHERE NOT EXISTS (SELECT 1 FROM record_current c
+		WHERE c.record_type = e.record_type AND c.data_subject = e.data_subject AND c.key = e.key)`).Scan(&orphans); err != nil {
+		r.t.Fatal(err)
+	}
+	return n + orphans
+}
+
+// The fold check sees an orphan event.
+func TestFoldBrokenCountsOrphanEvents(t *testing.T) {
+	r := newNoteRig(t)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	if r.foldBroken() != 0 {
+		t.Fatal("setup")
+	}
+	r.exec(t, `DELETE FROM record_current`)
+	if r.foldBroken() != 1 {
+		t.Error("an orphan event was not counted")
+	}
 }
 
 var pseudonymKey = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}:[A-Za-z0-9._-]+):(erased:[0-9a-f]{32})$`)
@@ -385,35 +405,73 @@ func contains(xs []string, s string) bool {
 	return false
 }
 
-// A kept note's events keep only the guardians part of prev_audience too
-// (an audience change, e.g. a type version with another fixed audience):
-// an old audience without it becomes empty, matching nobody.
-func TestEraseNarrowsAKeptNotesPrevAudience(t *testing.T) {
+// A kept note's events across an audience change (a type version with
+// another fixed audience): an event whose audience had no guardians part is
+// deleted, not kept as text nobody can read; a prev_audience keeps only its
+// guardians part (empty when it had none: the old values match nobody); a
+// prev_scope becomes the household scope; group_key is cleared.
+func TestEraseRewritesAKeptNotesHistory(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
 	r.mustNote("attendance_note", "e_parent2", "e_child1", "2026-10-14", `{"what_happened": "b"}`)
+	r.clock.Set(T0.Add(time.Hour))
+	r.mustNote("attendance_note", "e_parent2", "e_child1", "2026-10-14", `{"what_happened": "b2"}`)
 	r.exec(t, `ALTER TABLE record_event DISABLE TRIGGER USER`)
 	r.exec(t, `UPDATE record_event SET prev_audience = '{guardians,household,subject}' WHERE key = '2026-10-14:e_parent1'`)
-	r.exec(t, `UPDATE record_event SET prev_audience = '{household,subject}' WHERE key = '2026-10-14:e_parent2'`)
+	r.exec(t, `UPDATE record_event SET audience = '{household,subject}' WHERE key = '2026-10-14:e_parent2' AND kind = 'created'`)
+	r.exec(t, `UPDATE record_event SET prev_audience = '{household,subject}',
+		prev_scope = 'source=household/record_type=attendance_note/data_subject=e_child1'
+		WHERE key = '2026-10-14:e_parent2' AND kind = 'updated'`)
 	r.exec(t, `UPDATE record_event SET group_key = 'data_subject=e_child1/field%3Adate=2026-10-14'`) // as a group_by rule makes it
 	r.exec(t, `ALTER TABLE record_event ENABLE TRIGGER USER`)
-	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{}
-	for _, e := range r.events("") {
-		got[strings.SplitN(e.Key, ":erased:", 2)[0]] = strings.Join(e.PrevAudience, ",") + fmt.Sprint(e.PrevAudience != nil)
+	if resp.Events != 1 || resp.NotesPseudonymised != 2 {
+		t.Errorf("%+v", resp)
 	}
-	if got["2026-10-14:e_parent1"] != "guardianstrue" || got["2026-10-14:e_parent2"] != "true" {
-		t.Errorf("prev_audience after erase: %v", got)
-	}
+	got := map[string][]string{}
 	for _, e := range r.events("") {
+		got[strings.SplitN(e.Key, ":erased:", 2)[0]] = append(got[strings.SplitN(e.Key, ":erased:", 2)[0]],
+			e.Kind+"|"+strings.Join(e.PrevAudience, ",")+"|"+fmt.Sprint(e.PrevAudience != nil)+"|"+e.PrevScope)
 		if e.GroupKey != "" {
 			t.Errorf("group_key kept: %+v", e)
 		}
 	}
+	if fmt.Sprint(got["2026-10-14:e_parent1"]) != "[created|guardians|true|]" ||
+		fmt.Sprint(got["2026-10-14:e_parent2"]) != "[updated||true|source=household/record_type=attendance_note]" {
+		t.Errorf("history after erase: %v", got)
+	}
+	if r.foldBroken() != 0 {
+		t.Error("fold invariant broken")
+	}
 	if ids := r.idsEverywhere("e_child1"); len(ids) != 0 {
 		t.Errorf("the erased id survives:\n%s", strings.Join(ids, "\n"))
+	}
+}
+
+// Ids that are prefixes of each other: erasing e_ann leaves e_anna's notes,
+// as author and as subject.
+func TestEraseAnAuthorWhoseIdPrefixesAnother(t *testing.T) {
+	r := newNoteRig(t)
+	ros, err := roster.Parse(roster.FormatOpenclawHouseholdV1, []byte(`{"people": {
+		"e_ann": {"agent": "a1", "guardian_of": ["e_child1"]}, "e_anna": {"agent": "a2", "guardian_of": ["e_child1"]},
+		"e_child1": {"agent": "c1"}}, "household_members": ["e_ann", "e_anna", "e_child1"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ros.Store(ros)
+	r.mustNote("attendance_note", "e_ann", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	r.mustNote("attendance_note", "e_anna", "e_child1", "2026-10-14", `{"what_happened": "b"}`)
+	r.mustNote("family_note", "e_anna", "", "2026-10-14", `{"text": "c"}`)
+	keep := r.rowsWhere(`key LIKE '%:e_anna'`)
+	resp, err := r.j.Erase(ctx, "admin", "e_ann")
+	if err != nil || resp.NotesDeletedAsAuthor != 1 {
+		t.Fatalf("%+v %v", resp, err)
+	}
+	if got := r.rowsWhere(`key LIKE '%:e_anna'`); got != keep {
+		t.Errorf("e_anna's notes changed:\n%s\nwas\n%s", got, keep)
 	}
 }
 
@@ -525,51 +583,153 @@ func TestEraseTakesTheLocksOfTheAuthorsOtherSubjects(t *testing.T) {
 	}
 }
 
-// A note the author writes about a new subject between Erase's look-up and
-// its locks is found under the locks and makes Erase start again with that
-// subject's lock too: a writer still holding it makes Erase wait.
-func TestEraseRechecksTheAuthorsSubjectsUnderTheLocks(t *testing.T) {
-	r := newNoteRig(t)
-	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
-	var holder interface{ Rollback() error }
-	var once sync.Once
-	attempts := 0
-	r.j.beforeEraseLocks = func() {
-		attempts++
-		once.Do(func() {
-			r.mustNote("attendance_note", "e_parent1", "e_child2", "2026-10-14", `{"what_happened": "late"}`)
-			tx, err := r.j.db.BeginTx(ctx, nil)
+// The author lock: Erase of a member and WriteNote on behalf of that member
+// both take it, so each waits for the other; another member's author lock
+// blocks neither.
+func TestEraseAndNotesTakeTheAuthorLock(t *testing.T) {
+	for _, c := range []struct {
+		held    string
+		blocked bool
+	}{{"e_parent1", true}, {"e_parent2", false}} {
+		t.Run(c.held, func(t *testing.T) {
+			r := newNoteRig(t)
+			r.mustNote("attendance_note", "e_parent1", "e_child2", "2026-10-14", `{"what_happened": "x"}`)
+			holder, err := r.j.db.BeginTx(ctx, nil)
 			if err != nil {
-				t.Error(err)
-				return
+				t.Fatal(err)
 			}
-			holder = tx
-			if err := lockSubject(bounded(t), tx, "e_child2"); err != nil {
-				t.Error(err)
+			defer func() { _ = holder.Rollback() }()
+			if err := lockAuthor(bounded(t), holder, c.held); err != nil {
+				t.Fatal(err)
+			}
+			cx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+			defer cancel()
+			n, _ := noteOf(r.reg, "attendance_note", "e_parent1", "e_child1", "2026-10-15", `{"what_happened": "y"}`)
+			if _, _, err := r.j.WriteNote(cx, gateway, n); (err != nil) != c.blocked {
+				t.Errorf("WriteNote: %v, want blocked=%v", err, c.blocked)
+			}
+			cx2, cancel2 := context.WithTimeout(ctx, 700*time.Millisecond)
+			defer cancel2()
+			if _, err := r.j.Erase(cx2, "admin", "e_parent1"); (err != nil) != c.blocked {
+				t.Errorf("Erase: %v, want blocked=%v", err, c.blocked)
+			}
+			if c.blocked && (r.count("record_current") != 1 || r.count("erasure") != 0) {
+				t.Error("a timed-out write or erase changed something")
 			}
 		})
 	}
-	defer func() {
-		if holder != nil {
-			_ = holder.Rollback()
-		}
+}
+
+// A note by the erased author about a subject Erase has not locked, written
+// while Erase runs, cannot land between Erase's two rule-1 DELETEs (events
+// first, then current rows) and leave an orphan event naming the author: the
+// author lock makes it wait for the erase. A statement trigger holds the
+// events DELETE open until the note's row exists, or for two seconds; with
+// the author lock the note is written only after the erase commits.
+// (Review probe TestZZProbeTorn, 5ed6f73, made deterministic.)
+func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
+	r := newNoteRig(t)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
+	r.exec(t, `CREATE TABLE torn_flag (x int)`)
+	r.exec(t, `CREATE FUNCTION torn_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+		DECLARE deadline timestamptz := clock_timestamp() + interval '2 seconds';
+		BEGIN
+			IF EXISTS (SELECT 1 FROM torn_flag) THEN
+				DELETE FROM torn_flag;
+				WHILE NOT EXISTS (SELECT 1 FROM record_current WHERE key = '2026-10-15:e_parent1')
+				      AND clock_timestamp() < deadline LOOP
+					PERFORM pg_sleep(0.05);
+				END LOOP;
+			END IF;
+			RETURN NULL;
+		END $$`)
+	r.exec(t, `CREATE TRIGGER torn_wait BEFORE DELETE ON record_event FOR EACH STATEMENT EXECUTE FUNCTION torn_wait()`)
+	r.exec(t, `INSERT INTO torn_flag VALUES (1)`)
+	var wg sync.WaitGroup
+	var once sync.Once
+	var noteErr error
+	r.j.beforeEraseLocks = func() {
+		once.Do(func() {
+			n, _ := noteOf(r.reg, "attendance_note", "e_parent1", "e_child2", "2026-10-15", `{"what_happened": "late"}`)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, rej, err := r.j.WriteNote(bounded(t), gateway, n)
+				if err == nil && rej != nil {
+					err = fmt.Errorf("%v", rej)
+				}
+				noteErr = err
+			}()
+		})
+	}
+	resp, err := r.j.Erase(bounded(t), "admin", "e_parent1")
+	wg.Wait()
+	if err != nil || noteErr != nil {
+		t.Fatalf("erase %v, note %v", err, noteErr)
+	}
+	if resp.NotesDeletedAsAuthor != 1 {
+		t.Errorf("%+v", resp)
+	}
+	if r.foldBroken() != 0 {
+		t.Errorf("torn erase: fold broken\n%s", r.rowsWhere(`key LIKE '%e_parent1%'`))
+	}
+	// The late note was written after the erase, in full.
+	if _, ok := r.current("attendance_note", "e_child2", "2026-10-15:e_parent1"); !ok || len(r.events("e_child2")) != 1 {
+		t.Error("the late note is not whole")
+	}
+}
+
+// Erase takes its locks in one order: the author lock, then the subject
+// locks sorted ("" < e_child1 < e_child2 < e_parent1). Blocked on
+// e_child2, it holds the author lock, "" and e_child1, and not yet
+// e_parent1.
+func TestEraseTakesItsLocksInSortedOrder(t *testing.T) {
+	r := newNoteRig(t)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
+	r.mustNote("attendance_note", "e_parent1", "e_child2", "2026-10-14", `{"what_happened": "x"}`)
+	holder, err := r.j.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback() }()
+	if err := lockSubject(bounded(t), holder, "e_child2"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.j.Erase(bounded(t), "admin", "e_parent1")
+		done <- err
 	}()
-	cx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
-	defer cancel()
-	if _, err := r.j.Erase(cx, "admin", "e_parent1"); err == nil {
-		t.Error("Erase did not wait for the late subject's lock")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		_ = r.j.db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiting)
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Erase never waited on the held lock")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if r.count("record_current") != 2 || r.count("erasure") != 0 {
-		t.Error("a timed-out erase changed something")
+	author := func(c context.Context, tx *sql.Tx) error { return lockAuthor(c, tx, "e_parent1") }
+	subj := func(s string) func(context.Context, *sql.Tx) error {
+		return func(c context.Context, tx *sql.Tx) error { return lockSubject(c, tx, s) }
 	}
-	// One restart, which then waits on the late subject's lock.
-	if attempts != 2 {
-		t.Errorf("%d attempts, want 2", attempts)
+	if tryLock(t, r.j, author) {
+		t.Error("the author lock is not held")
+	}
+	for _, s := range []string{"", "e_child1"} {
+		if tryLock(t, r.j, subj(s)) {
+			t.Errorf("%q, before e_child2 in order, is not held", s)
+		}
+	}
+	if !tryLock(t, r.j, subj("e_parent1")) {
+		t.Error("e_parent1, after e_child2 in order, was taken early")
 	}
 	_ = holder.Rollback()
-	resp, err := r.j.Erase(ctx, "admin", "e_parent1")
-	if err != nil || resp.NotesDeletedAsAuthor != 2 || r.count("record_current") != 0 {
-		t.Errorf("%+v %v", resp, err)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -699,6 +859,20 @@ func TestRecordEventEraseRewriteIsTheOnlyOtherChange(t *testing.T) {
 	if err := try(true, `scan = '{"f": {"new": "pass"}}'`); err != nil {
 		t.Errorf("a scan update under the flag was refused: %v", err)
 	}
+	// Only 'on' opens it: a flag set to anything else does not.
+	for _, v := range []string{"off", "true", ""} {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`SELECT set_config('glovebox_journal.erase_rewrite', $1, true)`, v); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`UPDATE record_event SET `+good+` WHERE seq = $1`, seq); err == nil {
+			t.Errorf("the erase rewrite went through with the flag %q", v)
+		}
+		_ = tx.Rollback()
+	}
 	for name, set := range map[string]string{
 		"kind":                     `kind = 'removed', ` + good,
 		"actor":                    `actor = 'x', ` + good,
@@ -708,6 +882,7 @@ func TestRecordEventEraseRewriteIsTheOnlyOtherChange(t *testing.T) {
 		"key not suffixed":         strings.Replace(good, `key || ':erased:00'`, `'2026-10-14:e_parent2:erased:00'`, 1),
 		"key without pseudonym":    strings.Replace(good, `key || ':erased:00'`, `key || ':x'`, 1),
 		"key with empty pseudonym": strings.Replace(good, `key || ':erased:00'`, `key || ':erased:'`, 1),
+		"key with another suffix":  strings.Replace(good, `key || ':erased:00'`, `key || ':kept:0123456789abcdef0123456789abcdef'`, 1),
 		"audience grows":           strings.Replace(good, `audience = '{guardians}', prev`, `audience = '{guardians,public}', prev`, 1),
 		"prev_audience grows":      strings.Replace(good, `prev_audience = '{guardians}'`, `prev_audience = '{guardians,public}'`, 1),
 		"prev_audience dropped":    strings.Replace(good, `prev_audience = '{guardians}'`, `prev_audience = NULL`, 1),
@@ -728,5 +903,39 @@ func TestRecordEventEraseRewriteIsTheOnlyOtherChange(t *testing.T) {
 	}
 	if err := try(true, `key = key || ':erased:00'`); err == nil {
 		t.Error("a household event was rewritten")
+	}
+}
+
+// The rewrite flag is transaction-local: after an erase that used it
+// commits, the same pooled connection (the pool is one connection here) and
+// any new transaction see it unset, and the trigger refuses a rewrite.
+func TestEraseRewriteFlagDoesNotOutliveTheErase(t *testing.T) {
+	r := newNoteRig(t)
+	r.j.db.SetMaxOpenConns(1)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	r.mustNote("attendance_note", "e_parent1", "e_child2", "2026-10-14", `{"what_happened": "b"}`)
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
+	if err != nil || resp.NotesPseudonymised != 1 {
+		t.Fatalf("%+v %v", resp, err)
+	}
+	var v sql.NullString
+	if err := r.j.db.QueryRow(`SELECT current_setting('glovebox_journal.erase_rewrite', true)`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v.String == "on" {
+		t.Error("the flag outlived the erase on its connection")
+	}
+	_, err = r.j.db.Exec(`UPDATE record_event SET data_subject = '', key = key || ':erased:00', scope = 'source=household/record_type=attendance_note',
+		audience = '{guardians}', group_key = NULL WHERE data_subject = 'e_child2'`)
+	if err == nil {
+		t.Error("a rewrite went through after the erase")
+	}
+	tx, err := r.j.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRow(`SELECT current_setting('glovebox_journal.erase_rewrite', true)`).Scan(&v); err != nil || v.String == "on" {
+		t.Errorf("a new transaction sees the flag %q (%v)", v.String, err)
 	}
 }
