@@ -18,7 +18,7 @@ func TestEraseRemovesRemovedRecordsToo(t *testing.T) {
 	if c, ok := r.current("assignment", "e_child1", "c1:2"); !ok || !c.Removed {
 		t.Fatal("setup: no removed row")
 	}
-	resp, err := r.j.Erase(ctx, "a", "e_child1")
+	resp, err := r.eraseOff(ctx, "a", "e_child1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +36,11 @@ func TestEraseClockStepBackKeepsRefusing(t *testing.T) {
 	r := newRig(t)
 	five(r, 1, T0.Add(-3*time.Hour))
 	r.clock.Set(T0)
-	if _, err := r.j.Erase(ctx, "a", "e_child1"); err != nil {
+	if _, err := r.eraseOff(ctx, "a", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	r.clock.Set(T0.Add(-2 * time.Hour))
-	if _, err := r.j.Erase(ctx, "a", "e_child1"); err != nil {
+	if _, err := r.eraseOff(ctx, "a", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	r.clock.Set(T0.Add(time.Hour))
@@ -75,7 +75,7 @@ func TestEraseWaitsForRowLocks(t *testing.T) {
 			_ = rows.Close()
 			c, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 			defer cancel()
-			if _, err := r.j.Erase(c, "a", "e_child1"); err == nil {
+			if _, err := r.eraseOff(c, "a", "e_child1"); err == nil {
 				t.Error("Erase did not wait for the row lock")
 			}
 			_ = holder.Rollback()

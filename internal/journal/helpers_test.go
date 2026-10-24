@@ -63,6 +63,7 @@ type rig struct {
 	scanner *journaltest.FakeScanner
 	reg     *record.Registry
 	ros     atomic.Pointer[roster.Roster]
+	rosRaw  string // the document of ros, when set through newRig or setRoster
 	rec     *countingRecorder
 }
 
@@ -71,6 +72,7 @@ func newRig(t *testing.T, mods ...func(*Options)) *rig {
 	r := &rig{t: t, clock: &testClock{t: T0}, scanner: journaltest.NewFakeScanner("scanner-1"),
 		reg: journaltest.Registry(t), rec: &countingRecorder{snapshots: map[string]int{}, events: map[string]int{}}}
 	r.ros.Store(journaltest.Roster(t))
+	r.rosRaw = journaltest.HouseholdV1
 	rs, err := rules.Compile(journaltest.Rules(), r.reg)
 	if err != nil {
 		t.Fatal(err)

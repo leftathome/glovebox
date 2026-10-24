@@ -706,7 +706,7 @@ func TestRescanDoesNotResurrectAnErasedSubject(t *testing.T) {
 		if once.first() {
 			c, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			if _, err := r.j.Erase(c, "a", "e_child1"); err != nil {
+			if _, err := r.eraseOff(c, "a", "e_child1"); err != nil {
 				t.Errorf("erase during a rescan: %v", err)
 			}
 		}
@@ -730,7 +730,7 @@ func TestRescanDoesNotResurrectAnErasedSubject(t *testing.T) {
 func TestRescanOfAnErasedSubjectHasNothingToDo(t *testing.T) {
 	r := newRig(t)
 	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("k", "e_child1", `{"comment": "INJECT"}`)))
-	if _, err := r.j.Erase(ctx, "a", "e_child1"); err != nil {
+	if _, err := r.eraseOff(ctx, "a", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	r.j.o.Scanner = releasingScanner{}

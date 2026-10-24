@@ -39,7 +39,12 @@ var ErrBadQuery = errors.New("journal: bad query")
 // SHA-256 of that same roster, so a caller reports the roster that actually
 // filtered the read. The roster is the only source: the journal confirms
 // membership here, before any query.
-func (j *Journal) grantsOf(reader string) ([]roster.Grant, string, error) {
+//
+// To the roster's grants it adds one frozen-reader grant (s,
+// access.ErasedReader) for every kept note s (spec 4.13) that erasure_reader
+// lists the reader for. A kept note erased after this look-up is not in the
+// list, so a read racing an erase fails closed for it.
+func (j *Journal) grantsOf(ctx context.Context, reader string) ([]roster.Grant, string, error) {
 	ros := j.o.Roster()
 	if ros == nil {
 		return nil, "", ErrNoRoster
@@ -47,6 +52,21 @@ func (j *Journal) grantsOf(reader string) ([]roster.Grant, string, error) {
 	g, ok := ros.Grants(reader)
 	if !ok {
 		return nil, "", ErrUnknownReader
+	}
+	rows, err := j.db.QueryContext(ctx, `SELECT pseudonym FROM erasure_reader WHERE member = $1 ORDER BY 1`, reader)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, "", err
+		}
+		g = append(g, roster.Grant{Subject: s, Token: access.ErasedReader})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
 	}
 	return g, ros.SHA256(), nil
 }
@@ -68,11 +88,20 @@ func (j *Journal) rowVisible(grants []roster.Grant, subject string, audience []s
 // = ANY and unnest forms cannot push into an index. At household scale the
 // state and counts scans over the remaining rows are cheap, which is
 // accepted.
+//
+// A kept note (data_subject starting with access.ErasedPrefix) takes the
+// one other branch, as in access.Visible: visible exactly when a grant
+// names it with access.ErasedReader, whatever its audience. The CASE keeps
+// the two branches apart, so "public" or a roster grant never reaches a
+// kept note, and a frozen-reader grant never reaches any other row.
 func visibleSQL(a string) string {
-	return fmt.Sprintf(`(%[1]s.audience && array_append($2::text[], 'public') AND
+	return fmt.Sprintf(`(CASE WHEN starts_with(%[1]s.data_subject, '%[2]s') THEN EXISTS (
+		SELECT 1 FROM unnest($1::text[], $2::text[]) AS g(s, t)
+		WHERE g.s = %[1]s.data_subject AND g.t = '%[3]s')
+		ELSE (%[1]s.audience && array_append($2::text[], 'public') AND
 		('public' = ANY(%[1]s.audience) OR EXISTS (
 		SELECT 1 FROM unnest($1::text[], $2::text[]) AS g(s, t)
-		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience))))`, a)
+		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience)))) END)`, a, access.ErasedPrefix, access.ErasedReader)
 }
 
 func nullable(s *string) sql.NullString {
@@ -118,7 +147,7 @@ func (j *Journal) State(ctx context.Context, q StateQuery) ([]journalapi.StateRo
 // roster that decided visibility, as a later j.o.Roster() call could.
 func (j *Journal) StateWithRoster(ctx context.Context, q StateQuery) ([]journalapi.StateRow, string, error) {
 	none := []journalapi.StateRow{}
-	grants, sha, err := j.grantsOf(q.Reader)
+	grants, sha, err := j.grantsOf(ctx, q.Reader)
 	if err != nil {
 		return none, "", err
 	}
@@ -207,7 +236,7 @@ type EventsQuery struct {
 // That is intended; the disagreement is a bug to fix, not to page around.
 func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event, error) {
 	none := []journalapi.Event{}
-	grants, _, err := j.grantsOf(q.Reader)
+	grants, _, err := j.grantsOf(ctx, q.Reader)
 	if err != nil {
 		return none, err
 	}
@@ -378,7 +407,7 @@ func nilIfNull(v json.RawMessage) json.RawMessage {
 // and Events.
 func (j *Journal) Counts(ctx context.Context, reader string, subject *string, since time.Time) ([]journalapi.Count, error) {
 	none := []journalapi.Count{}
-	grants, _, err := j.grantsOf(reader)
+	grants, _, err := j.grantsOf(ctx, reader)
 	if err != nil {
 		return none, err
 	}

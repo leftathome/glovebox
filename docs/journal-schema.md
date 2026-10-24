@@ -37,7 +37,8 @@ CloudNativePG image at the production PostgreSQL version
   that changes anything but `scan`, with one exception: erase's rewrite of a
   kept note (see `erasure` below), admitted only inside a transaction that set
   `glovebox_journal.erase_rewrite = on` (transaction-local) and only in its
-  exact shape (migration `0002_erase_rewrite`). Rows are deleted only by
+  exact shape (migration `0003_erasure_reader`, which replaced the shape
+  `0002_erase_rewrite` admitted). Rows are deleted only by
   erase. The flag guards against application mistakes (a stray `UPDATE`); it
   is not a permission boundary, since any role that can run SQL on this
   database can set it, or drop the trigger.
@@ -191,47 +192,90 @@ One row per erase (4.13). Never erased itself; holds no field data.
 | `data_subject` | text | The erased subject. Snapshots of it observed before `erased_at` plus the maximum future skew (10 minutes, the writer-clock allowance of validation) are refused with 410; one observed exactly `erased_at` plus the skew or later is accepted. |
 | `erased_at` | timestamptz | Core clock. |
 | `actor` | text | Admin ServiceAccount. |
-| `rows` | jsonb | Counts only: `{"snapshot": n, "record_current": n, "record_event": n, "notes_deleted_as_author": n, "notes_pseudonymised": n}`. The first three are rows deleted (the member's own notes about others included); `notes_deleted_as_author` is the `record_current` rows among them that were notes the member wrote; `notes_pseudonymised` is the notes kept (not deleted). No pseudonym and no other member's id is recorded. Rows written before migration `0002_erase_rewrite` have the first three keys only. |
+| `rows` | jsonb | Counts only: `{"snapshot": n, "record_current": n, "record_event": n, "notes_deleted_as_author": n, "notes_pseudonymised": n}`. The first three are rows deleted (the member's own notes about others, and kept notes left without a reader, included); `notes_deleted_as_author` is the `record_current` rows among them that were notes the member wrote; `notes_pseudonymised` is the notes kept (not deleted). No pseudonym, no author and no reader is recorded. Rows written before migration `0002_erase_rewrite` have the first three keys only. |
 
 Index: `(data_subject, erased_at)`.
 
-**What erase does with household notes (decision 2026-10-23, spec 4.13).** A
-note belongs to its author, the member in its key `<date>:<on_behalf_of>` (and
-in its events' actor `writer;on_behalf_of=<id>`).
+### `erasure_reader`
 
-1. Erasing a member deletes every note they wrote, about anyone: other
+The frozen readers of kept notes (migration `0003_erasure_reader`): one row per
+kept note and reader. Rows are written and deleted only by erase.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `pseudonym` | text | The kept note's `data_subject`, `erased:<32 hex>:<n>` (CHECK). |
+| `member` | text | A roster member id who reads that note: non-empty, no `:` (CHECK), never the erased id. |
+
+Primary key `(pseudonym, member)`; index `(member)` (a read looks up the
+reader's rows).
+
+### What erase does with household notes
+
+Decisions of 2026-10-23 (spec 4.13). A note belongs to its author, the member
+in its key `<date>:<on_behalf_of>` (and in its events' actor
+`writer;on_behalf_of=<id>`).
+
+0. **Only members off the roster are erased.** Erase refuses a member still
+   on the roster in use with 409 `subject_on_roster`: the roster is changed
+   through gitops first. It also refuses `""`, anything that is not a
+   well-formed member id (a pseudonym included), and runs only with a roster
+   loaded. One roster snapshot, taken at the start, decides both the refusal
+   and the frozen readers.
+1. **The member's own notes go.** Every note they wrote, about anyone: other
    subjects, the household, themselves, and notes of theirs kept from an
-   earlier erasure.
-2. Notes someone else wrote about the erased member are kept when their
-   audience has a `guardians` part, because the observation is the author's.
-   Each is moved, rows and events alike, to the household: `data_subject`
-   becomes `''`, `key` becomes `<date>:<author>:erased:<token>`, `scope` the
-   household scope of its type (`source=household/record_type=<type>`),
-   `audience` and `prev_audience` keep only `guardians`, `prev_scope` (when
-   set) the household scope, `group_key` NULL (it may embed the subject or
-   the scope). The fields, the free text included, are kept exactly as
-   written: text that names the member is the author's observation and is not
-   scrubbed. A note with no `guardians` part has no reader left once its
-   subject part is gone and is deleted. So is each event of a kept note whose
-   own audience had no `guardians` part (written under a type version with
-   another fixed audience), rather than kept as text nobody can read; the
-   note's newest event has the note's audience and always stays. For such a
-   note the fold invariant holds for `scope`, `audience` and
-   `last_event_seq`, but its remaining events may no longer fold to its
-   `fields`: the history before the first kept event is gone.
-3. Everything else of the member is deleted, as before.
+   earlier erasure (with their `erasure_reader` rows).
+2. **The member stops reading kept notes.** Their `erasure_reader` rows are
+   deleted; a kept note left with no reader is deleted.
+3. **Others' notes about the member are kept, for frozen readers.** For each,
+   erase computes its readers once: every member of the roster snapshot who
+   can read it at that moment under the read visibility rule
+   (`access.Visible` over the member's roster grants), plus its author if on
+   the roster, never the erased member. These are written to
+   `erasure_reader`. The note moves, its `record_current` row and every one
+   of its events, to its own subject `erased:<pseudonym>:<n>` (one pseudonym
+   per erasure, `n` per note); `scope` and `prev_scope` (when set) become the
+   household scope of its type (`source=household/record_type=<type>`);
+   `group_key` is cleared (it may embed the subject or the scope). `key`,
+   `audience`, `prev_audience`, fields and text stay exactly as written, and
+   every event is kept, so the record still folds (the fold invariant holds
+   in full). A note with no reader is deleted with the subject's data.
+4. **Everything else of the member is deleted**, as before.
+
+**Who reads a kept note.** Exactly its frozen readers, in State, Events and
+Counts, its old values across an audience change included: a row whose
+`data_subject` starts with `erased:` is visible to a reader iff
+`erasure_reader` lists the reader for it, whatever its audience
+(`access.Visible` and the SQL clause `visibleSQL` have this one branch, first).
+Its audience is not consulted, so neither `public` nor any roster grant
+(household, guardians, ...) reaches it; roster ids contain no `:`, so no
+roster grant can name such a subject, and the frozen-reader grant
+(`(<pseudonym>, erased:reader)`, added to a reader's grants from
+`erasure_reader` at the start of each read) names only kept notes. A member
+added to the roster later, a guardian of another child, or the erased member
+put back read none of it. Notices of kept events go to nobody. A frozen reader
+who leaves the roster reads nothing (unknown readers read nothing); one
+erased later stops being a reader (step 2).
+
+**A consequence to know.** Because erase runs only once the member is off the
+roster (step 0), no roster grant names them any more at that moment, so in
+practice a kept note's frozen readers are its author (plus, for a note whose
+audience is `public`, every member). Guardians who are not its author lose
+access to a note about an erased child. The rule computes the set from the
+live roster as decided; widening it would need the roster from before the
+member's removal.
 
 The pseudonym is `erased:` and 128 random bits (32 hex digits), drawn per
-erasure and stored nowhere else. A hash of the id, even keyed, was rejected: a
-household has a handful of ids, so an unkeyed hash is reversed by trying them,
-and a keyed one is as safe as its key, would need key management, and makes
-two erasures of one member linkable. A random token cannot be recomputed from
-the id at all. It can still be linked by elimination: the `erasure` row names
-the member and its time, so with one erasure in the database its kept notes
-are evidently that member's. The pseudonym guarantees that the id is gone from
-the rows, not that a reader with database access cannot infer whom a kept note
-was about, and the text itself may say so. At the database level it is also
-linkable through `xmin`: the kept rows, their rewritten events and the
+erasure and stored only in the kept rows and their `erasure_reader` rows. A
+hash of the id, even keyed, was rejected: a household has a handful of ids, so
+an unkeyed hash is reversed by trying them, and a keyed one is as safe as its
+key, would need key management, and makes two erasures of one member linkable.
+A random token cannot be recomputed from the id at all. It can still be linked
+by elimination: the `erasure` row names the member and its time, so with one
+erasure in the database its kept notes are evidently that member's. The
+pseudonym guarantees that the id is gone from the rows, not that a reader with
+database access cannot infer whom a kept note was about, and the text itself
+may say so. At the database level it is also linkable through `xmin`: the
+kept rows, their rewritten events, their `erasure_reader` rows and the
 `erasure` row are written by one transaction and share its id until the rows
 are next changed or frozen. The old tuple versions, which still hold the id,
 stay in the table files until VACUUM removes them, and WAL archives and base
@@ -244,19 +288,9 @@ within that window.
 After an erase, new notes by or about the member are accepted as new data (a
 note about them observed before `erased_at` is refused, like a snapshot), and
 copies a reader already took from the events feed (any reader past those
-cursors) are outside the journal: erase does not reach them.
-
-Kept notes are read under the unchanged visibility rule: a household row with
-audience `[guardians]` is visible to holders of the grant `("", guardians)`,
-which the roster gives every guardian (spec 11 3.4). No grant names a
-pseudonym, so nothing else matches it, and no member holds `("", subject)` (a
-subject grant names the member's own id). The erased member reads it only if
-they are still in the roster as a guardian; erase is meant for members who
-have left it. Readers' cursors stay valid: the events keep their `seq`, and
-the fold invariant holds for the moved record (with the exception above). The new keys cannot collide:
-the moved rows' keys were unique per (type, subject), the token is new for
-each erasure, and no note written through `POST /v1/notes` has a key with a
-third `:`-part (roster ids contain no `:`).
+cursors) are outside the journal: erase does not reach them. Readers' cursors
+stay valid: kept events keep their `seq`. Kept rows cannot collide on primary
+keys: each has its own subject.
 
 ## Design notes
 
@@ -328,4 +362,5 @@ Choices this schema makes where the spec leaves room (also in the plan,
 | Migration | Change |
 |---|---|
 | `0001_init` | All tables above, their indexes and the append-only trigger. |
-| `0002_erase_rewrite` | Replaces the append-only trigger's function: besides `scan`, it admits erase's in-place rewrite of a kept note's events (decision 2026-10-23), only under the transaction-local setting `glovebox_journal.erase_rewrite = on` and only from a subject to the household, with the key gaining an `:erased:<token>` suffix, scopes without a `data_subject=` part, audiences that only shrink and `group_key` cleared. No table changes. |
+| `0002_erase_rewrite` | Replaces the append-only trigger's function: besides `scan`, it admits erase's in-place rewrite of a kept note's events (decision 2026-10-23), only under the transaction-local setting `glovebox_journal.erase_rewrite = on` and only from a subject to the household, with the key gaining an `:erased:<token>` suffix, scopes without a `data_subject=` part, audiences that only shrink and `group_key` cleared. No table changes. Superseded by `0003_erasure_reader`. |
+| `0003_erasure_reader` | Adds `erasure_reader` (the frozen readers of kept notes) and replaces the append-only trigger's function again: the erase rewrite now moves a kept note's events from a member to its own subject `erased:<32 hex>:<n>`, with scopes without a `data_subject=` part and `group_key` cleared, and changes nothing else (key and audiences stay). Same transaction-local flag. |

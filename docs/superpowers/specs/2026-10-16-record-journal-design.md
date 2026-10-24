@@ -571,29 +571,40 @@ the connector deletes them, so a spool replay cannot bring data back.
 Reader cursors stay valid (sequence numbers are not reused). This is the only
 operation that deletes or rewrites event history.
 
-Household notes (decision 2026-10-23): a note belongs to its author, the
-`on_behalf_of` member in its key.
+Decisions of 2026-10-23:
 
-- Erasing a member deletes every note they wrote, about anyone (other
-  subjects, the household, themselves).
-- Notes others wrote about the erased member are kept when their audience has
-  a `guardians` part: they move to the household (`data_subject` `''`), the
-  key gets the suffix `:erased:<token>`, the scope becomes the household
-  scope, the audience keeps only `guardians`, and their events are rewritten
-  in place (same `seq`, `group_key` cleared). The text is kept as written. The
-  token is 128 random bits per erasure, stored nowhere, so it cannot be
-  recomputed from the id. Guardians keep reading them through the household
-  grant `("", guardians)`; the visibility rule is unchanged. A note with no
-  `guardians` part has no reader left and is deleted.
+- Erase refuses a member still on the roster in use with `409
+  subject_on_roster`: the roster is updated through gitops first. One roster
+  snapshot decides the refusal and the frozen readers below.
+- A note belongs to its author, the `on_behalf_of` member in its key. Erasing
+  a member deletes every note they wrote, about anyone (other subjects, the
+  household, themselves, notes of theirs kept earlier), and removes them as a
+  reader of kept notes; a kept note left with no reader is deleted.
+- Notes others wrote about the erased member are kept, whatever their
+  audience, for their frozen readers: exactly the roster members who can read
+  the note at the erase, under the read visibility rule, plus its author if on
+  the roster, never the erased member (table `erasure_reader`). A note with no
+  such reader is deleted. A kept note moves to its own subject
+  `erased:<pseudonym>:<n>` (128 random bits per erasure, stored nowhere else,
+  so it cannot be recomputed from the id); its scope becomes the household
+  scope; key, audience, fields and text stay as written; its events are
+  rewritten in place (same `seq`, `group_key` cleared) and all kept, so it
+  still folds.
+- A kept note is visible exactly to its frozen readers, in every read,
+  whatever its audience: no roster grant, `public` included, reaches it, and
+  members added later never do.
 - Everything else of the member is deleted as above.
 
-Erase takes the member's author lock (which every note write takes for its
-`on_behalf_of`, before its subject lock), then the subject's lock, the
-household's and those of every subject the member wrote about, in sorted
-order. New notes by or about the member after the erase are accepted, and
-copies readers already took from the events feed are not reached. The `erasure` row records counts,
-including `notes_deleted_as_author` and `notes_pseudonymised`, and no id but
-the erased one. `docs/journal-schema.md` has the details.
+Because the member is off the roster when erased, no roster grant names them
+at that moment: a kept note's frozen readers are in practice its author (and
+everyone for a `public` note). Erase takes the member's author lock (which
+every note write takes for its `on_behalf_of`, before its subject lock), then
+the subject's lock, the household's and those of every subject the member
+wrote about, in sorted order. New notes by or about the member after the
+erase are accepted, and copies readers already took from the events feed are
+not reached. The `erasure` row records counts, including
+`notes_deleted_as_author` and `notes_pseudonymised`, and no id but the erased
+one. `docs/journal-schema.md` has the details.
 
 ### 4.14 Spool (connector side)
 

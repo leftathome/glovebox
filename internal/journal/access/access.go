@@ -6,6 +6,7 @@ package access
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/record"
@@ -27,12 +28,40 @@ var (
 	withheldAudienceJSON = record.Encode(WithheldAudience)
 )
 
+// ErasedPrefix starts the data_subject of a note kept when its subject was
+// erased (spec 4.13): "erased:<pseudonym>:<n>". Roster ids cannot contain
+// ':', so no roster member, and no roster grant, ever names one.
+const ErasedPrefix = "erased:"
+
+// ErasedReader is the token of a frozen-reader grant: the journal adds
+// (s, ErasedReader) to a reader's grants for every kept note s whose
+// frozen reader set (table erasure_reader) lists the reader. It contains
+// ':', so it is never an audience token a type or snapshot can name.
+const ErasedReader = "erased:reader"
+
+// IsErased reports whether subject is a kept note's pseudonymous subject.
+func IsErased(subject string) bool { return strings.HasPrefix(subject, ErasedPrefix) }
+
 // Visible is the visibility rule. Precondition: grants belong to an
 // authenticated reader who is present in the roster (an unknown reader has
 // no grants, and the request layer answers it with 403 before this is
-// called). A row whose audience contains "public" is visible to any such
-// reader.
+// called), plus the reader's frozen-reader grants.
+//
+// A kept note (IsErased(subject)) is visible exactly to the readers frozen
+// for it at erase time: its audience is not consulted, so neither "public"
+// nor any roster grant reaches it. Any other row is visible when its
+// audience contains "public", or when a grant names its subject and one of
+// its audience tokens; frozen-reader grants name only kept notes, so they
+// never match one.
 func Visible(grants []roster.Grant, subject string, audience []string) bool {
+	if IsErased(subject) {
+		for _, g := range grants {
+			if g.Subject == subject && g.Token == ErasedReader {
+				return true
+			}
+		}
+		return false
+	}
 	for _, t := range audience {
 		if t == Public {
 			return true
@@ -90,7 +119,12 @@ func OldValue(grants []roster.Grant, subject string, prev []string, audienceChan
 }
 
 // Notices keeps the notices whose token the reader holds for subject.
+// A kept note's notices were advice to readers of a subject who is gone:
+// nobody gets them.
 func Notices(grants []roster.Grant, subject string, in []rules.Notice) []rules.Notice {
+	if IsErased(subject) {
+		return nil
+	}
 	var out []rules.Notice
 	for _, n := range in {
 		for _, g := range grants {

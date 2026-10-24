@@ -112,6 +112,9 @@ const (
 	ReasonConflict         = "conflict"           // 409 on admin endpoints; on POST /v1/notes, the stored note is newer than the journal clock (retry)
 	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
+	// ReasonSubjectOnRoster: 409 on POST /v1/admin/erase, the member is still
+	// on the roster in use; remove them through gitops, then erase.
+	ReasonSubjectOnRoster = "subject_on_roster"
 )
 
 // ScopePart is one ["name", "value"] pair of a scope.
