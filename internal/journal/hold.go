@@ -90,6 +90,13 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 			out.Rejection = rej
 			return nil
 		}
+		// The ban (4.13): an erase deletes the subject's held snapshots, so
+		// one can only be here if it was stored some other way; it is
+		// refused like any later snapshot. Discard it.
+		if rej, err := banned(ctx, tx, n.Subject); err != nil || rej != nil {
+			out.Rejection = rej
+			return err
+		}
 		if rej := j.checkSubject(n.Subject); rej != nil {
 			out.Rejection = rej
 			return nil

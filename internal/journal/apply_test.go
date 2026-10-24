@@ -106,21 +106,26 @@ func TestLateSnapshotNeverMovesStateBackwards(t *testing.T) {
 	}
 }
 
-func TestErasedSubjectIsRefusedForEarlierObservations(t *testing.T) {
+// An erase is a ban (decision 2026-10-24): every snapshot of the subject is
+// refused with 410, observed before the erasure or long after it.
+func TestErasedSubjectIsBannedWhateverTheObservedAt(t *testing.T) {
 	r := newRig(t)
 	erasedAt := T0.Add(-time.Hour)
 	if _, err := r.j.db.Exec(`INSERT INTO erasure (data_subject, erased_at, actor, rows) VALUES ('e_child1', $1, 'test', '{}')`, erasedAt); err != nil {
 		t.Fatal(err)
 	}
-	out := r.apply(snap(1, "e_child1", "c1", erasedAt.Add(-time.Minute), true, rec("c1:1", "e_child1", `{"title": "x"}`)))
-	if out.Rejection == nil || out.Rejection.Status != 410 || out.Rejection.Reason != journalapi.ReasonErasedSubject {
-		t.Fatalf("%+v", out)
+	for i, at := range []time.Time{erasedAt.Add(-time.Minute), erasedAt.Add(record.MaxFutureSkew), T0.Add(record.MaxFutureSkew - time.Second)} {
+		out := r.apply(snap(i+1, "e_child1", "c1", at, true, rec("c1:1", "e_child1", `{"title": "x"}`)))
+		if out.Rejection == nil || out.Rejection.Status != 410 || out.Rejection.Reason != journalapi.ReasonErasedSubject ||
+			!strings.Contains(out.Rejection.Detail, "ban") {
+			t.Errorf("observed %v: %+v", at, out)
+		}
 	}
 	if r.count("snapshot") != 0 {
 		t.Error("a refused snapshot was stored")
 	}
-	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(record.MaxFutureSkew), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
-		t.Errorf("an observation after the erase: %+v", out)
+	if out := r.apply(snap(9, "e_child2", "c1", T0, true, rec("c1:1", "e_child2", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
+		t.Errorf("another subject: %+v", out)
 	}
 }
 

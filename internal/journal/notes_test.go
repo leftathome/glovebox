@@ -158,37 +158,31 @@ func TestNoteWithoutARosterIsRefused(t *testing.T) {
 	}
 }
 
+// The ban (decision 2026-10-24): no note about an erased member and none by
+// one, whatever erased_at says; another member's erasure does not matter.
 func TestNoteErasureGuard(t *testing.T) {
 	r := newRig(t)
-	r.eraseAt("e_child2", T0.Add(time.Hour)) // another subject's erasure does not matter
+	r.eraseAt("e_parent2", T0.Add(time.Hour)) // another member's erasure does not matter
 	if _, rej := r.note("e_parent1", "e_child1", "2026-10-14", `{}`); rej != nil {
 		t.Fatalf("unrelated erasure refused a note: %v", rej)
 	}
-	// A note is observed at the journal's own now: one written after the
-	// erasure is accepted, even inside the writers' clock-skew allowance.
-	r.eraseAt("e_child1", T0.Add(-time.Minute))
-	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{}`); rej != nil || resp.Status != "created" {
-		t.Errorf("a note after the erasure: %+v %v", resp, rej)
-	}
-	r.eraseAt("e_child1", T0) // erased_at == now: not after the note
-	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-16", `{}`); rej != nil || resp.Status != "created" {
-		t.Errorf("erased_at == now: %+v %v", resp, rej)
-	}
-	// An erasure after now (the clock stepped back) refuses the note.
-	r.eraseAt("e_child1", T0.Add(time.Microsecond))
-	_, rej := r.note("e_parent1", "e_child1", "2026-10-17", `{}`)
+	// By an erased author, about a subject who is not erased.
+	_, rej := r.note("e_parent2", "e_child2", "2026-10-15", `{}`)
 	if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject {
-		t.Errorf("erased_at after now: %v", rej)
+		t.Errorf("a note by an erased author: %v", rej)
 	}
-	if _, ok := r.current("attendance_note", "e_child1", "2026-10-17:e_parent1"); ok || r.count("record_event") != 3 {
+	r.eraseAt("e_child1", T0.Add(-24*time.Hour)) // long ago
+	for _, w := range []string{"e_parent1", "e_child1"} {
+		_, rej := r.note(w, "e_child1", "2026-10-15", `{}`)
+		if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject {
+			t.Errorf("a note about the erased member by %s: %v", w, rej)
+		}
+	}
+	if _, rej := r.note("e_parent1", "e_child2", "2026-10-15", `{}`); rej != nil {
+		t.Errorf("a note about a subject who is not erased: %v", rej)
+	}
+	if r.count("record_event") != 2 || r.eventCount("created") != 2 {
 		t.Error("a refused note was stored")
-	}
-	if r.eventCount("created") != 3 {
-		t.Errorf("created metric %d", r.eventCount("created"))
-	}
-	r.clock.Set(T0.Add(time.Microsecond)) // now == erased_at
-	if resp, rej := r.note("e_parent1", "e_child1", "2026-10-17", `{}`); rej != nil || resp.Status != "created" {
-		t.Errorf("now == erased_at: %+v %v", resp, rej)
 	}
 }
 
@@ -203,8 +197,12 @@ func TestNoteErasedSubjectOffTheRosterIs410(t *testing.T) {
 	}
 	r.eraseAt("e_stranger2", T0.Add(-time.Hour))
 	_, rej = r.note("e_parent1", "e_stranger2", "2026-10-14", `{}`)
-	if rej == nil || rej.Status != 409 {
+	if rej == nil || rej.Status != 410 {
 		t.Errorf("erased long ago, off the roster: %v", rej)
+	}
+	_, rej = r.note("e_parent1", "e_stranger3", "2026-10-14", `{}`)
+	if rej == nil || rej.Status != 409 {
+		t.Errorf("never erased, off the roster: %v", rej)
 	}
 }
 

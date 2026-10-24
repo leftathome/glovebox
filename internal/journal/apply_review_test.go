@@ -205,9 +205,8 @@ func TestConcurrentResendIsAppliedOnce(t *testing.T) {
 	}
 }
 
-// An erasure refuses snapshots observed before erased_at plus the allowed
-// future skew, because the writer's clock may run that far ahead.
-func TestErasureSkewBoundary(t *testing.T) {
+// The ban has no time boundary: the old erased_at + skew edge refuses too.
+func TestErasureBanHasNoSkewBoundary(t *testing.T) {
 	r := newRig(t)
 	erasedAt := T0.Add(-time.Hour)
 	if _, err := r.j.db.Exec(`INSERT INTO erasure (data_subject, erased_at, actor, rows) VALUES ('e_child1', $1, 'test', '{}')`, erasedAt); err != nil {
@@ -216,15 +215,12 @@ func TestErasureSkewBoundary(t *testing.T) {
 	for name, at := range map[string]time.Time{
 		"at erased_at":    erasedAt,
 		"inside the skew": erasedAt.Add(record.MaxFutureSkew - time.Microsecond),
+		"at the old edge": erasedAt.Add(record.MaxFutureSkew),
 	} {
 		out := r.apply(snap(1, "e_child1", "c1", at, true, rec("k", "e_child1", `{"title": "x"}`)))
 		if out.Rejection == nil || out.Rejection.Status != 410 {
 			t.Errorf("%s: %+v", name, out)
 		}
-	}
-	out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(record.MaxFutureSkew), true, rec("k", "e_child1", `{"title": "x"}`)))
-	if out.Status != journalapi.StatusApplied {
-		t.Errorf("exactly erased_at + skew: %+v", out)
 	}
 }
 

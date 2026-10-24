@@ -17,7 +17,7 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 	r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
 	maxSeq := r.events("e_child2")[0].Seq
 	r.clock.Set(T0.Add(-time.Hour))
-	resp, err := r.eraseOff(ctx, "openclaw/glovebox-journal-admin", "e_child1")
+	resp, err := r.j.Erase(ctx, "openclaw/glovebox-journal-admin", "e_child1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,12 +57,19 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 	if r.snapshotStatus(1) != "absent" {
 		t.Error("the replayed snapshot was stored")
 	}
-	// New data after the erase is accepted and gets new sequence numbers.
-	r.apply(snap(3, "e_child1", "c1", T0, true, rec("c1:1", "e_child1", `{"title": "A"}`)))
-	if ev := r.events("e_child1"); len(ev) != 1 || ev[0].Seq <= maxSeq {
+	// The erase is a ban: new data about the subject is refused too.
+	if out := r.apply(snap(3, "e_child1", "c1", T0, true, rec("c1:1", "e_child1", `{"title": "A"}`))); out.Rejection == nil ||
+		out.Rejection.Status != 410 {
+		t.Errorf("new data after the erase: %+v", out)
+	}
+	// Another subject's new events get new sequence numbers: none is reused.
+	var maxAll int64
+	_ = r.j.db.QueryRow(`SELECT max(seq) FROM record_event`).Scan(&maxAll)
+	r.apply(snap(4, "e_child2", "c1", T0, true, rec("c1:1", "e_child2", `{"title": "C"}`)))
+	if ev := r.events("e_child2"); len(ev) != 2 || ev[1].Seq <= maxSeq || ev[1].Seq <= maxAll {
 		t.Errorf("sequence numbers reused: %+v", ev)
 	}
-	if _, err := r.eraseOff(ctx, "admin", ""); !errors.Is(err, ErrNoSubject) {
+	if _, err := r.j.Erase(ctx, "admin", ""); !errors.Is(err, ErrNoSubject) {
 		t.Errorf("erased the empty subject: %v", err)
 	}
 }
@@ -160,7 +167,7 @@ func TestEraseClearsEveryStatusAndTouchesNoOneElse(t *testing.T) {
 	if household == "" || other == "" {
 		t.Fatal("setup: nothing to compare")
 	}
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.dump("e_child1"); got != "" {
@@ -197,16 +204,16 @@ func TestEraseClearsEveryStatusAndTouchesNoOneElse(t *testing.T) {
 }
 
 // A second erase is allowed: it counts nothing, adds its own erasure row and
-// keeps the refusal window at the later of the two erasures.
+// the ban stays.
 func TestEraseTwiceAndOfAnUnknownSubject(t *testing.T) {
 	r := newRig(t)
 	five(r, 1, T0.Add(-3*time.Hour))
-	first, err := r.eraseOff(ctx, "a", "e_child1")
+	first, err := r.j.Erase(ctx, "a", "e_child1")
 	if err != nil || first.Events != 5 || first.Current != 5 || first.Snapshots != 1 {
 		t.Fatalf("%+v %v", first, err)
 	}
 	r.clock.Set(T0.Add(time.Hour))
-	second, err := r.eraseOff(ctx, "b", "e_child1")
+	second, err := r.j.Erase(ctx, "b", "e_child1")
 	if err != nil || second.Events != 0 || second.Current != 0 || second.Snapshots != 0 || !second.ErasedAt.Equal(T0.Add(time.Hour)) {
 		t.Fatalf("%+v %v", second, err)
 	}
@@ -220,7 +227,7 @@ func TestEraseTwiceAndOfAnUnknownSubject(t *testing.T) {
 	}
 	// A subject with no data still gets its erasure row, so a replay of
 	// anything not yet received is refused.
-	if _, err := r.eraseOff(ctx, "a", "e_child2"); err != nil {
+	if _, err := r.j.Erase(ctx, "a", "e_child2"); err != nil {
 		t.Fatal(err)
 	}
 	if n := r.count("erasure"); n != 3 {
@@ -234,7 +241,7 @@ func TestEraseAndTheOtherWriters(t *testing.T) {
 	five(r, 1, T0.Add(-3*time.Hour))
 	r.apply(snap(2, "e_child1", "c1", T0.Add(-2*time.Hour), true, keep(3)...)) // held
 	r.note("e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
-	if _, err := r.eraseOff(ctx, "a", "e_child1"); err != nil {
+	if _, err := r.j.Erase(ctx, "a", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.j.ConfirmHeld(ctx, uid(2), allowAll); !errors.Is(err, ErrNotFound) {
@@ -264,19 +271,16 @@ func TestEraseAndTheOtherWriters(t *testing.T) {
 			t.Errorf("%s reads %d events, want %d", reader, len(evs), want)
 		}
 	}
-	// The clock is at T0 == erased_at: the note is not refused (strict >),
-	// a snapshot inside the skew window is.
-	if _, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{"what_happened": "y"}`); rej != nil {
-		t.Errorf("note at the erase instant: %v", rej)
-	}
-	out := r.apply(snap(3, "e_child1", "c1", T0.Add(5*time.Minute), true, keep(1)...))
-	if out.Rejection == nil || out.Rejection.Status != 410 {
-		t.Errorf("inside the skew window: %+v", out)
-	}
-	// A note when the clock stepped back before the erase is refused.
-	r.clock.Set(T0.Add(-time.Minute))
-	if _, rej := r.note("e_parent1", "e_child1", "2026-10-16", `{"what_happened": "z"}`); rej == nil || rej.Status != 410 {
-		t.Errorf("note before the erase: %v", rej)
+	// The ban: refused at the erase instant, later, and when the clock
+	// stepped back.
+	for _, at := range []time.Time{T0, T0.Add(time.Hour), T0.Add(-time.Minute)} {
+		r.clock.Set(at)
+		if _, rej := r.note("e_parent1", "e_child1", "2026-10-15", `{"what_happened": "y"}`); rej == nil || rej.Status != 410 {
+			t.Errorf("note at %v: %v", at, rej)
+		}
+		if out := r.apply(snap(3, "e_child1", "c1", at, true, keep(1)...)); out.Rejection == nil || out.Rejection.Status != 410 {
+			t.Errorf("snapshot at %v: %+v", at, out)
+		}
 	}
 }
 
@@ -295,7 +299,7 @@ func TestEraseTakesTheSubjectLock(t *testing.T) {
 	}
 	c, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 	defer cancel()
-	if _, err := r.eraseOff(c, "a", "e_child1"); err == nil {
+	if _, err := r.j.Erase(c, "a", "e_child1"); err == nil {
 		t.Error("Erase did not wait for the subject lock")
 	}
 	if r.count("record_event") != 5 || r.count("erasure") != 0 {
@@ -312,7 +316,7 @@ func TestEraseTakesTheSubjectLock(t *testing.T) {
 	}
 	c2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel2()
-	if _, err := r.eraseOff(c2, "a", "e_child1"); err != nil {
+	if _, err := r.j.Erase(c2, "a", "e_child1"); err != nil {
 		t.Errorf("Erase blocked on another subject's lock: %v", err)
 	}
 }
@@ -324,7 +328,7 @@ func TestEraseRollsBackAsOne(t *testing.T) {
 	if _, err := r.j.db.Exec(`ALTER TABLE erasure ADD CONSTRAINT erasure_test_fail CHECK (actor <> 'boom')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.eraseOff(ctx, "boom", "e_child1"); err == nil {
+	if _, err := r.j.Erase(ctx, "boom", "e_child1"); err == nil {
 		t.Fatal("expected the insert to fail")
 	}
 	if r.count("record_event") != 5 || r.count("record_current") != 5 || r.count("snapshot") != 1 || r.count("erasure") != 0 {

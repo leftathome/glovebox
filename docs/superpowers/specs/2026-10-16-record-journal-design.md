@@ -227,7 +227,7 @@ assert this invariant and nothing broader.
 | Code | Body `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | `200` | `applied`, `duplicate`, `late`, `held` | accepted (4.4) | delete the file |
-| `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at`, or within the clock-skew allowance (10 minutes) before it | delete the file |
+| `410` | `erased_subject` | the subject was erased: an erase bans all later data about the member, whatever its `observed_at` (4.13) | delete the file |
 | `403` | `policy` | the service may not write this type or scope | move to `spool/rejected/` |
 | `409` | `unknown_subject` | a `data_subject` is not in the current roster (4.9b) -- possibly a roster change in progress | keep, retry with backoff (bounded by the spool limits) |
 | `413` | `too_large` | over a limit | move to `spool/rejected/` |
@@ -246,8 +246,9 @@ In one transaction, under a per-subject advisory lock (every write for one `data
    and reveal nothing about the stored snapshot.
 2. **Validation.** Schema, limits and policy; failures return `4xx` and
    store nothing.
-3. **Erasure guard.** If any record's `data_subject` has an `erasure` row with
-   `erased_at > observed_at`, return `410 erased_subject` and store nothing.
+3. **Erasure guard.** If the snapshot's `data_subject` has any `erasure` row
+   (an erase is a ban, 4.13), return `410 erased_subject` and store nothing,
+   whatever `observed_at` is.
 4. **Ordering.** If a snapshot for the same scope with a later `observed_at`
    is already applied, store this one as `late` (payload kept, no diff, no
    events). Current state never moves backwards.
@@ -566,45 +567,51 @@ All reads require a service token and grants.
 `POST /v1/admin/erase` deletes, in one transaction, every `snapshot` row whose
 `data_subject` is the subject (held ones included) and every `record_current`
 and `record_event` row for the subject, and writes an `erasure` row with
-counts. Later snapshots observed before the erasure get `410` (4.4 step 3) and
-the connector deletes them, so a spool replay cannot bring data back.
-Reader cursors stay valid (sequence numbers are not reused). This is the only
-operation that deletes or rewrites event history.
+counts. Reader cursors stay valid (sequence numbers are not reused). This is
+the only operation that deletes or rewrites event history.
 
-Decisions of 2026-10-23:
+Decisions of 2026-10-23 and 2026-10-24:
 
-- Erase refuses a member still on the roster in use with `409
-  subject_on_roster`: the roster is updated through gitops first. One roster
-  snapshot decides the refusal and the frozen readers below.
+- A member may be erased while still on the roster; removing them from the
+  roster through gitops can follow at any time. One roster snapshot, which
+  still includes the member, decides the frozen readers below.
+- The erase is a ban: once an `erasure` row exists for a member, every later
+  snapshot about them (4.4 step 3, and the confirm of a held one), every note
+  about them and every note by them is refused with `410 erased_subject`,
+  whatever its time. Connectors and the gateway treat 410 as permanent and
+  delete the item, so in-flight spools drain themselves. There is no
+  un-erase; putting an erased person back needs a deliberate un-erase that
+  does not exist yet.
 - A note belongs to its author, the `on_behalf_of` member in its key. Erasing
   a member deletes every note they wrote, about anyone (other subjects, the
   household, themselves, notes of theirs kept earlier), and removes them as a
   reader of kept notes; a kept note left with no reader is deleted.
 - Notes others wrote about the erased member are kept, whatever their
   audience, for their frozen readers: exactly the roster members who can read
-  the note at the erase, under the read visibility rule, plus its author if on
-  the roster, never the erased member (table `erasure_reader`). A note with no
-  such reader is deleted. A kept note moves to its own subject
+  the note at the erase, under the read visibility rule (so the member's
+  guardians), plus its author if on the roster; never the erased member, and
+  never a member erased before (table `erasure_reader`). A note with no such
+  reader is deleted. A kept note moves to its own subject
   `erased:<pseudonym>:<n>` (128 random bits per erasure, stored nowhere else,
   so it cannot be recomputed from the id); its scope becomes the household
   scope; key, audience, fields and text stay as written; its events are
   rewritten in place (same `seq`, `group_key` cleared) and all kept, so it
   still folds.
 - A kept note is visible exactly to its frozen readers, in every read,
-  whatever its audience: no roster grant, `public` included, reaches it, and
-  members added later never do.
+  whatever its audience: no roster grant, `public` included, reaches it;
+  members added later, and the erased member even while still on the roster,
+  never do.
 - Everything else of the member is deleted as above.
+- Copies already delivered outside the journal (the openclaw inbox,
+  audiences, memory vaults) are not erased; that is a separate, later
+  improvement.
 
-Because the member is off the roster when erased, no roster grant names them
-at that moment: a kept note's frozen readers are in practice its author (and
-everyone for a `public` note). Erase takes the member's author lock (which
-every note write takes for its `on_behalf_of`, before its subject lock), then
-the subject's lock, the household's and those of every subject the member
-wrote about, in sorted order. New notes by or about the member after the
-erase are accepted, and copies readers already took from the events feed are
-not reached. The `erasure` row records counts, including
-`notes_deleted_as_author` and `notes_pseudonymised`, and no id but the erased
-one. `docs/journal-schema.md` has the details.
+Erase takes the member's author lock (which every note write takes for its
+`on_behalf_of`, before its subject lock), then the subject's lock, the
+household's and those of every subject the member wrote about, in sorted
+order. The `erasure` row records counts, including `notes_deleted_as_author`
+and `notes_pseudonymised`, and no id but the erased one.
+`docs/journal-schema.md` has the details.
 
 ### 4.14 Spool (connector side)
 

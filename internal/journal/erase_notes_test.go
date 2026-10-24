@@ -90,22 +90,6 @@ func rosterWithout(t testing.TB, raw string, ids ...string) string {
 	return string(b)
 }
 
-// eraseOff erases subject the way an operator must: off the roster first.
-// The roster in use before is restored afterwards, as if the member were
-// added back, so tests can go on writing about them.
-func (r *rig) eraseOff(c context.Context, actor, subject string) (journalapi.EraseResponse, error) {
-	r.t.Helper()
-	before := r.rosRaw
-	if before == "" {
-		r.t.Fatal("eraseOff needs a roster set through newRig or setRoster")
-	}
-	if subject != "" {
-		r.setRoster(rosterWithout(r.t, before, subject))
-	}
-	defer r.setRoster(before)
-	return r.j.Erase(c, actor, subject)
-}
-
 func noteOf(reg *record.Registry, typ, onBehalfOf, subject, date, fields string) (*record.NormNote, *record.Rejection) {
 	var f map[string]json.RawMessage
 	_ = json.Unmarshal([]byte(fields), &f)
@@ -338,7 +322,7 @@ func TestEraseAnAuthorRemovesEveryNoteTheyWrote(t *testing.T) {
 	}
 	attempts := 0
 	r.j.beforeEraseLocks = func() { attempts++ }
-	resp, err := r.eraseOff(ctx, "admin", "e_parent1")
+	resp, err := r.j.Erase(ctx, "admin", "e_parent1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +358,7 @@ func TestEraseAnAuthorLeavesSchoolRecordsWithALookalikeKey(t *testing.T) {
 	r := newNoteRig(t)
 	r.apply(snap(1, "e_child1", "c1", T0.Add(-time.Hour), true, rec("2026-10-14:e_parent1", "e_child1", `{"title": "A"}`)))
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
-	resp, err := r.eraseOff(ctx, "admin", "e_parent1")
+	resp, err := r.j.Erase(ctx, "admin", "e_parent1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +384,7 @@ func TestEraseAnAuthorWhoseIdPrefixesAnother(t *testing.T) {
 	r.mustNote("attendance_note", "e_anna", "e_child1", "2026-10-14", `{"what_happened": "b"}`)
 	r.mustNote("family_note", "e_anna", "", "2026-10-14", `{"text": "c"}`)
 	keep := r.rowsWhere(`key LIKE '%:e_anna'`)
-	resp, err := r.eraseOff(ctx, "admin", "e_ann")
+	resp, err := r.j.Erase(ctx, "admin", "e_ann")
 	if err != nil || resp.NotesDeletedAsAuthor != 1 {
 		t.Fatalf("%+v %v", resp, err)
 	}
@@ -431,7 +415,7 @@ func TestEraseTakesTheLocksOfTheAuthorsOtherSubjects(t *testing.T) {
 			}
 			cx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 			defer cancel()
-			_, err = r.eraseOff(cx, "admin", "e_parent1")
+			_, err = r.j.Erase(cx, "admin", "e_parent1")
 			if blocked := err != nil; blocked != c.blocked {
 				t.Errorf("blocked=%v (%v), want %v", blocked, err, c.blocked)
 			}
@@ -469,7 +453,7 @@ func TestEraseAndNotesTakeTheAuthorLock(t *testing.T) {
 			}
 			cx2, cancel2 := context.WithTimeout(ctx, 700*time.Millisecond)
 			defer cancel2()
-			if _, err := r.eraseOff(cx2, "admin", "e_parent1"); (err != nil) != c.blocked {
+			if _, err := r.j.Erase(cx2, "admin", "e_parent1"); (err != nil) != c.blocked {
 				t.Errorf("Erase: %v, want blocked=%v", err, c.blocked)
 			}
 			if c.blocked && (r.count("record_current") != 1 || r.count("erasure") != 0) {
@@ -497,7 +481,7 @@ func TestEraseTakesItsLocksInSortedOrder(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := r.eraseOff(bounded(t), "admin", "e_parent1")
+		_, err := r.j.Erase(bounded(t), "admin", "e_parent1")
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -541,7 +525,7 @@ func TestEraseRewriteFlagDoesNotOutliveTheErase(t *testing.T) {
 	r.j.db.SetMaxOpenConns(1)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
 	r.mustNote("attendance_note", "e_parent1", "e_child2", "2026-10-14", `{"what_happened": "b"}`)
-	resp, err := r.eraseOff(ctx, "admin", "e_child1")
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
 	if err != nil || resp.NotesPseudonymised != 1 {
 		t.Fatalf("%+v %v", resp, err)
 	}

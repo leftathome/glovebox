@@ -87,13 +87,9 @@ func (e *effects) emit() {
 // Apply runs 4.4 for a snapshot that passed validation and policy.
 // payload is the request body, stored as received.
 //
-// Erasure (4.13): a snapshot is refused with 410 when its observed_at is
-// less than record.MaxFutureSkew after an erasure of its subject, not only
-// when it is before it. The writer's clock may run ahead of the journal's by
-// up to the skew validation allows, so a snapshot stamped inside that window
-// after the erase may in fact have been observed before it; it is treated
-// as pre-erasure. One observed exactly erased_at+MaxFutureSkew or later is
-// accepted.
+// Erasure (4.13, decision 2026-10-24): an erase is a ban. Once any erasure
+// row exists for the subject, every snapshot of it is refused with 410,
+// whatever its observed_at; spools treat 410 as permanent and drop it.
 //
 // A snapshot id is a duplicate only if writer, record type and scope match
 // the stored snapshot; any other reuse is refused with 422 (also when two
@@ -113,14 +109,9 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 			resend = o.Rejection == nil
 			return err
 		}
-		erased, err := erasedAfter(ctx, tx, n.Subject, n.ObservedAt)
-		if err != nil {
+		if rej, err := banned(ctx, tx, n.Subject); err != nil || rej != nil {
+			out.Rejection = rej
 			return err
-		}
-		if erased {
-			out.Rejection = &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject,
-				Detail: "observed before, or within the clock-skew allowance after, the subject's erasure"}
-			return nil
 		}
 		if rej := j.checkSubject(n.Subject); rej != nil {
 			out.Rejection = rej
@@ -144,19 +135,34 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 	return out, err
 }
 
-// erasedAfter reports whether the subject was erased after the observation,
-// allowing for the writer's clock skew (see Apply).
-func erasedAfter(ctx context.Context, tx *sql.Tx, subject string, observed time.Time) (bool, error) {
-	if subject == "" {
-		return false, nil
+// erasedDetail is the detail of every 410 the ban answers.
+const erasedDetail = "the member was erased: the journal takes no more data about or by them " +
+	"(an erase is a ban; nothing un-erases yet)"
+
+// banned answers 410 erased_subject when any of the members has an erasure
+// row (decision 2026-10-24): an erase bans all later data about or by the
+// member, whatever its time. The household ("") is never banned. It must
+// run under the subject lock of the write, which an erase also takes, so a
+// write either commits before the erase (and is erased) or is refused.
+func banned(ctx context.Context, tx *sql.Tx, members ...string) (*record.Rejection, error) {
+	var ids []string
+	for _, m := range members {
+		if m != "" {
+			ids = append(ids, m)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
 	}
 	var one int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = $1 AND erased_at > $2 LIMIT 1`,
-		subject, observed.Add(-record.MaxFutureSkew)).Scan(&one)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = ANY($1) LIMIT 1`, ids).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return nil, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return nil, err
+	}
+	return &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject, Detail: erasedDetail}, nil
 }
 
 // checkSubject: a subject not in the current roster is refused with 409, a

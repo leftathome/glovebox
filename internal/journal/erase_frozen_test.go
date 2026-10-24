@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/access"
+	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/journaltest"
+	"github.com/leftathome/glovebox/internal/journal/record"
 	"github.com/leftathome/glovebox/internal/journal/roster"
 )
 
@@ -91,65 +93,73 @@ func keptReads(xs []string) []string {
 	return out
 }
 
-// Decision 3: a member still on the roster is not erased (409), and
-// nothing changes; off the roster, the same erase goes through. Neither
-// the household, a pseudonym nor a malformed id is a member, and without a
-// roster nothing is erased.
-func TestEraseRefusesAMemberStillOnTheRoster(t *testing.T) {
+// Erase needs a member id and a roster; the household, a pseudonym and a
+// malformed id are refused, and nothing changes.
+func TestEraseValidatesItsSubject(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
 	before := r.rowsWhere(`true`)
-	if _, err := r.j.Erase(ctx, "admin", "e_child1"); !errors.Is(err, ErrSubjectOnRoster) {
-		t.Errorf("erased a member on the roster: %v", err)
-	}
-	if got := r.rowsWhere(`true`); got != before || r.count("erasure") != 0 || r.count("erasure_reader") != 0 {
-		t.Error("a refused erase changed something")
-	}
-	// The probe's erased guardian: still on the roster, refused.
-	r.mustNote("family_note", "e_child1", "e_parent2", "2026-10-14", `{"text": "about p2"}`)
-	if _, err := r.j.Erase(ctx, "admin", "e_parent2"); !errors.Is(err, ErrSubjectOnRoster) {
-		t.Errorf("erased a guardian on the roster: %v", err)
-	}
 	for _, s := range []string{"", "erased:" + strings.Repeat("0", 32) + ":1", "a b"} {
 		if _, err := r.j.Erase(ctx, "admin", s); !errors.Is(err, ErrNoSubject) {
 			t.Errorf("erase %q: %v", s, err)
 		}
 	}
 	r.ros.Store(nil)
-	if _, err := r.j.Erase(ctx, "admin", "e_stranger"); !errors.Is(err, ErrNoRoster) {
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); !errors.Is(err, ErrNoRoster) {
 		t.Errorf("erase with no roster: %v", err)
 	}
-	r.setRoster(journaltest.HouseholdV1)
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
-		t.Errorf("off the roster: %v", err)
-	}
-	if r.count("erasure") != 1 {
-		t.Error("no erasure row")
+	if got := r.rowsWhere(`true`); got != before || r.count("erasure") != 0 {
+		t.Error("a refused erase changed something")
 	}
 }
 
-// The frozen readers are computed by the read rule over the roster in use,
-// minus the erased member, plus the author if on the roster. Here the
-// roster still has the subject, to show the rule itself; Erase calls it
-// only once the subject is off the roster (decision 3).
+// Decision A (2026-10-24): a member still on the roster is erased; the
+// roster snapshot, which still has them, makes their guardians frozen
+// readers of the notes kept about them, and they themselves read none of
+// it although still on the roster.
+func TestEraseWhileOnTheRoster(t *testing.T) {
+	r := newNoteRig(t)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "x"}`)
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
+		t.Fatal(err)
+	}
+	s := r.kept("attendance_note")["2026-10-14:e_parent1"]
+	if r.readersOf(s) != "e_parent1,e_parent2" {
+		t.Errorf("readers %q", r.readersOf(s))
+	}
+	for m, n := range map[string]int{"e_parent1": 3, "e_parent2": 3, "e_child1": 0, "e_child2": 0, "e_guest1": 0} {
+		if g := keptReads(r.readsOf(m)); len(g) != n {
+			t.Errorf("%s reads %v", m, g)
+		}
+	}
+}
+
+// The frozen readers are computed by the read rule over the roster
+// snapshot, minus the erased member and anyone erased before, plus the
+// author if on the roster and not erased.
 func TestFrozenReadersFollowTheReadRule(t *testing.T) {
 	ros := journaltest.Roster(t)
+	none := map[string]bool{}
 	for _, c := range []struct {
-		n    keptNote
-		want string
+		n      keptNote
+		erased map[string]bool
+		want   string
 	}{
-		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"guardians", "subject"}}, "e_parent1,e_parent2"},
-		{keptNote{"kid_note", "2026-10-14:e_child2", []string{"household"}}, "e_child2,e_parent1,e_parent2"},
+		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"guardians", "subject"}}, none, "e_parent1,e_parent2"},
+		{keptNote{"kid_note", "2026-10-14:e_child2", []string{"household"}}, none, "e_child2,e_parent1,e_parent2"},
 		// the author always reads, guardian or not
-		{keptNote{"attendance_note", "2026-10-14:e_child2", []string{"guardians"}}, "e_child2,e_parent1,e_parent2"},
+		{keptNote{"attendance_note", "2026-10-14:e_child2", []string{"guardians"}}, none, "e_child2,e_parent1,e_parent2"},
 		// an author off the roster does not
-		{keptNote{"attendance_note", "2026-10-14:e_gone", []string{"guardians"}}, "e_parent1,e_parent2"},
+		{keptNote{"attendance_note", "2026-10-14:e_gone", []string{"guardians"}}, none, "e_parent1,e_parent2"},
 		// the subject never does, by audience or as author
-		{keptNote{"attendance_note", "2026-10-14:e_child1", []string{"subject"}}, ""},
-		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"opaque_token"}}, "e_parent1"},
+		{keptNote{"attendance_note", "2026-10-14:e_child1", []string{"subject"}}, none, ""},
+		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"opaque_token"}}, none, "e_parent1"},
+		// a member erased earlier reads nothing, as reader or as author
+		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"guardians"}}, map[string]bool{"e_parent1": true}, "e_parent2"},
+		{keptNote{"kid_note", "2026-10-14:e_child2", []string{"household"}}, map[string]bool{"e_child2": true}, "e_parent1,e_parent2"},
 	} {
-		if got := strings.Join(frozenReaders(ros, "e_child1", c.n), ","); got != c.want {
-			t.Errorf("%v: readers %q, want %q", c.n, got, c.want)
+		if got := strings.Join(frozenReaders(ros, "e_child1", c.erased, c.n), ","); got != c.want {
+			t.Errorf("%v %v: readers %q, want %q", c.n, c.erased, got, c.want)
 		}
 	}
 	if authorOf("2026-10-14:e_ann") != "e_ann" || authorOf("x") != "" {
@@ -157,14 +167,12 @@ func TestFrozenReadersFollowTheReadRule(t *testing.T) {
 	}
 }
 
-// Decisions 1, 2 and 4 end to end. The subject is off the roster, so no
-// roster grant names them any more: who could read a note about them at
-// the erase is its author (a guardian or not), whatever its audience; a
-// note with no guardians part is kept too. Each kept note has its own
+// End to end, the member still on the roster. Each kept note has its own
 // subject under one pseudonym per erasure, its audience, key and text as
-// written, and only its frozen readers read it: in State, Events and
-// Counts. A member added to the roster afterwards, the erased member put
-// back and anyone else read none of it.
+// written, and only its frozen readers read it, in State, Events and
+// Counts: the guardians and the author for a note with a guardians part,
+// the household members for a household note. The erased member, a
+// guardian added to the roster later and a guest read none of it.
 func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 	r := newNoteRig(t)
 	five(r, 1, T0.Add(-3*time.Hour))
@@ -183,7 +191,7 @@ func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 	}
 	child2 := r.dump("e_child2")
 	r.clock.Set(T0.Add(2 * time.Hour))
-	resp, err := r.eraseOff(ctx, "admin", "e_child1")
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +214,7 @@ func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 	if keptSubject.FindStringSubmatch(p1)[1] != keptSubject.FindStringSubmatch(k)[1] {
 		t.Error("one erasure, two pseudonyms")
 	}
-	if r.readersOf(p1) != "e_parent1" || r.readersOf(p2) != "e_parent2" || r.readersOf(k) != "e_child2" {
+	if r.readersOf(p1) != "e_parent1,e_parent2" || r.readersOf(p2) != "e_parent1,e_parent2" || r.readersOf(k) != "e_child2,e_parent1,e_parent2" {
 		t.Errorf("readers %q %q %q", r.readersOf(p1), r.readersOf(p2), r.readersOf(k))
 	}
 	c, _ := r.current("attendance_note", p1, "2026-10-14:e_parent1")
@@ -235,16 +243,24 @@ func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 	if r.foldBroken() != 0 {
 		t.Error("fold invariant broken")
 	}
-	want := map[string][]string{
-		"e_parent1": {"count:" + p1 + "/attendance_note/1", "event:" + p1 + "/2026-10-14:e_parent1", "state:" + p1 + "/2026-10-14:e_parent1"},
-		"e_parent2": {"count:" + p2 + "/attendance_note/1", "event:" + p2 + "/2026-10-15:e_parent2", "state:" + p2 + "/2026-10-15:e_parent2"},
-		"e_child2":  {"count:" + k + "/kid_note/1", "event:" + k + "/2026-10-14:e_child2", "state:" + k + "/2026-10-14:e_child2"},
-		"e_guest1":  {},
-		"e_child1":  {}, // put back on the roster after the erase
+	all := func(s, typ, key string, events int) []string {
+		out := []string{"count:" + s + "/" + typ + "/1", "state:" + s + "/" + key}
+		for i := 0; i < events; i++ {
+			out = append(out, "event:"+s+"/"+key)
+		}
+		return out
 	}
-	// e_parent1 wrote two events; Events lists the key once per event.
-	want["e_parent1"] = append(want["e_parent1"], "event:"+p1+"/2026-10-14:e_parent1")
-	sort.Strings(want["e_parent1"])
+	parent := append(append(all(p1, "attendance_note", "2026-10-14:e_parent1", 2), all(p2, "attendance_note", "2026-10-15:e_parent2", 1)...),
+		all(k, "kid_note", "2026-10-14:e_child2", 1)...)
+	sort.Strings(parent)
+	want := map[string][]string{
+		"e_parent1": parent,
+		"e_parent2": parent,
+		"e_child2":  all(k, "kid_note", "2026-10-14:e_child2", 1),
+		"e_guest1":  {},
+		"e_child1":  {}, // erased, still on the roster
+	}
+	sort.Strings(want["e_child2"])
 	for m, w := range want {
 		if g := keptReads(r.readsOf(m)); fmt.Sprint(g) != fmt.Sprint(w) {
 			t.Errorf("%s reads %v, want %v", m, g, w)
@@ -260,7 +276,6 @@ func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 	if got := r.idsEverywhere("e_child1"); len(got) != 0 {
 		t.Errorf("the erased id survives:\n%s", strings.Join(got, "\n"))
 	}
-	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_child1"))
 	if strings.Contains(r.readsEverywhere(), "e_child1") {
 		t.Error("a read returns the erased id")
 	}
@@ -268,7 +283,8 @@ func TestEraseKeepsNotesForTheirFrozenReaders(t *testing.T) {
 
 // The review probe's widening, as a test: e_parent3, a guardian of another
 // child only, reads the note about e_child1 neither before nor after the
-// erase; its author does after.
+// erase, and neither does a guardian of e_child1 added later; the note's
+// author and e_child1's guardian do after.
 func TestEraseKeepsAGuardianOfAnotherChildOut(t *testing.T) {
 	r := newNoteRig(t)
 	raw := `{"people": {
@@ -280,7 +296,7 @@ func TestEraseKeepsAGuardianOfAnotherChildOut(t *testing.T) {
 	if g := r.readsOf("e_parent3"); len(g) != 0 {
 		t.Fatalf("before: %v", g)
 	}
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	if g := keptReads(r.readsOf("e_parent3")); len(g) != 0 {
@@ -289,23 +305,28 @@ func TestEraseKeepsAGuardianOfAnotherChildOut(t *testing.T) {
 	if g := keptReads(r.readsOf("e_parent1")); len(g) != 3 {
 		t.Errorf("after: the author reads %v", g)
 	}
+	r.setRoster(strings.Replace(raw, `"e_guest1": {"agent": "g1"}`, `"e_guest1": {"agent": "g1"}, "e_parent4": {"agent": "a4", "guardian_of": ["e_child1"]}`, 1))
+	if g := keptReads(r.readsOf("e_parent4")); len(g) != 0 {
+		t.Errorf("a later guardian reads %v", g)
+	}
 }
 
-// A note with no frozen reader (its author is off the roster too, and no
-// one else could read it) is deleted with the subject's data; one with a
-// reader stays.
+// A note with no frozen reader (no guardian left on the roster, its author
+// gone from it) is deleted with the subject's data; one with a reader stays.
 func TestEraseDropsANoteWithNoFrozenReader(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
-	r.mustNote("attendance_note", "e_parent2", "e_child1", "2026-10-14", `{"what_happened": "b"}`)
-	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_child1", "e_parent1"))
+	r.mustNote("kid_note", "e_child2", "e_child1", "2026-10-14", `{"text": "b"}`)
+	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_parent1", "e_parent2"))
 	resp, err := r.j.Erase(ctx, "admin", "e_child1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	kept := r.kept("attendance_note")
-	if resp.NotesPseudonymised != 1 || resp.Current != 1 || resp.Events != 1 || len(kept) != 1 || kept["2026-10-14:e_parent2"] == "" {
-		t.Errorf("%+v %v", resp, kept)
+	if resp.NotesPseudonymised != 1 || resp.Current != 1 || resp.Events != 1 || len(r.kept("attendance_note")) != 0 {
+		t.Errorf("%+v %v", resp, r.kept("attendance_note"))
+	}
+	if k := r.kept("kid_note")["2026-10-14:e_child2"]; k == "" || r.readersOf(k) != "e_child2" {
+		t.Errorf("kid_note kept %v", r.kept("kid_note"))
 	}
 	if r.count("erasure_reader") != 1 || r.foldBroken() != 0 {
 		t.Error("reader rows or fold")
@@ -314,45 +335,63 @@ func TestEraseDropsANoteWithNoFrozenReader(t *testing.T) {
 
 // Erasing a member who is a frozen reader of kept notes: they are no reader
 // any more; a kept note they were the only reader of goes; one they wrote
-// goes (rule 1) with its reader rows; erasure_reader never names them.
+// goes (rule 1) with all its reader rows; erasure_reader never names them.
 func TestEraseRemovesAnErasedReader(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
 	r.mustNote("attendance_note", "e_parent2", "e_child1", "2026-10-15", `{"what_happened": "b"}`)
 	r.mustNote("attendance_note", "e_guest1", "e_guest1", "2026-10-16", `{"what_happened": "c"}`)
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	kept := r.kept("attendance_note")
 	a, b := kept["2026-10-14:e_parent1"], kept["2026-10-15:e_parent2"]
-	// As if the frozen sets had been wider: e_guest1 reads a, and is b's
+	// As if the frozen sets had been other: e_guest1 reads a, and is b's
 	// only reader.
 	r.exec(t, `INSERT INTO erasure_reader VALUES ($1, 'e_guest1'), ($2, 'e_guest1')`, a, b)
-	r.exec(t, `DELETE FROM erasure_reader WHERE pseudonym = $1 AND member = 'e_parent2'`, b)
+	r.exec(t, `DELETE FROM erasure_reader WHERE pseudonym = $1 AND member <> 'e_guest1'`, b)
 	if g := keptReads(r.readsOf("e_guest1")); len(g) != 6 {
 		t.Fatalf("setup: %v", g)
 	}
-	resp, err := r.eraseOff(ctx, "admin", "e_guest1")
+	resp, err := r.j.Erase(ctx, "admin", "e_guest1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.NotesDeletedAsAuthor != 1 || resp.Current != 2 || resp.Events != 2 {
 		t.Errorf("%+v", resp)
 	}
-	if kept := r.kept("attendance_note"); len(kept) != 1 || kept["2026-10-14:e_parent1"] != a || r.readersOf(a) != "e_parent1" {
+	if kept := r.kept("attendance_note"); len(kept) != 1 || kept["2026-10-14:e_parent1"] != a || r.readersOf(a) != "e_parent1,e_parent2" {
 		t.Errorf("kept %v, readers of a %q", kept, r.readersOf(a))
 	}
 	if got := r.idsEverywhere("e_guest1"); len(got) != 0 {
 		t.Errorf("the erased id survives:\n%s", strings.Join(got, "\n"))
 	}
-	// The author of a kept note is erased: the note and its reader rows go,
-	// another reader's row included.
-	r.exec(t, `INSERT INTO erasure_reader VALUES ($1, 'e_parent2')`, a)
-	if _, err := r.eraseOff(ctx, "admin", "e_parent1"); err != nil {
+	// The author of a kept note is erased: the note and all its reader rows
+	// go, another reader's (e_parent2) included.
+	if _, err := r.j.Erase(ctx, "admin", "e_parent1"); err != nil {
 		t.Fatal(err)
 	}
 	if r.count("record_current") != 0 || r.count("erasure_reader") != 0 || r.foldBroken() != 0 {
 		t.Errorf("%d rows, %d reader rows left", r.count("record_current"), r.count("erasure_reader"))
+	}
+}
+
+// A member erased before is never a frozen reader of a later erasure's
+// notes, although still on the roster.
+func TestALaterEraseLeavesAnErasedMemberOut(t *testing.T) {
+	r := newNoteRig(t)
+	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
+	if _, err := r.j.Erase(ctx, "admin", "e_parent2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.kept("attendance_note")["2026-10-14:e_parent1"]; r.readersOf(s) != "e_parent1" {
+		t.Errorf("readers %q", r.readersOf(s))
+	}
+	if got := r.idsEverywhere("e_parent2"); len(got) != 0 {
+		t.Errorf("the erased id survives:\n%s", strings.Join(got, "\n"))
 	}
 }
 
@@ -365,7 +404,7 @@ func TestEraseAMemberWhoIsAuthorAndSubject(t *testing.T) {
 	r.mustNote("attendance_note", "e_child1", "e_child1", "2026-10-14", `{"what_happened": "c1 on c1"}`)
 	r.mustNote("family_note", "e_parent1", "e_child1", "2026-10-14", `{"text": "p1 on c1"}`)
 	r.mustNote("kid_note", "e_child2", "e_child2", "2026-10-14", `{"text": "c2 on c2"}`)
-	resp, err := r.eraseOff(ctx, "admin", "e_child1")
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,8 +414,8 @@ func TestEraseAMemberWhoIsAuthorAndSubject(t *testing.T) {
 	if got := r.rowsWhere(`data_subject = 'e_child2'`); strings.Contains(got, "e_child1") || !strings.Contains(got, "c2 on c2") {
 		t.Errorf("e_child2 rows:\n%s", got)
 	}
-	if kept := r.kept("family_note"); len(kept) != 1 || r.readersOf(kept["2026-10-14:e_parent1"]) != "e_parent1" {
-		t.Errorf("kept %v", kept)
+	if kept := r.kept("family_note"); len(kept) != 1 || r.readersOf(kept["2026-10-14:e_parent1"]) != "e_child2,e_parent1,e_parent2" {
+		t.Errorf("kept %v %q", kept, r.readersOf(kept["2026-10-14:e_parent1"]))
 	}
 	if got := r.idsEverywhere("e_child1"); len(got) != 0 {
 		t.Errorf("the erased id survives:\n%s", strings.Join(got, "\n"))
@@ -387,23 +426,19 @@ func TestEraseAMemberWhoIsAuthorAndSubject(t *testing.T) {
 }
 
 // Every erasure draws its own pseudonym and every kept note its own
-// subject: the same author's notes of one date about two erased subjects,
-// erased twice, and a household note of that date live side by side; the
-// author's kept notes go when the author is erased.
+// subject: the same author's notes of one date about two erased subjects
+// and a household note of that date live side by side; a second erase of a
+// subject keeps the ban and draws nothing new; the author's kept notes go
+// when the author is erased.
 func TestErasuresDrawDistinctPseudonyms(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("family_note", "e_parent1", "e_child1", "2026-10-14", `{"text": "a"}`)
 	r.mustNote("family_note", "e_parent1", "e_child2", "2026-10-14", `{"text": "b"}`)
-	for _, s := range []string{"e_child1", "e_child2"} {
-		if _, err := r.eraseOff(ctx, "admin", s); err != nil {
+	r.mustNote("family_note", "e_parent1", "", "2026-10-14", `{"text": "household"}`)
+	for _, s := range []string{"e_child1", "e_child2", "e_child1"} {
+		if _, err := r.j.Erase(ctx, "admin", s); err != nil {
 			t.Fatal(err)
 		}
-	}
-	r.mustNote("family_note", "e_parent1", "", "2026-10-14", `{"text": "household"}`)
-	r.clock.Set(T0.Add(time.Hour))
-	r.mustNote("family_note", "e_parent1", "e_child1", "2026-10-14", `{"text": "c"}`)
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
-		t.Fatal(err)
 	}
 	rows, _ := r.j.db.Query(`SELECT data_subject FROM record_current WHERE key = '2026-10-14:e_parent1' ORDER BY 1`)
 	var subjects []string
@@ -417,15 +452,67 @@ func TestErasuresDrawDistinctPseudonyms(t *testing.T) {
 		}
 	}
 	rows.Close()
-	if len(subjects) != 4 || subjects[0] != "" || len(pseudonyms) != 3 {
+	if len(subjects) != 3 || subjects[0] != "" || len(pseudonyms) != 2 {
 		t.Errorf("subjects %v", subjects)
 	}
-	resp, err := r.eraseOff(ctx, "admin", "e_parent1")
+	if _, rej := r.note("e_parent1", "e_child1", "2026-10-20", `{}`); rej == nil || rej.Status != 410 {
+		t.Errorf("after a second erase: %v", rej)
+	}
+	resp, err := r.j.Erase(ctx, "admin", "e_parent1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.NotesDeletedAsAuthor != 4 || r.count("record_current") != 0 || r.count("record_event") != 0 || r.count("erasure_reader") != 0 {
+	if resp.NotesDeletedAsAuthor != 3 || r.count("record_current") != 0 || r.count("record_event") != 0 || r.count("erasure_reader") != 0 {
 		t.Errorf("%+v; %d rows left", resp, r.count("record_current"))
+	}
+}
+
+// Decision B: an erase is a ban. Every later snapshot (Apply and a held
+// confirm), every note about the member and every note by them is refused
+// with 410, whatever its time; another subject, and a household note by
+// someone else, are not.
+func TestEraseBansLaterData(t *testing.T) {
+	r := newNoteRig(t)
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Set(T0.Add(30 * 24 * time.Hour))
+	gone := func(what string, rej *record.Rejection) {
+		t.Helper()
+		if rej == nil || rej.Status != 410 || rej.Reason != journalapi.ReasonErasedSubject || !strings.Contains(rej.Detail, "ban") {
+			t.Errorf("%s: %v", what, rej)
+		}
+	}
+	gone("snapshot observed after", r.apply(snap(1, "e_child1", "c1", T0.Add(30*24*time.Hour), true, keep(1)...)).Rejection)
+	_, rej := r.note("e_parent1", "e_child1", "2026-11-14", `{"what_happened": "x"}`)
+	gone("note about them", rej)
+	_, rej = r.note("e_child1", "e_child2", "2026-11-14", `{"what_happened": "x"}`)
+	gone("note by them", rej)
+	n, _ := noteOf(r.reg, "family_note", "e_child1", "", "2026-11-14", `{"text": "x"}`)
+	_, rej, err := r.j.WriteNote(ctx, gateway, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone("household note by them", rej)
+	// A held snapshot of the subject that got in some other way.
+	r.storeRawHeld(7, "assignment", scopeKey("e_child1", "c1"), snap(7, "e_child1", "c1", T0, true, keep(1)...))
+	out, err := r.j.ConfirmHeld(ctx, uid(7), allowAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone("held confirm", out.Rejection)
+	if r.count("record_current") != 0 || r.count("record_event") != 0 {
+		t.Error("banned data was stored")
+	}
+	// Not banned: another subject, a household note by someone else.
+	if out := r.apply(snap(2, "e_child2", "c1", T0.Add(30*24*time.Hour), true, rec("c1:1", "e_child2", `{"title": "x"}`))); out.Rejection != nil {
+		t.Errorf("another subject: %+v", out)
+	}
+	if _, rej := r.note("e_parent1", "e_child2", "2026-11-14", `{"what_happened": "x"}`); rej != nil {
+		t.Errorf("a note about another subject: %v", rej)
+	}
+	if resp := r.mustNote("family_note", "e_parent1", "", "2026-11-14", `{"text": "x"}`); resp.Status != "created" {
+		t.Errorf("a household note by someone else: %+v", resp)
 	}
 }
 
@@ -444,7 +531,7 @@ func TestEraseRewritesAKeptNotesHistory(t *testing.T) {
 		prev_scope = 'source=household/record_type=attendance_note/data_subject=e_child1' WHERE kind = 'updated'`)
 	r.exec(t, `UPDATE record_event SET group_key = 'data_subject=e_child1/field%3Adate=2026-10-14'`) // as a group_by rule makes it
 	r.exec(t, `ALTER TABLE record_event ENABLE TRIGGER USER`)
-	resp, err := r.eraseOff(ctx, "admin", "e_child1")
+	resp, err := r.j.Erase(ctx, "admin", "e_child1")
 	if err != nil || resp.Events != 0 || resp.NotesPseudonymised != 1 {
 		t.Fatalf("%+v %v", resp, err)
 	}
@@ -482,7 +569,7 @@ func TestKeptNoteVisibilitySQLAndGoAgree(t *testing.T) {
 	x := rec("pub", "e_child2", `{"title": "T"}`)
 	x.Audience = []string{"public"}
 	r.apply(snap(1, "e_child2", "c1", T0.Add(-time.Hour), true, x))
-	if _, err := r.eraseOff(ctx, "admin", "e_child1"); err != nil {
+	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	var subjects []string
@@ -545,9 +632,8 @@ func keyOf(r *rig, subject string) string {
 // A note by the erased author about a subject Erase has not locked, written
 // while Erase runs, cannot land between Erase's two rule-1 DELETEs (events
 // first, then current rows) and leave an orphan event naming the author: the
-// author lock makes it wait for the erase. The writer read its roster
-// before the author left it: here the roster is reloaded with the author
-// back in mid-erase, which also shows Erase keeps its one roster snapshot.
+// author lock makes it wait for the erase, and then the ban refuses it with
+// 410.
 // A statement trigger holds the events DELETE open until the note's row
 // exists, or for two seconds. (Review probe TestZZProbeTorn, deterministic.)
 func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
@@ -568,22 +654,17 @@ func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
 		END $$`)
 	r.exec(t, `CREATE TRIGGER torn_wait BEFORE DELETE ON record_event FOR EACH STATEMENT EXECUTE FUNCTION torn_wait()`)
 	r.exec(t, `INSERT INTO torn_flag VALUES (1)`)
-	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_parent1"))
 	var wg sync.WaitGroup
 	var once sync.Once
 	var noteErr error
+	var noteRej *record.Rejection
 	r.j.beforeEraseLocks = func() {
 		once.Do(func() {
-			r.ros.Store(journaltest.Roster(t)) // a reload: the author is back
 			n, _ := noteOf(r.reg, "attendance_note", "e_parent1", "e_child2", "2026-10-15", `{"what_happened": "late"}`)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, rej, err := r.j.WriteNote(bounded(t), gateway, n)
-				if err == nil && rej != nil {
-					err = fmt.Errorf("%v", rej)
-				}
-				noteErr = err
+				_, noteRej, noteErr = r.j.WriteNote(bounded(t), gateway, n)
 			}()
 		})
 	}
@@ -592,34 +673,38 @@ func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
 	if err != nil || noteErr != nil {
 		t.Fatalf("erase %v, note %v", err, noteErr)
 	}
+	if noteRej == nil || noteRej.Status != 410 {
+		t.Errorf("the late note by the erased author: %v", noteRej)
+	}
 	if resp.NotesDeletedAsAuthor != 1 {
 		t.Errorf("%+v", resp)
 	}
 	if r.foldBroken() != 0 {
 		t.Errorf("torn erase: fold broken\n%s", r.rowsWhere(`key LIKE '%e_parent1%'`))
 	}
-	if _, ok := r.current("attendance_note", "e_child2", "2026-10-15:e_parent1"); !ok || len(r.events("e_child2")) != 1 {
-		t.Error("the late note is not whole")
+	if got := r.rowsWhere(`key LIKE '%e_parent1%'`); got != "" {
+		t.Errorf("the author's notes remain:\n%s", got)
 	}
 }
 
-// Erase decides refusal and frozen readers from one roster snapshot: a
-// reload during the erase changes neither.
+// Erase decides the frozen readers from one roster snapshot: a reload
+// during the erase (here dropping e_parent2 and the subject) changes
+// nothing.
 func TestEraseUsesOneRosterSnapshot(t *testing.T) {
 	r := newNoteRig(t)
 	r.mustNote("attendance_note", "e_parent1", "e_child1", "2026-10-14", `{"what_happened": "a"}`)
 	r.mustNote("attendance_note", "e_parent2", "e_child1", "2026-10-15", `{"what_happened": "b"}`)
-	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_child1"))
 	r.j.beforeEraseLocks = func() {
-		// A reload that drops e_parent2 and puts the subject back.
-		r.ros.Store(mustParse(t, rosterWithout(t, journaltest.HouseholdV1, "e_parent2")))
+		r.ros.Store(mustParse(t, rosterWithout(t, journaltest.HouseholdV1, "e_parent2", "e_child1")))
 	}
 	if _, err := r.j.Erase(ctx, "admin", "e_child1"); err != nil {
 		t.Fatal(err)
 	}
 	kept := r.kept("attendance_note")
-	if len(kept) != 2 || r.readersOf(kept["2026-10-15:e_parent2"]) != "e_parent2" {
-		t.Errorf("kept %v, readers %q", kept, r.readersOf(kept["2026-10-15:e_parent2"]))
+	for _, k := range []string{"2026-10-14:e_parent1", "2026-10-15:e_parent2"} {
+		if r.readersOf(kept[k]) != "e_parent1,e_parent2" {
+			t.Errorf("%s: readers %q", k, r.readersOf(kept[k]))
+		}
 	}
 }
 
@@ -643,7 +728,6 @@ func TestEraseConcurrentWithWritersOfItsOtherSubjects(t *testing.T) {
 		}
 		r.mustNote("family_note", a, "", "2026-10-01", `{"text": "x"}`)
 	}
-	r.setRoster(rosterWithout(t, journaltest.HouseholdV1, "e_parent1"))
 	var wg sync.WaitGroup
 	errs := make(chan error, 1000)
 	wg.Add(1)

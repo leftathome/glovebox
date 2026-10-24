@@ -22,12 +22,6 @@ import (
 // not a member id (the household "", a kept note's pseudonym).
 var ErrNoSubject = errors.New("journal: erase needs a member id as data_subject")
 
-// ErrSubjectOnRoster refuses to erase a member who is still on the roster
-// in use (decision 2026-10-23): remove them from the roster through gitops
-// first. The request layer answers it with 409
-// journalapi.ReasonSubjectOnRoster.
-var ErrSubjectOnRoster = errors.New("journal: erase: the member is still on the roster")
-
 // authoredSQL selects, over table alias t, the household notes written by
 // $1: a household record's key is "<date>:<on_behalf_of>", its author is the
 // second ':'-part, and neither a date nor a roster id contains ':'. $2 is
@@ -39,10 +33,11 @@ const authoredSQL = `(t.record_type IN (SELECT name FROM record_type WHERE owner
 // frozen reader of.
 const readableSQL = `(t.data_subject IN (SELECT pseudonym FROM erasure_reader WHERE member = $1))`
 
-// Erase removes what the journal holds about one member (4.13, decisions
-// 2026-10-23). The member must be off the roster in use (ErrSubjectOnRoster
-// otherwise); that one roster snapshot also decides the frozen readers. In
-// one transaction:
+// Erase removes what the journal holds about one member and bans them (4.13,
+// decisions 2026-10-23 and 2026-10-24). The member may still be on the
+// roster; one roster snapshot, read at the start, decides the frozen
+// readers, and removing the member from the roster through gitops can
+// follow at any time. In one transaction:
 //
 //   - Rule 1: every note the member wrote, about anyone (any subject, the
 //     household, themselves, and notes kept from an earlier erasure), with
@@ -51,9 +46,10 @@ const readableSQL = `(t.data_subject IN (SELECT pseudonym FROM erasure_reader WH
 //     left with no reader is deleted.
 //   - Rule 2: every note someone else wrote about the member is kept if it
 //     has a reader left. Its readers are frozen: exactly the roster members
-//     who could read it at this moment under the read visibility rule, plus
-//     its author if on the roster, never the erased member; they are written
-//     to erasure_reader. The note moves to its own pseudonymous subject
+//     who could read it at this moment under the read visibility rule (the
+//     subject's guardians, for instance), plus its author if on the roster,
+//     never the erased member nor anyone erased before; they are written to
+//     erasure_reader. The note moves to its own pseudonymous subject
 //     "erased:<pseudonym>:<n>" (one pseudonym per erasure, n per note), its
 //     scope becomes the household scope of its type, its events are
 //     rewritten in place (same seq, group_key cleared); key, audience,
@@ -70,11 +66,12 @@ const readableSQL = `(t.data_subject IN (SELECT pseudonym FROM erasure_reader WH
 // household's few ids), it links none of the member's other erasures, and
 // the erasure row does not record it.
 //
-// The erasure is recorded (erased_at is the journal clock) so that
-// snapshots observed before it, or within the clock-skew allowance after
-// it, are refused with 410 (Apply), and notes from before it too
-// (WriteNote). It is the only operation that deletes or rewrites event
-// history.
+// The erasure row is a ban (decision 2026-10-24): from its commit on, every
+// snapshot about the member (Apply, ConfirmHeld) and every note about or by
+// them (WriteNote) is refused with 410 erased_subject, whatever its time
+// (banned). Nothing un-erases: putting an erased person back would need a
+// deliberate un-erase, which does not exist yet. Erase is the only
+// operation that deletes or rewrites event history.
 //
 // Locks: first the member's author lock (WriteNote takes the author lock of
 // its on_behalf_of before its subject lock), so no note by the member can be
@@ -92,17 +89,13 @@ const readableSQL = `(t.data_subject IN (SELECT pseudonym FROM erasure_reader WH
 // events lock: it publishes no sequence numbers (they are never reused), so
 // readers' cursors stay valid.
 //
-// A second erase of the same subject is allowed: it deletes whatever was
-// written since, with a new pseudonym for what it keeps, and writes another
-// erasure row. Apply refuses against the latest erased_at of any row, so
-// the refusal window never moves backward. Erasing a subject that holds no
-// data still records the erasure, so a spool replay that has not arrived
-// yet is refused.
+// A second erase of the same subject is allowed and writes another erasure
+// row; the ban stays. Erasing a subject that holds no data still records the
+// erasure, so the ban holds for data that has not arrived yet.
 //
-// After the erase, new notes by or about the member are accepted as new
-// data (a note about them observed before erased_at is refused), and copies
-// a reader already took from the events feed are outside the journal: erase
-// does not reach them.
+// Copies already delivered outside the journal (a reader past the events
+// cursor: the openclaw inbox, audiences, memory vaults) are not erased; that
+// is a separate, later improvement.
 //
 // Erase reports nothing to the Recorder: it has no metric (Task 20).
 func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.EraseResponse, error) {
@@ -112,9 +105,6 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 	ros := j.o.Roster()
 	if ros == nil {
 		return journalapi.EraseResponse{}, ErrNoRoster
-	}
-	if ros.Has(subject) {
-		return journalapi.EraseResponse{}, ErrSubjectOnRoster
 	}
 	pseudonym, err := newPseudonym()
 	if err != nil {
@@ -252,11 +242,12 @@ type keptNote struct {
 // who can read it now, by the same rule reads use (access.Visible over the
 // member's roster grants; nobody holds a frozen-reader grant on a subject
 // that is not a pseudonym), and its author if on the roster; never the
-// erased subject. Sorted.
-func frozenReaders(ros *roster.Roster, subject string, n keptNote) []string {
+// erased subject, nor any member in erased (erased earlier, so banned).
+// Sorted.
+func frozenReaders(ros *roster.Roster, subject string, erased map[string]bool, n keptNote) []string {
 	var out []string
 	for _, m := range ros.Members() {
-		if m == subject {
+		if m == subject || erased[m] {
 			continue
 		}
 		g, _ := ros.Grants(m)
@@ -264,7 +255,7 @@ func frozenReaders(ros *roster.Roster, subject string, n keptNote) []string {
 			out = append(out, m)
 		}
 	}
-	if author := authorOf(n.key); author != subject && ros.Has(author) {
+	if author := authorOf(n.key); author != subject && !erased[author] && ros.Has(author) {
 		out = append(out, author)
 	}
 	return sortedSet(out)
@@ -308,6 +299,25 @@ func keepNotes(ctx context.Context, tx *sql.Tx, ros *roster.Roster, subject, pse
 		return 0, err
 	}
 	_ = rs.Close()
+	// Members erased earlier are banned and never read a kept note.
+	erased := map[string]bool{}
+	ers, err := tx.QueryContext(ctx, `SELECT DISTINCT data_subject FROM erasure`)
+	if err != nil {
+		return 0, err
+	}
+	for ers.Next() {
+		var e string
+		if err := ers.Scan(&e); err != nil {
+			_ = ers.Close()
+			return 0, err
+		}
+		erased[e] = true
+	}
+	if err := ers.Err(); err != nil {
+		_ = ers.Close()
+		return 0, err
+	}
+	_ = ers.Close()
 	// The trigger admits the rewrite below only with the flag set
 	// (migration 0003). set_config(..., true) is transaction-local: the
 	// setting reverts at commit or rollback, so it never outlives this
@@ -317,7 +327,7 @@ func keepNotes(ctx context.Context, tx *sql.Tx, ros *roster.Roster, subject, pse
 	flagged := false
 	var kept int64
 	for _, n := range notes {
-		readers := frozenReaders(ros, subject, n)
+		readers := frozenReaders(ros, subject, erased, n)
 		if len(readers) == 0 {
 			continue // nobody can read it: rule 3 deletes it
 		}

@@ -21,10 +21,9 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 		return journalapi.NoteResponse{}, &record.Rejection{Status: http.StatusConflict, Reason: journalapi.ReasonUnknownSubject,
 			Detail: "no roster is loaded"}, nil
 	}
-	grants, ok := r.Grants(n.OnBehalfOf)
-	if !ok {
-		return journalapi.NoteResponse{}, policyRefusal("on_behalf_of is not in the roster"), nil
-	}
+	// A non-member is refused inside the transaction, after the ban: an
+	// erased author off the roster gets 410, not 403.
+	grants, member := r.Grants(n.OnBehalfOf)
 	now := j.o.Now().UTC()
 	resp := journalapi.NoteResponse{Status: "unchanged", Key: n.Key}
 	var refused *record.Rejection
@@ -39,18 +38,16 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
 		}
-		// Erasure is checked first (as in Apply, 410 before 409). A note has no
-		// writer clock: it is observed at now, and the subject lock orders it
-		// against an erase, so only an erasure after now (the clock stepped
-		// back) refuses it -- no MaxFutureSkew allowance. erasedAfter widens
-		// by the skew, so shift now by the same amount to cancel it.
-		erased, err := erasedAfter(ctx, tx, n.Subject, now.Add(record.MaxFutureSkew))
-		if err != nil {
+		// The ban is checked first (410 before 403 and 409): no note about an
+		// erased member, and none by one, whatever the time (decision
+		// 2026-10-24). The author and subject locks order it against an erase
+		// of either.
+		if rej, err := banned(ctx, tx, n.Subject, n.OnBehalfOf); err != nil || rej != nil {
+			refused = rej
 			return err
 		}
-		if erased {
-			refused = &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject,
-				Detail: "the subject was erased"}
+		if !member {
+			refused = policyRefusal("on_behalf_of is not in the roster")
 			return nil
 		}
 		// The household ("", only for a type that allows no subject, which

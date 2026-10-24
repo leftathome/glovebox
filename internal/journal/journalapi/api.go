@@ -96,7 +96,7 @@ const WithheldPrefix = "withheld: "
 // Reasons accompany StatusRejected. The HTTP status says what the spool
 // does; see the table in docs/journal-api.md.
 const (
-	ReasonErasedSubject    = "erased_subject"     // 410: delete the file
+	ReasonErasedSubject    = "erased_subject"     // 410: the member is erased, a ban on all later data about or by them; delete the file
 	ReasonPolicy           = "policy"             // 403: move to spool/rejected/
 	ReasonUnknownSubject   = "unknown_subject"    // 409: keep, retry with backoff
 	ReasonTooLarge         = "too_large"          // 413: move to spool/rejected/
@@ -112,9 +112,6 @@ const (
 	ReasonConflict         = "conflict"           // 409 on admin endpoints; on POST /v1/notes, the stored note is newer than the journal clock (retry)
 	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
-	// ReasonSubjectOnRoster: 409 on POST /v1/admin/erase, the member is still
-	// on the roster in use; remove them through gitops, then erase.
-	ReasonSubjectOnRoster = "subject_on_roster"
 )
 
 // ScopePart is one ["name", "value"] pair of a scope.

@@ -189,7 +189,7 @@ One row per erase (4.13). Never erased itself; holds no field data.
 | Column | Type | Meaning |
 |---|---|---|
 | `id` | bigint | |
-| `data_subject` | text | The erased subject. Snapshots of it observed before `erased_at` plus the maximum future skew (10 minutes, the writer-clock allowance of validation) are refused with 410; one observed exactly `erased_at` plus the skew or later is accepted. |
+| `data_subject` | text | The erased member. While any row names them, every snapshot about them and every note about or by them is refused with 410 (the ban, decision 2026-10-24), whatever its time. |
 | `erased_at` | timestamptz | Core clock. |
 | `actor` | text | Admin ServiceAccount. |
 | `rows` | jsonb | Counts only: `{"snapshot": n, "record_current": n, "record_event": n, "notes_deleted_as_author": n, "notes_pseudonymised": n}`. The first three are rows deleted (the member's own notes about others, and kept notes left without a reader, included); `notes_deleted_as_author` is the `record_current` rows among them that were notes the member wrote; `notes_pseudonymised` is the notes kept (not deleted). No pseudonym, no author and no reader is recorded. Rows written before migration `0002_erase_rewrite` have the first three keys only. |
@@ -211,16 +211,15 @@ reader's rows).
 
 ### What erase does with household notes
 
-Decisions of 2026-10-23 (spec 4.13). A note belongs to its author, the member
-in its key `<date>:<on_behalf_of>` (and in its events' actor
-`writer;on_behalf_of=<id>`).
+Decisions of 2026-10-23 and 2026-10-24 (spec 4.13). A note belongs to its
+author, the member in its key `<date>:<on_behalf_of>` (and in its events'
+actor `writer;on_behalf_of=<id>`).
 
-0. **Only members off the roster are erased.** Erase refuses a member still
-   on the roster in use with 409 `subject_on_roster`: the roster is changed
-   through gitops first. It also refuses `""`, anything that is not a
-   well-formed member id (a pseudonym included), and runs only with a roster
-   loaded. One roster snapshot, taken at the start, decides both the refusal
-   and the frozen readers.
+0. **Who can be erased.** Any well-formed member id, on the roster or not;
+   erase refuses `""` and anything else that is not a member id (a pseudonym
+   included), and runs only with a roster loaded. One roster snapshot, taken
+   at the start, decides the frozen readers. Removing the member from the
+   roster through gitops can follow at any time.
 1. **The member's own notes go.** Every note they wrote, about anyone: other
    subjects, the household, themselves, and notes of theirs kept from an
    earlier erasure (with their `erasure_reader` rows).
@@ -229,17 +228,26 @@ in its key `<date>:<on_behalf_of>` (and in its events' actor
 3. **Others' notes about the member are kept, for frozen readers.** For each,
    erase computes its readers once: every member of the roster snapshot who
    can read it at that moment under the read visibility rule
-   (`access.Visible` over the member's roster grants), plus its author if on
-   the roster, never the erased member. These are written to
-   `erasure_reader`. The note moves, its `record_current` row and every one
-   of its events, to its own subject `erased:<pseudonym>:<n>` (one pseudonym
-   per erasure, `n` per note); `scope` and `prev_scope` (when set) become the
-   household scope of its type (`source=household/record_type=<type>`);
-   `group_key` is cleared (it may embed the subject or the scope). `key`,
-   `audience`, `prev_audience`, fields and text stay exactly as written, and
-   every event is kept, so the record still folds (the fold invariant holds
-   in full). A note with no reader is deleted with the subject's data.
+   (`access.Visible` over the member's roster grants: the subject's
+   guardians, for a note with a guardians part), plus its author if on the
+   roster; never the erased member, even still on the roster, and never a
+   member erased before. These are written to `erasure_reader`. The note
+   moves, its `record_current` row and every one of its events, to its own
+   subject `erased:<pseudonym>:<n>` (one pseudonym per erasure, `n` per
+   note); `scope` and `prev_scope` (when set) become the household scope of
+   its type (`source=household/record_type=<type>`); `group_key` is cleared
+   (it may embed the subject or the scope). `key`, `audience`,
+   `prev_audience`, fields and text stay exactly as written, and every event
+   is kept, so the record still folds (the fold invariant holds in full). A
+   note with no reader is deleted with the subject's data.
 4. **Everything else of the member is deleted**, as before.
+5. **The erase is a ban.** Once an `erasure` row exists for a member, every
+   later snapshot about them (Apply, and the confirm of a held one), every
+   note about them and every note by them (`on_behalf_of`) is refused with
+   410 `erased_subject`, whatever its time; spools treat 410 as permanent,
+   so in-flight items drain themselves. Nothing un-erases: putting an erased
+   person back into the journal needs a deliberate un-erase, which does not
+   exist yet. A second erase of the same member is allowed and keeps the ban.
 
 **Who reads a kept note.** Exactly its frozen readers, in State, Events and
 Counts, its old values across an audience change included: a row whose
@@ -251,18 +259,10 @@ Its audience is not consulted, so neither `public` nor any roster grant
 roster grant can name such a subject, and the frozen-reader grant
 (`(<pseudonym>, erased:reader)`, added to a reader's grants from
 `erasure_reader` at the start of each read) names only kept notes. A member
-added to the roster later, a guardian of another child, or the erased member
-put back read none of it. Notices of kept events go to nobody. A frozen reader
-who leaves the roster reads nothing (unknown readers read nothing); one
-erased later stops being a reader (step 2).
-
-**A consequence to know.** Because erase runs only once the member is off the
-roster (step 0), no roster grant names them any more at that moment, so in
-practice a kept note's frozen readers are its author (plus, for a note whose
-audience is `public`, every member). Guardians who are not its author lose
-access to a note about an erased child. The rule computes the set from the
-live roster as decided; widening it would need the roster from before the
-member's removal.
+added to the roster later, a guardian of another child, and the erased member
+(even still on the roster) read none of it. Notices of kept events go to
+nobody. A frozen reader who leaves the roster reads nothing (unknown readers
+read nothing); one erased later stops being a reader (step 2).
 
 The pseudonym is `erased:` and 128 random bits (32 hex digits), drawn per
 erasure and stored only in the kept rows and their `erasure_reader` rows. A
@@ -285,12 +285,11 @@ cluster's object store keeps 30 days, `retentionPolicy: "30d"` in gitops
 2026-10-23). Erase removes the id from the live rows, not from storage history
 within that window.
 
-After an erase, new notes by or about the member are accepted as new data (a
-note about them observed before `erased_at` is refused, like a snapshot), and
-copies a reader already took from the events feed (any reader past those
-cursors) are outside the journal: erase does not reach them. Readers' cursors
-stay valid: kept events keep their `seq`. Kept rows cannot collide on primary
-keys: each has its own subject.
+Copies already delivered outside the journal (to readers past those events'
+cursors: the openclaw inbox, audiences, memory vaults) are not erased; that is
+tracked as a separate, later improvement. Readers' cursors stay valid: kept
+events keep their `seq`. Kept rows cannot collide on primary keys: each has
+its own subject.
 
 ## Design notes
 
