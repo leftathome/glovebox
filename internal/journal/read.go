@@ -40,10 +40,15 @@ var ErrBadQuery = errors.New("journal: bad query")
 // filtered the read. The roster is the only source: the journal confirms
 // membership here, before any query.
 //
-// To the roster's grants it adds one frozen-reader grant (s,
-// access.ErasedReader) for every kept note s (spec 4.13) that erasure_reader
-// lists the reader for. A kept note erased after this look-up is not in the
-// list, so a read racing an erase fails closed for it.
+// An erased member reads nothing (the read ban, spec 4.13): a reader with
+// any erasure row is ErrUnknownReader (403), on the roster or not. The
+// check is one query on the erasure index; an error fails the read.
+//
+// To the roster's grants it adds one frozen-reader grant for every kept
+// note s that erasure_reader lists the reader for: (s, access.ErasedAuthor)
+// for its author, (s, access.ReaderToken(frozen audience)) for any other
+// reader. A kept note erased after this look-up is not in the list, so a
+// read racing an erase fails closed for it.
 func (j *Journal) grantsOf(ctx context.Context, reader string) ([]roster.Grant, string, error) {
 	ros := j.o.Roster()
 	if ros == nil {
@@ -53,17 +58,35 @@ func (j *Journal) grantsOf(ctx context.Context, reader string) ([]roster.Grant, 
 	if !ok {
 		return nil, "", ErrUnknownReader
 	}
-	rows, err := j.db.QueryContext(ctx, `SELECT pseudonym FROM erasure_reader WHERE member = $1 ORDER BY 1`, reader)
+	var erased bool
+	if err := j.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM erasure WHERE data_subject = $1)`, reader).Scan(&erased); err != nil {
+		return nil, "", err
+	}
+	if erased {
+		return nil, "", ErrUnknownReader
+	}
+	rows, err := j.db.QueryContext(ctx, `SELECT r.pseudonym, r.author, to_jsonb(k.audience) FROM erasure_reader r
+		JOIN erasure_kept k ON k.pseudonym = r.pseudonym WHERE r.member = $1 ORDER BY 1`, reader)
 	if err != nil {
 		return nil, "", err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var s string
-		if err := rows.Scan(&s); err != nil {
+		var author bool
+		var aud []byte
+		if err := rows.Scan(&s, &author, &aud); err != nil {
 			return nil, "", err
 		}
-		g = append(g, roster.Grant{Subject: s, Token: access.ErasedReader})
+		token := access.ErasedAuthor
+		if !author {
+			var frozen []string
+			if err := json.Unmarshal(aud, &frozen); err != nil {
+				return nil, "", fmt.Errorf("kept note %s: frozen audience: %w", s, err)
+			}
+			token = access.ReaderToken(frozen)
+		}
+		g = append(g, roster.Grant{Subject: s, Token: token})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
@@ -90,18 +113,21 @@ func (j *Journal) rowVisible(grants []roster.Grant, subject string, audience []s
 // accepted.
 //
 // A kept note (data_subject starting with access.ErasedPrefix) takes the
-// one other branch, as in access.Visible: visible exactly when a grant
-// names it with access.ErasedReader, whatever its audience. The CASE keeps
-// the two branches apart, so "public" or a roster grant never reaches a
-// kept note, and a frozen-reader grant never reaches any other row.
+// one other branch, as in access.Visible: visible when a grant names it with
+// access.ErasedAuthor, or with the reader token of exactly this row's
+// audience (access.ReaderToken: the prefix and the audience joined by ","
+// in stored order). The CASE keeps the two branches apart, so "public" or a
+// roster grant never reaches a kept note, and a frozen-reader grant never
+// reaches any other row.
 func visibleSQL(a string) string {
 	return fmt.Sprintf(`(CASE WHEN starts_with(%[1]s.data_subject, '%[2]s') THEN EXISTS (
 		SELECT 1 FROM unnest($1::text[], $2::text[]) AS g(s, t)
-		WHERE g.s = %[1]s.data_subject AND g.t = '%[3]s')
+		WHERE g.s = %[1]s.data_subject AND (g.t = '%[3]s' OR g.t = '%[4]s' || array_to_string(%[1]s.audience, ',')))
 		ELSE (%[1]s.audience && array_append($2::text[], 'public') AND
 		('public' = ANY(%[1]s.audience) OR EXISTS (
 		SELECT 1 FROM unnest($1::text[], $2::text[]) AS g(s, t)
-		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience)))) END)`, a, access.ErasedPrefix, access.ErasedReader)
+		WHERE g.s = %[1]s.data_subject AND g.t = ANY(%[1]s.audience)))) END)`,
+		a, access.ErasedPrefix, access.ErasedAuthor, access.ErasedReaderPrefix)
 }
 
 func nullable(s *string) sql.NullString {

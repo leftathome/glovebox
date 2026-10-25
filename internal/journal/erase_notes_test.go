@@ -178,6 +178,9 @@ func (r *rig) readsEverywhere() string {
 	r.t.Helper()
 	var b strings.Builder
 	for _, m := range r.ros.Load().Members() {
+		if r.readRefused(m) {
+			continue // an erased member reads nothing
+		}
 		st, err := r.j.State(ctx, StateQuery{Reader: m, IncludeRemoved: true})
 		if err != nil {
 			r.t.Fatal(err)

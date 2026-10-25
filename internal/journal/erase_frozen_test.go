@@ -64,6 +64,9 @@ func (r *rig) readersOf(subject string) string {
 // "state:<subject>/<key>", "event:<subject>/<key>" and "count:<subject>".
 func (r *rig) readsOf(m string) []string {
 	r.t.Helper()
+	if r.readRefused(m) {
+		return []string{"refused"}
+	}
 	var out []string
 	for _, k := range r.stateKeys(m, StateQuery{IncludeRemoved: true}) {
 		out = append(out, "state:"+k)
@@ -80,6 +83,27 @@ func (r *rig) readsOf(m string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// readRefused reports whether State, Events and Counts all refuse the
+// reader with ErrUnknownReader; it fails the test when they disagree.
+func (r *rig) readRefused(m string) bool {
+	r.t.Helper()
+	_, e1 := r.j.State(ctx, StateQuery{Reader: m})
+	_, e2 := r.j.Events(ctx, EventsQuery{Reader: m, Limit: 10})
+	_, e3 := r.j.Counts(ctx, m, nil, T0.Add(-1000*time.Hour))
+	n := 0
+	for _, err := range []error{e1, e2, e3} {
+		if errors.Is(err, ErrUnknownReader) {
+			n++
+		} else if err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	if n != 0 && n != 3 {
+		r.t.Fatalf("%s: reads disagree: %v %v %v", m, e1, e2, e3)
+	}
+	return n == 3
 }
 
 // keptReads is the part of readsOf about kept notes.
@@ -154,6 +178,10 @@ func TestFrozenReadersFollowTheReadRule(t *testing.T) {
 		// the subject never does, by audience or as author
 		{keptNote{"attendance_note", "2026-10-14:e_child1", []string{"subject"}}, none, ""},
 		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"opaque_token"}}, none, "e_parent1"},
+		// public reaches every roster member, and only them, minus the
+		// subject and anyone erased
+		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"public"}}, none, "e_child2,e_guest1,e_parent1,e_parent2"},
+		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"public"}}, map[string]bool{"e_guest1": true}, "e_child2,e_parent1,e_parent2"},
 		// a member erased earlier reads nothing, as reader or as author
 		{keptNote{"attendance_note", "2026-10-14:e_parent1", []string{"guardians"}}, map[string]bool{"e_parent1": true}, "e_parent2"},
 		{keptNote{"kid_note", "2026-10-14:e_child2", []string{"household"}}, map[string]bool{"e_child2": true}, "e_parent1,e_parent2"},
@@ -588,33 +616,61 @@ func TestKeptNoteVisibilitySQLAndGoAgree(t *testing.T) {
 	r.exec(t, `UPDATE record_current SET audience = '{public}' WHERE data_subject = $1`, subjects[0])
 	r.exec(t, `UPDATE record_current SET audience = '{guardians,household}' WHERE data_subject = $1`, subjects[1])
 	r.exec(t, `INSERT INTO erasure_reader VALUES ($1, 'e_guest1')`, subjects[2])
+	// An event of another audience than the frozen one, for every kept note.
+	r.exec(t, `ALTER TABLE record_event DISABLE TRIGGER USER`)
+	r.exec(t, `INSERT INTO record_event (record_type, data_subject, key, kind, schema_version, scope, audience, changed,
+		observed_at, approximate, actor, importance) SELECT record_type, data_subject, key, 'updated', 1, scope, '{subject}',
+		'{}', last_confirmed_at, false, 'x', 'low' FROM record_current WHERE data_subject LIKE 'erased:%'`)
+	r.exec(t, `ALTER TABLE record_event ENABLE TRIGGER USER`)
+	// The rule written out from the tables: a kept row goes to its author,
+	// and to its other listed readers when its audience is the frozen one.
+	entitled := func(m, s string, audience []string) bool {
+		var author, listed bool
+		var frozen []byte
+		err := r.j.db.QueryRow(`SELECT r.author, true, to_jsonb(k.audience) FROM erasure_reader r JOIN erasure_kept k USING (pseudonym)
+			WHERE r.pseudonym = $1 AND r.member = $2`, s, m).Scan(&author, &listed, &frozen)
+		if err != nil {
+			return false
+		}
+		b, _ := json.Marshal(audience)
+		return author || listed && string(b) == strings.ReplaceAll(string(frozen), " ", "")
+	}
 	for _, m := range r.ros.Load().Members() {
+		if r.readRefused(m) {
+			continue
+		}
 		grants, _, err := r.j.grantsOf(ctx, m)
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := r.j.db.Query(`SELECT data_subject, key, to_jsonb(audience) FROM record_current ORDER BY 1, 2`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var want []string
-		for rows.Next() {
-			var s, k string
-			var aud []byte
-			_ = rows.Scan(&s, &k, &aud)
-			var audience []string
-			_ = json.Unmarshal(aud, &audience)
-			if access.Visible(grants, s, audience) {
-				want = append(want, s+"/"+k)
+		for _, table := range []string{"record_current", "record_event"} {
+			rows, err := r.j.db.Query(`SELECT data_subject, key, to_jsonb(audience) FROM ` + table + ` ORDER BY 1, 2`)
+			if err != nil {
+				t.Fatal(err)
 			}
-			// The rule itself: a kept note goes to its listed readers only.
-			if access.IsErased(s) && access.Visible(grants, s, audience) != strings.Contains(","+r.readersOf(s)+",", ","+m+",") {
-				t.Errorf("%s on %s: Go rule disagrees with erasure_reader", m, s)
+			var want []string
+			for rows.Next() {
+				var s, k string
+				var aud []byte
+				_ = rows.Scan(&s, &k, &aud)
+				var audience []string
+				_ = json.Unmarshal(aud, &audience)
+				if access.Visible(grants, s, audience) {
+					want = append(want, s+"/"+k)
+				}
+				if access.IsErased(s) && access.Visible(grants, s, audience) != entitled(m, s, audience) {
+					t.Errorf("%s on %s %v: Go rule disagrees with the tables", m, s, audience)
+				}
 			}
-		}
-		rows.Close()
-		if got := r.stateKeys(m, StateQuery{}); fmt.Sprint(got) != fmt.Sprint(nonNil(want)) {
-			t.Errorf("%s: SQL %v, Go %v", m, got, want)
+			rows.Close()
+			sort.Strings(want)
+			got := r.stateKeys(m, StateQuery{})
+			if table == "record_event" {
+				got = r.eventKeys(m)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(nonNil(want)) {
+				t.Errorf("%s %s: SQL %v, Go %v", m, table, got, want)
+			}
 		}
 	}
 	if g := r.stateKeys("e_guest1", StateQuery{}); fmt.Sprint(g) != fmt.Sprint([]string{"e_child2/pub", subjects[2] + "/" + keyOf(r, subjects[2])}) {
@@ -870,15 +926,45 @@ func TestRecordEventEraseRewriteIsTheOnlyOtherChange(t *testing.T) {
 			t.Errorf("an event of %q was rewritten", s)
 		}
 	}
-	// erasure_reader holds kept-note subjects and member ids only.
+	// erasure_reader holds kept-note subjects and member ids only: its own
+	// CHECKs, tested with the foreign key dropped inside a transaction that
+	// is rolled back.
+	withoutFK := func(q string) error {
+		t.Helper()
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`ALTER TABLE erasure_reader DROP CONSTRAINT erasure_reader_kept`); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(q)
+		return err
+	}
 	for _, q := range []string{
 		`INSERT INTO erasure_reader VALUES ('e_child1', 'e_parent1')`,
 		`INSERT INTO erasure_reader VALUES ('` + p + `', '')`,
 		`INSERT INTO erasure_reader VALUES ('` + p + `', '` + p + `')`,
 	} {
-		if _, err := db.Exec(q); err == nil {
+		if err := withoutFK(q); err == nil {
 			t.Errorf("accepted: %s", q)
 		}
+	}
+	if err := withoutFK(`INSERT INTO erasure_reader VALUES ('` + p + `', 'e_parent3')`); err != nil {
+		t.Errorf("a valid row was refused without the foreign key: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO erasure_reader VALUES ('` + p + `', 'e_parent1')`); err == nil {
+		t.Error("a reader row without its kept note")
+	}
+	if _, err := db.Exec(`INSERT INTO erasure_kept VALUES ('` + p + `', '{}')`); err == nil {
+		t.Error("a kept note frozen from no audience")
+	}
+	if _, err := db.Exec(`INSERT INTO erasure_kept VALUES ('e_child1', '{guardians}')`); err == nil {
+		t.Error("a kept note under a member id")
+	}
+	if _, err := db.Exec(`INSERT INTO erasure_kept VALUES ('` + p + `', '{guardians}')`); err != nil {
+		t.Error(err)
 	}
 	if _, err := db.Exec(`INSERT INTO erasure_reader VALUES ('` + p + `', 'e_parent1')`); err != nil {
 		t.Error(err)

@@ -200,8 +200,10 @@ func (j *Journal) eraseLocked(ctx context.Context, tx *sql.Tx, ros *roster.Roste
 	if err != nil {
 		return err
 	}
-	if _, err := exec(`DELETE FROM erasure_reader r WHERE NOT EXISTS (
-		SELECT 1 FROM record_current c WHERE c.data_subject = r.pseudonym)`); err != nil {
+	// Kept-note rows of notes that are gone (dropped here, or the member's
+	// own, deleted by rule 1); their reader rows go with them (cascade).
+	if _, err := exec(`DELETE FROM erasure_kept k WHERE NOT EXISTS (
+		SELECT 1 FROM record_current c WHERE c.data_subject = k.pseudonym)`); err != nil {
 		return err
 	}
 	// Rule 2: others' notes about the member, with their frozen readers.
@@ -339,8 +341,14 @@ func keepNotes(ctx context.Context, tx *sql.Tx, ros *roster.Roster, subject, pse
 		}
 		kept++
 		marker := pseudonym + ":" + strconv.FormatInt(kept, 10)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO erasure_reader (pseudonym, member) SELECT $1, unnest($2::text[])`,
-			marker, readers); err != nil {
+		// The audience the readers were frozen from, and the readers; the
+		// author is marked, and sees the whole history (access.Visible).
+		if _, err := tx.ExecContext(ctx, `INSERT INTO erasure_kept (pseudonym, audience) VALUES ($1, $2)`,
+			marker, nonNil(n.audience)); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO erasure_reader (pseudonym, member, author)
+			SELECT $1, m, m = $3 FROM unnest($2::text[]) AS m`, marker, readers, authorOf(n.key)); err != nil {
 			return 0, err
 		}
 		scope := record.HouseholdScope(n.recordType, "")

@@ -203,11 +203,22 @@ kept note and reader. Rows are written and deleted only by erase.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `pseudonym` | text | The kept note's `data_subject`, `erased:<32 hex>:<n>` (CHECK). |
-| `member` | text | A roster member id who reads that note: non-empty, no `:` (CHECK), never the erased id. |
+| `pseudonym` | text | The kept note's `data_subject`, `erased:<32 hex>:<n>` (CHECK); references `erasure_kept` (ON DELETE CASCADE, migration `0004_erasure_kept`). |
+| `member` | text | A roster member id who reads that note: non-empty, no `:` (CHECK), never an erased id. |
+| `author` | boolean | The member is the note's author, who reads its whole history (migration `0004_erasure_kept`). |
 
 Primary key `(pseudonym, member)`; index `(member)` (a read looks up the
 reader's rows).
+
+### `erasure_kept`
+
+One row per kept note (migration `0004_erasure_kept`). Written and deleted only
+by erase; deleting one deletes its `erasure_reader` rows.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `pseudonym` | text | The kept note's `data_subject` (primary key, same CHECK as above). |
+| `audience` | text[] | The audience its readers were frozen from: the note's audience at erase time, as stored (sorted, distinct; CHECK non-empty). |
 
 ### What erase does with household notes
 
@@ -222,47 +233,65 @@ actor `writer;on_behalf_of=<id>`).
    roster through gitops can follow at any time.
 1. **The member's own notes go.** Every note they wrote, about anyone: other
    subjects, the household, themselves, and notes of theirs kept from an
-   earlier erasure (with their `erasure_reader` rows).
+   earlier erasure (with their `erasure_kept` and `erasure_reader` rows).
 2. **The member stops reading kept notes.** Their `erasure_reader` rows are
    deleted; a kept note left with no reader is deleted.
 3. **Others' notes about the member are kept, for frozen readers.** For each,
    erase computes its readers once: every member of the roster snapshot who
    can read it at that moment under the read visibility rule
    (`access.Visible` over the member's roster grants: the subject's
-   guardians, for a note with a guardians part), plus its author if on the
-   roster; never the erased member, even still on the roster, and never a
-   member erased before. These are written to `erasure_reader`. The note
-   moves, its `record_current` row and every one of its events, to its own
-   subject `erased:<pseudonym>:<n>` (one pseudonym per erasure, `n` per
-   note); `scope` and `prev_scope` (when set) become the household scope of
-   its type (`source=household/record_type=<type>`); `group_key` is cleared
-   (it may embed the subject or the scope). `key`, `audience`,
-   `prev_audience`, fields and text stay exactly as written, and every event
-   is kept, so the record still folds (the fold invariant holds in full). A
-   note with no reader is deleted with the subject's data.
+   guardians, for a note with a guardians part; every roster member for a
+   `public` note), plus its author if on the roster; never the erased
+   member, even still on the roster, and never a member erased before. They
+   are written to `erasure_reader` (the author marked), and the note's
+   audience at that moment to `erasure_kept`. The note moves, its
+   `record_current` row and every one of its events, to its own subject
+   `erased:<pseudonym>:<n>` (one pseudonym per erasure, `n` per note);
+   `scope` and `prev_scope` (when set) become the household scope of its
+   type (`source=household/record_type=<type>`); `group_key` is cleared (it
+   may embed the subject or the scope). `key`, `audience`, `prev_audience`,
+   fields and text stay exactly as written, and every event is kept, so the
+   record still folds (the fold invariant holds in full). A note with no
+   reader is deleted with the subject's data.
 4. **Everything else of the member is deleted**, as before.
 5. **The erase is a ban.** Once an `erasure` row exists for a member, every
    later snapshot about them (Apply, and the confirm of a held one), every
-   note about them and every note by them (`on_behalf_of`) is refused with
-   410 `erased_subject`, whatever its time; spools treat 410 as permanent,
-   so in-flight items drain themselves. Nothing un-erases: putting an erased
-   person back into the journal needs a deliberate un-erase, which does not
-   exist yet. A second erase of the same member is allowed and keeps the ban.
+   note about them and every note by them (`on_behalf_of`; checked before
+   the roster, so an erased author off the roster gets 410, not 403) is
+   refused with 410 `erased_subject`, whatever its time; spools treat 410 as
+   permanent, so in-flight items drain themselves. The erased member also
+   reads nothing (the read ban): every State, Events and Counts read by a
+   member with an erasure row is refused as an unknown reader (403), on the
+   roster or not, household notes, siblings' rows and public rows included.
+   Nothing un-erases: putting an erased person back into the journal needs
+   a deliberate un-erase, which does not exist yet. A second erase of the
+   same member is allowed and keeps the ban.
 
-**Who reads a kept note.** Exactly its frozen readers, in State, Events and
-Counts, its old values across an audience change included: a row whose
-`data_subject` starts with `erased:` is visible to a reader iff
-`erasure_reader` lists the reader for it, whatever its audience
-(`access.Visible` and the SQL clause `visibleSQL` have this one branch, first).
-Its audience is not consulted, so neither `public` nor any roster grant
-(household, guardians, ...) reaches it; roster ids contain no `:`, so no
-roster grant can name such a subject, and the frozen-reader grant
-(`(<pseudonym>, erased:reader)`, added to a reader's grants from
-`erasure_reader` at the start of each read) names only kept notes. A member
-added to the roster later, a guardian of another child, and the erased member
-(even still on the roster) read none of it. Notices of kept events go to
-nobody. A frozen reader who leaves the roster reads nothing (unknown readers
-read nothing); one erased later stops being a reader (step 2).
+**Who reads a kept note.** Only its frozen readers, in State, Events and
+Counts: a row whose `data_subject` starts with `erased:` takes one branch of
+the rule (`access.Visible` and the SQL clause `visibleSQL`, first), so neither
+`public` nor any roster grant (household, guardians, ...) reaches it; roster
+ids contain no `:`, so no roster grant can name such a subject. Each read adds
+the reader's frozen-reader grants from `erasure_reader` and `erasure_kept`:
+`(<pseudonym>, erased:author)` for the author, `(<pseudonym>,
+erased:reader:<frozen audience joined by ",">)` for any other reader. The
+author sees every row of the note: every event and every old value. Any other
+frozen reader sees a row only when that row's own audience is exactly the
+frozen audience: the note itself, the events written under that audience, and
+an old value or `prev_scope`/`prev_observed_at` across an audience change only
+when `prev_audience` is the frozen audience too. Everything else is withheld,
+as for a different audience before the erase, so a guardian reads exactly the
+history they could read before. A member added to the roster later, a
+guardian of another child, and the erased member read none of it. Notices of
+kept events go to nobody. A frozen reader who leaves the roster reads nothing
+(unknown readers read nothing); one erased later stops being a reader
+(step 2).
+
+**Roster ids must not be reused for a different person.** `erasure` rows (the
+ban) and `erasure_reader` rows outlive the member's removal from the roster
+and are keyed by the id: a different person given that id later would inherit
+the ban, or a frozen reader's access to kept notes.
+
 
 The pseudonym is `erased:` and 128 random bits (32 hex digits), drawn per
 erasure and stored only in the kept rows and their `erasure_reader` rows. A
@@ -363,3 +392,4 @@ Choices this schema makes where the spec leaves room (also in the plan,
 | `0001_init` | All tables above, their indexes and the append-only trigger. |
 | `0002_erase_rewrite` | Replaces the append-only trigger's function: besides `scan`, it admits erase's in-place rewrite of a kept note's events (decision 2026-10-23), only under the transaction-local setting `glovebox_journal.erase_rewrite = on` and only from a subject to the household, with the key gaining an `:erased:<token>` suffix, scopes without a `data_subject=` part, audiences that only shrink and `group_key` cleared. No table changes. Superseded by `0003_erasure_reader`. |
 | `0003_erasure_reader` | Adds `erasure_reader` (the frozen readers of kept notes) and replaces the append-only trigger's function again: the erase rewrite now moves a kept note's events from a member to its own subject `erased:<32 hex>:<n>`, with scopes without a `data_subject=` part and `group_key` cleared, and changes nothing else (key and audiences stay). Same transaction-local flag. |
+| `0004_erasure_kept` | Adds `erasure_kept` (the audience each kept note's readers were frozen from) and `erasure_reader.author`, backfills both from the kept rows (frozen from their current audience; the author from the key), and makes `erasure_reader.pseudonym` reference `erasure_kept` with ON DELETE CASCADE. |

@@ -579,9 +579,12 @@ Decisions of 2026-10-23 and 2026-10-24:
   snapshot about them (4.4 step 3, and the confirm of a held one), every note
   about them and every note by them is refused with `410 erased_subject`,
   whatever its time. Connectors and the gateway treat 410 as permanent and
-  delete the item, so in-flight spools drain themselves. There is no
-  un-erase; putting an erased person back needs a deliberate un-erase that
-  does not exist yet.
+  delete the item, so in-flight spools drain themselves. The erased member
+  also reads nothing: every read by them is refused as an unknown reader
+  (403), on the roster or not. There is no un-erase; putting an erased
+  person back needs a deliberate un-erase that does not exist yet. Roster
+  ids must not be reused for a different person: the ban and frozen-reader
+  rows are keyed by the id and outlive roster removal.
 - A note belongs to its author, the `on_behalf_of` member in its key. Erasing
   a member deletes every note they wrote, about anyone (other subjects, the
   household, themselves, notes of theirs kept earlier), and removes them as a
@@ -597,10 +600,14 @@ Decisions of 2026-10-23 and 2026-10-24:
   scope; key, audience, fields and text stay as written; its events are
   rewritten in place (same `seq`, `group_key` cleared) and all kept, so it
   still folds.
-- A kept note is visible exactly to its frozen readers, in every read,
-  whatever its audience: no roster grant, `public` included, reaches it;
-  members added later, and the erased member even while still on the roster,
-  never do.
+- A kept note is visible only to its frozen readers, in every read: no
+  roster grant, `public` included, reaches it; members added later, and the
+  erased member even while still on the roster, never do. Its author sees
+  its whole history. Any other frozen reader sees only rows whose audience
+  is the one they were frozen from (table `erasure_kept`): the note, its
+  events of that audience, and old values or the previous scope across an
+  audience change only when the previous audience is that one too; the rest
+  is withheld as for a different audience, exactly as before the erase.
 - Everything else of the member is deleted as above.
 - Copies already delivered outside the journal (the openclaw inbox,
   audiences, memory vaults) are not erased; that is a separate, later

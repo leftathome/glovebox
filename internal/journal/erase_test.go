@@ -250,7 +250,11 @@ func TestEraseAndTheOtherWriters(t *testing.T) {
 	if err := r.j.DiscardHeld(ctx, uid(2)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("discard after erase: %v", err)
 	}
-	for _, reader := range []string{"e_parent1", "e_child1"} {
+	// The erased child, still on the roster, is refused every read.
+	if !r.readRefused("e_child1") {
+		t.Error("the erased member reads")
+	}
+	for _, reader := range []string{"e_parent1"} {
 		for _, k := range r.stateKeys(reader, StateQuery{}) {
 			if strings.HasPrefix(k, "e_child1/") {
 				t.Errorf("%s still reads %s", reader, k)
