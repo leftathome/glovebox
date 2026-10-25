@@ -155,18 +155,35 @@ func (j JournalConfig) Guard() diff.Guard {
 }
 
 // ScanTimeout bounds one text scan.
-func (j JournalConfig) ScanTimeout() time.Duration {
-	return time.Duration(j.ScanTimeoutSeconds) * time.Second
-}
+func (j JournalConfig) ScanTimeout() time.Duration { return seconds(j.ScanTimeoutSeconds) }
 
 // RequestTimeout bounds one API request.
-func (j JournalConfig) RequestTimeout() time.Duration {
-	return time.Duration(j.RequestTimeoutSeconds) * time.Second
-}
+func (j JournalConfig) RequestTimeout() time.Duration { return seconds(j.RequestTimeoutSeconds) }
 
 // Reload is how often the roster file is re-read.
-func (r JournalRosterConfig) Reload() time.Duration {
-	return time.Duration(r.ReloadSeconds) * time.Second
+func (r JournalRosterConfig) Reload() time.Duration { return seconds(r.ReloadSeconds) }
+
+// Upper bounds. A huge value would overflow a time.Duration negative: a
+// negative reload interval ends the roster watcher (revocations never
+// arrive), a huge min_keys switches the removal guard off.
+const (
+	maxReloadSeconds  = 300
+	maxRequestSeconds = 600
+	maxScanSeconds    = 300
+	maxMinKeys        = 1000
+	maxSecretBytes    = 4096
+)
+
+// seconds converts without overflow: validated values are small; anything
+// else is clamped into [0, 1h] rather than wrapping negative.
+func seconds(n int) time.Duration {
+	if n < 0 {
+		n = 0
+	}
+	if n > 3600 {
+		n = 3600
+	}
+	return time.Duration(n) * time.Second
 }
 
 func (j JournalConfig) validate(portsInUse map[int]string) error {
@@ -179,8 +196,11 @@ func (j JournalConfig) validate(portsInUse map[int]string) error {
 	if other, ok := portsInUse[j.Port]; ok {
 		return fmt.Errorf("journal.port %d is already used by %s", j.Port, other)
 	}
-	if j.RequestTimeoutSeconds <= 0 || j.ScanTimeoutSeconds <= 0 {
-		return fmt.Errorf("journal.request_timeout_seconds and journal.scan_timeout_seconds must be > 0")
+	if j.RequestTimeoutSeconds <= 0 || j.RequestTimeoutSeconds > maxRequestSeconds {
+		return fmt.Errorf("journal.request_timeout_seconds must be 1-%d", maxRequestSeconds)
+	}
+	if j.ScanTimeoutSeconds <= 0 || j.ScanTimeoutSeconds > maxScanSeconds {
+		return fmt.Errorf("journal.scan_timeout_seconds must be 1-%d", maxScanSeconds)
 	}
 	if strings.TrimSpace(j.ScannerVersion) == "" {
 		return fmt.Errorf("journal.scanner_version must not be empty")
@@ -190,21 +210,31 @@ func (j JournalConfig) validate(portsInUse map[int]string) error {
 		return fmt.Errorf("journal.database needs host, port (1-65535), name, user_file and password_file")
 	}
 	switch d.SSLMode {
-	case "disable", "require", "verify-ca", "verify-full":
+	case "require":
+	case "verify-ca", "verify-full":
+		if d.SSLRootCert == "" {
+			return fmt.Errorf("journal.database.sslrootcert is required when sslmode is %s", d.SSLMode)
+		}
+		if st, err := os.Stat(d.SSLRootCert); err != nil || st.IsDir() {
+			return fmt.Errorf("journal.database.sslrootcert %s is not a readable file", d.SSLRootCert)
+		}
 	default:
-		return fmt.Errorf("journal.database.sslmode must be disable, require, verify-ca or verify-full")
+		return fmt.Errorf("journal.database.sslmode must be require, verify-ca or verify-full; plaintext is refused")
 	}
-	if j.Roster.Path == "" || j.Roster.Format != roster.FormatOpenclawHouseholdV1 || j.Roster.ReloadSeconds <= 0 {
-		return fmt.Errorf("journal.roster needs a path, format %q and reload_seconds > 0", roster.FormatOpenclawHouseholdV1)
+	if strings.ContainsAny(d.Host, ",/?") {
+		return fmt.Errorf("journal.database.host must be a single host name (no ',', '/' or '?')")
+	}
+	if j.Roster.Path == "" || j.Roster.Format != roster.FormatOpenclawHouseholdV1 || j.Roster.ReloadSeconds <= 0 || j.Roster.ReloadSeconds > maxReloadSeconds {
+		return fmt.Errorf("journal.roster needs a path, format %q and reload_seconds 1-%d", roster.FormatOpenclawHouseholdV1, maxReloadSeconds)
 	}
 	// max_fraction >= 1 would let a snapshot remove every live key without
 	// being held; <= 0 would hold every removal. Both are refused.
-	if !(j.RemovalGuard.MaxFraction > 0 && j.RemovalGuard.MaxFraction < 1) || j.RemovalGuard.MinKeys < 0 {
-		return fmt.Errorf("journal.removal_guard needs 0 < max_fraction < 1 and min_keys >= 0")
+	if !(j.RemovalGuard.MaxFraction > 0 && j.RemovalGuard.MaxFraction < 1) || j.RemovalGuard.MinKeys < 0 || j.RemovalGuard.MinKeys > maxMinKeys {
+		return fmt.Errorf("journal.removal_guard needs 0 < max_fraction < 1 and 0 <= min_keys <= %d", maxMinKeys)
 	}
 	for _, p := range j.StalenessPrefixes {
-		if !strings.HasPrefix(p, record.PartSource+"=") {
-			return fmt.Errorf("journal.staleness_prefixes: %q does not start with source=", p)
+		if rest, ok := strings.CutPrefix(p, record.PartSource+"="); !ok || rest == "" {
+			return fmt.Errorf("journal.staleness_prefixes: %q must be source=<value> followed by anything", p)
 		}
 	}
 	// Fail at start, not at the first request, when the mounted Secret is
@@ -248,9 +278,17 @@ func (d JournalDatabaseConfig) Connection() (string, func(context.Context) (stri
 // ending (mounted Secrets often carry one; a password may contain other
 // spaces). An empty result is an error. Errors name the path only.
 func readSecretFile(path string) (string, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxSecretBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%s: read failed", path)
+	}
+	if len(b) > maxSecretBytes {
+		return "", fmt.Errorf("%s is larger than %d bytes", path, maxSecretBytes)
 	}
 	s := strings.TrimRight(string(b), "\r\n")
 	if strings.TrimSpace(s) == "" {

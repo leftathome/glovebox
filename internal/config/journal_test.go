@@ -36,6 +36,9 @@ func writeJournalConfig(t *testing.T, body string) string {
 	if err := os.WriteFile(filepath.Join(dir, "password"), []byte("s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), []byte("ca\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(strings.ReplaceAll(body, "%s", dir)), 0o600); err != nil {
 		t.Fatal(err)
@@ -181,6 +184,14 @@ func TestJournalFailClosedSettings(t *testing.T) {
 		{"scan timeout 0", `"scan_timeout_seconds": 0`, false},
 		{"scan timeout negative", `"scan_timeout_seconds": -5`, false},
 		{"request timeout 1", `"request_timeout_seconds": 1`, true},
+		{"request timeout 600", `"request_timeout_seconds": 600`, true},
+		{"request timeout 601", `"request_timeout_seconds": 601`, false},
+		{"scan timeout 300", `"scan_timeout_seconds": 300`, true},
+		{"scan timeout 301", `"scan_timeout_seconds": 301`, false},
+		{"scan timeout huge", `"scan_timeout_seconds": 9223372036854775807`, false},
+		{"min_keys 1000", `"removal_guard": {"max_fraction": 0.3, "min_keys": 1000}`, true},
+		{"min_keys 1001", `"removal_guard": {"max_fraction": 0.3, "min_keys": 1001}`, false},
+		{"min_keys huge", `"removal_guard": {"max_fraction": 0.3, "min_keys": 9223372036854775807}`, false},
 		{"request timeout 0", `"request_timeout_seconds": 0`, false},
 		{"request timeout negative", `"request_timeout_seconds": -1`, false},
 		{"guard fraction just above 0", `"removal_guard": {"max_fraction": 0.0001, "min_keys": 3}`, true},
@@ -206,18 +217,31 @@ func TestJournalNestedSettings(t *testing.T) {
 		old, new string
 		ok       bool
 	}{
-		"reload 1":       {`"roster": {`, `"roster": {"reload_seconds": 1, `, true},
-		"reload 0":       {`"roster": {`, `"roster": {"reload_seconds": 0, `, false},
-		"reload -1":      {`"roster": {`, `"roster": {"reload_seconds": -1, `, false},
-		"db port 0":      {`"host":`, `"port": 0, "host":`, false},
-		"db port 5433":   {`"host":`, `"port": 5433, "host":`, true},
-		"db port 65535":  {`"host":`, `"port": 65535, "host":`, true},
-		"db port 65536":  {`"host":`, `"port": 65536, "host":`, false},
-		"sslmode verify": {`"host":`, `"sslmode": "verify-full", "host":`, true},
-		"sslmode ca":     {`"host":`, `"sslmode": "verify-ca", "host":`, true},
-		"sslmode off":    {`"host":`, `"sslmode": "disable", "host":`, true},
-		"sslmode empty":  {`"host":`, `"sslmode": "", "host":`, false},
-		"no db name":     {`"host":`, `"name": "", "host":`, false},
+		"reload 1":            {`"roster": {`, `"roster": {"reload_seconds": 1, `, true},
+		"reload 0":            {`"roster": {`, `"roster": {"reload_seconds": 0, `, false},
+		"reload -1":           {`"roster": {`, `"roster": {"reload_seconds": -1, `, false},
+		"db port 0":           {`"host":`, `"port": 0, "host":`, false},
+		"db port 5433":        {`"host":`, `"port": 5433, "host":`, true},
+		"db port 65535":       {`"host":`, `"port": 65535, "host":`, true},
+		"db port 65536":       {`"host":`, `"port": 65536, "host":`, false},
+		"sslmode verify":      {`"host":`, `"sslmode": "verify-full", "sslrootcert": "%s/ca.pem", "host":`, true},
+		"sslmode ca":          {`"host":`, `"sslmode": "verify-ca", "sslrootcert": "%s/ca.pem", "host":`, true},
+		"verify no root":      {`"host":`, `"sslmode": "verify-full", "host":`, false},
+		"verify-ca no root":   {`"host":`, `"sslmode": "verify-ca", "host":`, false},
+		"verify missing root": {`"host":`, `"sslmode": "verify-full", "sslrootcert": "%s/nope.pem", "host":`, false},
+		"verify root is dir":  {`"host":`, `"sslmode": "verify-full", "sslrootcert": "%s", "host":`, false},
+		"sslmode off":         {`"host":`, `"sslmode": "disable", "host":`, false},
+		"reload 300":          {`"roster": {`, `"roster": {"reload_seconds": 300, `, true},
+		"reload 301":          {`"roster": {`, `"roster": {"reload_seconds": 301, `, false},
+		"reload huge":         {`"roster": {`, `"roster": {"reload_seconds": 9223372036854775807, `, false},
+		"prefix bare":         {`["source=powerschool/"]`, `["source="]`, false},
+		"prefix sourcex":      {`["source=powerschool/"]`, `["sourcex"]`, false},
+		"prefix ok":           {`["source=powerschool/"]`, `["source=a"]`, true},
+		"multi host":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a.svc,b.svc"`, false},
+		"host slash":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a/b"`, false},
+		"host query":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a?x=1"`, false},
+		"sslmode empty":       {`"host":`, `"sslmode": "", "host":`, false},
+		"no db name":          {`"host":`, `"name": "", "host":`, false},
 	} {
 		expect(t, name, tc.ok, loadValidate(t, strings.Replace(journalJSON, tc.old, tc.new, 1)))
 	}
@@ -357,6 +381,70 @@ func TestJournalSecrets(t *testing.T) {
 			t.Error("Connection accepted an empty user")
 		}
 	})
+	t.Run("a whitespace-only secret file is refused", func(t *testing.T) {
+		cfg := load(t)
+		_ = os.WriteFile(cfg.Journal.Database.PasswordFile, []byte(" \t\n"), 0o600)
+		_, password, _ := cfg.Journal.Database.Connection()
+		if p, err := password(context.Background()); err == nil {
+			t.Errorf("returned %q", p)
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Error("validated")
+		}
+	})
+	t.Run("an oversized secret file is refused", func(t *testing.T) {
+		cfg := load(t)
+		_ = os.WriteFile(cfg.Journal.Database.PasswordFile, []byte(strings.Repeat("x", 4097)), 0o600)
+		_, password, _ := cfg.Journal.Database.Connection()
+		if p, err := password(context.Background()); err == nil {
+			t.Errorf("returned %d bytes", len(p))
+		}
+		_ = os.WriteFile(cfg.Journal.Database.PasswordFile, []byte(strings.Repeat("x", 4096)), 0o600)
+		if p, err := password(context.Background()); err != nil || len(p) != 4096 {
+			t.Errorf("a 4096-byte secret: %d %v", len(p), err)
+		}
+	})
+	t.Run("a device file does not hang", func(t *testing.T) {
+		cfg := load(t)
+		cfg.Journal.Database.PasswordFile = "/dev/zero"
+		_, password, _ := cfg.Journal.Database.Connection()
+		if _, err := password(context.Background()); err == nil {
+			t.Error("accepted /dev/zero")
+		}
+	})
+	t.Run("a failure never echoes secret content", func(t *testing.T) {
+		cfg := load(t)
+		_ = os.WriteFile(cfg.Journal.Database.PasswordFile, []byte("%v %s s3cret"), 0o600)
+		_ = os.Remove(cfg.Journal.Database.UserFile)
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("validated")
+		}
+		if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "%v %s") {
+			t.Errorf("echoes the content: %v", err)
+		}
+		_, password, _ := cfg.Journal.Database.Connection()
+		_ = password
+		cfg2 := load(t)
+		_ = os.WriteFile(cfg2.Journal.Database.PasswordFile, []byte("%v %s s3cret"), 0o600)
+		_ = os.WriteFile(cfg2.Journal.Database.UserFile, []byte(strings.Repeat("u", 5000)), 0o600)
+		if err := cfg2.Validate(); err == nil || strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "%v %s") {
+			t.Errorf("%v", err)
+		}
+	})
+	t.Run("the configured sslmode and database name reach the DSN", func(t *testing.T) {
+		for _, mode := range []string{"require", "verify-ca", "verify-full"} {
+			body := strings.Replace(journalJSON, `"host":`, `"sslmode": "`+mode+`", "sslrootcert": "%s/ca.pem", "name": "other_db", "host":`, 1)
+			cfg, err := LoadConfig(writeJournalConfig(t, body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			dsn, _, err := cfg.Journal.Database.Connection()
+			if err != nil || !strings.Contains(dsn, "sslmode="+mode) || !strings.Contains(dsn, "/other_db?") {
+				t.Errorf("%s: %s %v", mode, dsn, err)
+			}
+		}
+	})
 	t.Run("errors never carry the password", func(t *testing.T) {
 		cfg := load(t)
 		cfg.Journal.Database.SSLMode = "maybe"
@@ -391,4 +479,45 @@ func TestJournalSecrets(t *testing.T) {
 			t.Errorf("%s %v", dsn, err)
 		}
 	})
+}
+
+func TestJournalServicesOmitted(t *testing.T) {
+	body := strings.Replace(journalJSON, `"services": {`, `"services_x": {`, 1)
+	if err := loadValidate(t, body); err == nil {
+		t.Error("unknown key accepted")
+	}
+	// Remove the services member entirely: an empty policy is valid and
+	// grants nothing.
+	i := strings.Index(journalJSON, `"services"`)
+	j := strings.Index(journalJSON, `"record_types"`)
+	cfg, err := LoadConfig(writeJournalConfig(t, journalJSON[:i]+journalJSON[j:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, pol, err := cfg.Journal.Build()
+	if err != nil || len(pol.Callers()) != 0 {
+		t.Errorf("%v %v", pol, err)
+	}
+}
+
+func TestJournalAccessorsDoNotOverflow(t *testing.T) {
+	j := JournalConfig{ScanTimeoutSeconds: 1 << 62, RequestTimeoutSeconds: -1 << 62}
+	j.Roster.ReloadSeconds = 1 << 62
+	if j.ScanTimeout() <= 0 || j.RequestTimeout() < 0 || j.Roster.Reload() <= 0 {
+		t.Errorf("%v %v %v", j.ScanTimeout(), j.RequestTimeout(), j.Roster.Reload())
+	}
+	if j.ScanTimeout() != time.Hour {
+		t.Errorf("clamp %v", j.ScanTimeout())
+	}
+	j.ScanTimeoutSeconds = 3601
+	if j.ScanTimeout() != time.Hour {
+		t.Errorf("clamp at 3601: %v", j.ScanTimeout())
+	}
+	j.ScanTimeoutSeconds, j.Roster.ReloadSeconds = 5, 7
+	if j.ScanTimeout() != 5*time.Second || j.Roster.Reload() != 7*time.Second {
+		t.Error("small values changed")
+	}
 }
