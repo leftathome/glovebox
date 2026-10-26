@@ -269,13 +269,34 @@ func TestBodyLimitBoundary(t *testing.T) {
 func TestRefusalsDoNotEchoValues(t *testing.T) {
 	r := newRig(t)
 	for name, b := range map[string]any{
-		"bad value":     assignments(1, "e_child1", "powerschool", T0, one("k", "e_child1", `{"score": "SECRETVALUE"}`)),
-		"unknown field": `{"snapshot_id": "` + uid(2) + `", "SECRETVALUE": 1}`,
-		"bad scope":     `{"snapshot_id": "` + uid(3) + `", "scope": "SECRETVALUE"}`,
-		"scope source":  assignments(4, "e_child1", "SECRETVALUE", T0),
+		"bad value":          assignments(1, "e_child1", "powerschool", T0, one("k", "e_child1", `{"score": "SECRETVALUE"}`)),
+		"unknown field":      `{"snapshot_id": "` + uid(2) + `", "SECRETVALUE": 1}`,
+		"bad scope":          `{"snapshot_id": "` + uid(3) + `", "scope": "SECRETVALUE"}`,
+		"scope source":       assignments(4, "e_child1", "SECRETVALUE", T0),
+		"unknown field name": assignments(5, "e_child1", "powerschool", T0, one("k", "e_child1", `{"secretvalue": 1}`)),
+		"unknown type": func() journalapi.Snapshot {
+			s := assignments(6, "e_child1", "powerschool", T0)
+			s.RecordType = "secretvalue"
+			return s
+		}(),
+		"scope part twice": func() journalapi.Snapshot {
+			s := assignments(7, "e_child1", "powerschool", T0)
+			s.Scope = append(s.Scope, journalapi.ScopePart{"secretvalue", "a"}, journalapi.ScopePart{"secretvalue", "b"})
+			return s
+		}(),
+		"scope part value": func() journalapi.Snapshot {
+			s := assignments(8, "e_child1", "powerschool", T0)
+			s.Scope = append(s.Scope, journalapi.ScopePart{"secretvalue", strings.Repeat("v", 300)})
+			return s
+		}(),
+		"complete_range field": func() journalapi.Snapshot {
+			s := assignments(9, "e_child1", "powerschool", T0)
+			s.CompleteRange = &journalapi.CompleteRange{Field: "secretvalue", From: "2026-10-01", To: "2026-10-02"}
+			return s
+		}(),
 	} {
 		code, raw := r.send("POST", journalapi.PathRecords, "ps", "application/json", b)
-		if code/100 != 4 || strings.Contains(string(raw), "SECRETVALUE") {
+		if code/100 != 4 || strings.Contains(strings.ToLower(string(raw)), "secretvalue") {
 			t.Errorf("%s: %d %s", name, code, raw)
 		}
 	}

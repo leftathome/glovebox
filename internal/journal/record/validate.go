@@ -76,7 +76,7 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 	}
 	t, ok := reg.Version(s.RecordType, s.SchemaVersion)
 	if !ok {
-		return nil, schemaErr("unknown record type %q version %d", s.RecordType, s.SchemaVersion)
+		return nil, schemaErr("unknown record_type or schema_version")
 	}
 	if t.Household() {
 		return nil, schemaErr("household record types are written through %s", journalapi.PathNotes)
@@ -117,10 +117,10 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 			return nil, schemaErr("invalid complete_range.field")
 		}
 		if t.Fields[cr.Field].Type != Date {
-			return nil, schemaErr("complete_range.field %q is not a date field of %s v%d", cr.Field, t.Name, t.SchemaVersion)
+			return nil, schemaErr("complete_range.field is not a date field of the record type's version")
 		}
 		if af := reg.ForwardName(t.Name, t.SchemaVersion, cr.Field); active.Fields[af].Type != Date {
-			return nil, schemaErr("complete_range.field %q is not a date field of the active version of %s", cr.Field, t.Name)
+			return nil, schemaErr("complete_range.field is not a date field of the record type's active version")
 		}
 		if !ValidDate(cr.From) || !ValidDate(cr.To) || cr.From > cr.To {
 			return nil, schemaErr("complete_range needs from <= to, both YYYY-MM-DD")
@@ -164,7 +164,7 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 		f = reg.Forward(t.Name, t.SchemaVersion, f)
 		for name := range f {
 			if _, ok := active.Fields[name]; !ok {
-				return nil, schemaErr("record %d: field %q of v%d has no place in v%d", i, name, t.SchemaVersion, active.SchemaVersion)
+				return nil, schemaErr("record %d: a field of its schema_version has no place in the active version", i)
 			}
 		}
 		n.Records = append(n.Records, NormRecord{Key: rec.Key, DataSubject: rec.DataSubject, Audience: aud, Fields: f, Hash: f.Hash()})

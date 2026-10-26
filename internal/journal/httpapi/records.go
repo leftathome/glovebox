@@ -40,7 +40,7 @@ func snapshotKeyLimits(reg *record.Registry) strictjson.Limits {
 }
 
 // handleRecords is POST /v1/records. Order: the service writes snapshots at
-// all (403 policy), Content-Type (400), body at most 8 MiB (413), strict
+// all (403 policy), no query parameters (400), Content-Type (400), body at most 8 MiB (413), strict
 // decoding (422 schema), 4.4 step 1 (a resend is answered from its stored
 // outcome; a reused id is 422), validation (4xx), policy (403), Apply (200
 // statuses, 409, 410, 422 reuse).
@@ -49,6 +49,12 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request, c call) {
 	// writes no snapshots learns nothing here, not even whether an id exists.
 	if !c.svc.WritesSnapshots(s.d.Registry) {
 		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "this service writes no snapshots")
+		return
+	}
+	// A snapshot carries everything in its body; any query parameter, an
+	// access field above all, is refused before the body is read (4.9).
+	if _, err := queryParams(r); err != nil {
+		badRequest(w, "POST /v1/records takes no query parameters")
 		return
 	}
 	if !isJSON(r) {

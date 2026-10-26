@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/journaltest"
 )
 
 func seed(r *rig) {
@@ -493,5 +496,136 @@ func TestReadsAreCountedByRouteName(t *testing.T) {
 	}
 	if strings.Contains(m, "SECRETVALUE") || strings.Contains(m, "/v1/") {
 		t.Error("a path or query reached a label")
+	}
+}
+
+// healthz goes through the real route wrapper: no token is 401, a valid
+// token of a ServiceAccount with no policy is 403 (database rig, real
+// Handler; the auth rig stubs healthz).
+func TestHealthzIsAuthenticated(t *testing.T) {
+	r := newRig(t)
+	var rr journalapi.Response
+	if code := r.do("GET", journalapi.PathHealthz, "", nil, &rr); code != 401 || rr.Reason != journalapi.ReasonUnauthenticated {
+		t.Errorf("no token: %d %+v", code, rr)
+	}
+	rr = journalapi.Response{}
+	if code := r.do("GET", journalapi.PathHealthz, "rss", nil, &rr); code != 403 || rr.Reason != journalapi.ReasonForbidden {
+		t.Errorf("rss: %d %+v", code, rr)
+	}
+	rr = journalapi.Response{}
+	if code := r.do("GET", journalapi.PathHealthz, "never-issued", nil, &rr); code != 401 || rr.Reason != journalapi.ReasonUnauthenticated {
+		t.Errorf("unknown token: %d %+v", code, rr)
+	}
+}
+
+// Reader ids are compared exactly: no case folding, no trimming.
+func TestReaderIsExact(t *testing.T) {
+	r := newRig(t)
+	seed(r)
+	for _, c := range []struct{ token, reader string }{
+		{"gw", "E_PARENT1"}, {"gw", "e_parent1%20"}, {"gw", "%20e_parent1"}, {"gw", "e_parent1%0A"},
+		{"dash", "E_PARENT1"}, {"dash", "e_parent1%20"}, {"dash", "%20e_parent1"},
+		{"ro", "E_parent1"}, {"co", "e_parent1%09"},
+	} {
+		for _, path := range []string{journalapi.PathState, journalapi.PathEvents, journalapi.PathCounts} {
+			code, raw := r.send("GET", path+"?reader="+c.reader, c.token, "", nil)
+			if code != 403 {
+				t.Errorf("%s %s as %q: %d %s", c.token, path, c.reader, code, raw)
+			}
+		}
+	}
+}
+
+// The 403 says why: a service without the endpoint's flag may not use it;
+// one with it may not act for that reader.
+func TestReadDenialDetail(t *testing.T) {
+	r := newAuthRig(t)
+	for _, c := range []struct{ token, path, detail string }{
+		{"co", journalapi.PathEvents + "?reader=e_parent1", "this service may not read"},
+		{"co", journalapi.PathState + "?reader=e_parent1", "this service may not read"},
+		{"ro", journalapi.PathCounts + "?reader=e_parent1", "this service may not count"},
+		{"ps", journalapi.PathState + "?reader=e_parent1", "this service may not read"},
+		{"dash", journalapi.PathState + "?reader=e_child1", "this service may not act for that reader"},
+		{"co", journalapi.PathCounts + "?reader=e_parent2", "this service may not act for that reader"},
+	} {
+		var rr journalapi.Response
+		if code := r.do("GET", c.path, c.token, nil, &rr); code != 403 || rr.Detail != c.detail {
+			t.Errorf("%s %s: %d %+v", c.token, c.path, code, rr)
+		}
+	}
+}
+
+// logPair is one key=value of a slog text line (value bare or quoted).
+var logPair = regexp.MustCompile(`([a-z_]+)=("(?:[^"\\]|\\.)*"|[^ ]*)`)
+
+// auditLines returns the "journal read" lines of the log as ordered keys
+// and a key=value map.
+func auditLines(log string) (keys [][]string, vals []map[string]string) {
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, `msg="journal read"`) {
+			continue
+		}
+		var ks []string
+		m := map[string]string{}
+		for _, p := range logPair.FindAllStringSubmatch(line, -1) {
+			ks = append(ks, p[1])
+			v := p[2]
+			if uq, err := strconv.Unquote(v); err == nil {
+				v = uq
+			}
+			m[p[1]] = v
+		}
+		keys = append(keys, ks)
+		vals = append(vals, m)
+	}
+	return keys, vals
+}
+
+// Each authorized read logs exactly one info line with exactly the keys
+// caller, endpoint (the route name), reader and code; no filter values, no
+// rows. A request refused by the service's policy logs none.
+func TestReadAuditLog(t *testing.T) {
+	r := newRig(t)
+	seed(r)
+	_, pre := auditLines(r.logs.String())
+	r.send("GET", journalapi.PathState+"?reader=e_child1&subject=e_child1&type=SECRETTYPE", "gw", "", nil)
+	r.send("GET", journalapi.PathEvents+"?reader=e_parent1&min_importance=low", "dash", "", nil)
+	r.send("GET", journalapi.PathCounts+"?reader=e_nobody&subject=SECRETSUBJECT", "gw", "", nil)
+	r.send("GET", journalapi.PathState+"?reader=e_child1", "dash", "", nil)         // refused by policy: no line
+	r.send("GET", journalapi.PathEvents+"?reader=e_child1", "dash", "", nil)        // refused by policy: no line
+	r.send("GET", journalapi.PathCounts+"?reader=e_child1", "dash", "", nil)        // refused by policy: no line
+	r.send("GET", journalapi.PathCounts+"?reader=e_parent1", "ro", "", nil)         // no counts flag: no line
+	r.send("GET", journalapi.PathEvents+"?reader=e_parent1&limit=0", "gw", "", nil) // authorized, then 400
+	r.send("GET", journalapi.PathState+"?reader=SECRET%20READER", "gw", "", nil)    // passes "*", not an id
+	keys, lines := auditLines(r.logs.String())
+	keys, lines = keys[len(pre):], lines[len(pre):]
+	want := []map[string]string{
+		{"caller": journaltest.SAGateway, "endpoint": "state", "reader": "e_child1", "code": "200"},
+		{"caller": journaltest.SADashboard, "endpoint": "events", "reader": "e_parent1", "code": "200"},
+		{"caller": journaltest.SAGateway, "endpoint": "counts", "reader": "e_nobody", "code": "403"},
+		{"caller": journaltest.SAGateway, "endpoint": "events", "reader": "e_parent1", "code": "400"},
+		{"caller": journaltest.SAGateway, "endpoint": "state", "reader": "(not a member id)", "code": "403"},
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("audit lines %v", lines)
+	}
+	for i, w := range want {
+		if strings.Join(keys[i], ",") != "time,level,msg,caller,endpoint,reader,code" {
+			t.Errorf("line %d keys %v", i, keys[i])
+		}
+		if lines[i]["level"] != "INFO" || lines[i]["msg"] != "journal read" {
+			t.Errorf("line %d: %v", i, lines[i])
+		}
+		for k, v := range w {
+			if lines[i][k] != v {
+				t.Errorf("line %d: %s=%q, want %q", i, k, lines[i][k], v)
+			}
+		}
+	}
+	log := r.logs.String()
+	for _, secret := range []string{"SECRETTYPE", "SECRETSUBJECT", "SECRET", "title"} {
+		if strings.Contains(log, secret) {
+			t.Errorf("the log carries %q", secret)
+		}
 	}
 }

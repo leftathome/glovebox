@@ -162,14 +162,14 @@ func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Reques
 // every read, so this no longer resolves grants; it returns the reader id.
 // Roster errors from the journal are mapped by readErr below. Used by the
 // read handlers; a note's on_behalf_of is checked by MayWriteNote, whose
-// refusal carries its own detail.
-func (s *Server) readerOK(w http.ResponseWriter, reader string, allowed bool) (string, bool) {
+// refusal carries its own detail. denied is the 403's detail (readDenial).
+func (s *Server) readerOK(w http.ResponseWriter, reader string, allowed bool, denied string) (string, bool) {
 	if reader == "" {
 		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "reader is required")
 		return "", false
 	}
 	if !allowed {
-		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "this service may not act for that reader")
+		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, denied)
 		return "", false
 	}
 	return reader, true

@@ -8,6 +8,7 @@ import (
 
 	"github.com/leftathome/glovebox/internal/journal"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/roster"
 	"github.com/leftathome/glovebox/internal/journal/rules"
 )
 
@@ -52,16 +53,46 @@ func nonNil[T any](s []T) []T {
 
 // nextCursor is EventsResponse.Next: the last returned seq, or the
 // request's after for an empty page. An empty page never moves the cursor,
-// in either direction. NOTE (Task 19 review): a page whose every row the
-// Go re-check drops comes back empty although later events exist; the
-// cursor then stays where it is (fail closed: it never pages past events
-// it did not deliver), and the stall is not silent -- every dropped row
-// counts VisibilityMismatch, which raises GloveboxJournalVisibilityMismatch.
+// in either direction. NOTE (Task 19 review): rows the Go re-check drops
+// (SQL and Go disagree) are not delivered. When every row of a page is
+// dropped the page is empty and the cursor holds, so the reader asks again
+// for the same page; when only some are, a dropped row below the last
+// delivered seq is passed by the cursor and never delivered to this
+// reader. Neither is silent: every dropped row counts VisibilityMismatch,
+// which raises GloveboxJournalVisibilityMismatch, and the disagreement is
+// a bug to fix, not to page around.
 func nextCursor(after int64, events []journalapi.Event) int64 {
 	if len(events) == 0 {
 		return after
 	}
 	return events[len(events)-1].Seq
+}
+
+// readDenial is the detail of readerOK's 403: a service without the
+// endpoint's flag (read, counts) may not use it at all; one with it may not
+// act for a reader outside its readers.
+func readDenial(flag bool, verb string) string {
+	if !flag {
+		return "this service may not " + verb
+	}
+	return "this service may not act for that reader"
+}
+
+// auditRead logs one line per authorized read, at info level, when the
+// answer is written: the caller service, the route name, the reader and
+// the HTTP status. Nothing else from the request (no filter values) and
+// nothing from the answer (no rows). A reader that is not even shaped like
+// a member id (only a "*" service gets that far with one) is logged as a
+// placeholder, so the line never carries arbitrary caller text.
+func (s *Server) auditRead(w http.ResponseWriter, c call, endpoint, reader string) {
+	code := 0
+	if sw, ok := w.(*statusWriter); ok {
+		code = sw.status
+	}
+	if !roster.ValidID(reader) {
+		reader = "(not a member id)"
+	}
+	s.d.Log.Info("journal read", "caller", c.caller, "endpoint", endpoint, "reader", reader, "code", code)
 }
 
 func badRequest(w http.ResponseWriter, detail string) {
@@ -74,10 +105,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, c call) {
 		badRequest(w, err.Error())
 		return
 	}
-	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayRead(q.Get("reader")))
+	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayRead(q.Get("reader")), readDenial(c.svc.Read, "read"))
 	if !ok {
 		return
 	}
+	defer s.auditRead(w, c, "state", reader)
 	sq := journal.StateQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"), Scope: q.Get("scope")}
 	if v, ok := q["include_removed"]; ok {
 		if sq.IncludeRemoved, err = strconv.ParseBool(v[0]); err != nil {
@@ -101,10 +133,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
 		badRequest(w, err.Error())
 		return
 	}
-	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayRead(q.Get("reader")))
+	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayRead(q.Get("reader")), readDenial(c.svc.Read, "read"))
 	if !ok {
 		return
 	}
+	defer s.auditRead(w, c, "events", reader)
 	eq := journal.EventsQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"),
 		MinImportance: rules.Low, Limit: defaultEventLimit}
 	if v, ok := q["after"]; ok {
@@ -140,10 +173,11 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 		badRequest(w, err.Error())
 		return
 	}
-	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayCount(q.Get("reader")))
+	reader, ok := s.readerOK(w, q.Get("reader"), c.svc.MayCount(q.Get("reader")), readDenial(c.svc.Counts, "count"))
 	if !ok {
 		return
 	}
+	defer s.auditRead(w, c, "counts", reader)
 	since := s.d.Now().Add(-defaultCountsDays * 24 * time.Hour)
 	if v, ok := q["since"]; ok {
 		if since, err = time.Parse(time.RFC3339, v[0]); err != nil {

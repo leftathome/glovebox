@@ -59,6 +59,8 @@ type Server struct {
 	// POST /v1/notes body.
 	snapshotKeys strictjson.Limits
 	noteKeys     strictjson.Limits
+	// noteBytes caps a POST /v1/notes body (noteByteLimit).
+	noteBytes int64
 }
 
 // New checks the dependencies.
@@ -88,7 +90,7 @@ func New(d Deps) (*Server, error) {
 		d.Context = context.Background()
 	}
 	return &Server{d: d, slots: make(chan struct{}, d.MaxInFlight), snapshotKeys: snapshotKeyLimits(d.Registry),
-		noteKeys: noteKeyLimits(d.Registry)}, nil
+		noteKeys: noteKeyLimits(d.Registry), noteBytes: noteByteLimit(d.Registry)}, nil
 }
 
 // Handler routes the API. Route names, not paths, label the request metric.

@@ -70,7 +70,7 @@ func NormalizeFields(t Type, in map[string]json.RawMessage) (Fields, *Rejection)
 			if !ValidName(name) {
 				return nil, schemaErr("invalid field name")
 			}
-			return nil, schemaErr("field %q is not declared by %s v%d", name, t.Name, t.SchemaVersion)
+			return nil, schemaErr("a field is not declared by the record type's version")
 		}
 		v, rej := NormalizeValue(def.Type, in[name])
 		if rej != nil {

@@ -41,23 +41,23 @@ func ParseScope(in []journalapi.ScopePart) (Scope, *Rejection) {
 			return Scope{}, schemaErr("scope part %d: invalid name", i)
 		}
 		if seen[name] {
-			return Scope{}, schemaErr("scope part %q appears twice", name)
+			return Scope{}, schemaErr("scope part %d: its name appears twice", i)
 		}
 		seen[name] = true
 		if i == 0 && name != PartSource {
 			return Scope{}, schemaErr("a scope starts with its source part")
 		}
 		if value == "" || len(value) > MaxScopeValueBytes {
-			return Scope{}, schemaErr("scope part %q: value must be 1 to %d bytes", name, MaxScopeValueBytes)
+			return Scope{}, schemaErr("scope part %d: value must be 1 to %d bytes", i, MaxScopeValueBytes)
 		}
 		if !utf8.ValidString(value) {
-			return Scope{}, schemaErr("scope part %q: not valid UTF-8", name)
+			return Scope{}, schemaErr("scope part %d: not valid UTF-8", i)
 		}
 		for _, r := range value {
 			// Scope values become stored keys, so unlike field values they
 			// are refused, not cleaned, when they carry C0/C1 or bidi controls.
 			if r < 0x20 || r == 0x7f || suspicious(r) {
-				return Scope{}, schemaErr("scope part %q: control character", name)
+				return Scope{}, schemaErr("scope part %d: control character", i)
 			}
 		}
 	}

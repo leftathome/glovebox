@@ -48,15 +48,15 @@ func TestReadErrMapping(t *testing.T) {
 func TestReaderOK(t *testing.T) {
 	r := newAuthRig(t)
 	rec := httptest.NewRecorder()
-	if _, ok := r.s.readerOK(rec, "", true); ok || rec.Code != 400 || decodeRefusal(t, rec).Reason != journalapi.ReasonBadRequest {
+	if _, ok := r.s.readerOK(rec, "", true, "x"); ok || rec.Code != 400 || decodeRefusal(t, rec).Reason != journalapi.ReasonBadRequest {
 		t.Errorf("no reader: %v %d", ok, rec.Code)
 	}
 	rec = httptest.NewRecorder()
-	if _, ok := r.s.readerOK(rec, "e_parent1", false); ok || rec.Code != 403 || decodeRefusal(t, rec).Reason != journalapi.ReasonPolicy {
+	if _, ok := r.s.readerOK(rec, "e_parent1", false, "the detail"); ok || rec.Code != 403 || decodeRefusal(t, rec).Reason != journalapi.ReasonPolicy || decodeRefusal(t, rec).Detail != "the detail" {
 		t.Errorf("not allowed: %v %d", ok, rec.Code)
 	}
 	rec = httptest.NewRecorder()
-	if got, ok := r.s.readerOK(rec, "e_parent1", true); !ok || got != "e_parent1" || rec.Body.Len() != 0 {
+	if got, ok := r.s.readerOK(rec, "e_parent1", true, "x"); !ok || got != "e_parent1" || rec.Body.Len() != 0 {
 		t.Errorf("allowed: %q %v %s", got, ok, rec.Body.String())
 	}
 }

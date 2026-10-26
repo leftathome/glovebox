@@ -201,10 +201,10 @@ func denied(format string, a ...any) *record.Rejection {
 // MayWrite decides POST /v1/records for a type and scope.
 func (s Service) MayWrite(t record.Type, sc record.Scope) *record.Rejection {
 	if t.Household() || !slices.Contains(s.WriteTypes, t.Name) {
-		return denied("this service may not write %s snapshots", t.Name)
+		return denied("this service may not write snapshots of this record type")
 	}
 	if sc.Source() != t.Owner {
-		return denied("the scope's source %q is not the owner of %s", sc.Source(), t.Name)
+		return denied("the scope's source is not the owner of the record type")
 	}
 	for part, allowed := range s.WriteScopes {
 		v, ok := sc.Get(part)
@@ -242,7 +242,7 @@ func (s Service) WritesNotes(reg *record.Registry) bool {
 // MayWriteNote decides POST /v1/notes for a type and its on_behalf_of.
 func (s Service) MayWriteNote(t record.Type, onBehalfOf string) *record.Rejection {
 	if !t.Household() || !slices.Contains(s.WriteTypes, t.Name) {
-		return denied("this service may not write %s", t.Name)
+		return denied("this service may not write this household record type")
 	}
 	if !s.Readers.Allows(onBehalfOf) {
 		return denied("this service may not write on behalf of that member")

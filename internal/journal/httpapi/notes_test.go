@@ -197,14 +197,14 @@ func fieldsBody(n int) []byte {
 	return b.Bytes()
 }
 
-// The body is capped at maxNoteBytes and its keys at noteKeyLimits: over
+// The body is capped at noteByteLimit and its keys at noteKeyLimits: over
 // either is 413 too_large; at the caps it is decoded (and then refused by
 // validation for its made-up fields, never as too large).
 func TestNoteBodyCaps(t *testing.T) {
 	r := newAuthRig(t)
 	lim := r.s.noteKeys
-	if lim.MaxObjectKeys != 9 || lim.MaxTotalKeys != 13 || maxNoteBytes != 512<<10 {
-		t.Fatalf("caps %+v %d", lim, maxNoteBytes)
+	if lim.MaxObjectKeys != 9 || lim.MaxTotalKeys != 13 || r.s.noteBytes != 422442 {
+		t.Fatalf("caps %+v %d", lim, r.s.noteBytes)
 	}
 	post := func(b []byte) (int, journalapi.Response) {
 		code, raw := r.send("POST", journalapi.PathNotes, "gw", "application/json", b)
@@ -238,11 +238,11 @@ func TestNoteBodyCaps(t *testing.T) {
 	if el := time.Since(start); el > time.Second {
 		t.Errorf("100k keys took %s", el)
 	}
-	// The byte cap: padded with whitespace to exactly maxNoteBytes it is
+	// The byte cap: padded with whitespace to exactly the cap it is
 	// read (and refused for its subject only later, by the journal, which
 	// the auth rig cannot reach: 500); one byte more is 413.
 	base := []byte(noteBody("e_parent1", "e_child1", "x"))
-	at := append(append([]byte{}, base...), bytes.Repeat([]byte(" "), maxNoteBytes-len(base))...)
+	at := append(append([]byte{}, base...), bytes.Repeat([]byte(" "), int(r.s.noteBytes)-len(base))...)
 	if code, rr := post(at); code == 413 {
 		t.Errorf("at the byte cap: %d %+v", code, rr)
 	}
@@ -259,7 +259,7 @@ func TestWidestNoteFitsTheByteCap(t *testing.T) {
 	body := `{"record_type": "attendance_note", "date": "2026-10-14", "data_subject": "e_child1", "on_behalf_of": "e_parent1", "fields": {` +
 		`"what_happened": "` + esc(record.MaxTextBytes) + `", "heard_from": "` + esc(record.MaxStringBytes) +
 		`", "explained_to_school": "` + esc(record.MaxStringBytes) + `"}}`
-	if len(body) > maxNoteBytes {
+	if len(body) > int(r.s.noteBytes) {
 		t.Fatalf("the widest note is %d bytes", len(body))
 	}
 	var resp journalapi.NoteResponse
@@ -279,6 +279,7 @@ func TestNoteRefusalsDoNotEchoValues(t *testing.T) {
 		"on_behalf_of":    `{"record_type": "attendance_note", "date": "2026-10-14", "data_subject": "e_child1", "on_behalf_of": "e_SECRETVALUE"}`,
 		"field value":     `{"record_type": "attendance_note", "date": "2026-10-14", "data_subject": "e_child1", "on_behalf_of": "e_parent1", "fields": {"heard_from": ["SECRETVALUE"]}}`,
 		"unknown key":     `{"record_type": "attendance_note", "SECRETVALUE": 1}`,
+		"unknown field":   `{"record_type": "attendance_note", "date": "2026-10-14", "data_subject": "e_child1", "on_behalf_of": "e_parent1", "fields": {"secretvalue": "x"}}`,
 		"not a household": `{"record_type": "secretvalue_type", "date": "2026-10-14", "data_subject": "e_child1", "on_behalf_of": "e_parent1"}`,
 		"policy":          noteBody("e_SECRETVALUE", "e_child1", "SECRETVALUE"),
 	} {
@@ -318,5 +319,90 @@ func TestNoteWriterCheckComesFirst(t *testing.T) {
 		if code != 403 || rr.Reason != journalapi.ReasonPolicy {
 			t.Errorf("%s: %d %s", tok, code, raw)
 		}
+	}
+}
+
+// The note byte cap follows the registry: the widest household type at
+// its widest encoding plus the envelope, never above a snapshot's 8 MiB.
+func TestNoteByteLimitFollowsTheRegistry(t *testing.T) {
+	base := noteByteLimit(journaltest.Registry(t))
+	// date, what_happened, heard_from, explained_to_school
+	want := int64(6*4+4+256) + int64(6*13+4+6*record.MaxTextBytes+2) + int64(6*10+4+6*record.MaxStringBytes+2) +
+		int64(6*19+4+6*record.MaxStringBytes+2) + noteEnvelopeBytes
+	if base != want {
+		t.Errorf("fixtures: %d, want %d", base, want)
+	}
+	two := record.Type{Name: "long_note", SchemaVersion: 1, Owner: record.OwnerHousehold, FixedAudience: []string{"guardians"},
+		Fields: map[string]record.FieldDef{"date": {Type: record.Date}, "a": {Type: record.Text}, "b": {Type: record.Text},
+			"l": {Type: record.StringList}}}
+	wantTwo := int64(6*4+4+256) + 2*int64(6+4+6*record.MaxTextBytes+2) + int64(6+4+record.MaxListItems*(6*record.MaxStringBytes+3)+2) + noteEnvelopeBytes
+	if got := noteByteLimit(journaltest.Registry(t, two)); got != min(wantTwo, maxSnapshotBytes) {
+		t.Errorf("two texts and a list: %d, want %d", got, wantTwo)
+	}
+	// A wide source type does not widen the note cap.
+	src := record.Type{Name: "wide_source", SchemaVersion: 1, Owner: "powerschool", DefaultAudience: []string{"guardians"},
+		Fields: map[string]record.FieldDef{"a": {Type: record.Text}, "b": {Type: record.Text}, "c": {Type: record.Text}}}
+	if got := noteByteLimit(journaltest.Registry(t, src)); got != base {
+		t.Errorf("a source type widened the cap: %d", got)
+	}
+	// Never above 8 MiB.
+	many := map[string]record.FieldDef{"date": {Type: record.Date}}
+	for i := 0; i < 40; i++ {
+		many[fmt.Sprintf("t%d", i)] = record.FieldDef{Type: record.Text}
+	}
+	huge := record.Type{Name: "huge_note", SchemaVersion: 1, Owner: record.OwnerHousehold, FixedAudience: []string{"guardians"}, Fields: many}
+	if got := noteByteLimit(journaltest.Registry(t, huge)); got != maxSnapshotBytes {
+		t.Errorf("huge: %d", got)
+	}
+	for ft, w := range map[record.FieldType]int{record.String: 6146, record.Text: 6*65536 + 2, record.StringList: 256*(6*1024+3) + 2,
+		record.Int: 256, record.Number: 256, record.Bool: 256, record.Date: 256, record.Timestamp: 256} {
+		if got := fieldValueBytes(ft); got != w {
+			t.Errorf("%s: %d, want %d", ft, got, w)
+		}
+	}
+}
+
+// Both POSTs refuse any query parameter, an access field above all, with
+// 400 before the body is read; nothing is written.
+func TestPostsRefuseQueryStrings(t *testing.T) {
+	r := newRig(t)
+	if code, rr := post(r, "ps", assignments(1, "e_child1", "powerschool", T0.Add(-time.Hour), one("k1", "e_child1", `{"title": "A"}`))); code != 200 {
+		t.Fatalf("snapshot without a query: %d %+v", code, rr)
+	}
+	for _, q := range []string{"?audience=public&reader=x", "?reader=e_parent1", "?x"} {
+		code, raw := r.send("POST", journalapi.PathNotes+q, "gw", "application/json", noteBody("e_parent1", "e_child1", "fever"))
+		var rr journalapi.Response
+		_ = json.Unmarshal(raw, &rr)
+		if code != 400 || rr.Reason != journalapi.ReasonBadRequest || strings.Contains(string(raw), "public") {
+			t.Errorf("notes %s: %d %s", q, code, raw)
+		}
+		rr = journalapi.Response{}
+		code, raw = r.send("POST", journalapi.PathRecords+q, "ps", "application/json",
+			assignments(2, "e_child2", "powerschool", T0.Add(-time.Hour), one("k2", "e_child2", `{"title": "B"}`)))
+		_ = json.Unmarshal(raw, &rr)
+		if code != 400 || rr.Reason != journalapi.ReasonBadRequest {
+			t.Errorf("records %s: %d %s", q, code, raw)
+		}
+	}
+	// Refused before the body: an oversized body with a query is still 400.
+	code, _ := r.send("POST", journalapi.PathNotes+"?audience=public", "gw", "application/json", bytes.Repeat([]byte(" "), int(r.s.noteBytes)+10))
+	if code != 400 {
+		t.Errorf("notes, oversized with a query: %d", code)
+	}
+	code, _ = r.send("POST", journalapi.PathRecords+"?audience=public", "ps", "application/json", bytes.Repeat([]byte(" "), maxSnapshotBytes+10))
+	if code != 400 {
+		t.Errorf("records, oversized with a query: %d", code)
+	}
+	var st journalapi.StateResponse
+	if r.do("GET", journalapi.PathState+"?reader=e_parent1", "gw", nil, &st); len(st.Rows) != 1 || st.Rows[0].DataSubject != "e_child1" {
+		t.Errorf("only the query-free snapshot is stored: %+v", st)
+	}
+	var ev journalapi.EventsResponse
+	if r.do("GET", journalapi.PathEvents+"?reader=e_parent1&type=attendance_note", "gw", nil, &ev); len(ev.Events) != 0 {
+		t.Errorf("a refused note was written: %+v", ev)
+	}
+	// The same requests without a query are accepted.
+	if code, raw := r.send("POST", journalapi.PathNotes, "gw", "application/json", noteBody("e_parent1", "e_child1", "fever")); code != 200 {
+		t.Errorf("notes without a query: %d %s", code, raw)
 	}
 }
