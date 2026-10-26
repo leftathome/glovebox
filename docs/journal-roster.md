@@ -189,14 +189,21 @@ Notes on the example:
   every such Kustomization in the cluster, not only the roster's, passes
   this policy. Pin the others, or accept that any of them could carry a
   roster change -- still only through a gitops commit.
-- The policy does not protect itself. Kubernetes does not run admission
-  policies on ValidatingAdmissionPolicy and ValidatingAdmissionPolicyBinding
-  objects (that would allow a lockout), so a second policy guarding these
-  two by name would not be enforced. A cluster administrator can delete
-  the binding and edit the roster until Flux restores both at its next
-  reconcile. The remaining controls are RBAC (only cluster administrators
-  may change admission policies), Flux's drift correction, and the API
-  server's audit log.
+- The policy does not protect itself. Policies created through the API are
+  exempt from guarding ValidatingAdmissionPolicy and
+  ValidatingAdmissionPolicyBinding objects, "to prevent circular
+  dependencies" (Kubernetes docs, Validating Admission Policy, "API kinds
+  exempt from admission validation"), so a second API-created policy
+  guarding these two by name would not be enforced. A cluster
+  administrator can delete the binding and edit the roster until Flux
+  restores both at its next reconcile. The remaining controls are RBAC
+  (only cluster administrators may change admission policies), Flux's
+  drift correction, and the API server's audit log. A cluster whose
+  Kubernetes version supports manifest-based admission control (policies
+  loaded from disk by the API server, not through the API) can define the
+  guard there, where the exemption does not apply; on Talos that is API
+  server configuration in the machine config, outside both the chart and
+  the gitops repo.
 - Verify the policy with server-side dry runs as an administrator. Both
   must be refused:
   `kubectl -n <roster-namespace> annotate configmap <roster-configmap> test=1 --dry-run=server`
