@@ -573,7 +573,8 @@ All reads require a service token and grants.
   counts-only household view. Requires `counts: true` in the service policy and
   is filtered by the reader's grants like every other read.
 - Admin (operator ServiceAccount only): `POST /v1/admin/held/{id}:confirm|discard`,
-  `POST /v1/admin/erase {data_subject}`, `POST /v1/admin/rescan`.
+  `POST /v1/admin/erase {data_subject, confirm}` (`confirm` repeats the
+  member id: an erase cannot be undone), `POST /v1/admin/rescan`.
 
 ### 4.13 Erase
 

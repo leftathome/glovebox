@@ -58,6 +58,48 @@ type rig struct {
 	now   atomic.Pointer[time.Time]
 	core  *gloveboxmetrics.Metrics
 	logs  *syncBuffer
+	scan  *gateScanner
+}
+
+// gateScanner is the rig's scanner: the fake scanner, which hold can stop
+// inside Verdict until released (to keep a rescan running).
+type gateScanner struct {
+	*journaltest.FakeScanner
+	mu      sync.Mutex
+	gate    chan struct{}
+	entered chan struct{}
+}
+
+func (g *gateScanner) Verdict(text string) string {
+	g.mu.Lock()
+	gate, entered := g.gate, g.entered
+	g.mu.Unlock()
+	if gate != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	return g.FakeScanner.Verdict(text)
+}
+
+// hold makes every later Verdict wait until release; entered receives once
+// a Verdict is waiting.
+func (g *gateScanner) hold() (entered <-chan struct{}, release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gate, in := make(chan struct{}), make(chan struct{}, 1)
+	g.gate, g.entered = gate, in
+	var once sync.Once
+	return in, func() {
+		once.Do(func() {
+			g.mu.Lock()
+			g.gate, g.entered = nil, nil
+			g.mu.Unlock()
+			close(gate)
+		})
+	}
 }
 
 // syncBuffer is a log sink the server may write to from its goroutines.
@@ -155,8 +197,9 @@ func buildRig(t *testing.T, db *sql.DB, migrate bool, opts ...rigOption) *rig {
 		t.Fatal(err)
 	}
 	r.ros.Store(journaltest.Roster(t))
+	r.scan = &gateScanner{FakeScanner: journaltest.NewFakeScanner("scanner-1")}
 	r.j = journal.New(db, journal.Options{Registry: reg, Rules: rs, Guard: diff.DefaultGuard,
-		Scanner: journaltest.NewFakeScanner("scanner-1"), Roster: r.ros.Load, Now: now, Metrics: jm})
+		Scanner: r.scan, Roster: r.ros.Load, Now: now, Metrics: jm})
 	if migrate {
 		if err := r.j.Migrate(context.Background()); err != nil {
 			t.Fatal(err)

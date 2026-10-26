@@ -112,7 +112,6 @@ const (
 	ReasonConflict         = "conflict"           // 409 on admin endpoints; on POST /v1/notes, the stored note is newer than the journal clock (retry)
 	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
-	ReasonNotImplemented   = "not_implemented"    // 501: an endpoint not built yet (until Tasks 26-27)
 )
 
 // ScopePart is one ["name", "value"] pair of a scope.
@@ -279,9 +278,12 @@ type Healthz struct {
 	SchemaVersion int    `json:"schema_version"`
 }
 
-// EraseRequest is the body of POST /v1/admin/erase.
+// EraseRequest is the body of POST /v1/admin/erase. An erase cannot be
+// undone, so the body names the member twice: Confirm must equal
+// DataSubject exactly, or nothing is erased (400).
 type EraseRequest struct {
 	DataSubject string `json:"data_subject"`
+	Confirm     string `json:"confirm"`
 }
 
 // EraseResponse counts what an erase did (4.13). Current and Events count

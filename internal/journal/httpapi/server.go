@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal"
@@ -61,6 +62,9 @@ type Server struct {
 	noteKeys     strictjson.Limits
 	// noteBytes caps a POST /v1/notes body (noteByteLimit).
 	noteBytes int64
+	// rescanning is set while a background rescan runs (handleRescan): at
+	// most one at a time.
+	rescanning atomic.Bool
 }
 
 // New checks the dependencies.

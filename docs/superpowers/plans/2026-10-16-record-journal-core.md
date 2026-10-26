@@ -11881,11 +11881,22 @@ computed from the roster."
 
 Operator-only (`admin: true` in the policy): confirm or discard a held snapshot, erase a subject, start a rescan. A rescan runs in the background (it can take minutes); a second request while one runs is a 409. Every admin action is logged with the caller.
 
+> NOTE (Task 27 implementation, 2026-10-26). The code in the repository wins; deviations from the draft below:
+>
+> - **Authorization.** `policy.Service.Admin` (`admin: true`) is the only grant, checked first in every handler (`s.admin`), after the route wrapper (ready, bearer, slot, TokenReview, policy entry). Nothing else in a policy grants it and it grants nothing else. A refusal is 403 `policy` ("this service is not an operator") and logs a WARN `journal admin refused` with `caller` and `endpoint` only. `TestAdminEndpointsAreOperatorOnly`: every non-admin test service is 403 `policy` on all four actions and nothing changes; services without a policy 403 `forbidden`; no token 401; the gateway given `admin: true` may act, the admin service without it may not.
+> - **Erase confirmation (not in the plan).** `journalapi.EraseRequest` gains `confirm`, which must equal `data_subject` exactly (no folding, no trimming), else 400 and nothing is erased. The id must pass `roster.ValidID` before the confirmation is looked at (`""`, a pseudonym, a path: 400 before the database). `ErrNoSubject` 400 `bad_request` (the handler refuses such ids first; `eraseErr` is unit-tested), `ErrNoRoster` 503 `unavailable`, anything else 500; success 200 with the `EraseResponse` counts. The erase runs under the request's context (an interrupted erase rolls back whole). Spec 4.12, `docs/journal-roster.md` and the Task 31 draft name `confirm`.
+> - **Held.** Order: operator, no query string, the path (`uuid.Parse` and the action, 400 before the database; `TestHeldPathIsParsedFirst` on the no-database rig), the body (empty or `{}`), then `ConfirmHeld(s.writerMayWrite)` / `DiscardHeld`. 404 `not_found`, 409 `conflict` (not held), a confirm's rejections as they are (writer re-check 403, ban 410, roster 409, schema 422; the snapshot stays held). A discard answers `{"status": "discarded"}` without stats. Metrics are ConfirmHeld's and DiscardHeld's own (Task 23).
+> - **Rescan.** Background, as drafted: `Server.rescanning` is back, `CompareAndSwap` after the body is accepted, so a refused request never takes the guard; concurrent rescans are 409 `conflict` and never run twice (`TestConcurrentRescansStartOnce`, 16 at once from idle, 5 rounds). `runRescan(ctx, ...)` runs under `Deps.Context` (process lifetime), never the request's context: the request timeout (whose cancel fires as soon as the 202 is written) and a client going away do not cancel it, and it holds no in-flight slot after the 202 (the guard bounds background rescans to one). Cancelling `Deps.Context` (shutdown) ends it at the next batch and frees the guard. Started/finished/failed are logged with the caller and the counts; no metric (Task 21).
+> - **Bodies.** `adminBody`: `http.MaxBytesReader` at a cap derived from the request type (`adminBodyCap`: each key escaped + each string at `record.MaxScopeValueBytes` escaped, each bool as `false`, + 256 bytes envelope: erase 3,454, rescan 283, held 256), 413 `too_large` with `Connection: close`; empty body allowed except for erase; a non-empty body must be `application/json`; `strictjson.DecodeLimits` with key caps of the field count + 2 (erase 4, rescan 3, held 2), over is 413, any other decode error 400 with a fixed detail. Every POST refuses a query string (400) before the body is read. No refusal echoes a caller-chosen name or value.
+> - **Audit log.** Every request past the operator check logs one INFO `journal admin` line when answered: `caller`, `endpoint` (route name), then `data_subject` (erase: the id if `ValidID`, else `(not a member id)`), or `snapshot_id` and `action` (parsed values or placeholders), or `all` (rescan), then `code`. No other values.
+> - `journalapi.ReasonNotImplemented` is removed (no placeholders remain). `api_requests_total` uses the fixed names `admin_held`, `admin_erase`, `admin_rescan`. The test rig's scanner is a `gateScanner` that can hold a rescan inside `Verdict`.
+> - **Mutants** (`git archive` copy plus the change, DB tests, named `--- FAIL:` only): 106 mutants of the operator check (each handler's call, the flag, widened to read/counts/writes/readers, the denial's return, status and reason), the query refusals, the erase confirmation (removed, folded, trimmed, prefix, contains, non-empty only), id validation (removed, empty only, on confirm), the erase actor, the held path parse, every error mapping and response, the writer re-check, the rescanning guard (removed, Load-only, not cleared, check-then-set, before the body), the rescan context (request, Background), `all` (dropped, forced), the body and key caps and their derivation, Content-Type, required body, the audit log (removed, code, caller, attrs, ids raw or hidden, placeholders, endpoints, the refusal warning, the started line) and the route names; plus a no-change baseline (survived). 105 killed, 0 build failures counted (4 first-round build failures -- vet's suspect-or, unused variables -- rewritten to compile and killed). 1 survivor: `rescan-guard-check-then-set` (`Load` then `Store` instead of `CompareAndSwap`), a race whose window no test hits deterministically; `TestConcurrentRescansStartOnce` would only catch it by chance.
+
 **Files:**
 - Modify: `internal/journal/httpapi/admin.go`
 - Test: `internal/journal/httpapi/admin_test.go`
 
-- [ ] **Step 27.1: Write the failing tests.**
+- [x] **Step 27.1: Write the failing tests.**
 
 `internal/journal/httpapi/admin_test.go`:
 
@@ -11974,11 +11985,11 @@ func TestRescanRunsOnceAtATime(t *testing.T) {
 }
 ```
 
-- [ ] **Step 27.2: Run; expect FAIL** (501 placeholders).
+- [x] **Step 27.2: Run; expect FAIL** (501 placeholders).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 27.3: Replace `admin.go`.**
+- [x] **Step 27.3: Replace `admin.go`.**
 
 ```go
 package httpapi
@@ -12114,11 +12125,11 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) {
 
 The erase log line names the erased subject id: that is an opaque id an operator chose to erase, and the `erasure` row keeps it anyway.
 
-- [ ] **Step 27.4: Run; expect PASS (the whole httpapi package).**
+- [x] **Step 27.4: Run; expect PASS (the whole httpapi package).**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 27.5: Commit.**
+- [x] **Step 27.5: Commit.**
 
 ```bash
 git add internal/journal/httpapi
@@ -13323,7 +13334,8 @@ same roster.
 - `POST /v1/admin/held/<snapshot_id>:confirm` -- apply a held snapshot
   without the guard; older held snapshots of the scope are discarded.
 - `POST /v1/admin/held/<snapshot_id>:discard`.
-- `POST /v1/admin/erase` with `{"data_subject": "<id>"}` -- delete every
+- `POST /v1/admin/erase` with `{"data_subject": "<id>", "confirm": "<id>"}`
+  (Task 27: `confirm` must repeat the id exactly, else 400) -- delete every
   snapshot, record and event of the subject; later snapshots observed before
   the erase are refused with 410.
 - `POST /v1/admin/rescan` with an optional `{"all": true}` -- re-scan stored

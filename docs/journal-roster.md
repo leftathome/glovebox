@@ -292,8 +292,11 @@ belongs next to the roster, in the gitops repository that owns both.
 
 ## 6. Erase and the roster
 
-Erase (`POST /v1/admin/erase`, for a ServiceAccount with `admin: true` in
-`journal.services`) removes what the journal holds about one member. It is also a **ban**.
+Erase (`POST /v1/admin/erase` with
+`{"data_subject": "<id>", "confirm": "<the same id>"}`, for a ServiceAccount
+with `admin: true` in `journal.services`) removes what the journal holds
+about one member. It is also a **ban**. It cannot be undone, so `confirm`
+must repeat the member id exactly, or nothing is erased (`400`).
 
 - **Erase works while the member is still listed** (and after they are
   gone). The roster in use at the start of the erase decides who keeps
