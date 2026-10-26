@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/leftathome/glovebox/internal/journal/policy"
 	"github.com/leftathome/glovebox/internal/journal/record"
 	"github.com/leftathome/glovebox/internal/journal/roster"
 	"github.com/leftathome/glovebox/internal/journal/rules"
@@ -125,4 +126,30 @@ func (s *FakeScanner) Calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+// ServiceAccounts used by the HTTP tests (spec 4.9 names).
+const (
+	SAGateway     = "openclaw/openclaw-gateway"
+	SAPowerSchool = "openclaw/glovebox-glovebox-connector-powerschool"
+	SASchoology   = "openclaw/glovebox-glovebox-connector-schoology"
+	SARSS         = "openclaw/glovebox-glovebox-connector-rss"
+	SACore        = "openclaw/glovebox-glovebox"
+	SADashboard   = "trunchbull/trunchbull"
+	SAAdmin       = "openclaw/glovebox-journal-admin"
+	SAShared      = "openclaw/test-shared-writer"
+)
+
+// Services is the test policy: the spec's example plus an operator and a
+// writer allowed two sources' types (to test owner versus source). The RSS
+// connector and the core have no entry.
+func Services() map[string]policy.Service {
+	return map[string]policy.Service{
+		SAGateway:     {Read: true, Readers: policy.Readers{Any: true}, WriteTypes: []string{"attendance_note"}, Counts: true},
+		SAPowerSchool: {WriteTypes: []string{"assignment", "attendance_day", "term_comment"}, WriteScopes: map[string][]string{"source": {"powerschool"}}, WriteSubjects: policy.RosterSubjects},
+		SASchoology:   {WriteTypes: []string{"lms_assignment"}, WriteScopes: map[string][]string{"source": {"schoology"}}, WriteSubjects: policy.RosterSubjects},
+		SADashboard:   {Read: true, Readers: policy.Readers{IDs: []string{"e_parent1", "e_parent2"}}, Counts: true},
+		SAAdmin:       {Admin: true},
+		SAShared:      {WriteTypes: []string{"assignment", "lms_assignment"}, WriteSubjects: policy.RosterSubjects},
+	}
 }

@@ -10797,6 +10797,21 @@ git commit -m "feat(config): journal configuration, off by default, validated at
 ---
 ## Task 25: HTTP API -- server, authentication and `POST /v1/records`
 
+> NOTE (Task 25 implementation, 2026-10-25). The code in the repository wins; deviations from the draft below:
+>
+> - **Strict decoding.** The body decodes through `strictjson.Decode` (unknown, duplicate and case-variant keys, also inside `fields`, and trailing data are 422 `schema` with the fixed detail "the body is not a snapshot"), not `DisallowUnknownFields`, so the stored payload means exactly what was validated.
+> - **Owner versus source.** `record.ValidateSnapshot` (Task 7) already refuses a scope whose source is not the type's owner with 422 `schema`, before policy. The draft's two rows "policy: other source" and "policy: owner != source" are therefore 422 `schema`, not 403. `MayWrite`'s write_types and write_scopes checks are reached through two extra rows (the PowerSchool connector writing `lms_assignment`; a test-only `openclaw/test-scoped-writer` with `write_scopes: {source: [powerschool], course: [c1]}` writing course `c2`), each with its allowed counterpart.
+> - **Request timeout.** `Deps.RequestTimeout` (Task 28 passes `JournalConfig.RequestTimeout()`) bounds each request's context, TokenReview included; negative is refused by `New`, zero leaves only the listener's timeouts.
+> - **Panics** are recovered per route: 500 `internal` with no detail, logged, counted; a panic after the answer started aborts the connection (`http.ErrAbortHandler`). `statusWriter` records only the first status.
+> - **Unrouted requests** (unknown paths, a known path with another method) are 404 `not_found` in the refusal shape, counted as `endpoint="unrouted"`, not net/http's plain-text 404/405.
+> - **Metrics.** The early-lookup duplicate takes its `record_type` label from the registry (Task 23 note); `api_requests_total` uses fixed route names.
+> - `queryParams` parses with `url.ParseQuery` and refuses a malformed query (`r.URL.Query()` silently drops bad pairs). `readerOK`, `readErr`, `queryParams` have unit tests now (helpers_test.go) so Task 26 inherits tested helpers. `Server.rescanning` is left for Task 27 (unused fields fail staticcheck).
+> - `writeJSON` adds `X-Content-Type-Options: nosniff`. A forbidden caller and an unavailable TokenReview are logged (identity / satoken's token-free error), never the token.
+> - No per-source rate limit before TokenReview (the login broker has one): the plan's check order and the 4.3 table have no 429. Candidate follow-on.
+> - The listener stays plain HTTP inside the pod network behind the Task 29 NetworkPolicy, with SA-token auth on every request; no TokenReview cache (neither spec nor plan asks for one).
+> - Tests: `rig_test.go` adds `newAuthRig` (no database; auth and policy tests run in plain `go test`), a mutable clock, a log buffer and a metrics scrape. Extra tests beyond the draft: malformed headers never reach the authenticator, TokenReview audience, fail-closed on 500/403/401/unreachable, not-ready asks nothing, tokens never logged or echoed, timeout, panics, 404, route-name metrics, resend before validation (clock stepped back), snapshot_id reuse (other scope / type / writer, unparseable scope skips the lookup), 410 via `Erase`, strict decoding, Content-Type, the exact 8 MiB boundary, no value echo, 500 on lookup and apply failures, the stored writer, held counted once.
+> - Mutants on a `git archive` copy: 64 of the auth, policy, size limit, decoding, early lookup, status mapping and helper guards; 64 killed by named tests, 0 survivors, 0 build failures.
+
 The listener's handler (4.1, 4.3, 4.9). Order of checks on every request: ready (else 503 `unavailable`), bearer token (401), TokenReview with audience `glovebox-journal` and the policy's callers as the allow-list (401 / 403 `forbidden` / 503 `auth_unavailable`, failing closed), then the endpoint's own policy check (403 `policy`). For records: body at most 8 MiB (413), strict decoding (unknown fields are a 422 `schema`), step 1 (a resend is answered from its stored outcome before anything else), validation, policy, `Apply`. The response table of 4.3 is exactly what comes back.
 
 **Files:**
@@ -10804,7 +10819,7 @@ The listener's handler (4.1, 4.3, 4.9). Order of checks on every request: ready 
 - Modify: `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/httpapi/rig_test.go`, `internal/journal/httpapi/auth_test.go`, `internal/journal/httpapi/records_test.go`
 
-- [ ] **Step 25.1: Add the test policy to the shared fixtures.**
+- [x] **Step 25.1: Add the test policy to the shared fixtures.**
 
 Append to `internal/journal/journaltest/fixtures.go` (import `policy`):
 
@@ -10836,7 +10851,7 @@ func Services() map[string]policy.Service {
 }
 ```
 
-- [ ] **Step 25.2: Write the test rig.**
+- [x] **Step 25.2: Write the test rig.**
 
 `internal/journal/httpapi/rig_test.go`:
 
@@ -10977,7 +10992,7 @@ func one(key, subject, fields string) journalapi.Record {
 }
 ```
 
-- [ ] **Step 25.3: Write the failing auth and records tests.**
+- [x] **Step 25.3: Write the failing auth and records tests.**
 
 `internal/journal/httpapi/auth_test.go`:
 
@@ -11106,11 +11121,11 @@ func TestHeldAnswerAndResend(t *testing.T) {
 
 (The 410 row of the table is tested in Task 27, which adds the erase endpoint.)
 
-- [ ] **Step 25.4: Run; expect a build failure** (`undefined: New`, `undefined: Deps`).
+- [x] **Step 25.4: Run; expect a build failure** (`undefined: New`, `undefined: Deps`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 25.5: Write `server.go`.**
+- [x] **Step 25.5: Write `server.go`.**
 
 `internal/journal/httpapi/server.go`:
 
@@ -11215,7 +11230,7 @@ func (s *Server) internal(w http.ResponseWriter, what string, err error) {
 }
 ```
 
-- [ ] **Step 25.6: Write `auth.go`.**
+- [x] **Step 25.6: Write `auth.go`.**
 
 `internal/journal/httpapi/auth.go`:
 
@@ -11345,7 +11360,7 @@ func isJSON(r *http.Request) bool {
 }
 ```
 
-- [ ] **Step 25.7: Write `records.go`, and stubs for the routes Tasks 26-27 fill.**
+- [x] **Step 25.7: Write `records.go`, and stubs for the routes Tasks 26-27 fill.**
 
 `internal/journal/httpapi/records.go`:
 
@@ -11477,11 +11492,11 @@ func (s *Server) handleErase(w http.ResponseWriter, r *http.Request, c call)  { 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) { refuse(w, http.StatusNotImplemented, "not_implemented", "") }
 ```
 
-- [ ] **Step 25.8: Run; expect PASS** (`TestAuthentication`, `TestAuthFailsClosedAndNotReadyIs503`, `TestRecordsResponseTable`, `TestHeldAnswerAndResend`).
+- [x] **Step 25.8: Run; expect PASS** (`TestAuthentication`, `TestAuthFailsClosedAndNotReadyIs503`, `TestRecordsResponseTable`, `TestHeldAnswerAndResend`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 25.9: Commit.**
+- [x] **Step 25.9: Commit.**
 
 ```bash
 git add internal/journal/httpapi internal/journal/journaltest/fixtures.go
