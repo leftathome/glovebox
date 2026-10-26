@@ -258,6 +258,9 @@ type Config struct {
 	SubjectsFile           string       `json:"subjects_file"`
 	SourcesFile            string       `json:"sources_file"`
 	Ingest                 IngestConfig `json:"ingest"`
+
+	// Journal is the record journal; off unless Journal.Enabled.
+	Journal JournalConfig `json:"journal"`
 }
 
 // RulesSigningConfig requires the rules file to carry a valid detached
@@ -339,6 +342,7 @@ func (r RulesSigningConfig) validate() error {
 
 func LoadConfig(path string) (Config, error) {
 	cfg := Config{
+		Journal:                defaultJournal(),
 		MetricsPort:            9090,
 		WatchMode:              "fsnotify",
 		PollIntervalSeconds:    5,
@@ -393,6 +397,9 @@ func LoadConfig(path string) (Config, error) {
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
+			return Config{}, err
+		}
+		if err := checkJournalKey(data); err != nil {
 			return Config{}, err
 		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
@@ -513,6 +520,9 @@ func (c *Config) Validate() error {
 	if err := c.RulesSigning.validate(); err != nil {
 		return err
 	}
+	if err := c.Journal.validate(c.portsInUse()); err != nil {
+		return err
+	}
 	if !c.Ingest.Enabled {
 		return nil
 	}
@@ -547,6 +557,25 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// portsInUse names the listeners the core opens besides the journal's.
+func (c *Config) portsInUse() map[int]string {
+	ports := map[int]string{c.MetricsPort: "metrics_port"}
+	if c.Ingest.Enabled {
+		ports[c.Ingest.Port] = "ingest.port"
+		if c.Ingest.BearerPort != 0 {
+			ports[c.Ingest.BearerPort] = "ingest.bearer_port"
+		}
+		if c.Ingest.TLS.Active() {
+			p := c.Ingest.TLS.Port
+			if p == 0 {
+				p = c.Ingest.Port + 1
+			}
+			ports[p] = "ingest.tls.port"
+		}
+	}
+	return ports
 }
 
 // validateBearerPort checks the bearer listener cannot collide with
