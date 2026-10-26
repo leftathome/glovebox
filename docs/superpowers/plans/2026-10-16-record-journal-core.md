@@ -10074,6 +10074,20 @@ git commit -m "test(journal): property tests for the fold, idempotence, lateness
 ---
 ## Task 23: Metrics and the gauges the alerts need
 
+> NOTE (Task 23 review, 2026-10-25; commits b01f903, 6e08a8f). Metrics are
+> emitted only after commit (effects). ApplyDuration records successful applies
+> and confirms only; failures show in api_requests_total{code}. Manual and
+> automatic discards count snapshots_total{status="discarded"} once each.
+> ConfirmHeld records ApplyDuration. No oldest-held-age gauge: the spec alert is
+> "a held snapshot" (held_snapshots > 0). Labels are an allowlist pinned by a
+> scrape test; record_type always comes from the registry, never caller input.
+> staleness_prefixes accept only `source=<v>/` or `source=<v>/surface=<v>/`, and
+> SetLastSnapshot also skips any prefix naming `data_subject=`, so no subject or
+> course id can reach a Prometheus label. For Task 29: a prefix with no snapshot
+> has no series, so the staleness alert is
+> `time() - max by (prefix) (glovebox_journal_last_snapshot_timestamp_seconds) > N
+> or absent(glovebox_journal_last_snapshot_timestamp_seconds{prefix="..."})`.
+
 **NOTE (Task 17 review).** Two observability gaps are deferred to this task: `ConfirmHeld` does not report `ApplyDuration`, and a discard (`DiscardHeld`, or the automatic discard of older held snapshots) changes a snapshot's status without any `glovebox_journal_snapshots_total` increment. Decide here whether either needs a metric. Task 17 also added a consistency check to `ConfirmHeld`: a stored payload whose id, record type or scope differs from its row is refused with 422 `schema` and stays held. Its tests are in `hold_test.go` and `hold_concurrency_test.go`.
 
 4.15's metrics, through the core's existing OpenTelemetry provider and Prometheus exporter (`internal/metrics`), so they appear on the core's `/metrics` with no new scrape target:
@@ -10098,7 +10112,7 @@ No label carries a subject, key or value. The two database-derived gauges are re
 - Create: `internal/journal/jmetrics/metrics.go`, `internal/journal/gauges.go`
 - Test: `internal/journal/jmetrics/metrics_test.go`, `internal/journal/gauges_test.go`
 
-- [ ] **Step 23.1: Write the failing tests.**
+- [x] **Step 23.1: Write the failing tests.**
 
 `internal/journal/jmetrics/metrics_test.go`:
 
@@ -10203,11 +10217,11 @@ func TestGauges(t *testing.T) {
 }
 ```
 
-- [ ] **Step 23.2: Run; expect build failures** (`undefined: New` in jmetrics; `r.j.Gauges undefined`).
+- [x] **Step 23.2: Run; expect build failures** (`undefined: New` in jmetrics; `r.j.Gauges undefined`).
 
 Run: `go test ./internal/journal/jmetrics/ && scripts/journal-test-db.sh ./internal/journal/ -run Gauges`
 
-- [ ] **Step 23.3: Write `jmetrics/metrics.go`.**
+- [x] **Step 23.3: Write `jmetrics/metrics.go`.**
 
 `internal/journal/jmetrics/metrics.go`:
 
@@ -10391,7 +10405,7 @@ func (m *Metrics) SetLastSnapshot(prefix string, t time.Time) {
 }
 ```
 
-- [ ] **Step 23.4: Write `gauges.go`.**
+- [x] **Step 23.4: Write `gauges.go`.**
 
 `internal/journal/gauges.go`:
 
@@ -10426,11 +10440,11 @@ func (j *Journal) Gauges(ctx context.Context, prefixes []string) (int64, map[str
 }
 ```
 
-- [ ] **Step 23.5: Run; expect PASS.**
+- [x] **Step 23.5: Run; expect PASS.**
 
 Run: `go test ./internal/journal/jmetrics/ -count=1 && scripts/journal-test-db.sh ./internal/journal/ -run Gauges`
 
-- [ ] **Step 23.6: Commit.**
+- [x] **Step 23.6: Commit.**
 
 ```bash
 git add internal/journal/jmetrics internal/journal/gauges.go internal/journal/gauges_test.go
@@ -12936,12 +12950,20 @@ git commit -m "feat(chart): journal listener, roster mount, TokenReview RBAC, Ne
 ---
 ## Task 30: CI -- the database tests run against PostgreSQL on every MR
 
+> NOTE (Task 30, 2026-10-25; commit f73dc9d, verified by MR !109 pipelines 4013
+> and 4014). GitLab job `test-journal-db` on the `cluster` runner with a CNPG
+> 17.10 service sidecar started by an entrypoint/command override (initdb, trust
+> auth inside the job pod only, no secret); JOURNAL_TEST_REQUIRE_DB=1 makes a
+> missing database a failure, not a skip; 1 CPU / 3Gi for the job. GitHub ci.yml
+> runs the same tests against a `docker run` Postgres on loopback; release.yml is
+> untouched. First real run: all nine journal packages ran (journal 82s).
+
 The existing `test` jobs keep running `go test ./...`, in which every database test skips (no `JOURNAL_TEST_DATABASE_URL`). A new job runs `./internal/journal/...` with a PostgreSQL service and `JOURNAL_TEST_REQUIRE_DB=1`, so a missing database is a failure, never a silent skip. The service is the CNPG image at the production version; the image has no Docker entrypoint, so the service's entrypoint runs `initdb` and starts the server. `ghcr.io` is among the registry mirror's upstreams and the tag is a concrete patch version (the floating-tag problem the `test` job's comment describes was a docker.io one).
 
 **Files:**
 - Modify: `.gitlab-ci.yml`, `.github/workflows/ci.yml`
 
-- [ ] **Step 30.1: Add the GitLab job** after the `test` job:
+- [x] **Step 30.1: Add the GitLab job** after the `test` job:
 
 ```yaml
 # ---------------------------------------------------------------------------
@@ -12977,7 +12999,7 @@ test-journal-db:
 
 The harness waits up to 90 seconds for the server, so no wait loop is needed in the job.
 
-- [ ] **Step 30.2: Add the GitHub job** (mirror) under `jobs:` in `.github/workflows/ci.yml`:
+- [x] **Step 30.2: Add the GitHub job** (mirror) under `jobs:` in `.github/workflows/ci.yml`:
 
 ```yaml
   journal-db:
@@ -13013,11 +13035,11 @@ The harness waits up to 90 seconds for the server, so no wait loop is needed in 
 
 The chart checks need no new job: `scripts/test-chart-journal.sh` is run by `scripts/chart-checks.sh` in the `chart-test` job that MR !105 adds (GitLab and GitHub).
 
-- [ ] **Step 30.3: Verify.**
+- [x] **Step 30.3: Verify.**
 
 Locally: `scripts/journal-test-db.sh` (the same image and command) -- PASS. Then push the branch to `origin` and confirm the `test-journal-db` job pulls the image through the registry mirror and passes; if the pull fails, record the failing upstream in the MR and pin the digest the cluster uses instead of the tag (`kubectl --context orac -n databases-app get pods -l cnpg.io/cluster=postgres -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'`).
 
-- [ ] **Step 30.4: Commit.**
+- [x] **Step 30.4: Commit.**
 
 ```bash
 git add .gitlab-ci.yml .github/workflows/ci.yml
