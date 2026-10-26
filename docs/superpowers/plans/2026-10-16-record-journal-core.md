@@ -12399,6 +12399,35 @@ place; until then it answers 503 and items flow as before."
 ---
 ## Task 29: Chart -- listener, roster mount, database Secret, RBAC, NetworkPolicy, alerts; off by default
 
+> NOTE (Task 29 review, 2026-10-26; commits 354e19e, b8f4d3c, 782534d, fa8d48e,
+> 9f4e22b). Off by default: the default render is byte-identical to the
+> pre-Task-29 chart (pinned by scripts/test-chart-journal.sh against origin/main).
+> Deviations from the draft below: an optional database ExternalSecret; values
+> scannerVersion and database.externalSecret; only sslmode=require renders
+> (verify-* waits for glovebox-wekc.18.2); the Secret mounts username/password
+> only, effective mode 0440 via fsGroup (required); the roster ConfigMap is mounted
+> whole, read-only, with no configmap RBAC and may not carry the chart's fullname
+> prefix; ingress and API CIDRs must be single addresses; an opt-in
+> CiliumNetworkPolicy (toEntities kube-apiserver) for the Cilium cutover;
+> glovebox.journalChecks mirrors the Go validator; the `default` ServiceAccount
+> and a services entry for the core's own SA are refused; writerConnectors need
+> write_types. Alerts aggregate by namespace: RosterReloadFailing reads the
+> glovebox_journal_roster_reload_failing gauge (== 1 for 5m); NoSnapshots gates
+> its absence half on present_over_time(glovebox_journal_ready[1h] offset W);
+> VisibilityMismatch holds 24h; promtool unit tests pin the behaviour. The core
+> readinessProbe is unchanged (journal readiness is the ready gauge plus the
+> NotReady alert). Operator guide: docs/journal-roster.md (ownership, format,
+> the immutability VAP and why it lives with the roster's owner, reload and
+> deletion behaviour, erase and id reuse, the enabling checklist).
+>
+> For Task 28 (wiring), required: call
+> `m.SetRosterReloadFailingSource(holder.Failing)` once after creating the
+> roster Holder and before starting Watch; pass `jc.RequestTimeout()` as
+> httpapi.Deps.RequestTimeout; keep jmetrics.New inside the journal-enabled
+> branch (a disabled core must not export ready=0); build the scanner version as
+> `scanner_version + "+rules." + <hash of the loaded rules>` and warm the scanner
+> before reporting ready (glovebox-wekc.18.3).
+
 Rendered only with `journal.enabled=true`; with the default values the chart renders byte-identically to before (checked by the test). One object per new template file. The NetworkPolicy admits port 9095 only from named peers: the pods of connectors listed in `journal.networkPolicy.writerConnectors` (Part B adds `powerschool` and `schoology`) and peers listed verbatim in `journal.networkPolicy.from` (the openclaw gateway's pods, the dashboard's namespace, admin pods -- gitops); nothing is admitted by default. Its egress adds the database and the API server (TokenReview); DNS comes from the core's existing policy (NetworkPolicies add up). The roster ConfigMap is mounted read-only and whole (`items`, no `subPath`) so gitops changes reach the process (4.9b).
 
 **Files:**
@@ -12406,7 +12435,7 @@ Rendered only with `journal.enabled=true`; with the default values the chart ren
 - Create: `charts/glovebox/templates/journal-service.yaml`, `charts/glovebox/templates/journal-networkpolicy.yaml`, `charts/glovebox/templates/journal-clusterrole.yaml`, `charts/glovebox/templates/journal-clusterrolebinding.yaml`, `charts/glovebox/templates/journal-prometheusrule.yaml`, `scripts/testdata/journal-values.yaml`, `scripts/test-chart-journal.sh`, `internal/config/testdata/helm-rendered-journal.json`
 - Test: `scripts/test-chart-journal.sh`, `internal/config/journal_test.go` (fixture test)
 
-- [ ] **Step 29.1: Write the values used by the tests.**
+- [x] **Step 29.1: Write the values used by the tests.**
 
 `scripts/testdata/journal-values.yaml`:
 
@@ -12451,7 +12480,7 @@ metrics:
     enabled: true
 ```
 
-- [ ] **Step 29.2: Write the failing chart test.**
+- [x] **Step 29.2: Write the failing chart test.**
 
 `scripts/test-chart-journal.sh`:
 
@@ -12552,7 +12581,7 @@ scripts/test-chart-journal.sh
 
 Expected: the "disabled" checks pass (nothing renders yet) and every "enabled" check and `expect_fail` fails.
 
-- [ ] **Step 29.3: Add the `journal` block to `values.yaml`** (at the end of the file):
+- [x] **Step 29.3: Add the `journal` block to `values.yaml`** (at the end of the file):
 
 ```yaml
 # Record journal (docs/journal-api.md, docs/journal-schema.md): keyed records
@@ -12620,7 +12649,7 @@ journal:
     kubernetesAPIPorts: [443, 6443]
 ```
 
-- [ ] **Step 29.4: Render the config block** in `templates/configmap.yaml`, immediately before the `"scan_workers"` line:
+- [x] **Step 29.4: Render the config block** in `templates/configmap.yaml`, immediately before the `"scan_workers"` line:
 
 ```yaml
       {{- /*
@@ -12662,7 +12691,7 @@ journal:
       {{- end }}
 ```
 
-- [ ] **Step 29.5: Edit `templates/deployment.yaml`.**
+- [x] **Step 29.5: Edit `templates/deployment.yaml`.**
 
 1. Replace `automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}` with the lines below. The explanation is a template comment, not a YAML one, so the default render stays byte-identical (the chart test checks it):
 
@@ -12726,7 +12755,7 @@ journal:
 
 And in `templates/serviceaccount.yaml` replace `automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}` with `automountServiceAccountToken: {{ or .Values.ingest.auth.enabled .Values.journal.enabled }}` and extend its comment: "and with journal.enabled, whose listener asks the API server to review callers' tokens."
 
-- [ ] **Step 29.6: Create the five templates.**
+- [x] **Step 29.6: Create the five templates.**
 
 `templates/journal-service.yaml`:
 
@@ -12941,12 +12970,12 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 29.7: Run the chart test; expect PASS.**
+- [x] **Step 29.7: Run the chart test; expect PASS.**
 
 Run: `scripts/chart-checks.sh` (from !105; it runs `helm lint` and every `scripts/test-chart-*.sh`, this one included). Before !105 has merged: `helm lint charts/glovebox && scripts/test-chart-journal.sh && scripts/test-chart-serviceaccounts.sh && scripts/test-chart-networkpolicy.sh`.
 Expected: every line `ok`, including !105's duplicate-ServiceAccount guard (the journal adds no ServiceAccount) and the serviceaccount test's comparison with `origin/main` (the default render is unchanged). Verified while writing this plan: with the default values and with `ingest.auth.enabled=true`, the render is byte-identical to `origin/main` at 1ab6879.
 
-- [ ] **Step 29.8: Generate the config fixture and pin it in Go.**
+- [x] **Step 29.8: Generate the config fixture and pin it in Go.**
 
 ```bash
 helm template glovebox charts/glovebox -n openclaw -f scripts/testdata/journal-values.yaml \
@@ -12984,7 +13013,7 @@ func TestJournalHelmRenderedFixture(t *testing.T) {
 
 Run: `go test ./internal/config/ -count=1` -- expect PASS.
 
-- [ ] **Step 29.9: Commit.**
+- [x] **Step 29.9: Commit.**
 
 ```bash
 git add charts/glovebox scripts/test-chart-journal.sh scripts/testdata internal/config
