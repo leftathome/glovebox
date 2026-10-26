@@ -38,11 +38,18 @@ type countingRecorder struct {
 	events    map[string]int
 	withheld  int
 	mismatch  int
+	durations int
+	// byType counts snapshots as "record_type/status".
+	byType map[string]int
 }
 
-func (c *countingRecorder) Snapshot(_, status string) {
+func (c *countingRecorder) Snapshot(recordType, status string) {
 	c.mu.Lock()
 	c.snapshots[status]++
+	if c.byType == nil {
+		c.byType = map[string]int{}
+	}
+	c.byType[recordType+"/"+status]++
 	c.mu.Unlock()
 }
 func (c *countingRecorder) Event(_, kind, importance string) {
@@ -51,7 +58,7 @@ func (c *countingRecorder) Event(_, kind, importance string) {
 	c.mu.Unlock()
 }
 func (c *countingRecorder) ScanWithheld(_ string, n int) { c.mu.Lock(); c.withheld += n; c.mu.Unlock() }
-func (c *countingRecorder) ApplyDuration(time.Duration)  {}
+func (c *countingRecorder) ApplyDuration(time.Duration)  { c.mu.Lock(); c.durations++; c.mu.Unlock() }
 func (c *countingRecorder) VisibilityMismatch()          { c.mu.Lock(); c.mismatch++; c.mu.Unlock() }
 
 const writer = "openclaw/glovebox-glovebox-connector-powerschool"
