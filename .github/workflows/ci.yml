@@ -158,6 +158,42 @@ jobs:
             echo "No test report found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # The record journal's database tests. The `test` job above runs
+  # `go test ./...`, where every database test skips (no
+  # JOURNAL_TEST_DATABASE_URL); here they run against PostgreSQL, and
+  # JOURNAL_TEST_REQUIRE_DB makes a missing database a failure.
+  journal-db:
+    name: Journal database tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache: true
+
+      # The CNPG image at the production PostgreSQL version (keep in step
+      # with .gitlab-ci.yml and scripts/journal-test-db.sh). It has no Docker
+      # entrypoint and service containers cannot override the command, so it
+      # is started here. Trust auth, no password: a throwaway server bound
+      # to the runner's loopback for the life of this job.
+      - name: Start PostgreSQL
+        run: >
+          docker run -d --name journal-pg -p 127.0.0.1:55432:5432
+          ghcr.io/cloudnative-pg/postgresql:17.10
+          /bin/sh -c "initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -c listen_addresses='*' -c fsync=off"
+
+      - name: Journal tests
+        env:
+          JOURNAL_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable
+          JOURNAL_TEST_REQUIRE_DB: "1"
+        run: go test ./internal/journal/... -count=1 -race
+
   # helm lint and every scripts/test-chart-*.sh (scripts/chart-checks.sh), the
   # same checks as the GitLab chart-test job. helm is pinned and verified by
   # scripts/install-helm.sh rather than whatever the runner image carries.
