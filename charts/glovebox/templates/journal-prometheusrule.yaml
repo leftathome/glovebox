@@ -67,7 +67,7 @@ would page at every enable and after every restart until the next snapshot.
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "The household roster no longer loads"
-      "description" "The latest roster reloads failed: the ConfigMap's file is missing, unreadable or does not parse as journal.roster.format (unknown keys are refused too). The journal keeps using the previous roster, so grants do not follow the change: a member added there cannot read yet, and a member removed there can still read. A deleted ConfigMap is not a revocation. Fix the ConfigMap in gitops (it can only be changed through gitops; docs/journal-roster.md); compare glovebox_journal_roster_info's sha256 with the hash openclaw logs."))
+      "description" "The latest roster reloads failed: the mounted file cannot be read or does not parse as journal.roster.format (unknown keys are refused too). The journal keeps using the previous roster, so grants do not follow the change: a member added there cannot read yet, and a member removed there can still read. Deleting the ConfigMap, or removing its key, does NOT trigger this alert: the kubelet keeps the last projected file, the journal keeps reading it, and the gauge stays 0; a deletion is never a revocation. Fix the ConfigMap in gitops (it can only be changed through gitops; docs/journal-roster.md); compare glovebox_journal_roster_info's sha256 with the hash openclaw logs."))
   (dict
     "alert" "GloveboxJournalVisibilityMismatch"
     "expr" (index $counterFires "glovebox_journal_visibility_mismatch_total")

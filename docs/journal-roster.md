@@ -184,9 +184,24 @@ Notes on the example:
 - Deleting the namespace would also be refused for this ConfigMap, because
   the namespace controller is not Flux. Break-glass, for that case or any
   other, is removing the policy through gitops.
-- Verify the policy with a server-side dry run as an administrator:
+- A Flux Kustomization that is not pinned to a ServiceAccount
+  (`spec.serviceAccountName` unset) acts as kustomize-controller itself, so
+  every such Kustomization in the cluster, not only the roster's, passes
+  this policy. Pin the others, or accept that any of them could carry a
+  roster change -- still only through a gitops commit.
+- The policy does not protect itself. Kubernetes does not run admission
+  policies on ValidatingAdmissionPolicy and ValidatingAdmissionPolicyBinding
+  objects (that would allow a lockout), so a second policy guarding these
+  two by name would not be enforced. A cluster administrator can delete
+  the binding and edit the roster until Flux restores both at its next
+  reconcile. The remaining controls are RBAC (only cluster administrators
+  may change admission policies), Flux's drift correction, and the API
+  server's audit log.
+- Verify the policy with server-side dry runs as an administrator. Both
+  must be refused:
   `kubectl -n <roster-namespace> annotate configmap <roster-configmap> test=1 --dry-run=server`
-  must be refused.
+  and
+  `kubectl -n <roster-namespace> delete configmap <roster-configmap> --dry-run=server`.
 
 **Why the policy lives with the roster's owner, not in the glovebox chart.**
 The policy protects data that glovebox consumes from everyone, glovebox's
@@ -201,7 +216,9 @@ belongs next to the roster, in the gitops repository that owns both.
 
 - The journal checks the file every `journal.roster.reloadSeconds` (1 to
   300; the config validator refuses anything outside that range). If the
-  bytes are unchanged (same SHA-256), nothing is done.
+  file holds the same bytes (same SHA-256) as the roster in use, nothing is
+  done. Any other content is parsed again on every check, so a broken file
+  that does not change is re-parsed, and fails, on every tick.
 - The kubelet delivers a changed ConfigMap to a mounted volume within
   roughly one to two minutes (its sync period plus its cache). A roster
   change therefore reaches the journal within about `reloadSeconds` plus
@@ -210,16 +227,26 @@ belongs next to the roster, in the gitops repository that owns both.
 - A reload swaps the roster atomically. **A file that cannot be read or
   does not parse is ignored, and the previous roster stays in use**
   (`roster.Holder.Reload`). Grants do not follow the change: a member added
-  in it cannot read yet, and a member removed in it can still read. This
-  holds even when the ConfigMap is deleted: the journal keeps serving with
-  the last roster it loaded until the process restarts.
+  in it cannot read yet, and a member removed in it can still read.
+- **Deleting the ConfigMap, or removing its key, changes nothing the
+  journal can see.** The kubelet does not remove the file from a running
+  pod's volume: it keeps the last projected content (and logs its own sync
+  errors). The journal keeps reading that file, it parses, the
+  reload-failing gauge stays 0 and no journal alert fires. The journal
+  serves with that last roster until the pod is replaced, and the new pod
+  then cannot start (see the next point). A deletion is never a
+  revocation; revoke by committing a changed roster.
 - On a start (a new pod, a restart) there is no previous roster. If the
-  ConfigMap does not exist, the pod does not start at all: the volume is
-  not optional (`FailedMount`), and item processing waits with it. If it
-  exists but does not parse, the journal has no roster until it does:
-  reads answer `503 unavailable` (`ErrNoRoster`) and snapshots answer
-  `409 unknown_subject`. An invalid roster at start is therefore an outage
-  of the journal, never a fallback to an older roster.
+  ConfigMap (or its key) does not exist, the pod does not start at all: the
+  volume is not optional (`FailedMount`), and item processing waits with
+  it. If it exists but does not parse, the journal never becomes ready:
+  every request, reads and snapshots alike, is answered
+  `503 unavailable` before authentication is even attempted, connectors
+  keep their snapshots in their spools, and `glovebox_journal_ready` stays
+  0 (`GloveboxJournalNotReady`, alongside
+  `GloveboxJournalRosterReloadFailing`). An invalid roster at start is
+  therefore an outage of the journal, never a fallback to an older
+  roster.
 - Every reload attempt sets `glovebox_journal_roster_reload_failing`: 1 when
   it failed, 0 when it succeeded or the file was unchanged. The gauge stays
   1 for as long as the file stays broken, and
@@ -369,8 +396,13 @@ Secret come from the same Vault entry, so a rotation updates both.
 
 ### 7.4 The database's NetworkPolicy admits the core on 5432 (and callers reach 9095)
 
-The chart's own policy allows the core's egress to the database pods. If
-the database namespace restricts ingress, admit the glovebox core there:
+The chart's own policy allows the core's egress to the database pods.
+**Add the ingress rule below only if a NetworkPolicy already selects the
+database pods for ingress.** A NetworkPolicy isolates every pod it selects:
+if this were the first ingress policy on the CNPG pods, it would cut off
+everything it does not list, including the CNPG operator's status checks
+and replication between instances. Where a policy already restricts them,
+admit the glovebox core alongside it:
 
 ```yaml
 apiVersion: networking.k8s.io/v1

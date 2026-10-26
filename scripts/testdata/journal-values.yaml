@@ -1,6 +1,13 @@
 # Values for scripts/test-chart-journal.sh and the config fixture
 # (internal/config/testdata/helm-rendered-journal.json). Placeholder
 # addresses and ids only.
+#
+# They assume release "glovebox" in namespace "openclaw" (the services keys
+# say openclaw/glovebox-glovebox-connector-...). `helm lint -f` with these
+# values renders as release "test-release" in namespace "default", so the
+# writer cross-check refuses it (powerschool has no write_types under
+# default/test-release-...): that is expected. The tests render with
+# `-n openclaw` and release "glovebox".
 journal:
   enabled: true
   database:
