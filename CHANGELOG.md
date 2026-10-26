@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-16
+
+### Upgrade notes
+
+No chart value has to be added or changed, and no Vault or gitops change
+has to land first. Three things to know:
+
+- **ServiceAccounts change.** Every enabled connector now runs as its own
+  `<fullname>-connector-<name>` and every importer Job as
+  `<fullname>-importer-<name>`, all without an API token; the core keeps
+  `<fullname>` and mounts its token only with `ingest.auth.enabled`. The
+  PowerSchool connector's account (rendered only with `loginOnDemand` or
+  `loginBroker`) is renamed from `<fullname>-powerschool` to
+  `<fullname>-connector-powerschool`. No Vault role the chart uses is bound
+  to an account that changes (`glovebox-ingest` stays on the core's
+  unchanged `<fullname>`). In a release with three connectors, as in
+  production, four pods roll once: the core and each connector. Check
+  anything outside the chart that names `<fullname>` for a connector. The
+  render now fails if two workloads would share one account.
+- **Helm's wait can be turned back on.** A PowerSchool connector waiting
+  for a new session is now Ready, so upgrades and rollbacks no longer time
+  out on it. Once the connector runs the 0.12.0 image, remove a Flux
+  HelmRelease's `spec.upgrade.disableWait` / `spec.rollback.disableWait`
+  workaround and set a sane `spec.timeout`: long enough for the slowest pod
+  to pull and start, short enough that a real failure still fails the
+  upgrade promptly. Not before: an older image still waiting is NotReady.
+- **Trade-off: PowerSchool readiness no longer covers its first poll.** The
+  connector is Ready as soon as it serves, so one whose catch-up poll fails
+  (a wrong ingest URL, a parser broken by a portal change) stays Ready and
+  `helm upgrade --wait` passes. Those failures show in the log,
+  `connector_errors_total`, `powerschool_polls_total` and the poll alerts.
+  Invalid config still exits and fails the rollout. Schoology keeps
+  ready-after-first-poll.
+
+See `docs/upgrading.md`, "Upgrading to 0.12.0 (from 0.11.0)".
+
 ### Fixed
 
 - **A PowerSchool connector waiting for a new session no longer blocks Helm
@@ -90,12 +126,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and checksum-verified by `scripts/install-helm.sh`. Until now these were
   run by hand.
 
-### Upgrade notes
+### Documentation
 
-- Every connector Deployment and the core roll once. No Vault role is bound
-  to an account that changes: `glovebox-ingest` stays bound to the core's
-  unchanged `<fullname>`, and the refresher and broker roles to their own
-  unchanged accounts. See `docs/upgrading.md`.
+- Record journal design (`docs/superpowers/specs/2026-10-16-record-journal-design.md`)
+  and the implementation plan for its part A, the journal core
+  (`docs/superpowers/plans/2026-10-16-record-journal-core.md`). Nothing in
+  this release implements them; the per-workload ServiceAccounts above are
+  their rollout step 0.
 
 ## [0.11.0] - 2026-10-12
 
