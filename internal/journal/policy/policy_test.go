@@ -111,6 +111,9 @@ func TestReadPolicy(t *testing.T) {
 	if !ps.WritesSnapshots(reg(t)) || gw.WritesSnapshots(reg(t)) || dash.WritesSnapshots(reg(t)) || admin.WritesSnapshots(reg(t)) {
 		t.Error("WritesSnapshots: only source-type writers")
 	}
+	if !gw.WritesNotes(reg(t)) || ps.WritesNotes(reg(t)) || dash.WritesNotes(reg(t)) || admin.WritesNotes(reg(t)) {
+		t.Error("WritesNotes: only household-type writers")
+	}
 	if _, ok := p.Service("openclaw/glovebox-glovebox-connector-rss"); ok {
 		t.Error("the RSS connector has a policy")
 	}

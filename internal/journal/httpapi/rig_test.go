@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,15 @@ var T0 = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 // than the source, so the HTTP tests reach MayWrite's scope check (the
 // source part is already tied to the type's owner by validation).
 const SAScoped = "openclaw/test-scoped-writer"
+
+// Test-only services that separate the read guards (Task 26): one may read
+// but not count, one may count but not read, both only as e_parent1; and a
+// note writer that may write only on behalf of e_parent2.
+const (
+	SAReadOnly   = "openclaw/test-read-only"
+	SACountsOnly = "openclaw/test-counts-only"
+	SANoteWriter = "openclaw/test-note-writer"
+)
 
 type rig struct {
 	t     *testing.T
@@ -73,6 +83,7 @@ var tokens = map[string]string{
 	"gw": journaltest.SAGateway, "ps": journaltest.SAPowerSchool, "sg": journaltest.SASchoology,
 	"rss": journaltest.SARSS, "core": journaltest.SACore, "dash": journaltest.SADashboard,
 	"admin": journaltest.SAAdmin, "shared": journaltest.SAShared, "scoped": SAScoped,
+	"ro": SAReadOnly, "co": SACountsOnly, "nw": SANoteWriter,
 }
 
 func testServices() map[string]policy.Service {
@@ -80,6 +91,9 @@ func testServices() map[string]policy.Service {
 	s[SAScoped] = policy.Service{WriteTypes: []string{"assignment"},
 		WriteScopes:   map[string][]string{"source": {"powerschool"}, "course": {"c1"}},
 		WriteSubjects: policy.RosterSubjects}
+	s[SAReadOnly] = policy.Service{Read: true, Readers: policy.Readers{IDs: []string{"e_parent1"}}}
+	s[SACountsOnly] = policy.Service{Counts: true, Readers: policy.Readers{IDs: []string{"e_parent1"}}}
+	s[SANoteWriter] = policy.Service{WriteTypes: []string{"attendance_note"}, Readers: policy.Readers{IDs: []string{"e_parent2"}}}
 	return s
 }
 
@@ -166,10 +180,26 @@ func buildRig(t *testing.T, db *sql.DB, migrate bool, opts ...rigOption) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.srv = httptest.NewServer(r.s.Handler())
+	h := r.s.Handler()
+	if !migrate {
+		// The auth rig has no database, and the real healthz reads the
+		// schema version from it. Its authentication tests use healthz as a
+		// request that passes the real route wrapper (ready, bearer, slot,
+		// TokenReview, policy) and then needs nothing else: a stub behind
+		// the same wrapper. The real healthz is tested with the database.
+		mux := http.NewServeMux()
+		mux.Handle("GET "+journalapi.PathHealthz, r.s.route("healthz", func(w http.ResponseWriter, _ *http.Request, _ call) {
+			writeJSON(w, http.StatusOK, map[string]string{"status": journalapi.HealthOK})
+		}))
+		mux.Handle("/", h)
+		h = mux
+	}
+	r.srv = httptest.NewServer(h)
 	t.Cleanup(r.srv.Close)
 	return r
 }
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 // setNow moves the clock of the journal and the server.
 func (r *rig) setNow(t time.Time) { r.now.Store(&t) }

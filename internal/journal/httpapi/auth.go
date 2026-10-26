@@ -161,7 +161,8 @@ func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Reques
 // 19 review): the journal computes grants and confirms roster membership on
 // every read, so this no longer resolves grants; it returns the reader id.
 // Roster errors from the journal are mapped by readErr below. Used by the
-// read and note handlers (Task 26).
+// read handlers; a note's on_behalf_of is checked by MayWriteNote, whose
+// refusal carries its own detail.
 func (s *Server) readerOK(w http.ResponseWriter, reader string, allowed bool) (string, bool) {
 	if reader == "" {
 		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "reader is required")
@@ -198,11 +199,13 @@ func queryParams(r *http.Request, allowed ...string) (url.Values, error) {
 		return nil, errors.New("the query string does not parse")
 	}
 	for k, v := range q {
+		// The errors name no parameter: a name is the caller's text, and a
+		// refusal echoes nothing it was sent.
 		if !slices.Contains(allowed, k) {
-			return nil, fmt.Errorf("unknown parameter %q: a request names its reader and nothing else about access", k)
+			return nil, errors.New("an unknown parameter: a request names its reader and its filters, nothing else")
 		}
 		if len(v) != 1 {
-			return nil, fmt.Errorf("parameter %q given %d times", k, len(v))
+			return nil, errors.New("a parameter is given more than once")
 		}
 	}
 	return q, nil

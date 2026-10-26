@@ -215,7 +215,7 @@ func ValidateNote(reg *Registry, in journalapi.Note) (*NormNote, *Rejection) {
 	}
 	t, ok := reg.Active(in.RecordType)
 	if !ok || !t.Household() {
-		return nil, schemaErr("%q is not a household record type", in.RecordType)
+		return nil, schemaErr("record_type is not a household record type")
 	}
 	if !ValidDate(in.Date) {
 		return nil, schemaErr("date must be YYYY-MM-DD")

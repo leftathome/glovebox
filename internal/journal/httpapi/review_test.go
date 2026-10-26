@@ -331,14 +331,41 @@ func TestInFlightLimit(t *testing.T) {
 			t.Fatalf("only %d requests reached the authenticator", i)
 		}
 	}
-	resp, out, _ := exchange(t, request(t, r, "GET", journalapi.PathHealthz, nil, "Authorization", "Bearer gw"))
-	if resp.StatusCode != 503 || out.Reason != journalapi.ReasonUnavailable || resp.Header.Get("Retry-After") != "1" {
-		t.Errorf("request 17: %d %+v %v", resp.StatusCode, out, resp.Header)
+	// Request 17 is refused at once, not queued for a slot: it answers
+	// within about a second while the 16 are still held.
+	type answer struct {
+		resp *http.Response
+		out  journalapi.Response
+	}
+	done := make(chan answer, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(request(t, r, "GET", journalapi.PathHealthz, nil, "Authorization", "Bearer gw"))
+		if err != nil {
+			done <- answer{}
+			return
+		}
+		defer resp.Body.Close()
+		var out journalapi.Response
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		done <- answer{resp, out}
+	}()
+	select {
+	case a := <-done:
+		if a.resp == nil || a.resp.StatusCode != 503 || a.out.Reason != journalapi.ReasonUnavailable || a.resp.Header.Get("Retry-After") != "1" {
+			t.Errorf("request 17: %+v", a)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("request 17 did not answer within a second: it waits for a slot")
+		close(g.release)
+		<-done
+		g.release = nil
 	}
 	if len(g.entered) != 0 {
 		t.Errorf("request 17 reached the authenticator")
 	}
-	close(g.release)
+	if g.release != nil {
+		close(g.release)
+	}
 	wg.Wait()
 	close(codes)
 	for c := range codes {

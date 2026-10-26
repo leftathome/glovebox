@@ -55,8 +55,10 @@ const DefaultMaxInFlight = 16
 type Server struct {
 	d     Deps
 	slots chan struct{}
-	// snapshotKeys caps the keys of a POST /v1/records body.
+	// snapshotKeys and noteKeys cap the keys of a POST /v1/records and a
+	// POST /v1/notes body.
 	snapshotKeys strictjson.Limits
+	noteKeys     strictjson.Limits
 }
 
 // New checks the dependencies.
@@ -85,7 +87,8 @@ func New(d Deps) (*Server, error) {
 	if d.Context == nil {
 		d.Context = context.Background()
 	}
-	return &Server{d: d, slots: make(chan struct{}, d.MaxInFlight), snapshotKeys: snapshotKeyLimits(d.Registry)}, nil
+	return &Server{d: d, slots: make(chan struct{}, d.MaxInFlight), snapshotKeys: snapshotKeyLimits(d.Registry),
+		noteKeys: noteKeyLimits(d.Registry)}, nil
 }
 
 // Handler routes the API. Route names, not paths, label the request metric.

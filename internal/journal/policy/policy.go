@@ -227,6 +227,18 @@ func (s Service) WritesSnapshots(reg *record.Registry) bool {
 	return false
 }
 
+// WritesNotes reports whether the service may write any household record
+// type: only such a service may use POST /v1/notes at all, so others are
+// refused before their body is read.
+func (s Service) WritesNotes(reg *record.Registry) bool {
+	for _, name := range s.WriteTypes {
+		if t, ok := reg.Active(name); ok && t.Household() {
+			return true
+		}
+	}
+	return false
+}
+
 // MayWriteNote decides POST /v1/notes for a type and its on_behalf_of.
 func (s Service) MayWriteNote(t record.Type, onBehalfOf string) *record.Rejection {
 	if !t.Household() || !slices.Contains(s.WriteTypes, t.Name) {

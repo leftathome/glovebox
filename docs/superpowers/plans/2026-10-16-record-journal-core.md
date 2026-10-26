@@ -11519,11 +11519,22 @@ core's own account have no policy and are refused by the allow-list."
 
 `POST /v1/notes` decodes strictly (any access field other than `on_behalf_of` -- `audience`, `grants` -- is an unknown field and a 400), validates, checks the service may write the type on behalf of that member, then `WriteNote` (which checks the member's computed grants). Reads take `reader` and their own filters as query parameters and nothing else; a reader outside the roster or outside the service's `readers` is 403; `counts` needs `counts: true`. `GET /v1/healthz` reports the roster hash and the schema version.
 
+> NOTE (Task 26 implementation, 2026-10-25). The code in the repository wins; deviations from the draft below:
+>
+> - **Authorization model.** Reads: `readerOK` (empty reader 400; `MayRead` for state/events, `MayCount` for counts, i.e. `read`/`counts` true AND `readers` allows the id -- `"*"` any id, a list only its members; else 403 `policy`), then the journal confirms roster membership and the read ban (`ErrUnknownReader` 403, `ErrNoRoster` 503, `ErrBadQuery` 400 via `readErr`). Notes: `WritesNotes` first (new `policy.Service.WritesNotes`: a service with no household write type is 403 before its body is read, like `WritesSnapshots`), then `MayWriteNote(type, on_behalf_of)` (type in `write_types` AND `readers` allows on_behalf_of), then `WriteNote` (ban 410, non-member 403, subject not on roster 409, no grant 403). The HTTP check runs before the journal's roster confirmation (the policy package comment orders them the other way); both must pass before any data is touched.
+> - **Body caps.** Not the draft's plain `json.Decoder` with a 256 KiB `LimitReader` (silently truncating): `http.MaxBytesReader` at `maxNoteBytes` = 512 KiB (the widest note, a 64 KiB text and two 1 KiB strings with every byte `\u`-escaped, is ~405 KiB; a household type with more text must revisit it), 413 `too_large` with `Connection: close`; then `strictjson.DecodeLimits` with `noteKeyLimits(registry)`: per object `max(5, widest household field count) + 4`, per document `5 + widest + 4` (9 and 13 with the fixtures), over is 413; any other decode error is 400 `bad_request` with a fixed detail. A body read error other than the cap is 500 with `Connection: close`.
+> - **Cursor.** `nextCursor`: the last returned seq, or the request's `after` for an empty page (never 0, never forward past undelivered events). An empty page from the Go re-check (Task 19) therefore holds the cursor; it is not silent -- each dropped row counts `VisibilityMismatch` (alert `GloveboxJournalVisibilityMismatch`).
+> - **Lists.** `nonNil` keeps `rows`/`events`/`counts` `[]` at the HTTP layer too (the journal already never returns nil).
+> - **No echo.** `queryParams` errors no longer name the parameter; `record.ValidateNote` no longer quotes the record_type (`record_type is not a household record type`). Present-but-malformed `after`, `limit`, `include_removed`, `since` are 400 (the draft treated an empty value as absent). `subject=` (empty) filters to household rows.
+> - **Tests.** The auth rig (no database) serves a stub healthz behind the real `route` wrapper, since the real one reads the schema version; Task 25's auth tests keep using it. Test-only services `test-read-only` (read, readers [e_parent1]), `test-counts-only` (counts, readers [e_parent1]) and `test-note-writer` (attendance_note, readers [e_parent2]) separate the guards. Extra tests: reader presentation both ways for every endpoint and service, each reader gets only its view, subject never replaces the reader, on_behalf_of both ways with the actor recorded, withheld text and guardians-only rows stay out, `[]` on the wire, paging, filters, erased reader 403, no roster 503/409, 410 notes, strict decoding, key and byte caps at and over the boundary, 100k keys under a second, no echo, 500 without detail, route-name metrics. Task 25 m1: `TestInFlightLimit` now requires request 17 to answer 503 within one second.
+> - **Mutants** (`git archive` copy, DB tests, named `--- FAIL:` only): 105 mutants of the reader/MayRead/MayCount/on_behalf_of guards, policy, error mapping, body and key caps, cursor, `[]`, filters, echoes, the in-flight slot and route names, plus a no-change baseline (survived). 103 killed, 0 build failures counted (6 first-round build failures rewritten to compile and killed). 2 equivalent survivors: dropping `nonNil` on state rows (the journal never returns nil) and naming the parameter in the duplicate-parameter error (only an allowed name can reach it).
+> - Pre-existing, untouched: `gofmt -l` lists five `internal/ingest` files and `staticcheck ./internal/...` reports ST1018/U1000 in `internal/engine`, `internal/ingest`, `internal/scan` test files; `staticcheck ./internal/journal/...` is clean.
+
 **Files:**
 - Modify: `internal/journal/httpapi/notes.go`, `internal/journal/httpapi/read.go`
 - Test: `internal/journal/httpapi/notes_test.go`, `internal/journal/httpapi/read_test.go`
 
-- [ ] **Step 26.1: Write the failing tests.**
+- [x] **Step 26.1: Write the failing tests.**
 
 `internal/journal/httpapi/notes_test.go`:
 
@@ -11644,11 +11655,11 @@ func TestReadRefusals(t *testing.T) {
 
 Add to `rig_test.go`: `func itoa(n int64) string { return strconv.FormatInt(n, 10) }` (import `strconv`).
 
-- [ ] **Step 26.2: Run; expect FAIL** (the placeholders answer 501).
+- [x] **Step 26.2: Run; expect FAIL** (the placeholders answer 501).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 26.3: Replace `notes.go`.**
+- [x] **Step 26.3: Replace `notes.go`.**
 
 ```go
 package httpapi
@@ -11699,7 +11710,7 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request, c call) {
 }
 ```
 
-- [ ] **Step 26.4: Replace `read.go`.**
+- [x] **Step 26.4: Replace `read.go`.**
 
 ```go
 package httpapi
@@ -11840,11 +11851,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request, _ call) {
 }
 ```
 
-- [ ] **Step 26.5: Run; expect PASS.**
+- [x] **Step 26.5: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 26.6: Commit.**
+- [x] **Step 26.6: Commit.**
 
 ```bash
 git add internal/journal/httpapi
