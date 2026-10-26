@@ -1,0 +1,95 @@
+{{- $j := .Values.journal }}
+{{- $np := $j.networkPolicy | default dict }}
+{{- if and $j.enabled .Values.networkPolicy.enabled $np.enabled }}
+{{- if not $np.kubernetesAPICIDRs }}
+{{- fail "journal.networkPolicy.kubernetesAPICIDRs is required: the journal authenticates every caller by asking the Kubernetes API server (TokenReview), which is not a pod a selector can match. List the control-plane addresses (kubectl get endpoints kubernetes -n default) and the kubernetes Service's cluster IP, each as a /32." }}
+{{- end }}
+{{- range $np.kubernetesAPICIDRs }}
+{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/32$|^[0-9A-Fa-f:]+/128$" (toString .)) }}
+{{- fail (printf "journal.networkPolicy.kubernetesAPICIDRs: %q is not a single address (/32 or /128): this rule exists for the API server alone" (toString .)) }}
+{{- end }}
+{{- end }}
+{{- range $i, $peer := $np.from }}
+{{- if not (kindIs "map" $peer) }}
+{{- fail (printf "journal.networkPolicy.from[%d] must be a NetworkPolicyPeer (podSelector / namespaceSelector / ipBlock)" $i) }}
+{{- end }}
+{{- if not (or $peer.podSelector $peer.namespaceSelector $peer.ipBlock) }}
+{{- fail (printf "journal.networkPolicy.from[%d] selects nothing specific: an empty peer or empty selector admits every pod. Name the gateway's pods or namespace by label" $i) }}
+{{- end }}
+{{- range $sel := list "podSelector" "namespaceSelector" }}
+{{- if hasKey $peer $sel }}
+{{- $s := index $peer $sel | default dict }}
+{{- if not (or $s.matchLabels $s.matchExpressions) }}
+{{- fail (printf "journal.networkPolicy.from[%d].%s is empty, which matches every %s: name the peers by label" $i $sel (ternary "pod" "namespace" (eq $sel "podSelector"))) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $db := $np.database | default dict }}
+{{- if not $db.namespace }}
+{{- fail "journal.networkPolicy.database.namespace is required: the namespace of the journal's PostgreSQL cluster (egress is admitted to it alone)" }}
+{{- end }}
+# The record journal's listener and its two dependencies. NetworkPolicies add
+# up: the core's own policy (networkpolicy.yaml) already isolates this pod
+# and keeps its rules (ingest from connectors, metrics, DNS, Vault); this one
+# adds exactly three things and nothing else:
+#   ingress to the journal port, from the named peers only (none by default);
+#   egress to the journal's PostgreSQL pods;
+#   egress to the API server, for TokenReview.
+# A NetworkPolicy cannot select a ServiceAccount: connector pods are matched
+# on the chart's own labels here, and which account may do what is decided
+# per request by the TokenReview allow-list (journal.services).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "glovebox.fullname" . }}-journal
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: journal
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "glovebox.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if or $np.writerConnectors $np.from }}
+  ingress:
+    - from:
+        {{- range $np.writerConnectors }}
+        # Connector {{ . }}: writes snapshots.
+        - podSelector:
+            matchLabels:
+              {{- include "glovebox.connectorSelectorLabels" (dict "connector" . "Values" $.Values "Chart" $.Chart "Release" $.Release) | nindent 14 }}
+        {{- end }}
+        {{- with $np.from }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ $j.port }}
+          protocol: TCP
+  {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $db.namespace }}
+          {{- with $db.podLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: {{ $db.port | default 5432 }}
+          protocol: TCP
+    - to:
+        {{- range $np.kubernetesAPICIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range ($np.kubernetesAPIPorts | default (list 443 6443)) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+{{- end }}

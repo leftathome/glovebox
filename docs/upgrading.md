@@ -10,6 +10,96 @@ at 02:00 with uploads failing.
 
 ---
 
+## Record journal
+
+The record journal (`journal.*` in `values.yaml`; design spec
+`docs/superpowers/specs/2026-10-16-record-journal-design.md`) is **off by
+default**. With `journal.enabled: false` the chart renders exactly what it
+rendered without it (`scripts/test-chart-journal.sh` compares the render
+against `origin/main`), so upgrading needs no action.
+
+### What `journal.enabled: true` renders
+
+- On the core pod: a `journal` port (9095), the core's ServiceAccount token
+  (`automountServiceAccountToken: true`, on the pod and on the account), a
+  read-only mount of the roster ConfigMap at `/etc/glovebox-roster` (whole,
+  through `items`, never `subPath`, so a gitops change reaches the process),
+  and a read-only mount of the database Secret at `/etc/glovebox-journal-db`
+  holding only `username` and `password`, mode 0400, readable through the
+  pod's `fsGroup` (the render refuses a pod without one).
+- `<fullname>-journal` Service (ClusterIP, port 9095). Plain HTTP inside the
+  pod network; every request is authenticated by a ServiceAccount token with
+  audience `glovebox-journal`, verified by TokenReview.
+- `<namespace>-<fullname>-journal-tokenreview` ClusterRole (`create` on
+  `tokenreviews`, nothing else) and ClusterRoleBinding to the core's
+  ServiceAccount only. **No RBAC on ConfigMaps or Secrets** is granted to
+  anything.
+- `<fullname>-journal` NetworkPolicy, adding to the core's own: ingress to
+  9095 only from the connectors in `journal.networkPolicy.writerConnectors`
+  and the peers in `journal.networkPolicy.from` (none by default; empty
+  selectors are refused), egress to the database pods and to the API server
+  addresses in `journal.networkPolicy.kubernetesAPICIDRs` (single addresses
+  only). It needs `networkPolicy.enabled`.
+- With `journal.database.externalSecret.enabled`, an ExternalSecret writing
+  `<fullname>-journal-db` from Vault.
+- With `metrics.prometheusRule.enabled`, the `<fullname>-journal`
+  PrometheusRule: `GloveboxJournalSnapshotHeld`, `GloveboxJournalNotReady`,
+  `GloveboxJournalScanWithheld`, `GloveboxJournalRosterReloadFailing`,
+  `GloveboxJournalVisibilityMismatch` (critical) and one
+  `GloveboxJournalNoSnapshots` per `journal.staleness` entry. Each
+  description is its runbook.
+
+The core pod's readiness does not wait for the journal: a journal without its
+database or roster answers 503 while items keep flowing, and
+`GloveboxJournalNotReady` reports it from the `glovebox_journal_ready` gauge.
+
+### Prerequisites in gitops (before enabling)
+
+1. **The roster ConfigMap** (`openclaw-household`, key `household.json`) in
+   the release's own namespace -- a ConfigMap volume cannot cross
+   namespaces, and the chart grants no RBAC to read one elsewhere. It is
+   applied by Flux from gitops and mounted read-only by both the openclaw
+   gateway and glovebox.
+2. **A ValidatingAdmissionPolicy and binding** denying `CREATE`, `UPDATE` and
+   `DELETE` of that ConfigMap to every requester except
+   `system:serviceaccount:flux-system:kustomize-controller` (spec 4.9b
+   item 4). It lives in gitops, not in this chart: the chart must not be
+   able to loosen it. Break-glass is removing it through gitops. Verify with
+   `kubectl auth can-i update configmap/openclaw-household --as=system:serviceaccount:<ns>:<sa>`
+   for every ServiceAccount in the namespace, and with a dry-run edit as an
+   administrator (refused by the policy).
+3. **The database**: `glovebox_journal` on the CNPG cluster, with the
+   journal's application role, and its credentials in Vault (for example
+   `secret/glovebox/journal-db`, properties `username` and `password`).
+   Either set `journal.database.externalSecret.enabled` and `.path`, or sync
+   a `kubernetes.io/basic-auth` Secret yourself and name it in
+   `journal.database.existingSecret`. Only `sslmode: require` is accepted
+   until the CNPG CA mount (verify-full, glovebox-wekc.18.2) lands; it will
+   mount the CA certificate only, never `ca.key`.
+4. **The database side of the network**: the CNPG cluster's own
+   NetworkPolicy (if any) must admit the core pod on 5432.
+5. **The API server addresses** for `journal.networkPolicy.kubernetesAPICIDRs`:
+   `kubectl get endpoints kubernetes -n default` plus the `kubernetes`
+   Service's cluster IP, each a `/32`.
+6. **The peers** for `journal.networkPolicy.from`, e.g. the gateway's pods:
+
+   ```yaml
+   journal:
+     networkPolicy:
+       from:
+         - podSelector:
+             matchLabels:
+               app: openclaw
+               component: gateway
+   ```
+
+7. **The policy** in `journal.services`, keyed `namespace/serviceaccount`
+   (spec 4.9). A connector given write rights there also needs the
+   projected `glovebox-journal` token (Part B) and its name in
+   `writerConnectors`.
+
+---
+
 ## Upgrading to 0.12.0 (from 0.11.0)
 
 - **Helm's wait can be turned back on.** A PowerSchool connector waiting

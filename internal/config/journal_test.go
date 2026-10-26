@@ -551,3 +551,42 @@ func TestJournalStalenessPrefixShapes(t *testing.T) {
 		expect(t, p, true, loadValidate(t, strings.Replace(journalJSON, `"source=powerschool/"`, `"`+p+`"`, 1)))
 	}
 }
+
+// The chart's rendered journal block loads and validates (regenerate with
+// the command in Task 29 of the plan after changing either side):
+//
+//	helm template glovebox charts/glovebox -n openclaw -f scripts/testdata/journal-values.yaml \
+//	  | python3 -c "import sys, yaml; [print(d['data']['config.json']) for d in yaml.safe_load_all(sys.stdin) if d and d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'glovebox-glovebox-config']" \
+//	  > internal/config/testdata/helm-rendered-journal.json
+func TestJournalHelmRenderedFixture(t *testing.T) {
+	cfg, err := LoadConfig("testdata/helm-rendered-journal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := cfg.Journal
+	// The chart names the in-container mount paths; pin them before
+	// pointing the validator at temporary files.
+	if j.Database.UserFile != "/etc/glovebox-journal-db/username" || j.Database.PasswordFile != "/etc/glovebox-journal-db/password" {
+		t.Errorf("chart -> Go mismatch on the database file paths: %+v", j.Database)
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "username"), []byte("u"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "password"), []byte("p"), 0o600)
+	cfg.Journal.Database.UserFile = filepath.Join(dir, "username")
+	cfg.Journal.Database.PasswordFile = filepath.Join(dir, "password")
+	// The rendered config names in-container paths (subjects.json, ...);
+	// only the journal block is under test here.
+	if err := cfg.Journal.validate(cfg.portsInUse()); err != nil {
+		t.Fatal(err)
+	}
+	if !j.Enabled || j.Port != 9095 || j.Roster.Path != "/etc/glovebox-roster/household.json" || len(j.Services) == 0 ||
+		len(j.RecordTypes) != 1 || j.RecordTypes[0].Fields["due"].Type != "date" || len(j.StalenessPrefixes) != 1 ||
+		j.StalenessPrefixes[0] != "source=powerschool/" || j.ScannerVersion != "core-scan-1" || j.Database.SSLMode != "require" ||
+		j.RequestTimeoutSeconds != 60 || j.ScanTimeoutSeconds != 10 || j.RemovalGuard.MaxFraction != 0.3 || j.RemovalGuard.MinKeys != 3 {
+		t.Errorf("chart -> Go mismatch: %+v", j)
+	}
+	_, _, pol, err := cfg.Journal.Build()
+	if err != nil || pol == nil {
+		t.Fatalf("Build: %v", err)
+	}
+}

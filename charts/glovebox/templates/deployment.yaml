@@ -27,7 +27,12 @@ spec:
       # Kubernetes login (ingest.auth.enabled); nothing else in the core
       # calls the Kubernetes API.
       serviceAccountName: {{ include "glovebox.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}
+      {{- /*
+        The token is also mounted with journal.enabled: the journal's
+        listener asks the API server to review each caller's token
+        (TokenReview), the only thing its ClusterRole allows.
+      */}}
+      automountServiceAccountToken: {{ or .Values.ingest.auth.enabled .Values.journal.enabled }}
       {{- with (include "glovebox.runtimeClassName" (dict "workload" dict "root" .)) }}
       runtimeClassName: {{ . | quote }}
       {{- end }}
@@ -76,6 +81,11 @@ spec:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
+            {{- if .Values.journal.enabled }}
+            - name: journal
+              containerPort: {{ .Values.journal.port }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.config.ingest.enabled }}
             {{- if include "glovebox.ingestPortServed" . }}
             - name: ingest
@@ -173,6 +183,20 @@ spec:
             - name: archive-storage
               mountPath: {{ .Values.ingest.archives.stagingRoot }}
             {{- end }}
+            {{- if .Values.journal.enabled }}
+            # The household roster, read-only and mounted whole (items, never
+            # subPath) so a change applied from gitops reaches the running
+            # process; the journal reloads it when the file changes (spec
+            # 4.9b). Only Flux may change the ConfigMap (gitops admission
+            # policy); this pod has no RBAC on it.
+            - name: journal-roster
+              mountPath: /etc/glovebox-roster
+              readOnly: true
+            # The journal's database username and password, nothing else.
+            - name: journal-db
+              mountPath: /etc/glovebox-journal-db
+              readOnly: true
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -237,4 +261,28 @@ spec:
         - name: archive-storage
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.archiveStorage.existingClaim | default (printf "%s-archive-storage" (include "glovebox.fullname" .)) }}
+        {{- end }}
+        {{- if .Values.journal.enabled }}
+        {{- include "glovebox.journalChecks" . }}
+        - name: journal-roster
+          configMap:
+            name: {{ .Values.journal.roster.configMap }}
+            items:
+              - key: {{ .Values.journal.roster.key }}
+                path: {{ .Values.journal.roster.key }}
+        {{- /*
+          Only the two keys the journal reads, never the whole Secret, and
+          0400: kubelet makes the files group-owned by the pod's fsGroup
+          (and adds group read), so the non-root process reads them and no
+          other user does. journalChecks refuses a pod without an fsGroup.
+        */}}
+        - name: journal-db
+          secret:
+            secretName: {{ include "glovebox.journalDBSecret" . }}
+            defaultMode: 0400
+            items:
+              - key: username
+                path: username
+              - key: password
+                path: password
         {{- end }}

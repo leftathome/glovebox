@@ -637,3 +637,70 @@ manual run.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+
+{{/*
+Record journal (journal.*). Every check the chart can make before the core
+starts, in one place, so a bad value fails the render with a message that
+names the setting instead of a pod that crash-loops. The core validates the
+rendered block again (internal/config/journal.go). Included only with
+journal.enabled.
+*/}}
+{{- define "glovebox.journalChecks" -}}
+{{- $j := .Values.journal -}}
+{{- if not $j.roster.configMap -}}
+{{- fail "journal.enabled needs journal.roster.configMap: the journal computes every reader's grants from the household roster and has nothing to serve without it" -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9_][A-Za-z0-9._-]*$" (toString $j.roster.key)) -}}
+{{- fail "journal.roster.key must be a plain ConfigMap key (letters, digits, '.', '_', '-'): it is also the file name under the read-only roster mount" -}}
+{{- end -}}
+{{- if or (not $j.database.host) (not (include "glovebox.journalDBSecret" .)) -}}
+{{- fail "journal.enabled needs journal.database.host and journal.database.existingSecret, or journal.database.externalSecret.enabled with a Vault path (a basic-auth Secret synced by ESO; see docs/upgrading.md, \"Record journal\")" -}}
+{{- end -}}
+{{- if and (not $j.database.existingSecret) $j.database.externalSecret.enabled (not $j.database.externalSecret.path) -}}
+{{- fail "journal.database.externalSecret.enabled needs journal.database.externalSecret.path, the Vault KV path of the journal's database credentials" -}}
+{{- end -}}
+{{- if not (.Values.podSecurityContext | default dict).fsGroup -}}
+{{- fail "journal.enabled needs podSecurityContext.fsGroup: the database credentials are mounted mode 0400 and only the fsGroup makes them readable to the non-root process" -}}
+{{- end -}}
+{{- if ne (toString $j.database.sslmode) "require" -}}
+{{- fail "journal.database.sslmode must be \"require\": plaintext is refused, and verify-ca / verify-full need the CNPG CA certificate mounted, which this chart does not do yet (glovebox-wekc.18.2)" -}}
+{{- end -}}
+{{- if not (toString $j.scannerVersion | trim) -}}
+{{- fail "journal.scannerVersion must not be empty: it labels every scan verdict, and an empty one means \"judged by no scanner\"" -}}
+{{- end -}}
+{{- range $j.staleness -}}
+{{- if not (regexMatch "^source=[^=/]+/(surface=[^=/]+/)?$" (toString .prefix)) -}}
+{{- fail (printf "journal.staleness: prefix %q must be source=<value>/ or source=<value>/surface=<value>/ (it becomes a metric label, so nothing finer than a surface is allowed)" (toString .prefix)) -}}
+{{- end -}}
+{{- if le (int .maxAgeHours) 0 -}}
+{{- fail (printf "journal.staleness: prefix %q needs maxAgeHours > 0" (toString .prefix)) -}}
+{{- end -}}
+{{- end -}}
+{{- if and ($j.networkPolicy | default dict).enabled (not .Values.networkPolicy.enabled) -}}
+{{- fail "journal.networkPolicy.enabled needs networkPolicy.enabled: the journal's policy only adds to the core's (which isolates the pod and allows DNS); without it the journal port would be open to every pod. Set journal.networkPolicy.enabled=false only if the journal's policy is managed outside this chart" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The Secret holding the journal's database username and password: the one
+named by journal.database.existingSecret, else the one the chart's
+ExternalSecret creates, else nothing.
+*/}}
+{{- define "glovebox.journalDBSecret" -}}
+{{- $d := .Values.journal.database -}}
+{{- if $d.existingSecret -}}
+{{- $d.existingSecret -}}
+{{- else if ($d.externalSecret | default dict).enabled -}}
+{{- printf "%s-journal-db" (include "glovebox.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the cluster-scoped TokenReview ClusterRole and its binding. Carries
+the namespace, since two releases of the same name in two namespaces would
+otherwise collide.
+*/}}
+{{- define "glovebox.journalTokenReviewName" -}}
+{{- printf "%s-%s-journal-tokenreview" .Release.Namespace (include "glovebox.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end }}

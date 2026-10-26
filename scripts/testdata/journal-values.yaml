@@ -1,0 +1,38 @@
+# Values for scripts/test-chart-journal.sh and the config fixture
+# (internal/config/testdata/helm-rendered-journal.json). Placeholder
+# addresses and ids only.
+journal:
+  enabled: true
+  database:
+    host: postgres-rw.databases-app.svc.cluster.local
+    existingSecret: glovebox-journal-db
+  roster:
+    configMap: openclaw-household
+  services:
+    openclaw/openclaw-gateway:
+      read: true
+      readers: "*"
+      counts: true
+    openclaw/glovebox-journal-admin:
+      admin: true
+  recordTypes:
+    - name: assignment
+      schema_version: 1
+      owner: powerschool
+      fields:
+        title: {type: string}
+        due: {type: date}
+      default_audience: [subject, guardians]
+  staleness:
+    - prefix: "source=powerschool/"
+      maxAgeHours: 96
+  networkPolicy:
+    writerConnectors: [powerschool]
+    from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: openclaw-gateway
+    kubernetesAPICIDRs: [192.0.2.10/32]
+metrics:
+  prometheusRule:
+    enabled: true
