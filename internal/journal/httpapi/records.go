@@ -14,6 +14,31 @@ import (
 
 const maxSnapshotBytes = 8 << 20 // 4.3
 
+// Key caps of a snapshot body, checked before it is decoded (strictjson).
+// A snapshot has 9 top-level keys, 3 in complete_range, 4 per record and
+// at most the widest record type version's field count in "fields". The
+// margins are slack only: validation refuses any key outside those anyway.
+const (
+	keyMarginPerObject = 16
+	keyMarginTotal     = 1024
+)
+
+// snapshotKeyLimits derives the caps from the registry: per object, the
+// widest type version's field count (or the 9 top-level keys) plus a
+// margin; per document, every record at that width plus the envelope and a
+// margin. With the test fixtures' types (at most 5 fields; the 9 top-level
+// keys are wider) that is 25 per object and 66036 per document.
+func snapshotKeyLimits(reg *record.Registry) strictjson.Limits {
+	widest := 9
+	for _, t := range reg.Types() {
+		widest = max(widest, len(t.Fields))
+	}
+	return strictjson.Limits{
+		MaxObjectKeys: widest + keyMarginPerObject,
+		MaxTotalKeys:  9 + 3 + record.MaxRecords*(4+widest) + keyMarginTotal,
+	}
+}
+
 // handleRecords is POST /v1/records. Order: the service writes snapshots at
 // all (403 policy), Content-Type (400), body at most 8 MiB (413), strict
 // decoding (422 schema), 4.4 step 1 (a resend is answered from its stored
@@ -34,16 +59,27 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request, c call) {
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
+			// The rest of the body is never read: close the connection.
+			// (http.MaxBytesReader cannot ask for that through statusWriter.)
+			w.Header().Set("Connection", "close")
 			refuse(w, http.StatusRequestEntityTooLarge, journalapi.ReasonTooLarge, "the body exceeds 8 MiB")
 			return
 		}
-		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "the body could not be read")
+		// A read timeout or a broken connection is not the snapshot's fault:
+		// a 5xx, which the spool retries.
+		s.d.Log.Warn("journal request body could not be read", "err", err)
+		w.Header().Set("Connection", "close")
+		refuse(w, http.StatusInternalServerError, journalapi.ReasonInternal, "")
 		return
 	}
 	// Strict: unknown, duplicate and case-variant keys and trailing data are
 	// refused, so the stored payload means exactly what was validated.
 	var snap journalapi.Snapshot
-	if err := strictjson.Decode(body, &snap); err != nil {
+	if err := strictjson.DecodeLimits(body, &snap, s.snapshotKeys); err != nil {
+		if errors.Is(err, strictjson.ErrTooManyKeys) {
+			refuse(w, http.StatusRequestEntityTooLarge, journalapi.ReasonTooLarge, "the body has more keys than any snapshot can")
+			return
+		}
 		refuse(w, http.StatusUnprocessableEntity, journalapi.ReasonSchema, "the body is not a snapshot")
 		return
 	}

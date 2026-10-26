@@ -104,7 +104,7 @@ func ValidateSnapshot(reg *Registry, s journalapi.Snapshot, now time.Time) (*Nor
 		Subject: sc.Subject(), Complete: s.Complete, ObservedAt: s.ObservedAt.UTC(), Approximate: s.Approximate,
 	}
 	if sc.Source() != active.Owner {
-		return nil, schemaErr("scope source %q does not own %s records", sc.Source(), t.Name)
+		return nil, schemaErr("the scope's source part is not the owner of %s records", t.Name)
 	}
 	if n.Subject == "" && !active.AllowNoSubject {
 		return nil, schemaErr("the scope has no data_subject part and %s records are always about someone", t.Name)

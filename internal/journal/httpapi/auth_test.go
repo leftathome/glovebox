@@ -29,6 +29,7 @@ func TestAuthentication(t *testing.T) {
 		"denied token":       {"denied", 401, journalapi.ReasonUnauthenticated},
 		"other audience":     {"wrong-audience", 401, journalapi.ReasonUnauthenticated},
 		"not an SA":          {"not-a-serviceaccount", 403, journalapi.ReasonForbidden},
+		"no SA prefix":       {"no-prefix", 403, journalapi.ReasonForbidden},
 		"rss connector":      {"rss", 403, journalapi.ReasonForbidden},
 		"the core itself":    {"core", 403, journalapi.ReasonForbidden},
 		"reader writes":      {"dash", 403, journalapi.ReasonPolicy},
@@ -192,6 +193,7 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 		"policy":   func(d *Deps) { d.Policy = nil },
 		"roster":   func(d *Deps) { d.Roster = nil },
 		"timeout":  func(d *Deps) { d.RequestTimeout = -time.Second },
+		"inflight": func(d *Deps) { d.MaxInFlight = -1 },
 	} {
 		d := full
 		mod(&d)

@@ -7,7 +7,9 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/leftathome/glovebox/internal/journal"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -42,10 +44,44 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// maxBearerBytes bounds a bearer token (satoken's bound). A projected
+// ServiceAccount token is about a kilobyte.
+const maxBearerBytes = 8 << 10
+
+// token68 is RFC 6750's b64token: what a ServiceAccount token (a JWT) is.
+var token68 = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+
+// bearerToken accepts exactly one Authorization header of the exact form
+// "Bearer <token>": the scheme in any case, one space, a token68 token. It
+// is stricter than satoken.BearerToken (the broker's parser, which trims
+// and tolerates extra spaces), and both must agree.
+func bearerToken(r *http.Request) (string, bool) {
+	vals := r.Header.Values("Authorization")
+	if len(vals) != 1 {
+		return "", false
+	}
+	h := vals[0]
+	const scheme = "Bearer "
+	if len(h) <= len(scheme) || !strings.EqualFold(h[:len(scheme)], scheme) {
+		return "", false
+	}
+	tok := h[len(scheme):]
+	if len(tok) > maxBearerBytes || !token68.MatchString(tok) {
+		return "", false
+	}
+	if t, ok := satoken.BearerToken(h); !ok || t != tok {
+		return "", false
+	}
+	return tok, true
+}
+
 // route bounds, authenticates, counts and dispatches. Order (4.9): ready
-// (503 unavailable), bearer token (401), TokenReview with the journal's
-// audience and the policy's callers as the allow-list (401 / 403 forbidden
-// / 503 auth_unavailable, failing closed), then the endpoint's own checks.
+// (503 unavailable), bearer token (401), an in-flight slot (503
+// unavailable with Retry-After), TokenReview with the journal's audience
+// and the policy's callers as the allow-list (401 / 403 forbidden / 503
+// auth_unavailable, failing closed), then the endpoint's own checks. The
+// slot is held for the TokenReview and the handler, so at most
+// MaxInFlight requests do work at once whatever goes wrong inside one.
 // No token is logged or echoed.
 func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Request, call)) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -75,10 +111,18 @@ func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Reques
 			refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "the journal is starting or cannot reach its database or roster")
 			return
 		}
-		token, ok := satoken.BearerToken(r.Header.Get("Authorization"))
+		token, ok := bearerToken(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			refuse(w, http.StatusUnauthorized, journalapi.ReasonUnauthenticated, "")
+			return
+		}
+		select {
+		case s.slots <- struct{}{}:
+			defer func() { <-s.slots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "the journal is at its limit of concurrent requests")
 			return
 		}
 		caller, err := s.d.Auth.Authenticate(r.Context(), token)

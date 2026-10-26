@@ -10811,6 +10811,14 @@ git commit -m "feat(config): journal configuration, off by default, validated at
 > - The listener stays plain HTTP inside the pod network behind the Task 29 NetworkPolicy, with SA-token auth on every request; no TokenReview cache (neither spec nor plan asks for one).
 > - Tests: `rig_test.go` adds `newAuthRig` (no database; auth and policy tests run in plain `go test`), a mutable clock, a log buffer and a metrics scrape. Extra tests beyond the draft: malformed headers never reach the authenticator, TokenReview audience, fail-closed on 500/403/401/unreachable, not-ready asks nothing, tokens never logged or echoed, timeout, panics, 404, route-name metrics, resend before validation (clock stepped back), snapshot_id reuse (other scope / type / writer, unparseable scope skips the lookup), 410 via `Erase`, strict decoding, Content-Type, the exact 8 MiB boundary, no value echo, 500 on lookup and apply failures, the stored writer, held counted once.
 > - Mutants on a `git archive` copy: 64 of the auth, policy, size limit, decoding, early lookup, status mapping and helper guards; 64 killed by named tests, 0 survivors, 0 build failures.
+>
+> NOTE (Task 25 security review, 2026-10-25). Fixed on top of 6b9ff2d:
+>
+> - **strictjson is linear.** The duplicate check folds each key to the smallest member of every rune's simple-fold orbit (exactly `strings.EqualFold`'s equivalence, proven over every rune by `TestFoldKeyIsExactlyEqualFold`) and uses a set; it was a pairwise EqualFold scan, quadratic in the keys of an object. `DecodeLimits` caps keys per object and per document (`ErrTooManyKeys`); `Decode` (configuration) has no caps. POST /v1/records caps at the widest record type version's field count (at least 9) + 16 per object and 12 + 5000 x (4 + width) + 1024 per document: 25 and 66036 with the fixtures; over is 413 `too_large`. 100k keys in one object are refused in well under a second.
+> - **In-flight limit.** At most `Deps.MaxInFlight` (default 16) requests hold a slot, taken after the bearer check and held for TokenReview plus the handler; the next is 503 `unavailable` with `Retry-After: 1`. A per-caller rate limit is a separate bead.
+> - **Bearer.** Exactly one `Authorization` header of the form `Bearer <token68>` (scheme in any case, one space, at most 8 KiB), else 401 without a TokenReview. satoken's lenient parser (the broker's) is unchanged and must agree.
+> - The owner refusal no longer echoes the scope's source value. A body read error other than the size limit is 500 `internal` (retried) with `Connection: close`; 413 closes the connection too. `journalapi.ReasonNotImplemented` names the placeholders' reason.
+> - The 4.3 table (spec and the docs draft above) lists 400, 401, 403 `forbidden`, 404, 503 `unavailable` and 503 `auth_unavailable`; the spool keys on `reason`.
 
 The listener's handler (4.1, 4.3, 4.9). Order of checks on every request: ready (else 503 `unavailable`), bearer token (401), TokenReview with audience `glovebox-journal` and the policy's callers as the allow-list (401 / 403 `forbidden` / 503 `auth_unavailable`, failing closed), then the endpoint's own policy check (403 `policy`). For records: body at most 8 MiB (413), strict decoding (unknown fields are a 422 `schema`), step 1 (a resend is answered from its stored outcome before anything else), validation, policy, `Apply`. The response table of 4.3 is exactly what comes back.
 
@@ -13172,13 +13180,32 @@ Answers -- the spool acts on exactly these:
 | Code | `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | 200 | `applied`, `duplicate`, `late`, `held` | accepted | delete the file |
-| 410 | `erased_subject` | the subject was erased after `observed_at` | delete the file |
+| 410 | `erased_subject` | the subject was erased: an erase bans all later data about the member, whatever its `observed_at` | delete the file |
 | 403 | `policy` | this service may not write this type or scope | move to `spool/rejected/` |
 | 409 | `unknown_subject` | a subject is not in the current roster | keep, retry with backoff |
 | 413 | `too_large` | over a limit | move to `spool/rejected/` |
 | 422 | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
 | 422 | `snapshot_id_reused` | the id already identifies a snapshot of another writer, record type or scope | move to `spool/rejected/` |
-| 5xx | -- | try again later | keep, retry with backoff |
+| 400 | `bad_request` | not `application/json` | keep, retry with backoff, alert |
+| 401 | `unauthenticated` | no token, a malformed `Authorization` header (exactly one `Bearer <token>`), or a token TokenReview does not vouch for with audience `glovebox-journal` | keep, retry with backoff, alert |
+| 403 | `forbidden` | a valid token of a ServiceAccount with no journal policy | keep, retry with backoff, alert |
+| 404 | `not_found` | no such endpoint or method | keep, retry with backoff, alert |
+| 503 | `unavailable` | the journal is starting, cannot reach its database or roster, or is at its limit of 16 concurrent requests (with `Retry-After`) | keep, retry with backoff |
+| 503 | `auth_unavailable` | TokenReview could not be asked (fails closed) | keep, retry with backoff |
+| 5xx | `internal` or none | try again later | keep, retry with backoff |
+
+The spool keys on `reason`, not on the code alone: only the reasons this
+table marks "move to `spool/rejected/`" are permanent. `401
+unauthenticated`, `403 forbidden`, `400 bad_request` and every `503` are
+kept and retried with backoff, and raise an alert while they persist (a
+deployment fault: a token audience, an allow-list, a client bug, a journal
+that is starting or overloaded), never a reason to drop data.
+
+Limits besides the 8 MiB body: at most 25 keys in any JSON object and
+66036 in the document with the shipped record types (per object: the
+widest record type version's field count, at least the 9 top-level keys,
+plus 16; per document: 12 + 5000 x (4 + that width) + 1024); over either is
+`413 too_large`, checked before the body is decoded.
 
 A 200 body: `{"status": "applied", "stats": {"created": 1, "updated": 0,
 "removed": 0, "restored": 0, "unchanged": 4, "stale": 0}}`. `late` means a

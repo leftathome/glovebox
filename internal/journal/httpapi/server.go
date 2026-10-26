@@ -21,6 +21,7 @@ import (
 	"github.com/leftathome/glovebox/internal/journal/policy"
 	"github.com/leftathome/glovebox/internal/journal/record"
 	"github.com/leftathome/glovebox/internal/journal/roster"
+	"github.com/leftathome/glovebox/internal/journal/strictjson"
 	"github.com/leftathome/glovebox/internal/satoken"
 )
 
@@ -39,13 +40,23 @@ type Deps struct {
 	// database work and the scans (config journal.request_timeout_seconds).
 	// Zero leaves only the listener's own timeouts.
 	RequestTimeout time.Duration
+	// MaxInFlight bounds the requests doing work at once (TokenReview plus
+	// the handler); 0 is DefaultMaxInFlight. A request beyond it is 503
+	// unavailable with Retry-After.
+	MaxInFlight int
 	// Context bounds background work (rescans); the process's lifetime.
 	Context context.Context
 }
 
+// DefaultMaxInFlight is Deps.MaxInFlight's default.
+const DefaultMaxInFlight = 16
+
 // Server is the journal's HTTP surface.
 type Server struct {
-	d Deps
+	d     Deps
+	slots chan struct{}
+	// snapshotKeys caps the keys of a POST /v1/records body.
+	snapshotKeys strictjson.Limits
 }
 
 // New checks the dependencies.
@@ -55,6 +66,12 @@ func New(d Deps) (*Server, error) {
 	}
 	if d.RequestTimeout < 0 {
 		return nil, errors.New("httpapi: the request timeout must not be negative")
+	}
+	if d.MaxInFlight < 0 {
+		return nil, errors.New("httpapi: the in-flight limit must not be negative")
+	}
+	if d.MaxInFlight == 0 {
+		d.MaxInFlight = DefaultMaxInFlight
 	}
 	if d.Log == nil {
 		d.Log = slog.New(slog.DiscardHandler)
@@ -68,7 +85,7 @@ func New(d Deps) (*Server, error) {
 	if d.Context == nil {
 		d.Context = context.Background()
 	}
-	return &Server{d: d}, nil
+	return &Server{d: d, slots: make(chan struct{}, d.MaxInFlight), snapshotKeys: snapshotKeyLimits(d.Registry)}, nil
 }
 
 // Handler routes the API. Route names, not paths, label the request metric.

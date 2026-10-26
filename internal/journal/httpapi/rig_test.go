@@ -116,6 +116,9 @@ func buildRig(t *testing.T, db *sql.DB, migrate bool, opts ...rigOption) *rig {
 	r.api.Allow("wrong-audience", "system:serviceaccount:openclaw:openclaw-gateway", "glovebox-login-broker-powerschool")
 	r.api.Deny("denied", journalapi.Audience)
 	r.api.Allow("not-a-serviceaccount", "system:node:node1", journalapi.Audience)
+	// A username shaped like an allow-listed caller but without the
+	// system:serviceaccount: prefix.
+	r.api.Allow("no-prefix", "openclaw:openclaw-gateway", journalapi.Audience)
 	t0 := T0
 	r.now.Store(&t0)
 	now := func() time.Time { return *r.now.Load() }

@@ -65,6 +65,11 @@ func TestRecordsResponseTable(t *testing.T) {
 			s.Scope[3][1] = "c2"
 			return s
 		}(), 403, journalapi.ReasonPolicy},
+		"policy: write_scopes part missing": {"scoped", func() journalapi.Snapshot {
+			s := assignments(13, "e_child1", "powerschool", T0)
+			s.Scope = s.Scope[:3] // no course part
+			return s
+		}(), 403, journalapi.ReasonPolicy},
 		"unknown subject":       {"ps", assignments(5, "e_stranger", "powerschool", T0, one("k", "e_stranger", `{"title": "A"}`)), 409, journalapi.ReasonUnknownSubject},
 		"future observed_at":    {"ps", assignments(6, "e_child1", "powerschool", T0.Add(time.Hour)), 422, journalapi.ReasonFutureObservedAt},
 		"duplicate key":         {"ps", assignments(7, "e_child1", "powerschool", T0, one("k", "e_child1", `{}`), one("k", "e_child1", `{}`)), 422, journalapi.ReasonDuplicateKey},
@@ -267,11 +272,22 @@ func TestRefusalsDoNotEchoValues(t *testing.T) {
 		"bad value":     assignments(1, "e_child1", "powerschool", T0, one("k", "e_child1", `{"score": "SECRETVALUE"}`)),
 		"unknown field": `{"snapshot_id": "` + uid(2) + `", "SECRETVALUE": 1}`,
 		"bad scope":     `{"snapshot_id": "` + uid(3) + `", "scope": "SECRETVALUE"}`,
+		"scope source":  assignments(4, "e_child1", "SECRETVALUE", T0),
 	} {
 		code, raw := r.send("POST", journalapi.PathRecords, "ps", "application/json", b)
 		if code/100 != 4 || strings.Contains(string(raw), "SECRETVALUE") {
 			t.Errorf("%s: %d %s", name, code, raw)
 		}
+	}
+}
+
+// Without a roster nobody is a known subject: 409, retried.
+func TestNoRosterIs409(t *testing.T) {
+	r := newRig(t)
+	r.ros.Store(nil)
+	code, resp := post(r, "ps", assignments(1, "e_child1", "powerschool", T0, one("k", "e_child1", `{"title": "A"}`)))
+	if code != 409 || resp.Reason != journalapi.ReasonUnknownSubject {
+		t.Errorf("no roster: %d %+v", code, resp)
 	}
 }
 

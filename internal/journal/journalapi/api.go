@@ -112,6 +112,7 @@ const (
 	ReasonConflict         = "conflict"           // 409 on admin endpoints; on POST /v1/notes, the stored note is newer than the journal clock (retry)
 	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
+	ReasonNotImplemented   = "not_implemented"    // 501: an endpoint not built yet (until Tasks 26-27)
 )
 
 // ScopePart is one ["name", "value"] pair of a scope.

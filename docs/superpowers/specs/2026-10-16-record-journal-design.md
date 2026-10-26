@@ -233,7 +233,20 @@ assert this invariant and nothing broader.
 | `413` | `too_large` | over a limit | move to `spool/rejected/` |
 | `422` | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
 | `422` | `snapshot_id_reused` | the `snapshot_id` already identifies a snapshot of another writer, record type or scope: a sender bug that retrying cannot fix | move to `spool/rejected/` |
-| `5xx`, network error | -- | try again later | keep, retry with backoff |
+| `400` | `bad_request` | not `application/json` | keep, retry with backoff, alert |
+| `401` | `unauthenticated` | no token, a malformed `Authorization` header (exactly one `Bearer <token>`), or a token TokenReview does not vouch for with audience `glovebox-journal` | keep, retry with backoff, alert |
+| `403` | `forbidden` | a valid token of a ServiceAccount with no journal policy | keep, retry with backoff, alert |
+| `404` | `not_found` | no such endpoint or method | keep, retry with backoff, alert |
+| `503` | `unavailable` | the journal is starting, cannot reach its database or roster, or is at its limit of concurrent requests (with `Retry-After`) | keep, retry with backoff |
+| `503` | `auth_unavailable` | TokenReview could not be asked (fails closed) | keep, retry with backoff |
+| `5xx`, network error | `internal` or none | try again later | keep, retry with backoff |
+
+The spool keys on `reason`, not on the code alone: only the reasons this
+table marks "move to `spool/rejected/`" are permanent. `401
+unauthenticated`, `403 forbidden`, `400 bad_request` and every `503` are
+kept and retried with backoff, and raise an alert while they persist (a
+deployment fault: a token audience, an allow-list, a client bug, a journal
+that is starting or overloaded), never a reason to drop data.
 
 ### 4.4 Applying a snapshot
 
