@@ -40,7 +40,20 @@ func mustScanner(t *testing.T, version string, timeout time.Duration) TextScanne
 }
 
 func TestEngineScannerVerdicts(t *testing.T) {
-	ts := mustScanner(t, "v1+rules.abc", 10*time.Second)
+	// The language detector loads its models lazily, process-wide, on the
+	// first detection: ~5s under -race, longer when the whole suite runs in
+	// parallel, which overran the 10s scan timeout and turned the benign
+	// verdict into "error" (glovebox-wekc.18.3). Warm it untimed, so this test
+	// checks real verdicts at steady state; the timeout path is covered by the
+	// fakes in TestEngineScannerFailsClosed.
+	sc := shippedScanner(t)
+	if _, err := sc.Scan([]byte("Missed the bus; the nurse called at 9."), "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := NewTextScanner(sc, "v1+rules.abc", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ts.Version() != "v1+rules.abc" {
 		t.Error("version")
 	}
