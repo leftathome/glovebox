@@ -19,10 +19,19 @@ type Holder struct {
 	cur          atomic.Pointer[Roster]
 	mu           sync.Mutex // serialises Reload so an older read never overwrites a newer one
 	failures     atomic.Uint64
+	failing      atomic.Bool
 }
 
 // Failures counts every failed Reload (unreadable or unparsable file).
 func (h *Holder) Failures() uint64 { return h.failures.Load() }
+
+// Failing reports whether the latest Reload failed. Every Reload sets it --
+// true on an unreadable or unparsable file, false on success or an
+// unchanged file -- so, unlike Watch's reports, which name a repeated error
+// once, it stays true for as long as the file stays broken. It is the
+// source of the glovebox_journal_roster_reload_failing gauge
+// (jmetrics.Metrics.SetRosterReloadFailingSource).
+func (h *Holder) Failing() bool { return h.failing.Load() }
 
 // NewHolder holds no roster until the first successful Reload.
 func NewHolder(path, format string) *Holder {
@@ -41,6 +50,7 @@ func (h *Holder) Reload() (changed bool, err error) {
 		if err != nil {
 			h.failures.Add(1)
 		}
+		h.failing.Store(err != nil)
 	}()
 	raw, err := os.ReadFile(h.path)
 	if err != nil {

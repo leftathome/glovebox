@@ -40,6 +40,10 @@ Glovebox only reads it:
   ConfigMap volume cannot cross namespaces. If the owner keeps the
   canonical copy elsewhere, gitops applies a copy into glovebox's namespace.
   Never give glovebox RBAC to read across namespaces.
+- The chart refuses a roster ConfigMap name that starts with its own
+  `<fullname>-` prefix. The chart's own ConfigMaps use that prefix, and one
+  of them (the PowerSchool login-request ConfigMap) is writable by a
+  workload.
 
 Chart values (`journal.roster`):
 
@@ -209,13 +213,20 @@ belongs next to the roster, in the gitops repository that owns both.
   in it cannot read yet, and a member removed in it can still read. This
   holds even when the ConfigMap is deleted: the journal keeps serving with
   the last roster it loaded until the process restarts.
-- On a start (a new pod, a restart) there is no previous roster. Until the
-  file loads, reads answer `503 unavailable` (`ErrNoRoster`) and snapshots
-  answer `409 unknown_subject`. An invalid roster at start is therefore an
-  outage of the journal, never a fallback to an older roster.
-- Every failed reload counts in `glovebox_journal_roster_reload_errors_total`
-  and raises `GloveboxJournalRosterReloadFailing`. The log repeats an error
-  only when it changes.
+- On a start (a new pod, a restart) there is no previous roster. If the
+  ConfigMap does not exist, the pod does not start at all: the volume is
+  not optional (`FailedMount`), and item processing waits with it. If it
+  exists but does not parse, the journal has no roster until it does:
+  reads answer `503 unavailable` (`ErrNoRoster`) and snapshots answer
+  `409 unknown_subject`. An invalid roster at start is therefore an outage
+  of the journal, never a fallback to an older roster.
+- Every reload attempt sets `glovebox_journal_roster_reload_failing`: 1 when
+  it failed, 0 when it succeeded or the file was unchanged. The gauge stays
+  1 for as long as the file stays broken, and
+  `GloveboxJournalRosterReloadFailing` fires after 5 minutes of it. The log
+  repeats an error only when its text changes, and the error counter
+  `glovebox_journal_roster_reload_errors_total` counts only what is
+  reported, so neither is a reliable "still failing" signal.
 - `glovebox_journal_roster_info{sha256="..."}` is 1, labelled with the
   SHA-256 of the roster file's bytes as loaded. openclaw logs the same hash
   of the file it read. Equal hashes mean both applications use the same
@@ -349,10 +360,14 @@ journal:
 
 Alternatively, sync a `kubernetes.io/basic-auth` Secret yourself and set
 `journal.database.existingSecret`. Only the `username` and `password` keys
-are mounted, mode 0400. The CNPG role's `passwordSecret` and glovebox's
+are mounted, with `defaultMode` 0400. Kubelet makes them group-owned by the
+pod's `fsGroup` and ORs in group read (0440 in effect), which is how the
+non-root process reads them. The group is the pod's own, and the pod has
+one container. The Secret must exist before the journal is enabled: the
+volume is not optional, so without it the core pod does not start. The CNPG role's `passwordSecret` and glovebox's
 Secret come from the same Vault entry, so a rotation updates both.
 
-### 7.4 The database's NetworkPolicy admits the core on 5432
+### 7.4 The database's NetworkPolicy admits the core on 5432 (and callers reach 9095)
 
 The chart's own policy allows the core's egress to the database pods. If
 the database namespace restricts ingress, admit the glovebox core there:
@@ -382,6 +397,27 @@ spec:
           protocol: TCP
 ```
 
+The same applies in the other direction: every caller needs egress to the
+journal port in its own namespace's policy, for example the gateway:
+
+```yaml
+# In the gateway's egress rules:
+- to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: glovebox
+          app.kubernetes.io/component: scanner
+  ports:
+    - port: 9095
+      protocol: TCP
+```
+
+The chart's connector policy allows all egress, so writer connectors need
+nothing more. A cluster that runs `networkPolicy.enabled=false` under a
+namespace default-deny of its own must set `journal.networkPolicy.enabled=false`
+and write the journal's ingress and egress rules itself (they are listed in
+[upgrading.md](upgrading.md#record-journal)).
+
 ### 7.5 HelmRelease values: API server, peers, policy
 
 ```yaml
@@ -394,6 +430,12 @@ journal:
     # (kubectl get endpoints kubernetes -n default) and the kubernetes
     # Service's cluster IP, each a /32.
     kubernetesAPICIDRs: [192.0.2.10/32, 192.0.2.11/32, 10.96.0.1/32]
+    # Under Cilium, ipBlock does not match node addresses in the default
+    # policy-cidr-match-mode, and the API server runs on the nodes. There,
+    # render a CiliumNetworkPolicy to the kube-apiserver entity instead
+    # (kubernetesAPICIDRs then becomes optional):
+    # ciliumAPIServer:
+    #   enabled: true
     # Who may connect to port 9095, by label. Empty selectors are refused.
     from:
       - podSelector:
@@ -420,4 +462,9 @@ metrics:
 ```
 
 Connector write rights (`write_types`, `write_scopes`, `write_subjects`) and
-`networkPolicy.writerConnectors` arrive with the connectors' journal support.
+`networkPolicy.writerConnectors` arrive with the connectors' journal
+support. The chart refuses a `writerConnectors` entry whose ServiceAccount
+has no `write_types` in `journal.services`, a `journal.services` entry for
+the core's own ServiceAccount, and `serviceAccount.name: default`. It also
+refuses every value the core's validator would refuse (ports in use,
+ranges, `sslmode`), so values that render are values the core accepts.

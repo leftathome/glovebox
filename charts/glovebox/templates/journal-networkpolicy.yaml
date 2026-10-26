@@ -1,17 +1,23 @@
 {{- $j := .Values.journal }}
 {{- $np := $j.networkPolicy | default dict }}
 {{- if and $j.enabled .Values.networkPolicy.enabled $np.enabled }}
-{{- if not $np.kubernetesAPICIDRs }}
-{{- fail "journal.networkPolicy.kubernetesAPICIDRs is required: the journal authenticates every caller by asking the Kubernetes API server (TokenReview), which is not a pod a selector can match. List the control-plane addresses (kubectl get endpoints kubernetes -n default) and the kubernetes Service's cluster IP, each as a /32." }}
+{{- $cilium := ($np.ciliumAPIServer | default dict).enabled }}
+{{- if and (not $np.kubernetesAPICIDRs) (not $cilium) }}
+{{- fail "journal.networkPolicy.kubernetesAPICIDRs is required: the journal authenticates every caller by asking the Kubernetes API server (TokenReview), which is not a pod a selector can match. List the control-plane addresses (kubectl get endpoints kubernetes -n default) and the kubernetes Service's cluster IP, each as a /32. Under Cilium, set journal.networkPolicy.ciliumAPIServer.enabled instead (ipBlock does not match node addresses there)." }}
 {{- end }}
 {{- range $np.kubernetesAPICIDRs }}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/32$|^[0-9A-Fa-f:]+/128$" (toString .)) }}
-{{- fail (printf "journal.networkPolicy.kubernetesAPICIDRs: %q is not a single address (/32 or /128): this rule exists for the API server alone" (toString .)) }}
+{{- if not (include "glovebox.singleAddressCIDR" .) }}
+{{- fail (printf "journal.networkPolicy.kubernetesAPICIDRs: %q is not a single address (a valid IPv4 /32 or IPv6 /128): this rule exists for the API server alone" (toString .)) }}
 {{- end }}
 {{- end }}
 {{- range $i, $peer := $np.from }}
 {{- if not (kindIs "map" $peer) }}
 {{- fail (printf "journal.networkPolicy.from[%d] must be a NetworkPolicyPeer (podSelector / namespaceSelector / ipBlock)" $i) }}
+{{- end }}
+{{- with $peer.ipBlock }}
+{{- if not (include "glovebox.singleAddressCIDR" .cidr) }}
+{{- fail (printf "journal.networkPolicy.from[%d].ipBlock.cidr %q is not a single address (a valid IPv4 /32 or IPv6 /128): an address range would admit everything in it to the journal port; name pods by label instead" $i (toString .cidr)) }}
+{{- end }}
 {{- end }}
 {{- if not (or $peer.podSelector $peer.namespaceSelector $peer.ipBlock) }}
 {{- fail (printf "journal.networkPolicy.from[%d] selects nothing specific: an empty peer or empty selector admits every pod. Name the gateway's pods or namespace by label" $i) }}
@@ -35,7 +41,10 @@
 # adds exactly three things and nothing else:
 #   ingress to the journal port, from the named peers only (none by default);
 #   egress to the journal's PostgreSQL pods;
-#   egress to the API server, for TokenReview.
+#   egress to the API server, for TokenReview (kubernetesAPICIDRs; under
+#   Cilium, which does not match node addresses with ipBlock by default,
+#   journal-cilium-apiserver.yaml with ciliumAPIServer.enabled).
+# Callers need egress to this port in their own namespace's policy.
 # A NetworkPolicy cannot select a ServiceAccount: connector pods are matched
 # on the chart's own labels here, and which account may do what is decided
 # per request by the TokenReview allow-list (journal.services).
@@ -82,8 +91,9 @@ spec:
       ports:
         - port: {{ $db.port | default 5432 }}
           protocol: TCP
+    {{- with $np.kubernetesAPICIDRs }}
     - to:
-        {{- range $np.kubernetesAPICIDRs }}
+        {{- range . }}
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
@@ -92,4 +102,5 @@ spec:
         - port: {{ . }}
           protocol: TCP
         {{- end }}
+    {{- end }}
 {{- end }}

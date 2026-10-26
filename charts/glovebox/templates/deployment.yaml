@@ -273,8 +273,10 @@ spec:
         {{- /*
           Only the two keys the journal reads, never the whole Secret, and
           0400: kubelet makes the files group-owned by the pod's fsGroup
-          (and adds group read), so the non-root process reads them and no
-          other user does. journalChecks refuses a pod without an fsGroup.
+          and ORs in group read, so the effective mode is 0440: the non-root
+          process reads them through its group and no other user does. The
+          fsGroup is this pod's own, with one container in it, so the group
+          bit widens nothing. journalChecks refuses a pod without an fsGroup.
         */}}
         - name: journal-db
           secret:

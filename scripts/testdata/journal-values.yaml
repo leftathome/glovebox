@@ -15,6 +15,10 @@ journal:
       counts: true
     openclaw/glovebox-journal-admin:
       admin: true
+    openclaw/glovebox-glovebox-connector-powerschool:
+      write_types: [assignment]
+      write_scopes: {source: [powerschool]}
+      write_subjects: roster_subjects
   recordTypes:
     - name: assignment
       schema_version: 1

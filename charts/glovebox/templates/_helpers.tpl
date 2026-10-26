@@ -661,7 +661,7 @@ journal.enabled.
 {{- fail "journal.database.externalSecret.enabled needs journal.database.externalSecret.path, the Vault KV path of the journal's database credentials" -}}
 {{- end -}}
 {{- if not (.Values.podSecurityContext | default dict).fsGroup -}}
-{{- fail "journal.enabled needs podSecurityContext.fsGroup: the database credentials are mounted mode 0400 and only the fsGroup makes them readable to the non-root process" -}}
+{{- fail "journal.enabled needs podSecurityContext.fsGroup: the database credentials are mounted with defaultMode 0400, and only the fsGroup (which kubelet applies as group ownership plus group read, 0440 in effect) makes them readable to the non-root process" -}}
 {{- end -}}
 {{- if ne (toString $j.database.sslmode) "require" -}}
 {{- fail "journal.database.sslmode must be \"require\": plaintext is refused, and verify-ca / verify-full need the CNPG CA certificate mounted, which this chart does not do yet (glovebox-wekc.18.2)" -}}
@@ -679,6 +679,126 @@ journal.enabled.
 {{- end -}}
 {{- if and ($j.networkPolicy | default dict).enabled (not .Values.networkPolicy.enabled) -}}
 {{- fail "journal.networkPolicy.enabled needs networkPolicy.enabled: the journal's policy only adds to the core's (which isolates the pod and allows DNS); without it the journal port would be open to every pod. Set journal.networkPolicy.enabled=false only if the journal's policy is managed outside this chart" -}}
+{{- end -}}
+{{- /*
+  The Go validator's ranges (internal/config/journal.go, validate), so that
+  values that render are values the core accepts.
+*/ -}}
+{{- $port := int $j.port -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "journal.port must be 1-65535, got %v" $j.port) -}}
+{{- end -}}
+{{- $inUse := dict -}}
+{{- if .Values.metrics.port -}}
+{{- $_ := set $inUse (toString (int .Values.metrics.port)) "metrics.port" -}}
+{{- end -}}
+{{- $_ := set $inUse (toString (int .Values.config.metricsPort)) "config.metricsPort" -}}
+{{- if .Values.config.ingest.enabled -}}
+{{- $_ := set $inUse (toString (int .Values.config.ingest.port)) "config.ingest.port" -}}
+{{- if include "glovebox.bearerPortSplit" . -}}
+{{- $_ := set $inUse (include "glovebox.bearerPort" .) "config.ingest.bearerPort" -}}
+{{- end -}}
+{{- if ne (toString .Values.ingest.tls.mode) "disabled" -}}
+{{- $tls := int .Values.ingest.tls.port -}}
+{{- if eq $tls 0 -}}{{- $tls = add1 (int .Values.config.ingest.port) -}}{{- end -}}
+{{- $_ := set $inUse (toString $tls) "ingest.tls.port" -}}
+{{- end -}}
+{{- end -}}
+{{- with index $inUse (toString $port) -}}
+{{- fail (printf "journal.port %d is already used by %s" $port .) -}}
+{{- end -}}
+{{- if not (and (ge (int $j.requestTimeoutSeconds) 1) (le (int $j.requestTimeoutSeconds) 600)) -}}
+{{- fail (printf "journal.requestTimeoutSeconds must be 1-600, got %v" $j.requestTimeoutSeconds) -}}
+{{- end -}}
+{{- if not (and (ge (int $j.scanTimeoutSeconds) 1) (le (int $j.scanTimeoutSeconds) 300)) -}}
+{{- fail (printf "journal.scanTimeoutSeconds must be 1-300, got %v" $j.scanTimeoutSeconds) -}}
+{{- end -}}
+{{- if ne (toString $j.roster.format) "openclaw-household-v1" -}}
+{{- fail (printf "journal.roster.format must be openclaw-household-v1 (the only roster format), got %q" (toString $j.roster.format)) -}}
+{{- end -}}
+{{- if not (and (ge (int $j.roster.reloadSeconds) 1) (le (int $j.roster.reloadSeconds) 300)) -}}
+{{- fail (printf "journal.roster.reloadSeconds must be 1-300, got %v" $j.roster.reloadSeconds) -}}
+{{- end -}}
+{{- $mf := float64 $j.removalGuard.maxFraction -}}
+{{- if not (and (gt $mf 0.0) (lt $mf 1.0)) -}}
+{{- fail (printf "journal.removalGuard.maxFraction must be strictly between 0 and 1, got %v: 1 or more would let a snapshot remove every record unheld, 0 or less would hold every removal" $j.removalGuard.maxFraction) -}}
+{{- end -}}
+{{- if not (and (ge (int $j.removalGuard.minKeys) 0) (le (int $j.removalGuard.minKeys) 1000)) -}}
+{{- fail (printf "journal.removalGuard.minKeys must be 0-1000, got %v" $j.removalGuard.minKeys) -}}
+{{- end -}}
+{{- if not (toString $j.database.name) -}}
+{{- fail "journal.database.name must not be empty" -}}
+{{- end -}}
+{{- if regexMatch "[,/?]" (toString $j.database.host) -}}
+{{- fail "journal.database.host must be a single host name (no ',', '/' or '?')" -}}
+{{- end -}}
+{{- if not (and (ge (int $j.database.port) 1) (le (int $j.database.port) 65535)) -}}
+{{- fail (printf "journal.database.port must be 1-65535, got %v" $j.database.port) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $j.staleness -}}
+{{- if hasKey $seen (toString .prefix) -}}
+{{- fail (printf "journal.staleness: prefix %q is listed twice" (toString .prefix)) -}}
+{{- end -}}
+{{- $_ := set $seen (toString .prefix) true -}}
+{{- end -}}
+{{- /* Identity cross-checks. */ -}}
+{{- $core := include "glovebox.serviceAccountName" . -}}
+{{- if eq $core "default" -}}
+{{- fail "journal.enabled refuses serviceAccount.name=default: the core's account gets the TokenReview grant and a mounted token, and the namespace's default account is the one every pod without an account of its own runs as" -}}
+{{- end -}}
+{{- $services := $j.services | default dict -}}
+{{- $coreKey := printf "%s/%s" .Release.Namespace $core -}}
+{{- if hasKey $services $coreKey -}}
+{{- fail (printf "journal.services must not list the core's own ServiceAccount %q: the core serves the journal and needs no rights in it" $coreKey) -}}
+{{- end -}}
+{{- range (($j.networkPolicy | default dict).writerConnectors | default list) -}}
+{{- $key := printf "%s/%s" $.Release.Namespace (include "glovebox.connectorServiceAccountByKey" (dict "name" (toString .) "root" $)) -}}
+{{- $entry := index $services $key | default dict -}}
+{{- if not $entry.write_types -}}
+{{- fail (printf "journal.networkPolicy.writerConnectors names %q, but journal.services gives its ServiceAccount %q no write_types: only connectors with write rights may reach the journal port" (toString .) $key) -}}
+{{- end -}}
+{{- end -}}
+{{- $fn := include "glovebox.fullname" . -}}
+{{- $cm := toString $j.roster.configMap -}}
+{{- if or (eq $cm $fn) (hasPrefix (printf "%s-" $fn) $cm) -}}
+{{- fail (printf "journal.roster.configMap %q is a name this chart uses for its own ConfigMaps (%s-*), some of which a workload may write (the PowerSchool login-request ConfigMap). The roster must be a ConfigMap only gitops writes; name it outside the chart's prefix" $cm $fn) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when the argument is a CIDR naming exactly one address: a dotted
+IPv4 address with every octet 0-255 and /32, or an IPv6 address (at most one
+"::", 1-4 hex digits per group, 8 groups without "::" and at most 7 with
+it) and /128. "" otherwise.
+*/}}
+{{- define "glovebox.singleAddressCIDR" -}}
+{{- $parts := splitList "/" (toString .) -}}
+{{- if eq (len $parts) 2 -}}
+{{- $a := index $parts 0 -}}
+{{- $p := index $parts 1 -}}
+{{- $octet := "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])" -}}
+{{- if eq $p "32" -}}
+{{- if regexMatch (printf "^(%s\\.){3}%s$" $octet $octet) $a -}}true{{- end -}}
+{{- else if and (eq $p "128") (regexMatch "^[0-9A-Fa-f:]+$" $a) (not (contains ":::" $a)) -}}
+{{- $halves := splitList "::" $a -}}
+{{- $ok := true -}}
+{{- $groups := 0 -}}
+{{- if gt (len $halves) 2 -}}{{- $ok = false -}}{{- end -}}
+{{- range $halves -}}
+{{- if . -}}
+{{- range (splitList ":" .) -}}
+{{- if not (regexMatch "^[0-9A-Fa-f]{1,4}$" .) -}}{{- $ok = false -}}{{- end -}}
+{{- $groups = add1 $groups -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (len $halves) 1 -}}
+{{- if ne $groups 8 -}}{{- $ok = false -}}{{- end -}}
+{{- else if gt $groups 7 -}}{{- $ok = false -}}
+{{- end -}}
+{{- if $ok -}}true{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

@@ -2,21 +2,27 @@
 Alerts of the record journal (spec 4.15; metrics in internal/journal/jmetrics),
 with metrics.prometheusRule.enabled and journal.enabled. The connectors' spool
 alert belongs to their own rules (Part B). Every description is the runbook
-entry: what it means, what keeps working, where to look.
+entry: what it means, what keeps working, where to look. Expressions keep
+metrics.prometheusRule.extraSelector and aggregate by namespace, so several
+releases sharing a Prometheus alert separately.
 
-Counters (scan withheld, roster reload errors, visibility mismatches) have no
-series until their first increment, and increase() over a series whose first
-sample is already 1 is 0. Each counter alert therefore also fires on a series
-that is non-zero now and did not exist one window ago, matched per series
-(pod and instance labels included), so the first increment after a start is
-not lost.
+Counters (scan withheld, visibility mismatches) have no series until their
+first increment, and increase() over a series whose first sample is already 1
+is 0. Each counter alert therefore also fires on a series that is non-zero now
+and did not exist one window ago, matched per series (pod and instance labels
+included), so the first increment after a start is not lost.
+
+The roster alert uses the glovebox_journal_roster_reload_failing gauge, which
+every reload attempt sets, not the error counter: the core reports a
+repeated error once, so the counter stops rising while the roster stays
+broken.
 
 The staleness alert has two halves: the newest snapshot under the prefix is
-older than maxAgeHours, or there has been no sample for the prefix at all for
-maxAgeHours (absent_over_time). A prefix that never received a snapshot has
-no series (jmetrics.SetLastSnapshot); plain absent() would also fire at every
-enable and after every restart until the next snapshot, which across a
-weekend is a false page.
+older than maxAgeHours; or there has been no sample for the prefix for
+maxAgeHours AND the journal was already up at the start of that window
+(glovebox_journal_ready present maxAgeHours ago). A prefix that never received
+a snapshot has no series, and the values live in memory, so plain absent()
+would page at every enable and after every restart until the next snapshot.
 */}}
 {{- $pr := .Values.metrics.prometheusRule | default dict }}
 {{- if and .Values.journal.enabled $pr.enabled }}
@@ -26,14 +32,14 @@ weekend is a false page.
 {{- $q := ternary (printf "{%s}" $sel) "" (ne $sel "") }}
 {{- $sev := $pr.severity | default "warning" }}
 {{- $counterFires := dict }}
-{{- range $metric, $window := dict "glovebox_journal_scan_withheld_total" "1h" "glovebox_journal_roster_reload_errors_total" "15m" "glovebox_journal_visibility_mismatch_total" "1h" }}
+{{- range $metric, $window := dict "glovebox_journal_scan_withheld_total" "1h" "glovebox_journal_visibility_mismatch_total" "24h" }}
 {{- $s := printf "%s%s" $metric $q }}
-{{- $_ := set $counterFires $metric (printf "sum(increase(%s[%s])) > 0 or max((%s > 0) unless (%s offset %s))" $s $window $s $s $window) }}
+{{- $_ := set $counterFires $metric (printf "sum by (namespace) (increase(%s[%s])) > 0 or max by (namespace) ((%s > 0) unless (%s offset %s))" $s $window $s $s $window) }}
 {{- end }}
 {{- $rules := list
   (dict
     "alert" "GloveboxJournalSnapshotHeld"
-    "expr" (printf "max(glovebox_journal_held_snapshots%s) > 0" $q)
+    "expr" (printf "max by (namespace) (glovebox_journal_held_snapshots%s) > 0" $q)
     "for" "5m"
     "labels" (dict "severity" $sev)
     "annotations" (dict
@@ -41,44 +47,45 @@ weekend is a false page.
       "description" "A complete snapshot would have removed more of a scope's records than journal.removalGuard allows, so nothing from it was applied (the connector was told held and dropped it from its spool). Usually a source that returned a partial answer (portal error, term change), sometimes a real mass removal. A later snapshot of the scope that does not trip the guard is applied normally and discards the held one automatically, so this may clear on its own at the next poll. Otherwise look at the held snapshot (its stats say what applying would do) on the journal's admin endpoints, compare with the source, then confirm or discard it."))
   (dict
     "alert" "GloveboxJournalNotReady"
-    "expr" (printf "min(glovebox_journal_ready%s) == 0 or absent(glovebox_journal_ready%s)" $q $q)
+    "expr" (printf "min by (namespace) (glovebox_journal_ready%s) == 0 or absent(glovebox_journal_ready%s)" $q $q)
     "for" "15m"
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "The record journal is not ready"
-      "description" "The journal's database, schema sync or roster is not in place, so every journal request is answered 503 and connectors keep their snapshots in their spools (nothing is lost while the spool has room). Item scanning and delivery are unaffected. The core's log says which dependency is missing (\"journal not ready\"). Check, in order: the database Secret (journal.database.existingSecret) exists with username and password; the CNPG cluster is up and the role can log in; the NetworkPolicy egress to the database and the API server (journal.networkPolicy); the roster ConfigMap exists and parses. Absent means the core is down or runs an image without the journal."))
+      "description" "Ready 0: the core is running but the journal cannot reach its database, finish its schema sync or load the roster, so every journal request is answered 503 and connectors keep their snapshots in their spools (nothing is lost while the spool has room); item scanning and delivery are unaffected. The core's log says which (\"journal not ready\"): check the CNPG cluster is up and the role can log in, the NetworkPolicy egress to the database and the API server (journal.networkPolicy), and that the roster parses (GloveboxJournalRosterReloadFailing). Absent: no core is exporting the journal at all. A missing database Secret or roster ConfigMap does that -- the volumes are not optional, so the core pod does not start (kubectl describe pod: FailedMount) and item processing stops too -- as does a core running an image without the journal."))
   (dict
     "alert" "GloveboxJournalScanWithheld"
     "expr" (index $counterFires "glovebox_journal_scan_withheld_total")
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "Journal text values were withheld by the content scanner"
-      "description" "A text value in a snapshot failed the content scan; it is stored but readers see \"withheld: failed content scan\" in its place, so a person relying on that field sees nothing. Review the withheld values (record_type label) in the journal. A false positive is released by a scanner rules update (bump journal.scannerVersion) followed by a rescan; a true positive means the source sent something hostile -- look at that connector's input."))
+      "description" "A text value in a snapshot failed the content scan; it is stored but readers see \"withheld: failed content scan\" in its place, so a person relying on that field sees nothing. Review the withheld values (record_type label) in the journal. A false positive is released by a rescan once the scanning rules no longer flag it: a rules update changes the stored scanner version by itself (the rules hash is appended to journal.scannerVersion), so bump journal.scannerVersion only for a scanner or binary change. A true positive means the source sent something hostile -- look at that connector's input."))
   (dict
     "alert" "GloveboxJournalRosterReloadFailing"
-    "expr" (index $counterFires "glovebox_journal_roster_reload_errors_total")
+    "expr" (printf "max by (namespace) (glovebox_journal_roster_reload_failing%s) == 1" $q)
+    "for" "5m"
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "The household roster no longer loads"
-      "description" "The roster ConfigMap changed (or was removed) and the new content does not parse as journal.roster.format. The journal keeps using the previous roster, so grants do not follow the change: a member added there cannot read yet, and a member removed there can still read. Fix the ConfigMap in gitops (it can only be changed through gitops); compare glovebox_journal_roster_info's sha256 with the hash openclaw logs."))
+      "description" "The latest roster reloads failed: the ConfigMap's file is missing, unreadable or does not parse as journal.roster.format (unknown keys are refused too). The journal keeps using the previous roster, so grants do not follow the change: a member added there cannot read yet, and a member removed there can still read. A deleted ConfigMap is not a revocation. Fix the ConfigMap in gitops (it can only be changed through gitops; docs/journal-roster.md); compare glovebox_journal_roster_info's sha256 with the hash openclaw logs."))
   (dict
     "alert" "GloveboxJournalVisibilityMismatch"
     "expr" (index $counterFires "glovebox_journal_visibility_mismatch_total")
     "labels" (dict "severity" "critical")
     "annotations" (dict
       "summary" "The journal's SQL and Go visibility checks disagree"
-      "description" "A row the database's visibility filter returned was refused by the Go visibility check, and was not served. The two must always agree; any disagreement is a bug in the journal's access control, and the next one could go the other way. Treat it as a security incident: capture the core's log around the alert, do not widen any grant, and consider disabling the journal's readers until the cause is found."))
+      "description" "A row the database's visibility filter returned was refused by the Go visibility check, and was not served. The two must always agree; any disagreement is a bug in the journal's access control, and the next one could go the other way. Treat it as a security incident: capture the core's log around the alert, do not widen any grant, and consider disabling the journal's readers until the cause is found. The alert stays up for 24h after the last mismatch."))
 }}
 {{- range .Values.journal.staleness }}
 {{- $h := int .maxAgeHours }}
 {{- $m := printf "glovebox_journal_last_snapshot_timestamp_seconds{prefix=%q%s}" (toString .prefix) $extra }}
 {{- $rules = append $rules (dict
       "alert" "GloveboxJournalNoSnapshots"
-      "expr" (printf "time() - max by (prefix) (%s) > %d or absent_over_time(%s[%dh])" $m (mul $h 3600) $m $h)
+      "expr" (printf "time() - max by (namespace, prefix) (%s) > %d or (absent_over_time(%s[%dh]) and on() present_over_time(glovebox_journal_ready%s[1h] offset %dh))" $m (mul $h 3600) $m $h $q $h)
       "labels" (dict "severity" $sev "prefix" (toString .prefix))
       "annotations" (dict
         "summary" (printf "No journal snapshot under %s for %dh" (toString .prefix) $h)
-        "description" "The connector writing these scopes has stopped sending snapshots, or its spool cannot deliver them, so the journal's state for them is getting old. Check the connector's log and spool metrics, and GloveboxJournalNotReady. School holidays trip this too.")) }}
+        "description" "The connector writing these scopes has stopped sending snapshots, or its spool cannot deliver them, so the journal's state for them is getting old. Check the connector's log and spool metrics, and GloveboxJournalNotReady. After an enable or a restart the alert waits a full window before treating a missing series as stale. School holidays trip this too.")) }}
 {{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule

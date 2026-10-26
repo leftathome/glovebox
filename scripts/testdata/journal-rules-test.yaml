@@ -1,0 +1,116 @@
+# promtool unit tests for the journal's alerts. scripts/test-chart-journal.sh
+# renders the chart with journal-values.yaml, writes the PrometheusRule's
+# groups to rules.yaml next to a copy of this file and runs
+# `promtool test rules`. promtool's clock starts at 0.
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # A roster that stays broken: every reload attempt sets the gauge, so it
+  # stays 1 and the alert keeps firing (the error counter would have stopped
+  # rising after the first, deduplicated, report).
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_roster_reload_failing{pod="a"}'
+        values: '0x10 1x120'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      - eval_time: 40m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      - eval_time: 120m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  # Fixed: the gauge returns to 0 and the alert clears.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_roster_reload_failing{pod="a"}'
+        values: '0x10 1x20 0x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      - eval_time: 40m
+        alertname: GloveboxJournalRosterReloadFailing
+        exp_alerts: []
+
+  # Staleness, fresh enable: the journal is up from t=0 and nothing has been
+  # written under the prefix. No page until a full window (96h) has passed
+  # with the journal up; a page after it.
+  - interval: 1h
+    input_series:
+      - series: 'glovebox_journal_ready{pod="a"}'
+        values: '1x200'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GloveboxJournalNoSnapshots
+        exp_alerts: []
+      - eval_time: 95h
+        alertname: GloveboxJournalNoSnapshots
+        exp_alerts: []
+      - eval_time: 98h
+        alertname: GloveboxJournalNoSnapshots
+        exp_alerts:
+          - exp_labels: {severity: warning, prefix: "source=powerschool/"}
+  # Staleness, restart: a snapshot was seen before the restart and the new
+  # process has none in memory yet. No page.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_ready{pod="a"}'
+        values: '1x10'
+      - series: 'glovebox_journal_ready{pod="b"}'
+        values: '_x10 1x300'
+      - series: 'glovebox_journal_last_snapshot_timestamp_seconds{pod="a",prefix="source=powerschool/"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: GloveboxJournalNoSnapshots
+        exp_alerts: []
+  # Staleness, old value: the newest snapshot is more than 96h old.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_last_snapshot_timestamp_seconds{pod="a",prefix="source=powerschool/"}'
+        values: '-400000x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GloveboxJournalNoSnapshots
+        exp_alerts:
+          - exp_labels: {severity: warning, prefix: "source=powerschool/"}
+
+  # Visibility mismatch: the very first increment after a start (series
+  # absent -> 1) pages, and the page lasts the 24h window.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_visibility_mismatch_total{pod="a"}'
+        values: '_x10 1x2000'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: GloveboxJournalVisibilityMismatch
+        exp_alerts:
+          - exp_labels: {severity: critical}
+      - eval_time: 20h
+        alertname: GloveboxJournalVisibilityMismatch
+        exp_alerts:
+          - exp_labels: {severity: critical}
+      - eval_time: 25h
+        alertname: GloveboxJournalVisibilityMismatch
+        exp_alerts: []
+
+  # Held snapshot.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_held_snapshots{pod="a"}'
+        values: '0x5 1x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: GloveboxJournalSnapshotHeld
+        exp_alerts:
+          - exp_labels: {severity: warning}

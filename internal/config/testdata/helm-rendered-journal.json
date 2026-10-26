@@ -35,7 +35,7 @@
       "max_fraction": 0.3,
       "min_keys": 3
     },
-    "services": {"openclaw/glovebox-journal-admin":{"admin":true},"openclaw/openclaw-gateway":{"counts":true,"read":true,"readers":"*"}},
+    "services": {"openclaw/glovebox-glovebox-connector-powerschool":{"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects","write_types":["assignment"]},"openclaw/glovebox-journal-admin":{"admin":true},"openclaw/openclaw-gateway":{"counts":true,"read":true,"readers":"*"}},
     "record_types": [{"default_audience":["subject","guardians"],"fields":{"due":{"type":"date"},"title":{"type":"string"}},"name":"assignment","owner":"powerschool","schema_version":1}],
     "rules": [],
     "staleness_prefixes": ["source=powerschool/"]

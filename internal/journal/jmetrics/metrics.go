@@ -25,9 +25,12 @@ type Metrics struct {
 
 	held  atomic.Int64
 	ready atomic.Int64
-	mu    sync.Mutex
-	sha   string
-	last  map[string]float64
+	// failing is the source of the roster_reload_failing gauge, read at
+	// every collection (SetRosterReloadFailingSource).
+	failing atomic.Pointer[func() bool]
+	mu      sync.Mutex
+	sha     string
+	last    map[string]float64
 }
 
 // New registers the instruments on mp.
@@ -68,6 +71,11 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	failing, err := meter.Int64ObservableGauge("glovebox_journal_roster_reload_failing",
+		metric.WithDescription("1 while the latest roster reload failed (the previous roster stays in use), else 0"))
+	if err != nil {
+		return nil, err
+	}
 	last, err := meter.Float64ObservableGauge("glovebox_journal_last_snapshot_timestamp_seconds",
 		metric.WithDescription("Newest snapshot received under a configured scope prefix"))
 	if err != nil {
@@ -76,6 +84,11 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		o.ObserveInt64(held, m.held.Load())
 		o.ObserveInt64(ready, m.ready.Load())
+		var f int64
+		if src := m.failing.Load(); src != nil && (*src)() {
+			f = 1
+		}
+		o.ObserveInt64(failing, f)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.sha != "" {
@@ -85,7 +98,7 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 			o.ObserveFloat64(last, ts, metric.WithAttributes(attribute.String("prefix", p)))
 		}
 		return nil
-	}, held, ready, roster, last)
+	}, held, ready, roster, failing, last)
 	return m, err
 }
 
@@ -136,11 +149,35 @@ func (m *Metrics) Request(endpoint string, code int) {
 	}
 }
 
-// RosterReloadError counts a failed reload.
+// RosterReloadError counts a failed reload. It counts what the caller
+// reports; roster.Holder.Watch reports a repeated error once, so the
+// counter is not a reliable "still failing" signal -- the alert uses the
+// roster_reload_failing gauge.
 func (m *Metrics) RosterReloadError() {
 	if m != nil {
 		add(m.rosterErrors, 1)
 	}
+}
+
+// SetRosterReloadFailingSource names the function the
+// glovebox_journal_roster_reload_failing gauge reads at every collection:
+// 1 when it returns true, 0 otherwise (and 0 while no source is set).
+//
+// Contract for the core's wiring (Task 28): call it once, right after
+// creating the roster.Holder and before starting Holder.Watch, with
+// holder.Failing. Every Reload attempt sets Failing, so the gauge follows
+// each tick without any per-tick call, and stays 1 for as long as the file
+// stays broken -- which Watch's deduplicated reports cannot show. A nil
+// function clears the source.
+func (m *Metrics) SetRosterReloadFailingSource(f func() bool) {
+	if m == nil {
+		return
+	}
+	if f == nil {
+		m.failing.Store(nil)
+		return
+	}
+	m.failing.Store(&f)
 }
 
 // SetHeld sets the held-snapshot gauge.
@@ -178,10 +215,14 @@ func (m *Metrics) SetRosterSHA(sha string) {
 // label.
 //
 // A prefix that has never received a snapshot has no series at all (Gauges
-// omits it), so an alert on staleness must also fire on absence: use
-// `time() - max by (prefix) (glovebox_journal_last_snapshot_timestamp_seconds) > N
-// or absent(glovebox_journal_last_snapshot_timestamp_seconds{prefix="..."})`
-// (Task 29).
+// omits it), and the values live in memory, so a restart drops them until
+// the next snapshot. The chart's staleness alert (journal-prometheusrule.yaml)
+// therefore fires on an old value, or on absence for the whole window only
+// when the journal itself was already up at the window's start:
+// `time() - max by (prefix) (M{prefix="..."}) > W
+// or (absent_over_time(M{prefix="..."}[W]) and on() present_over_time(glovebox_journal_ready[1h] offset W))`
+// with M glovebox_journal_last_snapshot_timestamp_seconds. Plain absent()
+// would page at every enable and after every restart.
 func (m *Metrics) SetLastSnapshot(prefix string, t time.Time) {
 	if m == nil {
 		return

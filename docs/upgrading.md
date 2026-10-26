@@ -25,8 +25,11 @@ against `origin/main`), so upgrading needs no action.
   read-only mount of the roster ConfigMap at `/etc/glovebox-roster` (whole,
   through `items`, never `subPath`, so a gitops change reaches the process),
   and a read-only mount of the database Secret at `/etc/glovebox-journal-db`
-  holding only `username` and `password`, mode 0400, readable through the
-  pod's `fsGroup` (the render refuses a pod without one).
+  holding only `username` and `password` with `defaultMode` 0400. Kubelet
+  makes them group-owned by the pod's `fsGroup` and ORs in group read, so
+  the effective mode is 0440. That is how the non-root process reads them,
+  and it widens nothing: the group is this pod's own and the pod has one
+  container (the render refuses a pod without an `fsGroup`).
 - `<fullname>-journal` Service (ClusterIP, port 9095). Plain HTTP inside the
   pod network; every request is authenticated by a ServiceAccount token with
   audience `glovebox-journal`, verified by TokenReview.
@@ -38,8 +41,23 @@ against `origin/main`), so upgrading needs no action.
   9095 only from the connectors in `journal.networkPolicy.writerConnectors`
   and the peers in `journal.networkPolicy.from` (none by default; empty
   selectors are refused), egress to the database pods and to the API server
-  addresses in `journal.networkPolicy.kubernetesAPICIDRs` (single addresses
-  only). It needs `networkPolicy.enabled`.
+  addresses in `journal.networkPolicy.kubernetesAPICIDRs`. Every CIDR there
+  and every `ipBlock` peer must be a single address (IPv4 /32 or IPv6
+  /128). It needs `networkPolicy.enabled`. A cluster that runs
+  `networkPolicy.enabled=false` under a namespace default-deny of its own
+  must set `journal.networkPolicy.enabled=false` and write equivalent rules
+  itself. Callers need egress to 9095 in their own namespace's policy: the
+  openclaw gateway, and each writer connector (the chart's connector policy
+  allows all egress).
+- Under Cilium, `kubernetesAPICIDRs` is not enough: in Cilium's default
+  `policy-cidr-match-mode` a NetworkPolicy `ipBlock` does not match node
+  addresses, and the API server runs on the control-plane nodes, so every
+  TokenReview would be dropped and the journal would answer 503
+  `auth_unavailable`. Set `journal.networkPolicy.ciliumAPIServer.enabled`
+  to render `<fullname>-journal-apiserver`, a CiliumNetworkPolicy allowing
+  egress `toEntities: [kube-apiserver]` on `kubernetesAPIPorts`
+  (`kubernetesAPICIDRs` then becomes optional). Flip it at the Cilium
+  cutover, together with the other ipBlock-to-API-server policies.
 - With `journal.database.externalSecret.enabled`, an ExternalSecret writing
   `<fullname>-journal-db` from Vault.
 - With `metrics.prometheusRule.enabled`, the `<fullname>-journal`
@@ -49,9 +67,13 @@ against `origin/main`), so upgrading needs no action.
   `GloveboxJournalNoSnapshots` per `journal.staleness` entry. Each
   description is its runbook.
 
-The core pod's readiness does not wait for the journal: a journal without its
-database or roster answers 503 while items keep flowing, and
-`GloveboxJournalNotReady` reports it from the `glovebox_journal_ready` gauge.
+The core pod's readiness does not wait for the journal: a journal whose
+database is unreachable (or whose schema sync, or roster parse, has not
+succeeded) answers 503 while items keep flowing, and `GloveboxJournalNotReady`
+reports it from the `glovebox_journal_ready` gauge. **A missing database
+Secret or roster ConfigMap is different**: those volumes are not optional,
+so the core pod does not start at all (`FailedMount`), and item processing
+stops with it. Create both before enabling the journal.
 
 ### Prerequisites in gitops (before enabling)
 
