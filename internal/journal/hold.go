@@ -39,6 +39,7 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 	if mayWrite == nil {
 		return Outcome{}, errors.New("journal: ConfirmHeld needs a write check")
 	}
+	start := time.Now()
 	subject, err := j.snapshotSubject(ctx, id)
 	if err != nil {
 		return Outcome{}, err
@@ -80,12 +81,6 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
 			return nil
 		}
-		// The payload is only trusted if it still describes the row it is stored in.
-		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
-			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
-				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
-			return nil
-		}
 		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {
 			out.Rejection = rej
 			return nil
@@ -105,6 +100,7 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 		return err
 	})
 	if err == nil && out.Rejection == nil {
+		j.o.Metrics.ApplyDuration(time.Since(start))
 		ef.emit()
 		j.o.Metrics.Snapshot(recordType, out.Status)
 	}
@@ -113,12 +109,15 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 
 // DiscardHeld marks a held snapshot discarded; nothing is applied.
 func (j *Journal) DiscardHeld(ctx context.Context, id string) error {
-	res, err := j.db.ExecContext(ctx, `UPDATE snapshot SET status = 'discarded' WHERE id = $1::uuid AND status = 'held'`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 1 {
+	var recordType string
+	err := j.db.QueryRowContext(ctx, `UPDATE snapshot SET status = 'discarded'
+		WHERE id = $1::uuid AND status = 'held' RETURNING record_type`, id).Scan(&recordType)
+	if err == nil {
+		j.o.Metrics.Snapshot(recordType, journalapi.StatusDiscarded)
 		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
 	if _, err := j.snapshotSubject(ctx, id); err != nil {
 		return err

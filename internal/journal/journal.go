@@ -20,6 +20,9 @@ type Recorder interface {
 	Snapshot(recordType, status string)
 	Event(recordType, kind, importance string)
 	ScanWithheld(recordType string, n int)
+	// ApplyDuration records the latency of successful applies and confirms
+	// only; a refusal or an error records none (failures are visible through
+	// glovebox_journal_api_requests_total{code}).
 	ApplyDuration(d time.Duration)
 	VisibilityMismatch()
 }

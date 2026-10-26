@@ -123,8 +123,8 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 	if errors.Is(err, errSnapshotIDReused) {
 		out, err = Outcome{Rejection: reusedRejection()}, nil
 	}
-	j.o.Metrics.ApplyDuration(time.Since(start))
 	if err == nil && out.Rejection == nil {
+		j.o.Metrics.ApplyDuration(time.Since(start))
 		ef.emit()
 		status := out.Status
 		if resend {
@@ -212,10 +212,23 @@ func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.N
 		return Outcome{}, err
 	}
 	// Older held snapshots of the scope would now be late (4.5).
-	_, err = tx.ExecContext(ctx, `UPDATE snapshot SET status = 'discarded'
+	res, err := tx.ExecContext(ctx, `UPDATE snapshot SET status = 'discarded'
 		WHERE record_type = $1 AND scope = $2 AND status = 'held' AND observed_at < $3`,
 		n.Type.Name, n.ScopeKey, n.ObservedAt)
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	// Each snapshot that leaves "held" for "discarded" is one more answer of
+	// that status, so the held series can be reconciled with the gauge.
+	if discarded, _ := res.RowsAffected(); discarded > 0 {
+		recordType := n.Type.Name
+		ef.add(func() {
+			for i := int64(0); i < discarded; i++ {
+				j.o.Metrics.Snapshot(recordType, journalapi.StatusDiscarded)
+			}
+		})
+	}
+	return out, nil
 }
 
 func (j *Journal) storeSnapshot(ctx context.Context, tx *sql.Tx, n *record.Normalized, writer string, payload []byte, confirmID string, out Outcome) error {
