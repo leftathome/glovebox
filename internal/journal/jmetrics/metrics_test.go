@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -206,5 +207,86 @@ func TestLabelAllowlistCatchesAForbiddenLabel(t *testing.T) {
 	sort.Strings(want)
 	if strings.Join(got, ",") == strings.Join(want, ",") {
 		t.Error("a data_subject label would pass the allowlist")
+	}
+}
+
+// sampleValue finds the sample of a metric with exactly these labels
+// (otel_scope_* ignored) and returns its value.
+func sampleValue(t *testing.T, body, name string, labels map[string]string) float64 {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		m := sampleLine.FindStringSubmatch(line)
+		if m == nil || m[1] != name {
+			continue
+		}
+		got := map[string]string{}
+		for _, l := range regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"`).FindAllStringSubmatch(m[2], -1) {
+			if !strings.HasPrefix(l[1], "otel_scope_") {
+				got[l[1]] = l[2]
+			}
+		}
+		if len(got) != len(labels) {
+			continue
+		}
+		match := true
+		for k, v := range labels {
+			if got[k] != v {
+				match = false
+			}
+		}
+		if !match {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(line[len(m[0]):]), 64)
+		if err != nil {
+			t.Fatalf("sample %q: %v", line, err)
+		}
+		return v
+	}
+	t.Fatalf("no sample %s%v in:\n%s", name, labels, body)
+	return 0
+}
+
+func TestExactSampleValues(t *testing.T) {
+	core, m := newPair(t)
+	exercise(m)
+	m.SetHeld(1)
+	body := scrape(t, core)
+	for _, c := range []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"glovebox_journal_snapshots_total", map[string]string{"record_type": "assignment", "status": "applied"}, 1},
+		{"glovebox_journal_events_total", map[string]string{"record_type": "attendance_day", "kind": "created", "importance": "high"}, 1},
+		{"glovebox_journal_scan_withheld_total", map[string]string{"record_type": "assignment"}, 2},
+		{"glovebox_journal_api_requests_total", map[string]string{"endpoint": "records", "code": "200"}, 1},
+		{"glovebox_journal_roster_reload_errors_total", map[string]string{}, 1},
+		{"glovebox_journal_visibility_mismatch_total", map[string]string{}, 1},
+		{"glovebox_journal_held_snapshots", map[string]string{}, 1},
+		{"glovebox_journal_ready", map[string]string{}, 1},
+		{"glovebox_journal_roster_info", map[string]string{"sha256": "abc123"}, 1},
+		{"glovebox_journal_last_snapshot_timestamp_seconds", map[string]string{"prefix": "source=powerschool/"}, 1.8e9},
+		{"glovebox_journal_apply_duration_seconds_count", map[string]string{}, 1},
+	} {
+		if got := sampleValue(t, body, c.name, c.labels); got != c.want {
+			t.Errorf("%s%v = %v, want %v", c.name, c.labels, got, c.want)
+		}
+	}
+	if got := sampleValue(t, body, "glovebox_journal_apply_duration_seconds_sum", map[string]string{}); got < 0.0149 || got > 0.0151 {
+		t.Errorf("apply duration sum = %v, want 0.015 (seconds)", got)
+	}
+}
+
+func TestSetLastSnapshotRefusesAPrefixNamingASubject(t *testing.T) {
+	core, m := newPair(t)
+	m.SetLastSnapshot("source=powerschool/surface=assignments/data_subject=e_child1/", time.Unix(1_800_000_000, 0))
+	m.SetLastSnapshot("source=powerschool/", time.Unix(1_800_000_000, 0))
+	body := scrape(t, core)
+	if strings.Contains(body, "e_child1") || strings.Contains(body, "data_subject") {
+		t.Errorf("a subject reached a label:\n%s", body)
+	}
+	if got := sampleValue(t, body, "glovebox_journal_last_snapshot_timestamp_seconds", map[string]string{"prefix": "source=powerschool/"}); got != 1.8e9 {
+		t.Errorf("the safe prefix was dropped: %v", got)
 	}
 }

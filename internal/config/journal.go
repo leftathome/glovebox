@@ -233,8 +233,8 @@ func (j JournalConfig) validate(portsInUse map[int]string) error {
 		return fmt.Errorf("journal.removal_guard needs 0 < max_fraction < 1 and 0 <= min_keys <= %d", maxMinKeys)
 	}
 	for _, p := range j.StalenessPrefixes {
-		if rest, ok := strings.CutPrefix(p, record.PartSource+"="); !ok || rest == "" {
-			return fmt.Errorf("journal.staleness_prefixes: %q must be source=<value> followed by anything", p)
+		if err := checkStalenessPrefix(p); err != nil {
+			return err
 		}
 	}
 	// Fail at start, not at the first request, when the mounted Secret is
@@ -295,4 +295,38 @@ func readSecretFile(path string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return s, nil
+}
+
+// checkStalenessPrefix refuses a staleness prefix that could carry data.
+// A prefix becomes the `prefix` label of a public Prometheus series, so it
+// may name a source and at most one surface and nothing finer: canonical
+// scopes run source, surface, data_subject, course..., and everything from
+// data_subject on holds a household member or a course. Allowed shapes:
+// `source=<v>/` and `source=<v>/surface=<v>/`.
+func checkStalenessPrefix(p string) error {
+	bad := func(why string) error {
+		return fmt.Errorf("journal.staleness_prefixes: %q %s (want source=<value>/ or source=<value>/surface=<value>/)", p, why)
+	}
+	rest, ok := strings.CutSuffix(p, "/")
+	if !ok {
+		return bad("must end with '/'")
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) > 2 {
+		return bad("names more than a source and a surface")
+	}
+	for i, part := range parts {
+		name, value, ok := strings.Cut(part, "=")
+		if !ok || value == "" || strings.ContainsAny(value, "=") {
+			return bad("has a part that is not name=<non-empty value>")
+		}
+		want := record.PartSource
+		if i >= 1 {
+			want = "surface"
+		}
+		if name != want {
+			return bad("part " + strconv.Itoa(i+1) + " must be " + want + "=")
+		}
+	}
+	return nil
 }

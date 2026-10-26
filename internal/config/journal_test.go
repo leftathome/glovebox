@@ -154,8 +154,32 @@ func TestJournalRefusals(t *testing.T) {
 		"policy unknown type": func(s string) string {
 			return strings.Replace(s, `["assignment"], "write_scopes"`, `["grades"], "write_scopes"`, 1)
 		},
-		"bad record type":  func(s string) string { return strings.Replace(s, `"type": "string"`, `"type": "blob"`, 1) },
-		"bad prefix":       func(s string) string { return strings.Replace(s, `"source=powerschool/"`, `"powerschool"`, 1) },
+		"bad record type": func(s string) string { return strings.Replace(s, `"type": "string"`, `"type": "blob"`, 1) },
+		"bad prefix":      func(s string) string { return strings.Replace(s, `"source=powerschool/"`, `"powerschool"`, 1) },
+		"prefix names a subject": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool/surface=assignments/data_subject=e_child1/"`, 1)
+		},
+		"prefix is a subject": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool/data_subject=e_child1/"`, 1)
+		},
+		"prefix names a course": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool/course=c1/"`, 1)
+		},
+		"prefix without trailing slash": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool"`, 1)
+		},
+		"prefix with empty value": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=/"`, 1)
+		},
+		"prefix with empty surface": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool/surface=/"`, 1)
+		},
+		"prefix three parts": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"source=powerschool/surface=a/surface=b/"`, 1)
+		},
+		"prefix not from source": func(s string) string {
+			return strings.Replace(s, `"source=powerschool/"`, `"surface=assignments/"`, 1)
+		},
 		"bad sslmode":      func(s string) string { return strings.Replace(s, `"host":`, `"sslmode": "maybe", "host":`, 1) },
 		"no user file":     func(s string) string { return strings.Replace(s, `"user_file": "%s/username", `, ``, 1) },
 		"no password file": func(s string) string { return strings.Replace(s, `, "password_file": "%s/password"`, ``, 1) },
@@ -236,7 +260,7 @@ func TestJournalNestedSettings(t *testing.T) {
 		"reload huge":         {`"roster": {`, `"roster": {"reload_seconds": 9223372036854775807, `, false},
 		"prefix bare":         {`["source=powerschool/"]`, `["source="]`, false},
 		"prefix sourcex":      {`["source=powerschool/"]`, `["sourcex"]`, false},
-		"prefix ok":           {`["source=powerschool/"]`, `["source=a"]`, true},
+		"prefix ok":           {`["source=powerschool/"]`, `["source=a/"]`, true},
 		"multi host":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a.svc,b.svc"`, false},
 		"host slash":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a/b"`, false},
 		"host query":          {`"host": "postgres-rw.databases-app.svc"`, `"host": "a?x=1"`, false},
@@ -519,5 +543,11 @@ func TestJournalAccessorsDoNotOverflow(t *testing.T) {
 	j.ScanTimeoutSeconds, j.Roster.ReloadSeconds = 5, 7
 	if j.ScanTimeout() != 5*time.Second || j.Roster.Reload() != 7*time.Second {
 		t.Error("small values changed")
+	}
+}
+
+func TestJournalStalenessPrefixShapes(t *testing.T) {
+	for _, p := range []string{"source=powerschool/", "source=powerschool/surface=assignments/"} {
+		expect(t, p, true, loadValidate(t, strings.Replace(journalJSON, `"source=powerschool/"`, `"`+p+`"`, 1)))
 	}
 }

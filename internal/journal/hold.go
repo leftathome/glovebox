@@ -81,12 +81,6 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
 			return nil
 		}
-		// The payload is only trusted if it still describes the row it is stored in.
-		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
-			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
-				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
-			return nil
-		}
 		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {
 			out.Rejection = rej
 			return nil

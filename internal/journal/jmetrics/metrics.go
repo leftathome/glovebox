@@ -6,11 +6,14 @@ package jmetrics
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/leftathome/glovebox/internal/journal/record"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -169,11 +172,25 @@ func (m *Metrics) SetRosterSHA(sha string) {
 }
 
 // SetLastSnapshot records the newest snapshot under a configured scope
-// prefix. prefix comes from configuration, never from a request.
+// prefix. prefix comes from configuration, never from a request, and the
+// config validator refuses one below the surface; as a second guard a prefix
+// that names a data subject is skipped and logged rather than exported as a
+// label.
+//
+// A prefix that has never received a snapshot has no series at all (Gauges
+// omits it), so an alert on staleness must also fire on absence: use
+// `time() - max by (prefix) (glovebox_journal_last_snapshot_timestamp_seconds) > N
+// or absent(glovebox_journal_last_snapshot_timestamp_seconds{prefix="..."})`
+// (Task 29).
 func (m *Metrics) SetLastSnapshot(prefix string, t time.Time) {
-	if m != nil {
-		m.mu.Lock()
-		m.last[prefix] = float64(t.Unix())
-		m.mu.Unlock()
+	if m == nil {
+		return
 	}
+	if strings.Contains(prefix, record.PartSubject+"=") {
+		slog.Warn("journal metrics: staleness prefix names a data subject; not exported")
+		return
+	}
+	m.mu.Lock()
+	m.last[prefix] = float64(t.Unix())
+	m.mu.Unlock()
 }
