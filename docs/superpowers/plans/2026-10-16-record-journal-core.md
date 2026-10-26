@@ -10432,6 +10432,22 @@ git commit -m "feat(journal): metrics for snapshots, events, scans, API, roster 
 
 ## Task 24: Configuration (`internal/config/journal.go`)
 
+> NOTE (Task 24 review, 2026-10-24; commits 5dfac7b, 07c5d17). Deviations from the
+> code below: the journal block decodes through strictjson and a repeated or
+> case-variant top-level `journal` key is refused; `services` is RawMessage loaded
+> with policy.Parse; `scanner_version` added (default `core-scan-1`, empty refused);
+> guard range `0 < max_fraction < 1`, `0 <= min_keys <= 1000`; caps
+> `reload_seconds <= 300`, `request_timeout_seconds <= 600`, `scan_timeout_seconds
+> <= 300`, accessors clamp to [0,1h]; `Connection()` returns
+> `func(context.Context) (string, error)`, re-reads the password file each call
+> through a 4 KiB LimitReader, errors name paths only; `sslmode=disable` is
+> refused (require/verify-ca/verify-full; verify modes need an existing
+> sslrootcert; verify-full with the CNPG CA is glovebox-wekc.18.2); host refuses
+> `,` `/` `?`. For Task 28: the scanner version should be `scanner_version +
+> "+rules." + <hash of the loaded rules>` so a rules update triggers a rescan, and
+> the scanner must be warmed before readiness (glovebox-wekc.18.3). For Task 29:
+> mount the database Secret with `defaultMode: 0400` plus fsGroup.
+
 The journal is configured in `config.json` like everything else in the core, under `journal`, and is off unless `journal.enabled` is true. The chart renders it (Task 29). Policy, record types and rules use the spec's snake_case keys verbatim, so the chart can pass them through with `toJson`. `Validate` builds the registry, the rules and the policy, so a bad configuration fails at start, loudly, before anything listens. The database password is read from a file (the mounted Secret) on every new connection.
 
 **Files:**
@@ -10439,7 +10455,7 @@ The journal is configured in `config.json` like everything else in the core, und
 - Modify: `internal/config/config.go`
 - Test: `internal/config/journal_test.go`
 
-- [ ] **Step 24.1: Write the failing test.**
+- [x] **Step 24.1: Write the failing test.**
 
 `internal/config/journal_test.go`:
 
@@ -10548,11 +10564,11 @@ func TestJournalRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 24.2: Run; expect a build failure** (`cfg.Journal undefined`).
+- [x] **Step 24.2: Run; expect a build failure** (`cfg.Journal undefined`).
 
 Run: `go test ./internal/config/ -run Journal`
 
-- [ ] **Step 24.3: Write `internal/config/journal.go`.**
+- [x] **Step 24.3: Write `internal/config/journal.go`.**
 
 ```go
 package config
@@ -10704,7 +10720,7 @@ func readTrimmed(path string) (string, error) {
 }
 ```
 
-- [ ] **Step 24.4: Wire it into `internal/config/config.go`.**
+- [x] **Step 24.4: Wire it into `internal/config/config.go`.**
 
 Add the field at the end of `Config`:
 
@@ -10744,11 +10760,11 @@ func (c *Config) portsInUse() map[int]string {
 }
 ```
 
-- [ ] **Step 24.5: Run; expect PASS (the whole config package).**
+- [x] **Step 24.5: Run; expect PASS (the whole config package).**
 
 Run: `go test ./internal/config/ -count=1`
 
-- [ ] **Step 24.6: Commit.**
+- [x] **Step 24.6: Commit.**
 
 ```bash
 git add internal/config
