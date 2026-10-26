@@ -2872,7 +2872,8 @@ journal:
   roster:
     # The household roster ConfigMap openclaw reads, in THIS namespace (a
     # ConfigMap volume cannot cross namespaces). Owned by gitops: the chart
-    # mounts it read-only and grants nobody RBAC on it.
+    # mounts it read-only and grants nobody RBAC on it. Format, grants,
+    # reloads, erase and the immutability contract: docs/journal-roster.md.
     configMap: ""
     key: household.json
     format: openclaw-household-v1

@@ -55,6 +55,11 @@ database or roster answers 503 while items keep flowing, and
 
 ### Prerequisites in gitops (before enabling)
 
+[journal-roster.md](journal-roster.md) is the operator's guide to the
+roster: who owns it, which fields glovebox reads, the immutability contract
+with an example admission policy, reload and erase behaviour, and these
+prerequisites with an example for each.
+
 1. **The roster ConfigMap** (`openclaw-household`, key `household.json`) in
    the release's own namespace -- a ConfigMap volume cannot cross
    namespaces, and the chart grants no RBAC to read one elsewhere. It is
