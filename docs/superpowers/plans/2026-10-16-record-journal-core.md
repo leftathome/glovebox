@@ -9450,7 +9450,7 @@ Generators are hand-rolled over `math/rand` with fixed seeds; each failure names
 **Files:**
 - Test: `internal/journal/property_test.go`, `internal/journal/visibility_property_test.go`, `internal/journal/cursor_test.go`
 
-- [ ] **Step 22.1: Write the journal-logic property tests.**
+- [x] **Step 22.1: Write the journal-logic property tests.**
 
 `internal/journal/property_test.go`:
 
@@ -9765,11 +9765,11 @@ func TestPropertyFoldAcrossASchemaActivation(t *testing.T) {
 }
 ```
 
-- [ ] **Step 22.2: Run; expect PASS** (the properties exercise code from Tasks 8-21; a failure is a real bug -- fix the code, keep the seed).
+- [x] **Step 22.2: Run; expect PASS** (the properties exercise code from Tasks 8-21; a failure is a real bug -- fix the code, keep the seed).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run Property`
 
-- [ ] **Step 22.3: Write the visibility property test.**
+- [x] **Step 22.3: Write the visibility property test.**
 
 `internal/journal/visibility_property_test.go`:
 
@@ -9955,11 +9955,11 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 }
 ```
 
-- [ ] **Step 22.4: Run; expect PASS.**
+- [x] **Step 22.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run PropertyReads`
 
-- [ ] **Step 22.5: Write the cursor test.**
+- [x] **Step 22.5: Write the cursor test.**
 
 `internal/journal/cursor_test.go`:
 
@@ -10050,17 +10050,26 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 
 (The writers call `Apply` directly and report with `t.Error`: `t.Fatal` must not be called from another goroutine.)
 
-- [ ] **Step 22.6: Run; expect PASS.**
+- [x] **Step 22.6: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run 'Property|Cursor'`
 Also confirm the test can fail: temporarily delete the `lockEvents` call in `writePlan`, run `-run Cursor -count=20`; expect at least one failure on a multi-core machine (record the outcome in the commit message, then restore the call).
 
-- [ ] **Step 22.7: Commit.**
+- [x] **Step 22.7: Commit.**
 
 ```bash
 git add internal/journal
 git commit -m "test(journal): property tests for the fold, idempotence, lateness, the guard and visibility; cursor test (glovebox-wekc.18)"
 ```
+
+> NOTE (Task 22 implementation, 2026-10-25). Deviations from the draft above; the tests as committed are
+> `property_test.go`, `visibility_property_test.go`, `erase_property_test.go` (new) and `cursor_test.go`.
+>
+> - **Journal logic.** The guard oracle's SQL passes a non-nil key list (a nil array is SQL NULL and hid every removal of an empty snapshot), and the guard decision is written out in the test (`expectHold`) instead of calling `diff.DefaultGuard.Hold`, so a mutated guard cannot agree with its own oracle. A sequential reference model (`seqModel`, not derived from `internal/journal/diff`) is fed every first delivery and must predict each status (applied, late, held) and the final rows (scope, audience, fields, removed, confirmed time). It also catches a stale older observation overwriting a newer one across scopes, which the fold check cannot (events and rows stay consistent). Generators add ties (two snapshots with one observed_at). Extra checks: no orphan events and `last_event_seq` is the newest event; an applied complete snapshot wrote exactly the removals the oracle counted; every record an applied snapshot names is confirmed at or after its time. The generators must reach every branch (`requireTally`). `TestPropertyGuardBoundaries` pins the 0.3 / 3 edges through Apply.
+> - **Visibility.** Rewritten with the Task 19 changes (Reader, not Grants, fail on any error, `r.ros.Store`). The oracle is exact in both directions (what is entitled is returned, nothing else), per event kind, for old values across an audience change (value, audience marker, scan marker), for `prev_scope` / `prev_observed_at` (the update moves scope, so they are present), counts, and withheld text (no "INJECT" in any read). It also compares State and Events with `access.Visible` applied to every raw row with the reader's full grants (frozen-reader grants included): `assertSQLGoAgree`. An asymmetric roster (`asymHousehold`, a guardian of one child, an outsider) runs 4 more seeds. The oracle handles subject "" (household-wide rows).
+> - **Erase.** `erase_property_test.go` (not in the plan) keeps a model of rows, notes, authors and frozen readers computed from relationships, over random rosters, notes (three types, three authors-and-subjects shapes, one household-wide), 1 to 3 erasures per seed, members still on the roster or removed from it, and members offboarded without an erase. After each step it checks reads, events, counts, the kept notes and their exact reader sets, the erase response counts, that the erased id is nowhere (`idsEverywhere`, `readsEverywhere`), the 410 ban for snapshots and notes about or by the member at any time (a refusal changes nothing), the read ban, the fold, and SQL/Go agreement.
+> - **Cursor.** Three readers with different visibility follow their own cursors in pages of 7 while four writers apply 3-record snapshots; at the end each reader has seen exactly the events `access.Visible` allows, once, in order. A sampler checks that no lower seq becomes visible after a higher one (the property the events lock provides). Removing the `lockEvents` call fails it on the first run (also with `-count=20`).
+> - Mutants run on a `git archive` copy: 50 mutants of the visibility SQL and Go rule, fold, apply, diff, guard, roster, erase, ban and cursor code; 45 killed. The 5 survivors are equivalent for any journal this API can build: the guard clause `removals == live` (implied by the fraction test), a kept note's frozen-audience equality (the audience of a kept note never changes after the keep), the SQL twin of that check, `group_key` clearing on kept events (no rule matches a note), and removal of a row "confirmed later" in its own scope (that confirmation would have made the snapshot late).
 
 ---
 ## Task 23: Metrics and the gauges the alerts need
