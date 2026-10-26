@@ -409,6 +409,12 @@ metrics:
   #
   # Metric names and the expressions are in internal/loginbroker/DESIGN.md
   # for installs without the operator.
+  #
+  # With journal.enabled a second PrometheusRule, <fullname>-journal, holds
+  # the record journal's alerts (GloveboxJournalSnapshotHeld, ...NotReady,
+  # ...ScanWithheld, ...RosterReloadFailing, ...VisibilityMismatch and one
+  # ...NoSnapshots per journal.staleness entry); the descriptions there are
+  # the runbook. severity and extraSelector below apply to it too.
   prometheusRule:
     enabled: false
     labels: {}        # additional labels (e.g., release: prometheus)
@@ -2802,3 +2808,142 @@ importers:
     nodeSelector: {}
     affinity: {}
     tolerations: []
+
+# ---------------------------------------------------------------------------
+# Record journal (docs/journal-schema.md; design spec
+# docs/superpowers/specs/2026-10-16-record-journal-design.md): keyed records
+# and change events from stateful sources, in PostgreSQL, behind
+# ServiceAccount-token auth, filtered by grants computed from the household
+# roster. Off by default: with enabled false nothing below renders and the
+# chart's output is byte-identical to a chart without this block. Enable it
+# only after the gitops prerequisites in docs/upgrading.md ("Record journal")
+# are in place -- among them the ValidatingAdmissionPolicy that lets only
+# Flux's kustomize-controller change the roster ConfigMap.
+journal:
+  enabled: false
+  # The journal's own listener on the core pod. Plain HTTP inside the pod
+  # network: every request carries a ServiceAccount token (audience
+  # glovebox-journal) that the core verifies with a TokenReview, and the
+  # NetworkPolicy below limits who can connect at all. Until its database,
+  # schema and roster are in place it answers 503 (glovebox_journal_ready 0)
+  # while the core keeps processing items, so the core pod's readiness does
+  # not wait for it; GloveboxJournalNotReady watches the gauge instead.
+  port: 9095
+  # Upper bound on one API request, TokenReview included (1-600).
+  requestTimeoutSeconds: 60
+  # Upper bound on one content scan of a journal text value (1-300).
+  scanTimeoutSeconds: 10
+  # Labels the verdicts the core's scanner gives journal text. The core
+  # appends a hash of the loaded scanning rules to it, so a rules update
+  # changes the stored version by itself and a rescan re-judges stored
+  # values; bump this only for a scanner or binary change. Never empty.
+  scannerVersion: core-scan-1
+  database:
+    # The CNPG read-write Service of the cluster holding the journal's
+    # database, e.g. postgres-rw.databases-app.svc.cluster.local. Required.
+    host: ""
+    port: 5432
+    name: glovebox_journal
+    # Only "require" is accepted for now: the connection is encrypted but the
+    # server certificate is not verified. verify-full against the CNPG CA
+    # (its ca.crt only -- never ca.key) is glovebox-wekc.18.2.
+    sslmode: require
+    # A Secret in this namespace with the keys `username` and `password`
+    # (kubernetes.io/basic-auth). Only those two keys are mounted, read-only,
+    # with defaultMode 0400. Kubelet makes the files group-owned by the pod's
+    # fsGroup (podSecurityContext.fsGroup) and ORs in group read, so the
+    # effective mode is 0440: the non-root process reads them through its
+    # group, and no other user does. That is acceptable because the fsGroup
+    # is this pod's own and only its one container runs in it. The password is re-read for every new connection, so a rotation
+    # needs no restart. Either name an existing Secret here or let the
+    # ExternalSecret below create one.
+    existingSecret: ""
+    # ESO pulls the credentials from Vault into the Secret
+    # <fullname>-journal-db. Used only when existingSecret is empty. No
+    # credential ever goes in values.
+    externalSecret:
+      enabled: false
+      refreshInterval: 1h
+      secretStoreRef:
+        kind: ClusterSecretStore
+        name: vault-default
+      # Vault KV path (under the store's mount) holding the journal's
+      # database role, e.g. glovebox/journal-db. Required when enabled.
+      path: ""
+      usernameProperty: username
+      passwordProperty: password
+  roster:
+    # The household roster ConfigMap openclaw reads, in THIS namespace (a
+    # ConfigMap volume cannot cross namespaces). Owned by gitops: the chart
+    # mounts it read-only and grants nobody RBAC on it. Format, grants,
+    # reloads, erase and the immutability contract: docs/journal-roster.md.
+    configMap: ""
+    key: household.json
+    format: openclaw-household-v1
+    # How often the journal looks for a changed file (1-300).
+    reloadSeconds: 10
+  # The removal guard (spec 4.5): a complete snapshot that would remove more
+  # than maxFraction of a scope's live keys, when at least minKeys would go,
+  # is held for a person to confirm. 0 < maxFraction < 1,
+  # 0 <= minKeys <= 1000.
+  removalGuard:
+    maxFraction: 0.3
+    minKeys: 3
+  # Per-ServiceAccount policy, keyed "namespace/serviceaccount". Keys inside
+  # each entry are the journal's own (snake_case) and pass through as is:
+  # read, readers ("*" or a list of roster ids), write_types, write_scopes,
+  # write_subjects (roster_subjects), counts, admin. Accounts not listed
+  # cannot call the journal at all (the TokenReview allow-list). Connectors
+  # run as <fullname>-connector-<name>, e.g.
+  # openclaw/glovebox-glovebox-connector-powerschool.
+  services: {}
+  # Record type definitions (snake_case keys, design spec 4.7).
+  recordTypes: []
+  # Importance, grouping and notification rules (spec 4.10).
+  rules: []
+  # Scope prefixes watched by the GloveboxJournalNoSnapshots alert, each
+  # `source=<v>/` or `source=<v>/surface=<v>/` (a prefix becomes a metric
+  # label, so nothing finer is allowed). maxAgeHours 96 is two school days
+  # across a weekend:
+  #   - prefix: "source=powerschool/"
+  #     maxAgeHours: 96
+  staleness: []
+  rbac:
+    # The ClusterRole/Binding letting the core's ServiceAccount create
+    # TokenReviews, and nothing else. Set false to manage them outside the
+    # chart.
+    create: true
+  networkPolicy:
+    # Needs networkPolicy.enabled (the core's own policy isolates the pod and
+    # allows DNS). Set false only to manage the journal's policy outside the
+    # chart -- for instance on a cluster that runs networkPolicy.enabled=false
+    # under a namespace default-deny of its own, which must then write
+    # equivalent rules itself. Callers (the gateway, the writer connectors)
+    # also need egress to this port in their own policies.
+    enabled: true
+    # Connector names whose pods may reach the journal port (Part B adds
+    # powerschool and schoology), matched on the chart's connector pod
+    # labels. What each one's ServiceAccount may do is `services` above.
+    writerConnectors: []
+    # Further NetworkPolicyPeers admitted to the journal port, verbatim: the
+    # openclaw gateway's pods, the dashboard's namespace, admin pods.
+    # Nothing is admitted by default.
+    from: []
+    database:
+      namespace: databases-app
+      podLabels:
+        cnpg.io/cluster: postgres
+      port: 5432
+    # The API server's addresses, for TokenReview (required): the
+    # control-plane endpoints (kubectl get endpoints kubernetes -n default)
+    # and the kubernetes Service's cluster IP, each a /32.
+    kubernetesAPICIDRs: []
+    kubernetesAPIPorts: [443, 6443]
+    # Under Cilium, a NetworkPolicy ipBlock does not match node addresses in
+    # the default policy-cidr-match-mode, and the API server runs on the
+    # control-plane nodes, so kubernetesAPICIDRs alone drops every
+    # TokenReview. enabled renders a CiliumNetworkPolicy allowing egress
+    # `toEntities: [kube-apiserver]` on kubernetesAPIPorts (needs the Cilium
+    # CRDs); kubernetesAPICIDRs then becomes optional.
+    ciliumAPIServer:
+      enabled: false

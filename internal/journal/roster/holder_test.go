@@ -162,3 +162,44 @@ func TestHolderFollowsASymlinkSwap(t *testing.T) {
 		t.Fatalf("after swap: %v %v", changed, err)
 	}
 }
+
+// Failing is set by every Reload, so it stays true across repeated
+// failures with the same error (which Watch reports once) and turns false
+// on the first good or unchanged file.
+func TestHolderFailingFollowsEveryReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "household.json")
+	h := roster.NewHolder(path, roster.FormatOpenclawHouseholdV1)
+	if h.Failing() {
+		t.Error("failing before any reload")
+	}
+	write := func(s string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	good := `{"people": {"e_a": {"agent": "a"}}, "household_members": ["e_a"]}`
+	write(good)
+	if _, err := h.Reload(); err != nil || h.Failing() {
+		t.Fatalf("good roster: err %v, failing %v", err, h.Failing())
+	}
+	write(`broken`)
+	for i := 0; i < 5; i++ {
+		if _, err := h.Reload(); err == nil || !h.Failing() {
+			t.Fatalf("reload %d of a broken roster: err %v, failing %v", i, err, h.Failing())
+		}
+	}
+	if !h.Current().Has("e_a") {
+		t.Error("the previous roster was not kept")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Reload(); err == nil || !h.Failing() {
+		t.Errorf("missing file: err %v, failing %v", err, h.Failing())
+	}
+	write(good)
+	if _, err := h.Reload(); err != nil || h.Failing() {
+		t.Errorf("unchanged good roster again: err %v, failing %v", err, h.Failing())
+	}
+}

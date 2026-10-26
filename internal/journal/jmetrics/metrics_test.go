@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ func exercise(m *Metrics) {
 	m.SetHeld(1)
 	m.SetReady(true)
 	m.SetRosterSHA("abc123")
+	m.SetRosterReloadFailingSource(func() bool { return true })
 	m.SetLastSnapshot("source=powerschool/", time.Unix(1_800_000_000, 0))
 }
 
@@ -136,6 +138,7 @@ var labelAllowlist = map[string][]string{
 	"glovebox_journal_last_snapshot_timestamp_seconds": {"prefix"},
 	"glovebox_journal_roster_info":                     {"sha256"},
 	"glovebox_journal_ready":                           {},
+	"glovebox_journal_roster_reload_failing":           {},
 }
 
 var sampleLine = regexp.MustCompile(`^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})? `)
@@ -265,6 +268,7 @@ func TestExactSampleValues(t *testing.T) {
 		{"glovebox_journal_visibility_mismatch_total", map[string]string{}, 1},
 		{"glovebox_journal_held_snapshots", map[string]string{}, 1},
 		{"glovebox_journal_ready", map[string]string{}, 1},
+		{"glovebox_journal_roster_reload_failing", map[string]string{}, 1},
 		{"glovebox_journal_roster_info", map[string]string{"sha256": "abc123"}, 1},
 		{"glovebox_journal_last_snapshot_timestamp_seconds", map[string]string{"prefix": "source=powerschool/"}, 1.8e9},
 		{"glovebox_journal_apply_duration_seconds_count", map[string]string{}, 1},
@@ -289,4 +293,41 @@ func TestSetLastSnapshotRefusesAPrefixNamingASubject(t *testing.T) {
 	if got := sampleValue(t, body, "glovebox_journal_last_snapshot_timestamp_seconds", map[string]string{"prefix": "source=powerschool/"}); got != 1.8e9 {
 		t.Errorf("the safe prefix was dropped: %v", got)
 	}
+}
+
+// The reload-failing gauge reads its source at every collection: 0 with no
+// source, then exactly what the source says, scrape after scrape, with no
+// setter call in between (a roster that stays broken stays 1).
+func TestRosterReloadFailingGaugeFollowsItsSource(t *testing.T) {
+	core, m := newPair(t)
+	re := regexp.MustCompile(`(?m)^glovebox_journal_roster_reload_failing(\{[^}]*\})? ([01])$`)
+	value := func() string {
+		got := re.FindStringSubmatch(scrape(t, core))
+		if got == nil {
+			t.Fatal("no roster_reload_failing sample")
+		}
+		return got[2]
+	}
+	if v := value(); v != "0" {
+		t.Errorf("without a source: %s, want 0", v)
+	}
+	var failing atomic.Bool
+	m.SetRosterReloadFailingSource(failing.Load)
+	failing.Store(true)
+	for i := 0; i < 3; i++ {
+		if v := value(); v != "1" {
+			t.Errorf("scrape %d while failing: %s, want 1", i, v)
+		}
+	}
+	failing.Store(false)
+	if v := value(); v != "0" {
+		t.Errorf("after recovery: %s, want 0", v)
+	}
+	m.SetRosterReloadFailingSource(nil)
+	failing.Store(true)
+	if v := value(); v != "0" {
+		t.Errorf("source cleared: %s, want 0", v)
+	}
+	var nilMetrics *Metrics
+	nilMetrics.SetRosterReloadFailingSource(failing.Load) // must not panic
 }

@@ -36,6 +36,45 @@ data:
         "public_key_file": {{ printf "/etc/glovebox-rules-key/%s" .Values.rules.signing.publicKeySecretKey | quote }}
       },
       {{- end }}
+      {{- /*
+        Record journal. Emitted only when enabled, so an install without it
+        renders a byte-identical ConfigMap. services, record_types and rules
+        are the journal's own snake_case documents and pass through toJson.
+        The mount paths are the ones deployment.yaml creates. No secret is
+        ever in this block: the database credentials are the mounted files.
+      */}}
+      {{- with .Values.journal }}
+      {{- if .enabled }}
+      "journal": {
+        "enabled": true,
+        "port": {{ .port | int }},
+        "request_timeout_seconds": {{ .requestTimeoutSeconds | int }},
+        "scan_timeout_seconds": {{ .scanTimeoutSeconds | int }},
+        "scanner_version": {{ .scannerVersion | toString | quote }},
+        "database": {
+          "host": {{ .database.host | quote }},
+          "port": {{ .database.port | int }},
+          "name": {{ .database.name | quote }},
+          "sslmode": {{ .database.sslmode | quote }},
+          "user_file": "/etc/glovebox-journal-db/username",
+          "password_file": "/etc/glovebox-journal-db/password"
+        },
+        "roster": {
+          "path": {{ printf "/etc/glovebox-roster/%s" .roster.key | quote }},
+          "format": {{ .roster.format | quote }},
+          "reload_seconds": {{ .roster.reloadSeconds | int }}
+        },
+        "removal_guard": {
+          "max_fraction": {{ .removalGuard.maxFraction | float64 }},
+          "min_keys": {{ .removalGuard.minKeys | int }}
+        },
+        "services": {{ .services | default dict | toJson }},
+        "record_types": {{ .recordTypes | default list | toJson }},
+        "rules": {{ .rules | default list | toJson }},
+        "staleness_prefixes": {{ $p := list }}{{ range .staleness }}{{ $p = append $p (toString .prefix) }}{{ end }}{{ $p | toJson }}
+      },
+      {{- end }}
+      {{- end }}
       "scan_workers": {{ .Values.config.scanWorkers }},
       "scan_timeout_seconds": {{ .Values.config.scanTimeoutSeconds }},
       "delivery_timeout_seconds": {{ .Values.config.deliveryTimeoutSeconds }},

@@ -1,0 +1,30 @@
+{{- $j := .Values.journal }}
+{{- $np := $j.networkPolicy | default dict }}
+{{- if and $j.enabled .Values.networkPolicy.enabled $np.enabled ($np.ciliumAPIServer | default dict).enabled }}
+# The journal's TokenReview egress under Cilium. The API server runs on the
+# control-plane nodes' host network, and Cilium's default
+# policy-cidr-match-mode does not match node addresses with a NetworkPolicy
+# ipBlock, so kubernetesAPICIDRs alone would drop every TokenReview there.
+# Cilium names the API server as an entity instead. Policies add up: this
+# adds the one egress, to the API server only, on the listed ports.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "glovebox.fullname" . }}-journal-apiserver
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: journal
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "glovebox.selectorLabels" . | nindent 6 }}
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            {{- range ($np.kubernetesAPIPorts | default (list 443 6443)) }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+{{- end }}
