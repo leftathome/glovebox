@@ -68,6 +68,15 @@ type gateScanner struct {
 	mu      sync.Mutex
 	gate    chan struct{}
 	entered chan struct{}
+	// panicVersion makes Version panic (a rescan reads it first).
+	panicVersion atomic.Bool
+}
+
+func (g *gateScanner) Version() string {
+	if g.panicVersion.Load() {
+		panic("scanner version unavailable")
+	}
+	return g.FakeScanner.Version()
 }
 
 func (g *gateScanner) Verdict(text string) string {
@@ -215,7 +224,7 @@ func buildRig(t *testing.T, db *sql.DB, migrate bool, opts ...rigOption) *rig {
 	r.ready.Store(true)
 	d := Deps{Journal: r.j, Registry: reg, Auth: auth, Policy: pol, Roster: r.ros.Load, Metrics: jm,
 		Log: slog.New(slog.NewTextHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Now: now, Ready: r.ready.Load, RequestTimeout: 30 * time.Second}
+		Now: now, Ready: r.ready.Load, RequestTimeout: 30 * time.Second, Context: context.Background()}
 	for _, o := range opts {
 		o(&d)
 	}

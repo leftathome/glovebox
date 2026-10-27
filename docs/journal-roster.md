@@ -320,6 +320,22 @@ must repeat the member id exactly, or nothing is erased (`400`).
   person's id would be banned from the start. A new person given the id of
   a frozen reader would inherit that reader's access to kept notes about
   someone else. Give every person a new id.
+- **Check `subject_unknown` in the answer.** An id that is not on the roster
+  in use and has no data in the journal is still erased, so the ban covers
+  data that has not arrived yet. The answer then says
+  `"subject_unknown": true` and the core logs a warning. A mistyped id gives
+  the same answer, so look at it before you trust the result. The real
+  member is not erased in that case.
+- **Residual risk: one token is enough.** Anyone holding a token of the
+  ServiceAccount with `admin: true` can erase and ban any member, for good,
+  in one request. The `confirm` field stops slips, not a stolen token or a
+  careless operator. What limits the risk today: the NetworkPolicy on the
+  listener, keeping the admin ServiceAccount out of long-running pods, and
+  the audit lines (`journal admin`, with the caller, the member id and the
+  outcome) in the core's log. Options for later, none built yet: a
+  two-person rule (a second operator approves a pending erase), erase only
+  from a one-shot Job whose ServiceAccount and RBAC exist only for that run,
+  and a regular review of the audit lines, with an alert on every erase.
 
 ## 7. Enabling checklist
 

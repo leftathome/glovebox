@@ -137,6 +137,8 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 	if err != nil {
 		return journalapi.EraseResponse{}, err
 	}
+	resp.SubjectUnknown = !ros.Has(subject) && resp.Snapshots == 0 && resp.Current == 0 && resp.Events == 0 &&
+		resp.NotesDeletedAsAuthor == 0 && resp.NotesPseudonymised == 0
 	return resp, nil
 }
 

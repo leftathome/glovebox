@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,7 +46,9 @@ type Deps struct {
 	// the handler); 0 is DefaultMaxInFlight. A request beyond it is 503
 	// unavailable with Retry-After.
 	MaxInFlight int
-	// Context bounds background work (rescans); the process's lifetime.
+	// Context bounds background work (rescans): the process's lifetime.
+	// Required. Cancelling it ends a running rescan at its next batch;
+	// Server.Wait then waits for it (see Wait).
 	Context context.Context
 }
 
@@ -63,14 +66,22 @@ type Server struct {
 	// noteBytes caps a POST /v1/notes body (noteByteLimit).
 	noteBytes int64
 	// rescanning is set while a background rescan runs (handleRescan): at
-	// most one at a time.
+	// most one at a time. rescans counts the running rescan goroutine.
 	rescanning atomic.Bool
+	rescans    sync.WaitGroup
 }
+
+// Wait returns once no background rescan runs. The shutdown contract
+// (Task 28): stop the listener first (http.Server.Shutdown), so no request
+// can start another rescan; cancel Deps.Context, which ends a running
+// rescan at its next batch; then Wait; only then close the database. A
+// rescan started after Wait returned is not waited for.
+func (s *Server) Wait() { s.rescans.Wait() }
 
 // New checks the dependencies.
 func New(d Deps) (*Server, error) {
-	if d.Journal == nil || d.Registry == nil || d.Auth == nil || d.Policy == nil || d.Roster == nil {
-		return nil, errors.New("httpapi: journal, registry, authenticator, policy and roster are required")
+	if d.Journal == nil || d.Registry == nil || d.Auth == nil || d.Policy == nil || d.Roster == nil || d.Context == nil {
+		return nil, errors.New("httpapi: journal, registry, authenticator, policy, roster and context are required")
 	}
 	if d.RequestTimeout < 0 {
 		return nil, errors.New("httpapi: the request timeout must not be negative")
@@ -89,9 +100,6 @@ func New(d Deps) (*Server, error) {
 	}
 	if d.Ready == nil {
 		d.Ready = func() bool { return true }
-	}
-	if d.Context == nil {
-		d.Context = context.Background()
 	}
 	return &Server{d: d, slots: make(chan struct{}, d.MaxInFlight), snapshotKeys: snapshotKeyLimits(d.Registry),
 		noteKeys: noteKeyLimits(d.Registry), noteBytes: noteByteLimit(d.Registry)}, nil

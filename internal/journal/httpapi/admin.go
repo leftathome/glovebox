@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -86,16 +87,23 @@ func (s *Server) admin(w http.ResponseWriter, c call, endpoint string) bool {
 	return true
 }
 
-// auditAdmin logs one info line per operator request, when the answer is
-// written: the caller, the route name, what the request named (attrs) and
-// the HTTP status. attrs carry only parsed, well-formed ids or fixed
-// placeholders, never caller text.
-func (s *Server) auditAdmin(w http.ResponseWriter, c call, endpoint string, attrs ...any) {
+// auditAdmin logs one line per operator request, when the handler returns:
+// the caller, the route name, what the request named (attrs) and the
+// outcome. attrs carry only parsed, well-formed ids or fixed placeholders,
+// never caller text. Each handler defers it with recover() as panicked: a
+// handler that panicked is logged at ERROR with outcome=panic and no code
+// (the status writer still says 200 then, which would be a lie), and the
+// panic goes on to route's recover, which answers 500 or aborts.
+func (s *Server) auditAdmin(w http.ResponseWriter, c call, endpoint string, panicked any, attrs ...any) {
+	args := append([]any{"caller", c.caller, "endpoint", endpoint}, attrs...)
+	if panicked != nil {
+		s.d.Log.Error("journal admin", append(args, "outcome", "panic")...)
+		panic(panicked)
+	}
 	code := 0
 	if sw, ok := w.(*statusWriter); ok {
 		code = sw.status
 	}
-	args := append([]any{"caller", c.caller, "endpoint", endpoint}, attrs...)
 	s.d.Log.Info("journal admin", append(args, "code", code)...)
 }
 
@@ -153,7 +161,7 @@ func (s *Server) handleHeld(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	snapshot, action := "(not a snapshot id)", "(not an action)"
-	defer func() { s.auditAdmin(w, c, endpoint, "snapshot_id", snapshot, "action", action) }()
+	defer func() { s.auditAdmin(w, c, endpoint, recover(), "snapshot_id", snapshot, "action", action) }()
 	if _, err := queryParams(r); err != nil {
 		badRequest(w, "POST /v1/admin/held takes no query parameters")
 		return
@@ -220,7 +228,7 @@ func (s *Server) handleErase(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	subject := ""
-	defer func() { s.auditAdmin(w, c, endpoint, "data_subject", loggedMember(subject)) }()
+	defer func() { s.auditAdmin(w, c, endpoint, recover(), "data_subject", loggedMember(subject)) }()
 	if _, err := queryParams(r); err != nil {
 		badRequest(w, "POST /v1/admin/erase takes no query parameters")
 		return
@@ -243,6 +251,12 @@ func (s *Server) handleErase(w http.ResponseWriter, r *http.Request, c call) {
 	if err != nil {
 		s.eraseErr(w, err)
 		return
+	}
+	if resp.SubjectUnknown {
+		// Allowed (the ban covers data that has not arrived), but it may be
+		// a typo: the operator should look before trusting the result.
+		s.d.Log.Warn("journal erase of an unknown member: not on the roster and no data held",
+			"caller", c.caller, "data_subject", req.DataSubject)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -279,14 +293,14 @@ func (s *Server) eraseErr(w http.ResponseWriter, err error) {
 // away do not cancel it, and it holds no in-flight slot once answered (the
 // guard bounds it to one). Shutting down cancels Deps.Context, which ends it
 // at the next batch; committed batches stay, and a later run continues.
-// Rescan reports no metric (Task 21).
+// Server.Wait waits for it to return. Rescan reports no metric (Task 21).
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) {
 	const endpoint = "admin_rescan"
 	if !s.admin(w, c, endpoint) {
 		return
 	}
 	var req journalapi.RescanRequest
-	defer func() { s.auditAdmin(w, c, endpoint, "all", req.All) }()
+	defer func() { s.auditAdmin(w, c, endpoint, recover(), "all", req.All) }()
 	if _, err := queryParams(r); err != nil {
 		badRequest(w, "POST /v1/admin/rescan takes no query parameters")
 		return
@@ -299,14 +313,23 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	s.d.Log.Info("journal rescan started", "caller", c.caller, "all", req.All)
+	s.rescans.Add(1)
 	go s.runRescan(s.d.Context, c.caller, req.All)
 	writeJSON(w, http.StatusAccepted, journalapi.Response{Status: journalapi.StatusStarted})
 }
 
 // runRescan runs one rescan under ctx (Deps.Context, never a request's)
-// and frees the guard after.
+// and frees the guard after. A panic in it is logged at ERROR and ends
+// only this rescan: the guard is freed and the process keeps serving
+// (route's recover does not reach a goroutine).
 func (s *Server) runRescan(ctx context.Context, caller string, all bool) {
+	defer s.rescans.Done()
 	defer s.rescanning.Store(false)
+	defer func() {
+		if v := recover(); v != nil {
+			s.d.Log.Error("journal rescan panicked", "caller", caller, "panic", fmt.Sprint(v))
+		}
+	}()
 	res, err := s.d.Journal.Rescan(ctx, all)
 	if err != nil {
 		s.d.Log.Error("journal rescan failed", "caller", caller, "err", err, "current_rows", res.CurrentRows,

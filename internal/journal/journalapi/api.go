@@ -300,6 +300,10 @@ type EraseResponse struct {
 	Events               int64     `json:"record_events"`
 	NotesDeletedAsAuthor int64     `json:"notes_deleted_as_author"`
 	NotesPseudonymised   int64     `json:"notes_pseudonymised"`
+	// SubjectUnknown: the id was not on the roster in use and the journal
+	// held nothing of it. The erase (a ban) is recorded anyway; the hint is
+	// for an operator who may have mistyped the id.
+	SubjectUnknown bool `json:"subject_unknown"`
 }
 
 // RescanRequest is the optional body of POST /v1/admin/rescan. All rescans

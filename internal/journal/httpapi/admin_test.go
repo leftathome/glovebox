@@ -241,7 +241,7 @@ func TestEraseThenReplayAnswers410(t *testing.T) {
 	r := newRig(t)
 	seed(r)
 	var er journalapi.EraseResponse
-	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_child1"), &er); code != 200 || er.Current != 1 || er.Events != 1 || er.Snapshots != 1 || er.DataSubject != "e_child1" || er.ErasedAt.IsZero() {
+	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_child1"), &er); code != 200 || er.Current != 1 || er.Events != 1 || er.Snapshots != 1 || er.DataSubject != "e_child1" || er.ErasedAt.IsZero() || er.SubjectUnknown {
 		t.Fatalf("erase %d %+v", code, er)
 	}
 	var resp journalapi.Response
@@ -270,13 +270,14 @@ func TestEraseThenReplayAnswers410(t *testing.T) {
 	if err := r.db.QueryRow(`SELECT actor FROM erasure`).Scan(&actor); err != nil || actor != journaltest.SAAdmin {
 		t.Errorf("actor %q %v", actor, err)
 	}
-	// A second erase is allowed (the ban stays) and answers 200.
-	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_child1"), &er); code != 200 || er.Current != 0 {
+	// A second erase is allowed (the ban stays) and answers 200; the member
+	// is on the roster, so not unknown.
+	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_child1"), &er); code != 200 || er.Current != 0 || er.SubjectUnknown {
 		t.Errorf("second erase: %d %+v", code, er)
 	}
 	// A member not on the roster is erased too: the ban covers data that
 	// has not arrived.
-	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_gone"), &er); code != 200 || er.DataSubject != "e_gone" {
+	if code := r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("e_gone"), &er); code != 200 || er.DataSubject != "e_gone" || !er.SubjectUnknown {
 		t.Errorf("off the roster: %d %+v", code, er)
 	}
 }
@@ -671,6 +672,7 @@ func TestAdminAuditLog(t *testing.T) {
 	r.do("POST", journalapi.PathAdminErase, "admin", eraseBody("not ok"), nil)
 	r.do("POST", journalapi.HeldPath(id, journalapi.ActionDiscard), "admin", nil, nil)
 	r.do("POST", journalapi.PathAdminHeld+"nope:confirm", "admin", nil, nil)
+	r.do("POST", journalapi.HeldPath(strings.ToUpper(uid(103)), journalapi.ActionConfirm), "admin", nil, nil)
 	r.do("POST", journalapi.PathAdminRescan, "admin", `{"all": true}`, nil)
 	r.waitRescan()
 	r.do("POST", journalapi.PathAdminErase, "gw", eraseBody("e_child1"), nil)
@@ -681,6 +683,7 @@ func TestAdminAuditLog(t *testing.T) {
 		`caller=` + journaltest.SAAdmin + ` endpoint=admin_erase data_subject="(not a member id)" code=400`,
 		`caller=` + journaltest.SAAdmin + ` endpoint=admin_held snapshot_id=` + id + ` action=discard code=200`,
 		`caller=` + journaltest.SAAdmin + ` endpoint=admin_held snapshot_id="(not a snapshot id)" action="(not an action)" code=400`,
+		`caller=` + journaltest.SAAdmin + ` endpoint=admin_held snapshot_id=` + uid(103) + ` action=confirm code=404`,
 		`caller=` + journaltest.SAAdmin + ` endpoint=admin_rescan all=true code=202`,
 	}
 	if len(lines) != len(want) {
@@ -808,8 +811,8 @@ func TestRescanIsDetachedFromTheRequest(t *testing.T) {
 	cancel()
 	release2()
 	r.waitRescan()
-	if !strings.Contains(r.logs.String(), "journal rescan failed") {
-		t.Errorf("no failure logged:\n%s", r.logs.String())
+	if !regexp.MustCompile(`level=ERROR msg="journal rescan failed" caller=` + journaltest.SAAdmin + ` err=`).MatchString(r.logs.String()) {
+		t.Errorf("no failure logged with the caller:\n%s", r.logs.String())
 	}
 }
 
