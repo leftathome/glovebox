@@ -62,6 +62,20 @@ func AdminURL(t testing.TB) string {
 // NewDB returns a connection to a new, empty database owned by AppRole.
 func NewDB(t testing.TB) *sql.DB {
 	t.Helper()
+	db, err := sql.Open("pgx", NewDBURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// NewDBURL creates a new, empty database owned by AppRole and returns the
+// URL that connects to it as AppRole, for tests that open the database
+// themselves (the core's journal wiring). The database is dropped when the
+// test ends, after its connections are forced closed.
+func NewDBURL(t testing.TB) string {
+	t.Helper()
 	admin := AdminURL(t)
 	serverOnce.Do(func() { serverErr = prepareServer(admin) })
 	if serverErr != nil {
@@ -84,12 +98,7 @@ func NewDB(t testing.TB) *sql.DB {
 	}
 	u.User = url.UserPassword(AppRole, appPassword)
 	u.Path = "/" + name
-	db, err := sql.Open("pgx", u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
-		_ = db.Close()
 		a, err := sql.Open("pgx", admin)
 		if err != nil {
 			return
@@ -99,7 +108,7 @@ func NewDB(t testing.TB) *sql.DB {
 		defer cancel()
 		_, _ = a.ExecContext(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
 	})
-	return db
+	return u.String()
 }
 
 // prepareServer waits for the server (a CI service container may still be

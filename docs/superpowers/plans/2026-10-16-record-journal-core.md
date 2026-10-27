@@ -12157,12 +12157,26 @@ git commit -m "feat(journal): operator endpoints -- held decisions, erase, resca
 
 `startJournal` (root package, beside `archive_listener.go`) builds everything from `cfg.Journal` and opens the listener; `main.go` calls it and shuts it down. The item pipeline never waits for the journal: a journal whose database, schema sync or roster is not there yet answers 503 while a background loop retries with backoff (`glovebox_journal_ready` 0 meanwhile), and items flow as before. Configuration errors were already refused by `config.Validate`. The core needs its own ServiceAccount token to ask for TokenReviews (chart, Task 29); outside a pod `startJournal` refuses to start an enabled journal.
 
+> NOTE (Task 28 implementation, 2026-10-27). The code in the repository wins; deviations from the draft below:
+>
+> - **Shape.** `startJournal(jc config.JournalConfig, sc, rulesSHA256, mp, k8s func() (*kubecm.Access, error)) (*journalRuntime, error)`; nil, nil when off, before anything is touched (no Kubernetes access asked, no metric registered, no database opened, nothing bound). `k8s` is `inClusterAccess` in `main.go` (`kubecm.InCluster` over `serviceAccountDir`, a variable only so the re-executed core in `main_test.go` can point it at a test directory). The runtime owns the listener, the loops, the database and its own context (from `context.Background()`, not the core's: the shutdown order needs the listener stopped before it is cancelled). Errors at start (all fatal in `main.go`, enabled journal only): outside a pod, Build, an empty policy (TokenReview refuses an empty allow-list), the text scanner, the database user file, the port. The listener is bound synchronously (`net.Listen`), so a port in use is a start error, not a log line.
+> - **Contracts honoured.** `jm.SetRosterReloadFailingSource(holder.Failing)` once, after `NewHolder`, before `Watch`; `jmetrics.New` only inside the enabled branch and after the Kubernetes, policy and scanner checks (a refused journal registers nothing); `Deps.RequestTimeout = jc.RequestTimeout()`, `MaxInFlight = httpapi.DefaultMaxInFlight`, `Context` = the runtime's context; `Deps.Log = slog.Default()`.
+> - **Scanner version** is `jc.ScannerVersion` (config `scanner_version`, default `core-scan-1`) + `"+rules."` + the first 12 hex of the rules file's digest (`rulesProv.SHA256`), not the binary's `Version` as drafted. `journal.NewTextScanner` returns an error now (behind the `newTextScanner` variable, a test hook).
+> - **Warm-up (glovebox-wekc.18.3).** The ready loop first runs one untimed `sc.Scan` of a prose sentence (`warmScanner`, a test hook), then tries roster, migrate, sync; ready is never reported before the warm-up returns. Backoff 1s doubling to 1m. A panic in the warm-up or an attempt is recovered (an attempt's panic is a failed attempt).
+> - **Gauges.** The gauge loop is started by the ready step, so the first refresh is at once (then every minute), not polling readiness from the start. A failed refresh is logged and the gauges keep their values; `SetLastSnapshot` refuses data_subject prefixes itself.
+> - **No crash after start.** Every journal goroutine runs under `goLoop` (counted, panics recovered and logged); the roster watch callback counts `RosterReloadError`, logs, and sets `roster_info` on a change. The core's `/readyz` is not gated on the journal.
+> - **Listener timeouts.** ReadHeaderTimeout 10s, ReadTimeout = request timeout, WriteTimeout = request timeout + 5s (so a request cut by its context can still write its 503), IdleTimeout 2m.
+> - **Shutdown** (`journalShutdown`, Task 27 S-2): `http.Server.Shutdown` (Close on deadline) and wait for Serve to return; cancel the context; wait for `Server.Wait()` and every loop; only then close the database. If the deadline passes first the database is left open and an error returned. The TokenReview transport's idle connections are closed afterwards; "journal stopped" is logged. `main.go` calls it first in the shutdown block (after the item pipeline has drained), with its own 10s budget, then the ingest and metrics servers as before.
+> - **Tests.** `journaltest.NewDBURL` added (NewDB is built on it). Root package: `TestMain` re-executes the test binary as the core. `TestCoreWithTheJournalOff` (items delivered, no `glovebox_journal_` series, nothing on the journal port, no journal log line, clean SIGTERM) and `TestCoreWithTheJournalDegraded` (database unreachable, with and without a roster: core ready, items delivered before and after retries, 503 `unavailable`, ready 0, reload-failing 1/0, retry logged with its cause, scanner version logged, journal stopped before the core). In-process: disabled starts nothing, outside a pod, empty policy, port in use, unreachable database (no blocking, 503, ready 0, roster loaded, listener closed after shutdown, no goroutine left), missing roster (failing gauge and error counter); ready-loop, shutdown-order and gauge-loop unit tests; with a database: ready, healthz, a record stored with the qualified scanner version, gauges at once after a restart, roster appearing later, the request timeout bounding a hung TokenReview, ready only after the warm-up, Shutdown waits for the loops, and a running rescan stopped by shutdown (`journal rescan failed`, never `finished`) before the database closes.
+> - **Journal-off equality.** The pre-Task-28 binary (acdcbc6) and this one, run with the same journal-off config (ingest on), opened the same listeners (metrics, ingest), exported the same 48 metric families (no `glovebox_journal_`), logged the same lines and exited 0.
+> - **Mutants** (`git archive` copy plus the change, one PostgreSQL container, named `--- FAIL:` only): 32 mutants of the enabled branch, metrics placement (outside the branch, before the Kubernetes check), the Kubernetes error, the failing-gauge source (removed, constant), the request timeout, `Deps.Context`, the shutdown order (cancel first, close before drain, close on timeout, no rescan wait, no loops wait, listener not stopped), the gauge loop (not started, no prefixes, waits a tick, held not set), the warm-up (removed, after ready, in the background), the ready steps (no sync, no migrate, no backoff growth, gauge or flag not set), the scanner version (full hash, binary version, unqualified text scanner, main without the rules digest), main without the journal shutdown, and the roster error counter. 32 killed. The first round left 4 survivors (the Kubernetes error ignored -- the satoken error also said "Kubernetes"; `Deps.Context` = Background; no `Server.Wait`; no loops wait), 1 hang (listener not stopped: Serve was awaited without the deadline, now bounded) and 2 non-compiling mutants; the tests and the bounded wait above were added and every mutant re-run.
+
 **Files:**
 - Create: `journal_listener.go`
 - Modify: `main.go`
 - Test: `journal_listener_test.go`
 
-- [ ] **Step 28.1: Write the failing tests.**
+- [x] **Step 28.1: Write the failing tests.**
 
 `journal_listener_test.go`:
 
@@ -12213,11 +12227,11 @@ func TestScannerVersion(t *testing.T) {
 }
 ```
 
-- [ ] **Step 28.2: Run; expect a build failure** (`undefined: startJournal`, `undefined: scannerVersion`).
+- [x] **Step 28.2: Run; expect a build failure** (`undefined: startJournal`, `undefined: scannerVersion`).
 
 Run: `go test . -run 'Journal|ScannerVersion'`
 
-- [ ] **Step 28.3: Write `journal_listener.go`.**
+- [x] **Step 28.3: Write `journal_listener.go`.**
 
 ```go
 package main
@@ -12387,7 +12401,7 @@ func journalGaugeLoop(ctx context.Context, j *journal.Journal, prefixes []string
 }
 ```
 
-- [ ] **Step 28.4: Call it from `main.go`.**
+- [x] **Step 28.4: Call it from `main.go`.**
 
 After the metrics server goroutine is started (and `sc` exists), add:
 
@@ -12409,11 +12423,11 @@ and in the shutdown block, beside `metricsServer.Shutdown(shutdownCtx)`:
 	}
 ```
 
-- [ ] **Step 28.5: Run the root package tests and the whole build; expect PASS.**
+- [x] **Step 28.5: Run the root package tests and the whole build; expect PASS.**
 
 Run: `go build ./... && go vet . && go test . -count=1 -race`
 
-- [ ] **Step 28.6: Commit.**
+- [x] **Step 28.6: Commit.**
 
 ```bash
 git add journal_listener.go journal_listener_test.go main.go
