@@ -205,6 +205,13 @@ func (j JournalConfig) validate(portsInUse map[int]string) error {
 	if strings.TrimSpace(j.ScannerVersion) == "" {
 		return fmt.Errorf("journal.scanner_version must not be empty")
 	}
+	// An empty policy would leave TokenReview an empty allow-list: every
+	// caller refused, the journal useless. Refuse it here, before start,
+	// rather than at runtime. Build parses the document strictly.
+	var callers map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(j.Services), &callers); err != nil || len(callers) == 0 {
+		return fmt.Errorf("journal.services must name at least one caller when the journal is enabled")
+	}
 	d := j.Database
 	if d.Host == "" || d.Name == "" || d.UserFile == "" || d.PasswordFile == "" || d.Port <= 0 || d.Port > 65535 {
 		return fmt.Errorf("journal.database needs host, port (1-65535), name, user_file and password_file")

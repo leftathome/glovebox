@@ -748,6 +748,9 @@ journal.enabled.
 {{- fail "journal.enabled refuses serviceAccount.name=default: the core's account gets the TokenReview grant and a mounted token, and the namespace's default account is the one every pod without an account of its own runs as" -}}
 {{- end -}}
 {{- $services := $j.services | default dict -}}
+{{- if not $services -}}
+{{- fail "journal.enabled needs journal.services to name at least one caller: an empty policy leaves TokenReview an empty allow-list and every request is refused" -}}
+{{- end -}}
 {{- $coreKey := printf "%s/%s" .Release.Namespace $core -}}
 {{- if hasKey $services $coreKey -}}
 {{- fail (printf "journal.services must not list the core's own ServiceAccount %q: the core serves the journal and needs no rights in it" $coreKey) -}}

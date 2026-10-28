@@ -60,6 +60,14 @@ var warmScanner = func(sc *scan.Scanner) { _, _ = sc.Scan([]byte(warmUpText), "t
 // can hold a rescan inside a verdict.
 var newTextScanner = journal.NewTextScanner
 
+// readyAttemptTimeout bounds one ready-loop attempt (migrations and type
+// sync); gaugeRefreshTimeout bounds one gauge refresh. Variables so tests
+// can shorten them.
+var (
+	readyAttemptTimeout = 60 * time.Second
+	gaugeRefreshTimeout = 30 * time.Second
+)
+
 // scannerVersion names the scanner a stored verdict came from: the
 // configured journal.scanner_version and the digest of the rules file in
 // use. A rescan re-judges values from any other version, so a rules update
@@ -256,6 +264,13 @@ func (rt *journalRuntime) Shutdown(ctx context.Context) error {
 			if err != nil {
 				rt.srv.Close() // the deadline passed: drop what is still open
 			}
+			// Check served first: once the deadline has passed both cases
+			// can be ready, and select would pick one at random.
+			select {
+			case <-rt.served:
+				return err
+			default:
+			}
 			select {
 			case <-rt.served:
 			case <-ctx.Done():
@@ -341,10 +356,16 @@ func journalReadyLoop(ctx context.Context, s readySteps, first, maxBackoff time.
 			if err := s.roster(); err != nil {
 				return err
 			}
-			if err := s.migrate(ctx); err != nil {
+			// Each attempt gets its own deadline: with no connect_timeout in
+			// the DSN, a silently dropping network would otherwise hold an
+			// attempt for the OS SYN timeout, and a half-dead connection
+			// could hang it indefinitely.
+			actx, cancel := context.WithTimeout(ctx, readyAttemptTimeout)
+			defer cancel()
+			if err := s.migrate(actx); err != nil {
 				return err
 			}
-			return s.sync(ctx)
+			return s.sync(actx)
 		}()
 		if err == nil {
 			s.ready()
@@ -378,7 +399,11 @@ func journalGaugeLoop(ctx context.Context, every time.Duration,
 					log.Printf("journal gauges panicked: %v", p)
 				}
 			}()
-			held, last, err := gauges(ctx, prefixes)
+			// A deadline per refresh, so a hung query cannot freeze
+			// held_snapshots and mask the held-snapshot alert.
+			gctx, cancel := context.WithTimeout(ctx, gaugeRefreshTimeout)
+			defer cancel()
+			held, last, err := gauges(gctx, prefixes)
 			if err != nil {
 				if ctx.Err() == nil {
 					log.Printf("journal gauges: %v", err)

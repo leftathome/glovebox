@@ -183,6 +183,8 @@ expect_fail "enabled without database" "journal.database" "${API[@]}" --set jour
 expect_fail "externalSecret without a Vault path" "journal.database.externalSecret.path" \
   "${V[@]}" --set journal.database.existingSecret= --set journal.database.externalSecret.enabled=true
 expect_fail "sslmode other than require" "journal.database.sslmode" "${V[@]}" --set journal.database.sslmode=disable
+expect_fail "enabled with no services" "journal.services to name at least one caller" \
+  "${V[@]}" --set journal.services=null --set journal.networkPolicy.writerConnectors=null
 expect_fail "verify-full before the CA mount exists" "glovebox-wekc.18.2" "${V[@]}" --set journal.database.sslmode=verify-full
 expect_fail "pod without fsGroup" "podSecurityContext.fsGroup" "${V[@]}" --set podSecurityContext.fsGroup=null
 expect_fail "empty scanner version" "journal.scannerVersion" "${V[@]}" --set journal.scannerVersion=

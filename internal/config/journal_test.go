@@ -510,20 +510,27 @@ func TestJournalServicesOmitted(t *testing.T) {
 	if err := loadValidate(t, body); err == nil {
 		t.Error("unknown key accepted")
 	}
-	// Remove the services member entirely: an empty policy is valid and
-	// grants nothing.
+	// Remove the services member entirely. Build still turns that into an
+	// empty policy that grants nothing, but an enabled journal refuses it at
+	// Validate: TokenReview would refuse every caller, so the journal would
+	// start useless (Task 28 review M-1).
 	i := strings.Index(journalJSON, `"services"`)
 	j := strings.Index(journalJSON, `"record_types"`)
 	cfg, err := LoadConfig(writeJournalConfig(t, journalJSON[:i]+journalJSON[j:]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "journal.services must name at least one caller") {
+		t.Errorf("an enabled journal with no services validated: %v", err)
 	}
 	_, _, pol, err := cfg.Journal.Build()
 	if err != nil || len(pol.Callers()) != 0 {
 		t.Errorf("%v %v", pol, err)
+	}
+	// An explicitly empty object is refused the same way.
+	empty := journalJSON[:i] + `"services": {},` + journalJSON[j:]
+	if err := loadValidate(t, empty); err == nil || !strings.Contains(err.Error(), "journal.services must name at least one caller") {
+		t.Errorf("services {} validated: %v", err)
 	}
 }
 

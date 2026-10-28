@@ -654,6 +654,112 @@ func TestGaugeLoopRefreshesNowAndOnEveryTick(t *testing.T) {
 	}
 }
 
+// A panicking refresh is logged and the loop carries on: the next tick
+// still refreshes the gauges.
+func TestGaugeLoopRecoversAPanickingRefresh(t *testing.T) {
+	mp, scrape := testProvider(t)
+	jm, err := jmetrics.New(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gauges := func(context.Context, []string) (int64, map[string]time.Time, error) {
+		if calls.Add(1) == 1 {
+			panic("gauges exploded")
+		}
+		return 7, nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go journalGaugeLoop(ctx, 10*time.Millisecond, gauges, nil, jm)
+	waitFor(t, func() bool { return calls.Load() >= 2 })
+	waitFor(t, func() bool { v, _ := metricValue(scrape(), "glovebox_journal_held_snapshots"); return v == 7 })
+}
+
+// Each refresh has its own deadline, so a hung query cannot freeze the
+// gauges: the hung refresh is cut off and the next one lands.
+func TestGaugeRefreshHasADeadline(t *testing.T) {
+	old := gaugeRefreshTimeout
+	gaugeRefreshTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { gaugeRefreshTimeout = old })
+	mp, scrape := testProvider(t)
+	jm, err := jmetrics.New(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	var firstErr atomic.Value
+	gauges := func(ctx context.Context, _ []string) (int64, map[string]time.Time, error) {
+		if calls.Add(1) == 1 {
+			<-ctx.Done() // a hung query
+			firstErr.Store(ctx.Err())
+			return 0, nil, ctx.Err()
+		}
+		return 3, nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go journalGaugeLoop(ctx, 10*time.Millisecond, gauges, nil, jm)
+	waitFor(t, func() bool { v, _ := metricValue(scrape(), "glovebox_journal_held_snapshots"); return v == 3 })
+	if e, _ := firstErr.Load().(error); !errors.Is(e, context.DeadlineExceeded) {
+		t.Errorf("the hung refresh ended with %v, want its own deadline", e)
+	}
+}
+
+// Each ready attempt has its own deadline: a migration hung on a dead
+// connection is cut off and retried rather than holding readiness forever.
+func TestReadyAttemptHasADeadline(t *testing.T) {
+	old := readyAttemptTimeout
+	readyAttemptTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { readyAttemptTimeout = old })
+	f := newReadyFake()
+	st := f.steps()
+	var n atomic.Int32
+	var firstErr atomic.Value
+	st.migrate = func(ctx context.Context) error {
+		if n.Add(1) == 1 {
+			<-ctx.Done()
+			firstErr.Store(ctx.Err())
+			return ctx.Err()
+		}
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { journalReadyLoop(context.Background(), st, time.Millisecond, time.Millisecond); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung migration held the ready loop")
+	}
+	if f.readyCalls.Load() != 1 || n.Load() != 2 {
+		t.Errorf("ready %d, migrate attempts %d", f.readyCalls.Load(), n.Load())
+	}
+	if e, _ := firstErr.Load().(error); !errors.Is(e, context.DeadlineExceeded) {
+		t.Errorf("the hung attempt ended with %v, want its own deadline", e)
+	}
+}
+
+// goLoop recovers a panic: the loop ends, the WaitGroup is released and
+// the process keeps running.
+func TestGoLoopRecoversAPanic(t *testing.T) {
+	rt := &journalRuntime{}
+	rt.goLoop("exploding", func() { panic("loop exploded") })
+	ran := make(chan struct{})
+	rt.goLoop("after", func() { close(ran) })
+	done := make(chan struct{})
+	go func() { rt.loops.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a panicking loop never released the WaitGroup")
+	}
+	select {
+	case <-ran:
+	default:
+		t.Error("the loop after the panic did not run")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
