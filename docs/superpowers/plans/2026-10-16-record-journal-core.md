@@ -5958,7 +5958,7 @@ This task creates the `Journal` value every later database task extends, the ada
 - Modify: `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/helpers_test.go`, `internal/journal/scanner_test.go`, `internal/journal/types_sync_test.go`
 
-- [ ] **Step 14.1: Extend the shared fixtures.**
+- [x] **Step 14.1: Extend the shared fixtures.**
 
 Append to `internal/journal/journaltest/fixtures.go` (and add the imports `"strings"`, `"sync"`, `"testing"`, and the `record`, `roster`, `rules` packages):
 
@@ -6068,7 +6068,7 @@ func (s *FakeScanner) Calls() int {
 
 (`encoding/json` joins the imports too.)
 
-- [ ] **Step 14.2: Write the journal test helpers.**
+- [x] **Step 14.2: Write the journal test helpers.**
 
 `internal/journal/helpers_test.go`:
 
@@ -6303,7 +6303,7 @@ func (r *rig) count(table string) int {
 }
 ```
 
-- [ ] **Step 14.3: Write the failing scanner and sync tests.**
+- [x] **Step 14.3: Write the failing scanner and sync tests.**
 
 `internal/journal/scanner_test.go`:
 
@@ -6459,11 +6459,11 @@ func TestActivationRewritesCurrentFields(t *testing.T) {
 }
 ```
 
-- [ ] **Step 14.4: Run; expect a build failure** (`undefined: Options`, `undefined: New`, `undefined: NewTextScanner`).
+- [x] **Step 14.4: Run; expect a build failure** (`undefined: Options`, `undefined: New`, `undefined: NewTextScanner`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 14.5: Write `journal.go`.**
+- [x] **Step 14.5: Write `journal.go`.**
 
 `internal/journal/journal.go`:
 
@@ -6595,7 +6595,7 @@ func lockEvents(ctx context.Context, tx *sql.Tx) error {
 }
 ```
 
-- [ ] **Step 14.6: Write `scanner.go`.**
+- [x] **Step 14.6: Write `scanner.go`.**
 
 `internal/journal/scanner.go`:
 
@@ -6656,7 +6656,7 @@ func (e *engineScanner) Verdict(text string) string {
 }
 ```
 
-- [ ] **Step 14.7: Write `types_sync.go`.**
+- [x] **Step 14.7: Write `types_sync.go`.**
 
 `internal/journal/types_sync.go`:
 
@@ -6824,12 +6824,12 @@ func rewriteFields(ctx context.Context, tx *sql.Tx, t record.Type) error {
 
 A version whose `renames` is empty needs no rewrite (its names are the previous version's).
 
-- [ ] **Step 14.8: Run; expect PASS.**
+- [x] **Step 14.8: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: the migration tests, the scanner tests and the three sync tests pass.
 
-- [ ] **Step 14.9: Commit.**
+- [x] **Step 14.9: Commit.**
 
 ```bash
 git add internal/journal
@@ -13168,7 +13168,13 @@ git commit -m "ci: run the journal's database tests against the production Postg
 - Create: `docs/journal-api.md`
 - Modify: `docs/upgrading.md`, `CHANGELOG.md`, `docs/journal-schema.md` (only if anything above changed the schema -- it should not have)
 
-- [ ] **Step 31.1: Write `docs/journal-api.md`.**
+> NOTE (Task 31, 2026-10-28). The code in the repository wins; the draft below was checked against it and these deviations went into the docs:
+> - **`docs/journal-api.md`** is written from the code, not the draft. Corrections to the draft: erase bans *all* later data about or by the member, whatever its `observed_at` (the draft said "later snapshots observed before the erase"); erase is allowed while the member is on the roster; notes belong to their author and others' notes about the member are kept, pseudonymised, for the readers frozen at erase time plus the author; erase does not reach copies outside the journal (glovebox-wekc.18.1); `after` on `GET /v1/events` is optional (default 0; `limit` default 200); `in_latest_snapshot` is absent for household notes; `GET /v1/healthz` is 503 like everything else until ready (readiness is checked before the token); a scope whose `source` is not the type's `owner` is `422 schema` at validation (and `403 policy` again in `MayWrite`), not only a policy rule; the 66,036 key cap is not "with the shipped record types" (the chart ships none) but for types of at most 9 fields; the note and admin body caps are derived (note: widest household type + 16 KiB, 422,442 bytes with the fixtures; erase 3,454, rescan 283, held 256 bytes); every POST and healthz refuse a query string; notes answer `409 unknown_subject` with no roster loaded and `409 conflict` when the stored note is newer than the clock; a held confirm re-checks the writer and re-validates, and its refusals leave the snapshot held; discard answers `{"status": "discarded"}`; the scanner version is `scanner_version+rules.<12 hex>`; the shutdown order (listener, cancel, drain rescan and loops, close the database; 10s budget) and the rescan's 409 one-at-a-time rule are documented; the read and admin audit log lines are documented; metrics and alerts use the built names, `glovebox_journal_roster_reload_failing` included. The draft's own sections on upgrading notes are not duplicated: `docs/upgrading.md` already had the "Record journal" section from Task 29, which gained a pointer to the three journal docs and the two enabling blockers (0.12.0's per-connector ServiceAccounts, gitops-kxpb).
+> - **Corrected elsewhere:** `charts/glovebox/values.yaml` described the removal guard as holding "when at least minKeys would go"; the code (`diff.Guard.Hold`) holds when the scope has *more than* minKeys live keys in range and the snapshot removes all of them or more than maxFraction. Comment only; the render is unchanged. `docs/journal-roster.md` section 6 gained the "copies outside the journal are not erased" bullet (glovebox-wekc.18.1) and a link to `journal-api.md`. `docs/journal-schema.md` needed no change (its migration history already covers 0001-0004).
+> - **Known follow-ups** section in `docs/journal-api.md`: glovebox-wekc.18.1, .18.2, .18.3 (warm-up landed in Task 28; what is left is confirming its acceptance, arm64 included, and closing it), .18.4 (per-caller rate limit and slow-body slots), gitops-kxpb (blocks enabling), and the gitops checklist below.
+> - **Final verification (GOTOOLCHAIN=go1.27.1, fresh):** `go build ./...` ok; `go vet ./...` ok; staticcheck v0.8.1 over satoken, journal, config, loginbroker and `.` clean; `./scripts/check-codegen.sh` up to date; `gofmt -l` over the 119 Go files the branch adds or changes: clean (`gofmt -l` over the whole tree lists 34 files the branch does not touch, pre-existing on `origin/main`); `go test ./... -count=1 -race`: 84 packages ok, none failed (DB tests skip without a database). `scripts/journal-test-db.sh ./internal/journal/... .` (CNPG 17.10): all 12 packages ok, 0 failures (journal 79s, httpapi 24s, root package 35s). The published-port mode failed the DB tests with `no route to host` (this WSL sandbox does not route published ports); `JOURNAL_PG_HOST_NETWORK=1` in parallel still dropped a few connections to 127.0.0.1 (6 tests, all `dial ... no route to host`, no assertion failures), so the recorded run is `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`. `REQUIRE_BASE_REF=1 scripts/chart-checks.sh` against `origin/main` f75e95e: helm lint and every test-chart script passed. Off-by-default render: `helm template` of `origin/main`'s chart and this one with default values are byte-identical (and `test-chart-journal.sh`'s three disabled-render comparisons passed). The ASCII grep finds non-ASCII only in the deliberate Unicode case-folding fixtures of the strictjson, policy and rules tests; the journal docs, scripts and templates are ASCII. The new and changed docs carry only placeholder ids.
+
+- [x] **Step 31.1: Write `docs/journal-api.md`.**
 
 ````markdown
 # Record journal API
@@ -13395,7 +13401,7 @@ curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 ```
 ````
 
-- [ ] **Step 31.2: Add the upgrade notes** to `docs/upgrading.md`, under "Upgrading to the next release":
+- [x] **Step 31.2: Add the upgrade notes** to `docs/upgrading.md`, under "Upgrading to the next release":
 
 ```markdown
 ### Record journal (off by default; glovebox-wekc.18)
@@ -13428,7 +13434,7 @@ The journal answers 503 until its database is migrated and its roster
 loaded; items are not affected.
 ```
 
-- [ ] **Step 31.3: Add the changelog entry** under `## [Unreleased]` / `### Added`:
+- [x] **Step 31.3: Add the changelog entry** under `## [Unreleased]` / `### Added`:
 
 ```markdown
 - **Record journal, part A (off by default; glovebox-wekc.18).** Stateful
@@ -13443,7 +13449,7 @@ loaded; items are not affected.
   follow.
 ```
 
-- [ ] **Step 31.4: Final verification -- everything, fresh.**
+- [x] **Step 31.4: Final verification -- everything, fresh.**
 
 ```bash
 export GOTOOLCHAIN=go1.27.1
@@ -13459,7 +13465,7 @@ LC_ALL=C grep -rnP '[^\x00-\x7F]' internal/journal internal/satoken docs/journal
 
 Expected: all green, "ASCII only". Then check the diff for anything that must not be public: `git diff origin/main --stat` and a read of every new file for real names, ids or addresses (only `e_parent1`-style placeholders, `192.0.2.x`, and the spec's ServiceAccount names may appear).
 
-- [ ] **Step 31.5: Commit.**
+- [x] **Step 31.5: Commit.**
 
 ```bash
 git add docs CHANGELOG.md

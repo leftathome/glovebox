@@ -18,6 +18,16 @@ default**. With `journal.enabled: false` the chart renders exactly what it
 rendered without it (`scripts/test-chart-journal.sh` compares the render
 against `origin/main`), so upgrading needs no action.
 
+The API, the policy, the spool's handling of each answer, the
+configuration bounds and the metrics are in
+[journal-api.md](journal-api.md); the roster and the enabling checklist in
+[journal-roster.md](journal-roster.md); the database in
+[journal-schema.md](journal-schema.md). Before enabling it, the
+per-connector ServiceAccounts of 0.12.0 must be deployed, and gitops-kxpb
+must be fixed: the openclaw Telegram watchdog's Role can exec into every
+pod in the namespace, the glovebox core included, which would expose the
+journal's database credentials and ServiceAccount token.
+
 ### What `journal.enabled: true` renders
 
 - On the core pod: a `journal` port (9095), the core's ServiceAccount token

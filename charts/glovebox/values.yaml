@@ -2882,10 +2882,11 @@ journal:
     format: openclaw-household-v1
     # How often the journal looks for a changed file (1-300).
     reloadSeconds: 10
-  # The removal guard (spec 4.5): a complete snapshot that would remove more
-  # than maxFraction of a scope's live keys, when at least minKeys would go,
-  # is held for a person to confirm. 0 < maxFraction < 1,
-  # 0 <= minKeys <= 1000.
+  # The removal guard (spec 4.5): a complete snapshot that would remove all,
+  # or more than maxFraction, of a scope's live keys (within complete_range)
+  # is held for a person to confirm, when the scope has more than minKeys
+  # such keys; a scope with minKeys live keys or fewer is never held.
+  # 0 < maxFraction < 1, 0 <= minKeys <= 1000.
   removalGuard:
     maxFraction: 0.3
     minKeys: 3

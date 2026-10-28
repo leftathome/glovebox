@@ -7,7 +7,9 @@ covers who owns the roster, what glovebox reads from it, the contract that
 keeps it immutable, and what glovebox needs in place before the journal is
 enabled.
 
-Every id below (`e_parent1`, `e_child1`, ...) is a placeholder.
+The API itself (endpoints, the policy, refusals, configuration, metrics) is
+[journal-api.md](journal-api.md). Every id below (`e_parent1`, `e_child1`,
+...) is a placeholder.
 
 - [1. Ownership](#1-ownership)
 - [2. Format: openclaw-household-v1](#2-format-openclaw-household-v1)
@@ -320,6 +322,11 @@ must repeat the member id exactly, or nothing is erased (`400`).
   person's id would be banned from the start. A new person given the id of
   a frozen reader would inherit that reader's access to kept notes about
   someone else. Give every person a new id.
+- **Copies outside the journal are not erased.** What readers already
+  fetched (the openclaw inbox and audiences, agent memory and vaults) and
+  files waiting in connector spools stay where they are; the spools' next
+  sends are refused with `410` and dropped. Erasing those copies is
+  glovebox-wekc.18.1.
 - **Check `subject_unknown` in the answer.** An id that is not on the roster
   in use and has no data in the journal is still erased, so the ban covers
   data that has not arrived yet. The answer then says

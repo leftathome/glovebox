@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Record journal, part A (off by default; glovebox-wekc.18).** Stateful
+  sources can be written as keyed records with typed fields; the core diffs
+  each snapshot against current state, appends change events, and serves
+  state, events and counts filtered by grants it computes from the household
+  roster. PostgreSQL (CloudNativePG) through `pgx`; ServiceAccount-token
+  auth shared with the login broker (`internal/satoken`); removal guard,
+  erase (a ban; others' notes about the member kept, pseudonymised, for the
+  readers frozen at erase time), rescan, importance rules; metrics and
+  alerts. With `journal.enabled: false` the chart renders exactly as
+  before. See `docs/journal-api.md`, `docs/journal-roster.md`,
+  `docs/journal-schema.md` and `docs/upgrading.md` before enabling it;
+  gitops-kxpb blocks enabling. Connectors (Part B) and the openclaw
+  consumer (Part C) follow.
+
 ## [0.12.0] - 2026-10-16
 
 ### Upgrade notes
