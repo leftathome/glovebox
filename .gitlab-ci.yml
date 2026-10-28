@@ -155,7 +155,7 @@ test-journal-db:
   before_script:
     - "go version"
   script:
-    - "go test ./internal/journal/... -count=1 -race"
+    - "go test ./internal/journal/... . -count=1 -race"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
       when: never
