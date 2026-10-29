@@ -1,11 +1,15 @@
 package powerschool
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connector/records"
+	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/record"
 )
 
 // PowerSchoolRecords is the connector's "records" block: the shared spool
@@ -75,6 +79,36 @@ func (b Binding) skip(reason string) {
 	if b.OnSkip != nil {
 		b.OnSkip(reason)
 	}
+}
+
+// scope is a scope of this binding's subject on one record surface.
+func (b Binding) scope(surface string, extra ...journalapi.ScopePart) []journalapi.ScopePart {
+	return records.Scope(sourceName, surface, b.DataSubject, extra...)
+}
+
+// record is one record about the binding's subject, with its audience.
+func (b Binding) record(key string, f *records.Fields) journalapi.Record {
+	return journalapi.Record{Key: key, DataSubject: b.DataSubject, Audience: slices.Clone(b.Audience), Fields: f.Map()}
+}
+
+// maxSnapshotBytes is the journal's body limit (spec 4.3).
+const maxSnapshotBytes = 8 << 20
+
+// fits reports whether the journal would take the snapshot's size. A
+// snapshot over a limit is refused whole (413, permanent) and would be
+// refused again at every poll; it is left out here, logged and counted
+// instead. The log line names the record type only.
+func (b Binding) fits(s journalapi.Snapshot) bool {
+	ok := len(s.Records) <= record.MaxRecords
+	if ok {
+		raw, err := json.Marshal(s)
+		ok = err == nil && len(raw) <= maxSnapshotBytes
+	}
+	if !ok {
+		b.skip("snapshot_too_large")
+		slog.Warn("powerschool record snapshot over the journal's size limits; not sent", "record_type", s.RecordType)
+	}
+	return ok
 }
 
 // subjectFor resolves the binding of a kid's surface. Without a rule, or a

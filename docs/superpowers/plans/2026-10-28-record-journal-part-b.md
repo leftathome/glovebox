@@ -1754,7 +1754,7 @@ NOTE (B1 implementation): `ApplyDefaults` is a package function here, so it call
 
 Both come from the home page grade rows (`page.Grades`), one record per course, one scope per course (`(powerschool, grades|attendance_totals, subject, course=<courseKey>)`, complete). Unlike today's items, every row becomes a record, including a course with no grade posted and a course with 0 absences and 0 tardies: records describe state, not change. (These scopes have one record each, so `complete` can never remove anything; tests do not expect a removal -- spec 5.1.)
 
-- [ ] **Step 13.1: Write the failing tests.**
+- [x] **Step 13.1: Write the failing tests.**
 
 ```go
 func TestCourseMarksOneScopePerCourse(t *testing.T) {
@@ -1798,10 +1798,12 @@ func TestCourseKeyWithControlCharactersIsHashedConsistently(t *testing.T) {
 }
 ```
 
-- [ ] **Step 13.2: Run; expect FAIL.**
-- [ ] **Step 13.3: Implement.** `recordCourseKey(g) = records.SafeKey(courseKey(g))` (export as `CourseRecordKey` for the seed, S15); percent through `splitGrade` then `strconv.ParseFloat` (an unparsable percent is null, the letter keeps the raw cell, as `splitGrade` does); `Fields.String` for every string. A nil row is skipped. Two rows with the same course key on one page (should not happen; `frn` is per enrolment): keep the first, count `powerschool_record_rows_skipped_total{reason="duplicate_key"}` -- add the counter to `telemetry.go`, nil-safe like the others.
-- [ ] **Step 13.4: Run; expect PASS.**
-- [ ] **Step 13.5: Commit** (`feat(powerschool): course_mark and attendance_total record builders`).
+- [x] **Step 13.2: Run; expect FAIL.**
+- [x] **Step 13.3: Implement.** `recordCourseKey(g) = records.SafeKey(courseKey(g))` (export as `CourseRecordKey` for the seed, S15); percent through `splitGrade` then `strconv.ParseFloat` (an unparsable percent is null, the letter keeps the raw cell, as `splitGrade` does); `Fields.String` for every string. A nil row is skipped. Two rows with the same course key on one page (should not happen; `frn` is per enrolment): keep the first, count `powerschool_record_rows_skipped_total{reason="duplicate_key"}` -- add the counter to `telemetry.go`, nil-safe like the others.
+- [x] **Step 13.4: Run; expect PASS.**
+- [x] **Step 13.5: Commit** (`feat(powerschool): course_mark and attendance_total record builders`).
+
+NOTE (B1 implementation): the duplicate-key counter is reached through `Binding.OnSkip` (Task 12's NOTE); `Telemetry.RecordRecordRowSkipped` is the nil-safe recorder. Shared helpers on `Binding` (`scope`, `record`, `fits`) live in `record_binding.go`; `fits` leaves out any snapshot over 5000 records or 8 MiB encoded (counted `snapshot_too_large`, logged with the record type only) for every builder, not only `assignment`. The scope's `course` part is `records.Part("course", courseKey(g))`, which hashes exactly as `CourseRecordKey` does, so the key and the scope value agree.
 
 ---
 

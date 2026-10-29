@@ -32,6 +32,7 @@ type Telemetry struct {
 	rejectedSessionAge metric.Float64Gauge
 	attendanceNonEvent metric.Int64Counter
 	pollsSkipped       metric.Int64Counter
+	recordRowsSkipped  metric.Int64Counter
 
 	tracer trace.Tracer
 }
@@ -106,7 +107,22 @@ func newTelemetry(base *connector.Metrics, meter metric.Meter, tracer trace.Trac
 	if err != nil {
 		return nil, fmt.Errorf("construct powerschool_polls_skipped_total: %w", err)
 	}
+	t.recordRowsSkipped, err = meter.Int64Counter("powerschool_record_rows_skipped_total",
+		metric.WithDescription("Rows or snapshots the record builders left out, by reason (duplicate_key, "+
+			"snapshot_too_large, audience_not_guardians_only, builder_panic). Records only; items are not affected."))
+	if err != nil {
+		return nil, fmt.Errorf("construct powerschool_record_rows_skipped_total: %w", err)
+	}
 	return t, nil
+}
+
+// RecordRecordRowSkipped adds one to
+// powerschool_record_rows_skipped_total{reason}.
+func (t *Telemetry) RecordRecordRowSkipped(reason string) {
+	if t == nil {
+		return
+	}
+	t.recordRowsSkipped.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // SetRejectedSessionAge sets powerschool_rejected_session_age_seconds. It
