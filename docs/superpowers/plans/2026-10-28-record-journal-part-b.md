@@ -1598,7 +1598,7 @@ func (e *Emitter) OnCut()
 
 `Run` is the only goroutine the records feature adds. A panic in a drain pass is recovered, logged and counted as a transport-style retry (the loop keeps running).
 
-- [ ] **Step 11.1: Write the failing tests.**
+- [x] **Step 11.1: Write the failing tests.**
 
 ```go
 func TestRunDeliversWhatEmitWrites(t *testing.T)                 // Emit 2 -> fake journal receives 2 within 1s; spool empty
@@ -1630,10 +1630,21 @@ func TestRestartSendsAtOnce(t *testing.T)
 
 Simulate a crash by building a second `Emitter` on the same state directory without closing the first (no shared state other than the directory), and for the temp-file case by writing the temp file by hand with `atomicfile`'s naming (`<name>.tmp-<pid>-<nanos>`). For "applied but answer lost", script the fake journal to apply and then hijack and close the connection.
 
-- [ ] **Step 11.2: Run; expect FAIL.**
-- [ ] **Step 11.3: Implement.**
-- [ ] **Step 11.4: Run; expect PASS** (`go test ./connector/records/... -count=1 -race`; also `-count=20` for the loop tests once, to shake out timing).
-- [ ] **Step 11.5: Commit** (`feat(records): emitter loop; crash and restart tests`).
+- [x] **Step 11.2: Run; expect FAIL.**
+- [x] **Step 11.3: Implement.**
+- [x] **Step 11.4: Run; expect PASS** (`go test ./connector/records/... -count=1 -race`; also `-count=20` for the loop tests once, to shake out timing).
+- [x] **Step 11.5: Commit** (`feat(records): emitter loop; crash and restart tests`).
+
+NOTE (B1 implementation):
+- **Signature.** `New(cfg Config, o Options) (*Emitter, error)`. `Options{StateDir, Connector, Meter, Log, Now}` replaces the positional arguments, so that the logger can be passed in (the sketch had none) and the tests can inject a file system, a transport and a pass hook. `New` applies the defaults and validates.
+- **Off by default.** With `cfg.Enabled` false, `New` returns `(nil, nil)` before it touches anything. Every method of a nil `*Emitter` (`Emit`, `Run`, `OnCut`) is a no-op. `TestDisabledCreatesNothing` checks that the state directory stays empty, that a counting meter sees no instrument registered (it sees all 8 once records are enabled), that nothing is logged, and that the goroutine count does not grow.
+- **The loop.** `Run` discards a wake-up left by `Emit` calls made before it started (the first pass covers them). It waits for the earliest of: a wake from `Emit`, the pass's `NextDue`, or one minute. A panicking pass is recovered, logged without its value, and backed off through `Sender.FailPass`.
+- **Errors.** `Emit` returns an error that counts the failed snapshots and carries no path. Each failed `Put` is already counted in `write_errors_total`.
+- **Crash and restart tests** (`restart_test.go`; the spool-level ones are in `crash_test.go`):
+  - `TestCrashAfterSendBeforeDeleteIsADuplicate` crashes a drain pass over `memFS` at every file operation. It then restarts the spool and sender on the durable state and drains again. Every snapshot must be applied exactly once, every answer must be a 200 (`applied` or `duplicate`), and the spool must end empty.
+  - The other three tests use a second `Emitter` on the same directory, with no state shared with the first: a hand-written `atomicfile`-style temp file is removed and never sent; replay is oldest first per scope, with scopes ordered by their oldest file; and a restart sends at once, with no backoff carried over.
+  - None of these tests sleeps. The loop tests synchronise on the pass hook.
+- Loop and crash tests passed `-count=20 -race`.
 
 **B2 can start after this commit merges.**
 
