@@ -172,7 +172,7 @@ func (tm *testMetrics) value(t testing.TB, name string, kv ...string) float64 {
 	match := func(set attribute.Set) bool {
 		for i := 0; i+1 < len(kv); i += 2 {
 			v, ok := set.Value(attribute.Key(kv[i]))
-			if !ok || v.Emit() != kv[i+1] {
+			if !ok || v.String() != kv[i+1] {
 				return false
 			}
 		}

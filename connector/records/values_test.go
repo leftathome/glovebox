@@ -26,7 +26,7 @@ func TestFieldsStringIsOneCleanLine(t *testing.T) {
 	if got := string(m["c1"]); got != `"a b"` {
 		t.Fatalf("C1 control = %s", got)
 	}
-	f.String("long", strings.Repeat("é", 2000))
+	f.String("long", strings.Repeat("\u00e9", 2000))
 	var s string
 	_ = json.Unmarshal(f.Map()["long"], &s)
 	if len(s) > record.MaxStringBytes || !utf8.ValidString(s) {
@@ -35,7 +35,7 @@ func TestFieldsStringIsOneCleanLine(t *testing.T) {
 }
 
 func TestFieldsTextIsKeptAsReceived(t *testing.T) {
-	in := "Line one.\r\n\tLine‮ two.​\n<b>&</b>"
+	in := "Line one.\r\n\tLine\u202e two.\u200b\n<b>&</b>"
 	f := NewFields(nil)
 	f.Text("comment", in)
 	var out string
@@ -59,7 +59,7 @@ func TestFieldsTextDropsOnlyNULAndInvalidUTF8AndCutsAt64KiB(t *testing.T) {
 	}
 	cut := 0
 	f2 := NewFields(func() { cut++ })
-	f2.Text("b", strings.Repeat("é", record.MaxTextBytes)) // 2 bytes each
+	f2.Text("b", strings.Repeat("\u00e9", record.MaxTextBytes)) // 2 bytes each
 	var s string
 	_ = json.Unmarshal(f2.Map()["b"], &s)
 	if len(s) > record.MaxTextBytes || len(s) < record.MaxTextBytes-1 || !utf8.ValidString(s) || cut != 1 {
@@ -104,8 +104,8 @@ func TestFieldsTypedValues(t *testing.T) {
 // Every value Fields writes is accepted by the journal's own value check.
 func TestFieldsValuesPassTheJournal(t *testing.T) {
 	f := NewFields(nil)
-	f.String("s", "x\x01y\u0085z‮")
-	f.Text("t", "a\x07b‮\x00"+strings.Repeat("z", record.MaxTextBytes))
+	f.String("s", "x\x01y\u0085z\u202e")
+	f.Text("t", "a\x07b\u202e\x00"+strings.Repeat("z", record.MaxTextBytes))
 	for name, ft := range map[string]record.FieldType{"s": record.String, "t": record.Text} {
 		if _, rej := record.NormalizeValue(ft, f.Map()[name]); rej != nil {
 			t.Errorf("%s refused: %v", name, rej)
@@ -130,7 +130,7 @@ func TestSafeKeyAndScopeValue(t *testing.T) {
 	if got := SafeKey(strings.Repeat("a", 512)); got != strings.Repeat("a", 512) {
 		t.Fatal("a key of exactly 512 bytes was hashed")
 	}
-	for _, bad := range []string{strings.Repeat("a", 513), "", "  ", "a‮b", "a\u0085b", "a\xffb", "a b", "a\x7fb"} {
+	for _, bad := range []string{strings.Repeat("a", 513), "", "  ", "a\u202eb", "a\u0085b", "a\xffb", "a\u2028b", "a\x7fb"} {
 		if got := SafeKey(bad); !strings.HasPrefix(got, "h:") {
 			t.Errorf("key %q kept", bad)
 		}

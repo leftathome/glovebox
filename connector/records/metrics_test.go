@@ -124,8 +124,8 @@ func TestEveryMetricCarriesOnlyAllowedLabels(t *testing.T) {
 			var keys []string
 			for _, kv := range set.ToSlice() {
 				keys = append(keys, string(kv.Key))
-				if !allowedValue(string(kv.Key), kv.Value.Emit()) {
-					t.Errorf("metric %s label %s has value %q outside its fixed set", name, kv.Key, kv.Value.Emit())
+				if !allowedValue(string(kv.Key), kv.Value.String()) {
+					t.Errorf("metric %s label %s has value %q outside its fixed set", name, kv.Key, kv.Value.String())
 				}
 			}
 			sort.Strings(keys)

@@ -154,7 +154,7 @@ func safe(s string, max int) string {
 // zero-width characters, line and paragraph separators): every format
 // character is hashed away.
 func unsafeRune(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == ' ' || r == ' '
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029'
 }
 
 func hash32(s string) string {
