@@ -150,6 +150,16 @@ func wantScope(t *testing.T, s journalapi.Snapshot, source, surface, subject str
 	}
 }
 
+// testTZ is the connector's default school time zone.
+func testTZ(t *testing.T) *time.Location {
+	t.Helper()
+	tz, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tz
+}
+
 // recordsBlock is an enabled records block that passes validation.
 func recordsBlock(url string) records.Config {
 	return records.Config{Enabled: true, JournalURL: url, TokenFile: "/var/run/secrets/journal/token"}
