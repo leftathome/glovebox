@@ -1887,9 +1887,9 @@ Per date, across all course rows of the page (spec 5.1):
 
 This task builds the pure aggregation and classification (`dayTally`, `classify`); Task 17 adds settling and the snapshot.
 
-- [ ] **Step 16.1: Write the failing table test** with the cases spec 8 names: full (every met period `UA` or `EA`), partial (one of four `UA`), late-or-left-early (`L` and `LE`, no absence), no-meeting (`-` cells do not count: two met periods both `UA` plus two `-` is `full_day`), unmarked (one `.` among three met, two `UA` -> marked 2, `full_day`), authorized only (`FT` -> `other`, `any_unexcused` false), unknown code (`ZZ` not in the legend -> `unknown_codes` 1, `other`), mixed excused and unexcused absence (`full_day`, `any_unexcused` true), a late unexcused plus an excused absence (partial with `any_unexcused` true), and a day with no codes (no candidate).
-- [ ] **Step 16.2: Run; expect FAIL.**
-- [ ] **Step 16.3: Implement.**
+- [x] **Step 16.1: Write the failing table test** with the cases spec 8 names: full (every met period `UA` or `EA`), partial (one of four `UA`), late-or-left-early (`L` and `LE`, no absence), no-meeting (`-` cells do not count: two met periods both `UA` plus two `-` is `full_day`), unmarked (one `.` among three met, two `UA` -> marked 2, `full_day`), authorized only (`FT` -> `other`, `any_unexcused` false), unknown code (`ZZ` not in the legend -> `unknown_codes` 1, `other`), mixed excused and unexcused absence (`full_day`, `any_unexcused` true), a late unexcused plus an excused absence (partial with `any_unexcused` true), and a day with no codes (no candidate).
+- [x] **Step 16.2: Run; expect FAIL.**
+- [x] **Step 16.3: Implement.**
 
 ```go
 type dayTally struct {
@@ -1963,8 +1963,8 @@ func (t *dayTally) classification() string {
 
 (`abs > marked` cannot happen: every absence cell is a met, marked cell.)
 
-- [ ] **Step 16.4: Run; expect PASS.**
-- [ ] **Step 16.5: Commit** (`feat(powerschool): attendance_day tally and classification`).
+- [x] **Step 16.4: Run; expect PASS.**
+- [x] **Step 16.5: Commit** (`feat(powerschool): attendance_day tally and classification`).
 
 ---
 
