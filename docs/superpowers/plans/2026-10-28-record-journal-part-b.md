@@ -1352,7 +1352,7 @@ One pass over `spool/`: group pending entries by `ScopeKey`; visit scopes in the
 
 Backoff: exponential from `min_backoff` to `max_backoff`, with +/-20% jitter (`rand` injected), reset on any `ActDelete`/`ActReject`. Global and per-scope backoff live in memory only: a restart sends at once, which is safe because every send is idempotent (A9).
 
-- [ ] **Step 8.1: Write the failing tests** with `recordstest.Journal` and a fake clock:
+- [x] **Step 8.1: Write the failing tests** with `recordstest.Journal` and a fake clock:
 
 ```go
 func TestDrainSendsOldestFirstPerScope(t *testing.T)            // 3 files, 2 scopes: arrival order at the journal is per-scope oldest first
@@ -1368,9 +1368,9 @@ func TestDrainTransportErrorIsRetried(t *testing.T)              // server close
 func TestDrainResendAfterLostAnswerIsDuplicate(t *testing.T)     // journal applies but the answer is lost (script a connection reset after apply): next pass gets duplicate and deletes
 ```
 
-- [ ] **Step 8.2: Run; expect FAIL.**
+- [x] **Step 8.2: Run; expect FAIL.**
 
-- [ ] **Step 8.3: Implement.**
+- [x] **Step 8.3: Implement.**
 
 ```go
 type Sender struct {
@@ -1488,8 +1488,10 @@ func (s *Sender) backoff(step int, retryAfter time.Duration) time.Duration {
 
 Log lines carry the file name (time and UUID) and reasons; never a scope value, subject id or field value (the subject id is a roster id, but log lines go to Loki; keep them out).
 
-- [ ] **Step 8.4: Run; expect PASS.**
-- [ ] **Step 8.5: Commit** (`feat(records): sender drains the spool in order and acts on every answer`).
+- [x] **Step 8.4: Run; expect PASS.**
+- [x] **Step 8.5: Commit** (`feat(records): sender drains the spool in order and acts on every answer`).
+
+NOTE (B1 implementation): `NewSender(spool, client, metrics, cfg, log, now)`; the jitter is a field the tests set. Changes from the sketch: `ActReject` also resets the global step (as the text above says) and clears the scope's backoff; an accepted or rejected head clears the scope's `unknown_subject` mark, a 409 sets it; a 409's scope backoff also honours `Retry-After`. `ActErased` lets `PurgeSubject` delete the answered file with the others (one count per file); a subject-less scope just deletes the file. A cancelled context ends the pass without a backoff and without counting an answer. `FailPass` backs off after a panicked pass (Task 11). Log lines carry `record_type`, `scope` (the `source=/surface=` prefix), `code` and `reason` only -- not the file name, which the sketch logged: the brief allows only the scope prefix, the record type and the reason. Tests added beyond the list: erased-subject purge through the sender, jitter bounds and the cap at a large step, context cancellation, and that a short `Retry-After` never shortens the computed backoff.
 
 ---
 
