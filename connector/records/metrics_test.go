@@ -38,7 +38,7 @@ func allowedValue(label, v string) bool {
 	case "action":
 		return regexp.MustCompile(`^(delete|erased|reject|retry_scope|retry|retry_alert)$`).MatchString(v)
 	case "code":
-		return regexp.MustCompile(`^(0|[1-5][0-9][0-9])$`).MatchString(v)
+		return regexp.MustCompile(`^(0|token|[1-5][0-9][0-9])$`).MatchString(v)
 	case "reason":
 		switch v {
 		case "none", "other", RejectUnreadable, DropMaxAge, DropMaxBytes, DropUnknownSubjectExpired, DropErasedSubject:
@@ -191,7 +191,7 @@ func TestNilMetricsAreSafe(t *testing.T) {
 	m.setGauges(1, 1, 1, 1)
 	m.droppedN("x", 1)
 	m.rejectedOne("x")
-	m.answer(200, "", ActDelete)
+	m.answer("200", "", ActDelete)
 	m.writeError()
 	m.cutOne()
 }

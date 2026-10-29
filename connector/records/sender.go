@@ -2,6 +2,7 @@ package records
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"time"
@@ -17,6 +18,9 @@ import (
 //	ActRetryScope  keep it; block this scope until its own backoff ends
 //	ActRetry       keep it; stop the pass; global backoff (at least Retry-After)
 //	ActRetryAlert  as ActRetry, and log an error (alerted through answers_total)
+//
+// A token file that cannot be read or is empty sends nothing and is
+// ActRetryAlert with code "token": a deployment fault, as a 401 is.
 //
 // Backoff is exponential from min_backoff to max_backoff with +/-20%
 // jitter, reset by any accepted or rejected file. It lives in memory only:
@@ -72,14 +76,16 @@ func earliest(a, b time.Time) time.Time {
 	return a
 }
 
-// Drain makes one pass over the spool.
+// Drain makes one pass over the spool. The bounds are applied first, even
+// during a global backoff, so max_age holds while the journal is away.
+// A backoff runs from the moment of its answer, not the pass's start.
 func (s *Sender) Drain(ctx context.Context) PassResult {
+	if err := s.spool.Enforce(); err != nil {
+		s.log.Warn("records spool bounds could not be applied", "error", errText(err))
+	}
 	now := s.now()
 	if now.Before(s.globalUntil) {
 		return PassResult{NextDue: s.globalUntil, Remaining: s.remaining()}
-	}
-	if err := s.spool.Enforce(); err != nil {
-		s.log.Warn("records spool bounds could not be applied", "error", errText(err))
 	}
 	pending, err := s.spool.Pending()
 	if err != nil {
@@ -107,14 +113,21 @@ scopes:
 				continue // the file went away (bounds, purge); nothing to do
 			}
 			a, err := s.client.Send(ctx, body)
+			code := codeLabel(a.Code)
 			if err != nil {
 				if ctx.Err() != nil {
 					break scopes // shutting down: not the journal's answer
 				}
-				a = Answer{} // code 0: transport
+				a, code = Answer{}, codeLabel(0) // transport
+				if errors.Is(err, ErrNoToken) {
+					code = codeToken
+				}
 			}
 			act := Classify(a.Code, a.Status, a.Reason)
-			s.m.answer(a.Code, a.Reason, act)
+			if code == codeToken {
+				act = ActRetryAlert
+			}
+			s.m.answer(code, a.Reason, act)
 			switch act {
 			case ActDelete:
 				if err := s.spool.Delete(e); err != nil {
@@ -135,7 +148,7 @@ scopes:
 				delete(s.scopes, key)
 				s.spool.MarkUnknown(key, false)
 				s.log.Error("records snapshot refused by the journal; moved to rejected/",
-					"record_type", e.RecordType, "scope", e.ScopePrefix, "code", codeLabel(a.Code), "reason", ReasonLabel(a.Reason))
+					"record_type", e.RecordType, "scope", e.ScopePrefix, "code", code, "reason", ReasonLabel(a.Reason))
 				continue
 			case ActErased:
 				// The purge deletes this file too (it is about the subject).
@@ -155,7 +168,7 @@ scopes:
 			case ActRetryScope:
 				b := s.scopes[key]
 				b.step++
-				b.until = now.Add(s.backoff(b.step, a.RetryAfter))
+				b.until = s.now().Add(s.backoff(b.step, a.RetryAfter))
 				s.scopes[key] = b
 				s.spool.MarkUnknown(key, true)
 				res.NextDue = earliest(res.NextDue, b.until)
@@ -163,13 +176,13 @@ scopes:
 					"record_type", e.RecordType, "scope", e.ScopePrefix, "reason", ReasonLabel(a.Reason))
 			default: // ActRetry, ActRetryAlert
 				s.globalStep++
-				s.globalUntil = now.Add(s.backoff(s.globalStep, a.RetryAfter))
+				s.globalUntil = s.now().Add(s.backoff(s.globalStep, a.RetryAfter))
 				if act == ActRetryAlert {
 					s.log.Error("records journal refused the connector for a reason that is not the data's; keeping the spool",
-						"record_type", e.RecordType, "scope", e.ScopePrefix, "code", codeLabel(a.Code), "reason", ReasonLabel(a.Reason))
+						"record_type", e.RecordType, "scope", e.ScopePrefix, "code", code, "reason", ReasonLabel(a.Reason))
 				} else {
 					s.log.Warn("records journal unavailable; keeping the spool",
-						"code", codeLabel(a.Code), "reason", ReasonLabel(a.Reason))
+						"code", code, "reason", ReasonLabel(a.Reason))
 				}
 				res.NextDue = s.globalUntil
 				res.Remaining = s.remaining()
@@ -211,8 +224,8 @@ func (s *Sender) backoff(step int, retryAfter time.Duration) time.Duration {
 	return d
 }
 
-// groupByScope groups entries (oldest first) by scope; scopes are ordered
-// by their oldest file.
+// groupByScope groups entries (oldest first) by scope (ScopeKey: record
+// type and scope parts); scopes are ordered by their oldest file.
 func groupByScope(es []Entry) ([]string, map[string][]Entry) {
 	var order []string
 	groups := map[string][]Entry{}

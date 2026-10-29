@@ -117,12 +117,13 @@ func (m *Metrics) rejectedOne(reason string) {
 	m.rejected.Add(context.Background(), 1, metric.WithAttributes(m.conn, attribute.String("reason", reason)))
 }
 
-func (m *Metrics) answer(code int, reason string, act Action) {
+// answer counts one answer. code is a codeLabel or codeToken.
+func (m *Metrics) answer(code, reason string, act Action) {
 	if m == nil {
 		return
 	}
 	m.answers.Add(context.Background(), 1, metric.WithAttributes(m.conn,
-		attribute.String("code", codeLabel(code)), attribute.String("reason", ReasonLabel(reason)),
+		attribute.String("code", code), attribute.String("reason", ReasonLabel(reason)),
 		attribute.String("action", act.String())))
 }
 
@@ -139,6 +140,10 @@ func (m *Metrics) cutOne() {
 	}
 	m.cut.Add(context.Background(), 1, metric.WithAttributes(m.conn))
 }
+
+// codeToken is the code label of a send that never left: the token file
+// could not be read or is empty (ErrNoToken).
+const codeToken = "token"
 
 // codeLabel bounds an HTTP status for a label: 0 (transport) or 100-599.
 func codeLabel(code int) string {

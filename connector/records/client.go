@@ -28,6 +28,11 @@ const maxRetryAfter = 24 * time.Hour
 // request that is not to the journal's own address.
 var ErrHostBlocked = errors.New("records: request to a host other than the journal blocked")
 
+// ErrNoToken is returned by Send when the token file cannot be read or is
+// empty: nothing was sent. It is a deployment fault, not the journal's
+// answer, so the sender alerts on it (ActRetryAlert, code "token").
+var ErrNoToken = errors.New("records: no ServiceAccount token for the journal")
+
 // pinned forwards only requests to exactly one scheme and host (as
 // internal/loginbroker/brokerapi does; not imported, its errors name the
 // login broker).
@@ -133,7 +138,7 @@ func TokenFile(path string) func() (string, error) {
 func (c *Client) Send(ctx context.Context, body []byte) (Answer, error) {
 	token, err := c.token()
 	if err != nil || token == "" {
-		return Answer{}, errors.New("records: no ServiceAccount token for the journal")
+		return Answer{}, ErrNoToken
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {

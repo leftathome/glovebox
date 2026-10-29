@@ -2,6 +2,7 @@ package records
 
 import (
 	"context"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -375,5 +376,169 @@ func TestDrainStopsWithItsContext(t *testing.T) {
 	res := r.sender.Drain(ctx)
 	if len(r.j.Answers()) != 0 || len(r.pending(t)) != 1 || !r.sender.globalUntil.IsZero() {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// max_age is applied by the pass itself, with no Put to trigger it: a
+// scope the journal keeps answering 409 expires instead of being resent.
+func TestDrainAppliesMaxAgeWithoutPuts(t *testing.T) {
+	r := newSenderRig(t)
+	r.j.Unknown("e_child1", true)
+	r.put(t, "e_child1", "c1", at(13, 0))
+	r.sender.Drain(context.Background())
+	r.clock.Advance(8 * 24 * time.Hour)
+	r.sender.Drain(context.Background())
+	if n := len(r.j.Answers()); n != 1 {
+		t.Fatalf("%d answers: an expired file was sent", n)
+	}
+	if p := r.pending(t); len(p) != 0 {
+		t.Fatalf("pending %v", p)
+	}
+	if r.m.counter(t, metricDropped, "reason", DropUnknownSubjectExpired) != 1 {
+		t.Fatal("not counted")
+	}
+}
+
+// ... and during a global backoff, which can outlast max_age.
+func TestDrainAppliesMaxAgeDuringBackoff(t *testing.T) {
+	r := newSenderRig(t)
+	r.spool.cfg.MaxAgeHours = 1
+	r.put(t, "e_child1", "c1", at(14, 30))
+	r.j.Next(recordstest.Answer{Code: 503, Reason: journalapi.ReasonUnavailable, RetryAfter: 7200})
+	r.sender.Drain(context.Background())
+	r.clock.Advance(time.Hour)
+	res := r.sender.Drain(context.Background())
+	if res.Sent != 0 || res.Remaining != 0 || len(r.pending(t)) != 0 {
+		t.Fatalf("%+v pending %v", res, r.pending(t))
+	}
+	if r.m.counter(t, metricDropped, "reason", DropMaxAge) != 1 {
+		t.Fatal("not counted")
+	}
+}
+
+// An erase purges its subject only: e_child10 is not e_child1.
+func TestDrainErasedSubjectPurgeIsExact(t *testing.T) {
+	r := newSenderRig(t)
+	r.j.Erase("e_child1")
+	r.put(t, "e_child1", "c1", at(13, 0))
+	keep := r.put(t, "e_child10", "c1", at(13, 1))
+	keepRej := r.put(t, "e_child10", "c9", at(12, 0))
+	es, _ := r.spool.Pending()
+	if es[0].ID != keepRej.SnapshotID {
+		t.Fatalf("order %v", ids(es))
+	}
+	_ = r.spool.Reject(es[0], "schema")
+	r.sender.Drain(context.Background())
+	if got := receivedIDs(r.j); len(got) != 1 || got[0] != keep.SnapshotID {
+		t.Fatalf("received %v", got)
+	}
+	if n := listNames(t, rejectedDir(r.dir)); len(n) != 1 {
+		t.Fatalf("rejected file of another subject purged: %v", n)
+	}
+	if r.m.counter(t, metricDropped, "reason", DropErasedSubject) != 1 {
+		t.Fatal("dropped count")
+	}
+	if err := r.spool.Put(testSnapshot(t, "e_child10", "c1", at(13, 2))); err != nil || len(r.pending(t)) != 1 {
+		t.Fatal("a later snapshot of another subject was refused")
+	}
+}
+
+// A 410 for a scope without a data subject deletes that file, once.
+func TestDrainErasedWithoutASubjectDeletesTheFile(t *testing.T) {
+	r := newSenderRig(t)
+	s := NewSnapshot("t1", 1, Scope("src", "s", ""), true, nil, at(13, 0), nil)
+	if err := r.spool.Put(s); err != nil {
+		t.Fatal(err)
+	}
+	r.j.Next(recordstest.Answer{Code: 410, Reason: journalapi.ReasonErasedSubject})
+	r.sender.Drain(context.Background())
+	r.clock.Advance(time.Hour)
+	r.sender.Drain(context.Background())
+	if n := len(r.j.Answers()); n != 1 {
+		t.Fatalf("%d answers: the file was resent", n)
+	}
+	if p := r.pending(t); len(p) != 0 {
+		t.Fatalf("pending %v", p)
+	}
+	if r.m.counter(t, metricDropped, "reason", DropErasedSubject) != 1 {
+		t.Fatal("not counted")
+	}
+}
+
+// A 409's Retry-After lengthens that scope's backoff.
+func TestDrainUnknownSubjectHonoursRetryAfter(t *testing.T) {
+	r := newSenderRig(t)
+	r.put(t, "e_child1", "c1", at(13, 0))
+	r.j.Next(recordstest.Answer{Code: 409, Reason: journalapi.ReasonUnknownSubject, RetryAfter: 300})
+	res := r.sender.Drain(context.Background())
+	if !res.NextDue.Equal(r.clock.Now().Add(300 * time.Second)) {
+		t.Fatalf("%+v", res)
+	}
+	if b := r.sender.scopes; len(b) != 1 {
+		t.Fatalf("scope backoffs %v", b)
+	}
+}
+
+// slowTransport advances the clock while a request is in flight.
+type slowTransport struct {
+	clock *fakeClock
+	d     time.Duration
+}
+
+func (s slowTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.clock.Advance(s.d)
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// A backoff runs from the answer, not from the start of the pass.
+func TestDrainBackoffStartsAtTheAnswer(t *testing.T) {
+	r := newSenderRig(t)
+	c, err := NewClient(r.j.URL, TokenFile(newTokenFile(t, "tok-1")), 5*time.Second, slowTransport{r.clock, 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sender.client = c
+	r.put(t, "e_child1", "c1", at(13, 0))
+	r.put(t, "e_child2", "c1", at(13, 1))
+	r.j.SetAuthUnavailable(true)
+	res := r.sender.Drain(context.Background())
+	if !res.NextDue.Equal(r.clock.Now().Add(30 * time.Second)) {
+		t.Fatalf("global backoff %+v, now %v", res, r.clock.Now())
+	}
+	r.j.SetAuthUnavailable(false)
+	r.sender.globalUntil = time.Time{}
+	r.j.Next(recordstest.Answer{Code: 409, Reason: journalapi.ReasonUnknownSubject})
+	r.sender.scopes = map[string]scopeBackoff{}
+	r.sender.Drain(context.Background())
+	if len(r.sender.scopes) != 1 {
+		t.Fatalf("scope backoffs %v", r.sender.scopes)
+	}
+	// The 409 came 10 s before the end of the pass (the next send took 10 s).
+	for _, b := range r.sender.scopes {
+		if !b.until.Equal(r.clock.Now().Add(20 * time.Second)) {
+			t.Fatalf("scope backoff until %v, now %v", b.until, r.clock.Now())
+		}
+	}
+}
+
+// A token file that cannot be read sends nothing and is alerted on as a
+// deployment fault, under its own code.
+func TestDrainWithoutATokenIsAlerted(t *testing.T) {
+	r := newSenderRig(t)
+	c, err := NewClient(r.j.URL, TokenFile(newTokenFile(t, " \n")), 5*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sender.client = c
+	r.put(t, "e_child1", "c1", at(13, 0))
+	res := r.sender.Drain(context.Background())
+	if len(r.j.Answers()) != 0 || len(r.pending(t)) != 1 || res.NextDue.IsZero() {
+		t.Fatalf("%+v", res)
+	}
+	if r.m.counter(t, metricAnswers, "code", codeToken, "action", "retry_alert") != 1 {
+		t.Fatal("not counted as code=token retry_alert")
+	}
+	if logs := r.logs.String(); !strings.Contains(logs, `"level":"ERROR"`) || !strings.Contains(logs, `"code":"token"`) {
+		t.Fatalf("not logged as an error:\n%s", logs)
 	}
 }
