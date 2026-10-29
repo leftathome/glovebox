@@ -32,6 +32,7 @@ import (
 	"github.com/leftathome/glovebox/internal/journal/jmetrics"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/journaltest"
+	"github.com/leftathome/glovebox/internal/journal/roster"
 	"github.com/leftathome/glovebox/internal/kubecm"
 	"github.com/leftathome/glovebox/internal/satoken/satokentest"
 	"github.com/leftathome/glovebox/internal/scan"
@@ -757,6 +758,23 @@ func TestGoLoopRecoversAPanic(t *testing.T) {
 	case <-ran:
 	default:
 		t.Error("the loop after the panic did not run")
+	}
+}
+
+// An unknown household.json field gets its own explicit log line, saying
+// that removals stop applying; any other failure keeps the generic one.
+func TestRosterReloadMessage(t *testing.T) {
+	_, err := roster.Parse(roster.FormatOpenclawHouseholdV1,
+		[]byte(`{"people": {"e_a": {"agent": "a"}}, "household_members": [], "pets": []}`))
+	msg := rosterReloadMessage(err)
+	for _, want := range []string{`"pets"`, "INCLUDING REMOVALS", "Adding a field to household.json"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("unknown-field message lacks %q: %s", want, msg)
+		}
+	}
+	other := rosterReloadMessage(errors.New("roster: open: no such file"))
+	if strings.Contains(other, "INCLUDING REMOVALS") || !strings.Contains(other, "keeping the previous roster") {
+		t.Errorf("generic message: %s", other)
 	}
 }
 
