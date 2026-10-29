@@ -1,8 +1,11 @@
 package powerschool
 
 import (
+	"sort"
 	"time"
 
+	"github.com/leftathome/glovebox/connector/records"
+	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	pslib "github.com/leftathome/powerschool-go"
 )
 
@@ -72,6 +75,93 @@ func tallyDays(page *pslib.AttendancePage, cfg AttendanceDaysConfig) map[string]
 			default:
 				t.unknown++
 			}
+		}
+	}
+	return out
+}
+
+// BuildAttendanceDays builds one attendance_day snapshot per school year
+// shown on the page, over its settled days only (decisions S1-S3).
+//
+// "Today" is now's calendar date in the school's time zone tz; grid dates
+// are compared with it as YYYY-MM-DD. A school day is a grid date on or
+// before today with at least one met period. A date is settled when it is
+// before today and either has no unmarked cell or has been followed by at
+// least settle school days (those after it, today included).
+//
+// The range runs from the year's first grid date to the last date of the
+// unbroken run of settled dates that starts there: every date up to `to`
+// is settled, so the snapshot never removes a day it has not judged. A
+// year with no such run gets no snapshot. Records are the coded days
+// inside the range, keyed by date.
+func BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int,
+	now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot {
+	if settle < 1 {
+		settle = DefaultAttendanceDaySettleSchoolDays
+	}
+	if tz == nil {
+		tz = time.UTC
+	}
+	tallies := tallyDays(page, cfg)
+	today := now.In(tz).Format("2006-01-02")
+	var schoolDays []string
+	for d, t := range tallies {
+		if d <= today && t.met > 0 {
+			schoolDays = append(schoolDays, d)
+		}
+	}
+	sort.Strings(schoolDays)
+	settled := func(d string) bool {
+		if d >= today {
+			return false
+		}
+		if tallies[d].unmarked == 0 {
+			return true
+		}
+		after := sort.Search(len(schoolDays), func(i int) bool { return schoolDays[i] > d })
+		return len(schoolDays)-after >= settle
+	}
+
+	var out []journalapi.Snapshot
+	for _, y := range gridYears(page) {
+		to := ""
+		for _, d := range y.dates {
+			if !settled(d) {
+				break
+			}
+			to = d
+		}
+		if to == "" {
+			continue
+		}
+		recs := []journalapi.Record{}
+		for _, d := range y.dates {
+			t := tallies[d]
+			if d > to {
+				break
+			}
+			if !t.coded {
+				continue
+			}
+			f := records.NewFields(nil)
+			f.Date("date", t.date)
+			f.Int("periods_met", t.met)
+			f.Int("periods_unmarked", t.unmarked)
+			f.Int("absent_unexcused", t.absUnex)
+			f.Int("absent_excused", t.absEx)
+			f.Int("late", t.late)
+			f.Int("left_early", t.leftEarly)
+			f.Int("authorized", t.auth)
+			f.Int("unknown_codes", t.unknown)
+			f.Bool("any_unexcused", t.anyUnex)
+			f.String("classification", t.classification())
+			recs = append(recs, b.record(d, f))
+		}
+		rng := &journalapi.CompleteRange{Field: "date", From: y.from(), To: to}
+		s := records.NewSnapshot(TypeAttendanceDay, recordSchemaVersion, b.scope("attendance_days", records.Part("school_year", y.year)),
+			true, rng, observedAt, recs)
+		if b.fits(s) {
+			out = append(out, s)
 		}
 	}
 	return out

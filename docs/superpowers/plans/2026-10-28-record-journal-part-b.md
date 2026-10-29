@@ -1978,7 +1978,7 @@ Settled (spec 5.1 with S1, S2): a date is settled when it is before today in the
 
 Snapshot per school year (S3): `from` = the first grid date of the year; `to` = the last date of the longest prefix (from `from`, in date order over grid dates of that year that are before today) in which every date is settled; records = coded days within `[from, to]`; scope `(powerschool, attendance_days, subject, school_year=<y>)`, complete, `complete_range {date, from, to}`. If no date of the year is settled, no snapshot for that year. Key: the date.
 
-- [ ] **Step 17.1: Write the failing tests** (spec 8: "unmarked-then-settled and corrected days"):
+- [x] **Step 17.1: Write the failing tests** (spec 8: "unmarked-then-settled and corrected days"):
 
 ```go
 func TestDayWithUnmarkedCellIsNotSettledUntilThreeSchoolDays(t *testing.T) {
@@ -2003,10 +2003,12 @@ func TestAttendanceDaysSplitAtTheSchoolYear(t *testing.T)
 func TestAttendanceDayFieldsAreTheSpecSet(t *testing.T)            // wantFields + validateAll
 ```
 
-- [ ] **Step 17.2: Run; expect FAIL.**
-- [ ] **Step 17.3: Implement** `BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int, now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot`. "Today" is `now.In(tz)`'s calendar date compared with the grid's UTC-midnight dates by `YYYY-MM-DD` string.
-- [ ] **Step 17.4: Run; expect PASS.**
-- [ ] **Step 17.5: Commit** (`feat(powerschool): attendance_day settled days and complete_range`).
+- [x] **Step 17.2: Run; expect FAIL.**
+- [x] **Step 17.3: Implement** `BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int, now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot`. "Today" is `now.In(tz)`'s calendar date compared with the grid's UTC-midnight dates by `YYYY-MM-DD` string.
+- [x] **Step 17.4: Run; expect PASS.**
+- [x] **Step 17.5: Commit** (`feat(powerschool): attendance_day settled days and complete_range`).
+
+NOTE (B1 implementation): a `settle` below 1 is taken as the default 3 (the config refuses it anyway) and a nil `tz` as UTC. "Followed" counts school days strictly after the date up to and including today; a grid date that is all `-` is not a school day. Extra test: a code cell on a `-` column does not count; a nil page gives nothing.
 
 ---
 
