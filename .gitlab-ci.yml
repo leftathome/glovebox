@@ -94,13 +94,21 @@ test:
   # reverting the Go bump to work around a registry fault. Revert to the
   # floating tag once gitops-br8e is fixed.
   image: golang:1.27.1-bookworm
+  # Memory: `go test -race ./...` builds and runs every package in parallel,
+  # and the root package re-runs the whole core binary under the race
+  # detector. At the runner's default 4Gi limit the job was OOM-killed (exit
+  # 137) on main pipeline 4056 after passing on the MR. -p 4 bounds how many
+  # packages build and run at once; the request makes the scheduler reserve it.
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
   before_script:
     - "go version"
     - "go env GOPATH GOMODCACHE GOCACHE"
   script:
     - "go vet ./..."
     - "./scripts/check-codegen.sh"
-    - "go test ./... -count=1 -race"
+    - "go test ./... -count=1 -race -p 4"
   rules:
     # Keep the unit gate off schedule/web pipelines -- those run only the
     # integration stage (see .build_rules for the same guard rationale).
@@ -147,7 +155,8 @@ test-journal-db:
       command: ["initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -c listen_addresses='*' -c fsync=off"]
   variables:
     KUBERNETES_CPU_REQUEST: "1"
-    KUBERNETES_MEMORY_REQUEST: "3Gi"
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
     KUBERNETES_SERVICE_CPU_REQUEST: "500m"
     KUBERNETES_SERVICE_MEMORY_REQUEST: "512Mi"
     JOURNAL_TEST_DATABASE_URL: "postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
@@ -155,7 +164,7 @@ test-journal-db:
   before_script:
     - "go version"
   script:
-    - "go test ./internal/journal/... . -count=1 -race"
+    - "go test ./internal/journal/... . -count=1 -race -p 4"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
       when: never
