@@ -155,7 +155,7 @@ Taken from the Part A plan's NOTEs (Tasks 15, 23, 24, 25, 26, 29, 31) and `docs/
 
 The connector's config gains a `records` block. Absent or `enabled: false` means nothing else in it is read or checked (so today's configs keep working byte for byte).
 
-- [ ] **Step 1.1: Write the failing tests.**
+- [x] **Step 1.1: Write the failing tests.**
 
 ```go
 package records
@@ -216,9 +216,9 @@ func TestConfigRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 1.2: Run; expect FAIL** (`go test ./connector/records/ -run TestConfig -count=1`: package does not exist).
+- [x] **Step 1.2: Run; expect FAIL** (`go test ./connector/records/ -run TestConfig -count=1`: package does not exist).
 
-- [ ] **Step 1.3: Implement.**
+- [x] **Step 1.3: Implement.**
 
 ```go
 // Package records is the connector side of the record journal (design spec
@@ -317,8 +317,8 @@ func (c Config) Validate() error {
 }
 ```
 
-- [ ] **Step 1.4: Run; expect PASS.**
-- [ ] **Step 1.5: Commit.**
+- [x] **Step 1.4: Run; expect PASS.**
+- [x] **Step 1.5: Commit.**
 
 ```bash
 git add connector/records
