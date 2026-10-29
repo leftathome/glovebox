@@ -155,7 +155,7 @@ Taken from the Part A plan's NOTEs (Tasks 15, 23, 24, 25, 26, 29, 31) and `docs/
 
 The connector's config gains a `records` block. Absent or `enabled: false` means nothing else in it is read or checked (so today's configs keep working byte for byte).
 
-- [ ] **Step 1.1: Write the failing tests.**
+- [x] **Step 1.1: Write the failing tests.**
 
 ```go
 package records
@@ -216,9 +216,9 @@ func TestConfigRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 1.2: Run; expect FAIL** (`go test ./connector/records/ -run TestConfig -count=1`: package does not exist).
+- [x] **Step 1.2: Run; expect FAIL** (`go test ./connector/records/ -run TestConfig -count=1`: package does not exist).
 
-- [ ] **Step 1.3: Implement.**
+- [x] **Step 1.3: Implement.**
 
 ```go
 // Package records is the connector side of the record journal (design spec
@@ -317,8 +317,8 @@ func (c Config) Validate() error {
 }
 ```
 
-- [ ] **Step 1.4: Run; expect PASS.**
-- [ ] **Step 1.5: Commit.**
+- [x] **Step 1.4: Run; expect PASS.**
+- [x] **Step 1.5: Commit.**
 
 ```bash
 git add connector/records
@@ -335,7 +335,7 @@ git commit -m "feat(records): connector records config block, off unless enabled
 
 Every field the journal will see goes through `Fields`. Rules (A3, A6, A7, S8): every declared field present, `null` when unknown; `string` one line, no C0 controls, at most 1024 bytes; `text` valid UTF-8 without NUL, at most 64 KiB, otherwise **unchanged** (no scrubbing of format characters, no indentation, no 4 KiB cut: the journal scans it); keys and scope values pass through when clean and short, else become `h:<32 hex>`.
 
-- [ ] **Step 2.1: Write the failing tests.**
+- [x] **Step 2.1: Write the failing tests.**
 
 ```go
 package records
@@ -441,9 +441,9 @@ func TestSafeKeyAndScopeValue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2.2: Run; expect FAIL.**
+- [x] **Step 2.2: Run; expect FAIL.**
 
-- [ ] **Step 2.3: Implement.**
+- [x] **Step 2.3: Implement.**
 
 ```go
 package records
@@ -594,8 +594,10 @@ func hash32(s string) string {
 
 Check `record.Encode` handles `int64`, `bool`, `float64`, `string` (it does: `encode` uses `json.Encoder` with HTML escaping off).
 
-- [ ] **Step 2.4: Run; expect PASS.**
-- [ ] **Step 2.5: Commit** (`feat(records): field writers, safe keys and scope values`).
+- [x] **Step 2.4: Run; expect PASS.**
+- [x] **Step 2.5: Commit** (`feat(records): field writers, safe keys and scope values`).
+
+NOTE (B1 implementation): `SafeKey`/`SafeScopeValue` also hash a blank value (the journal refuses a whitespace-only key) and every Unicode format character (Cf) plus U+2028/U+2029, which is wider than the journal's own check; the byte caps come from `record.MaxKeyBytes` and `record.MaxScopeValueBytes` instead of local constants. `OneLine` trims a space left at the end by the 1024-byte cut. Extra tests: values pass `record.NormalizeValue`, and hashed scope values pass `record.ParseScope`.
 
 ---
 
@@ -605,7 +607,7 @@ Check `record.Encode` handles `int64`, `bool`, `float64`, `string` (it does: `en
 - Create: `connector/records/snapshot.go`
 - Test: `connector/records/snapshot_test.go`
 
-- [ ] **Step 3.1: Write the failing tests.**
+- [x] **Step 3.1: Write the failing tests.**
 
 ```go
 func TestScopeOrderAndSubject(t *testing.T) {
@@ -649,9 +651,9 @@ func TestSchoolYear(t *testing.T) {
 
 `testRegistry` lives in `connector/records/helpers_test.go` and builds `record.NewRegistry([]record.Type{...})`.
 
-- [ ] **Step 3.2: Run; expect FAIL.**
+- [x] **Step 3.2: Run; expect FAIL.**
 
-- [ ] **Step 3.3: Implement.**
+- [x] **Step 3.3: Implement.**
 
 ```go
 package records
@@ -700,8 +702,8 @@ func SchoolYear(d time.Time) string {
 }
 ```
 
-- [ ] **Step 3.4: Run; expect PASS.**
-- [ ] **Step 3.5: Commit** (`feat(records): scope constructor, snapshot assembly, school year`).
+- [x] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.5: Commit** (`feat(records): scope constructor, snapshot assembly, school year`).
 
 ---
 
@@ -713,7 +715,7 @@ func SchoolYear(d time.Time) string {
 
 Layout under the state directory: `spool/` holds pending files, `spool/rejected/` holds permanently refused ones. A file is `<observed_at>-<snapshot_id>.json`, `observed_at` as `20060102T150405.000Z` (UTC, fixed width, so names sort by time). Written with `internal/atomicfile.WriteFile` (temp file, fsync, rename), then the directory is fsynced. On open: stale `*.tmp-*` siblings (a crash during a write) are removed; a file whose name or content cannot be parsed is moved to `rejected/` and counted (`rejected{reason="unreadable"}`), never deleted silently and never sent.
 
-- [ ] **Step 4.1: Write the failing tests.**
+- [x] **Step 4.1: Write the failing tests.**
 
 ```go
 func TestPutWritesOneFileNamedByTimeAndID(t *testing.T) {
@@ -802,9 +804,9 @@ func TestPutFailureLeavesNothing(t *testing.T) {
 
 Helpers (`openTestSpool`, `testSnapshot` builds a one-record snapshot for scope `(src, s, subject, course)`, `at(h, m)` = 2026-10-16 h:m UTC, `listNames` ignores directories, `newTestMetrics` wraps an `sdkmetric.ManualReader`) go in `connector/records/helpers_test.go`.
 
-- [ ] **Step 4.2: Run; expect FAIL.**
+- [x] **Step 4.2: Run; expect FAIL.**
 
-- [ ] **Step 4.3: Implement.**
+- [x] **Step 4.3: Implement.**
 
 ```go
 package records
@@ -1031,8 +1033,16 @@ func syncDir(dir string) {
 
 `refreshGauges` / `refreshGaugesLocked` (count files in both directories, sum bytes, oldest pending `observed_at`) are written in Task 10; until then make them no-ops so this task compiles, and let `Metrics` be a stub with `writeError()` and `rejectedOne(string)` methods that are nil-safe. Task 10 replaces the stub.
 
-- [ ] **Step 4.4: Run; expect PASS** (`go test ./connector/records/ -run 'TestPut|TestPending|TestOpen' -count=1`).
-- [ ] **Step 4.5: Commit** (`feat(records): spool directory with atomic writes and crash recovery`).
+- [x] **Step 4.4: Run; expect PASS** (`go test ./connector/records/ -run 'TestPut|TestPending|TestOpen' -count=1`).
+- [x] **Step 4.5: Commit** (`feat(records): spool directory with atomic writes and crash recovery`).
+
+NOTE (B1 implementation):
+- **No `atomicfile.WriteFile`.** It does not fsync the directory and cannot be made to fail at a chosen step. The spool writes through a small `fsys` interface (`fs.go`: `osFS` in production) in the same order (temp `<name>.tmp-<pid>-<nanos>`, write, fsync, close, rename) and then fsyncs the directory before `Put` returns; every directory change (delete, move, recovery) is fsynced and its error returned (the plan's `syncDir` ignored errors). `OpenSpool` also fsyncs the state directory and `spool/` after creating them.
+- **Move order.** `Reject` renames into `rejected/`, fsyncs `rejected/` first and `spool/` second: a crash between them leaves the file in both, and recovery deletes the pending copy (a file in both was being rejected). The other order could lose the file.
+- **Crash tests** use `memFS` (`fs_mem_test.go`), a model that keeps only fsynced content and fsynced directory entries, and can fail one operation or crash at one (that operation and all later ones do nothing). `crash_test.go` crashes `Put`, `Reject`, `Delete` and recovery's quarantine at every operation, restarts on the durable state, and checks old-or-new, no torn file, no temp file, and that a step that returned nil survived. `TestPutFailureLeavesNothing` uses single injected failures instead of `chmod` (the tests run as root).
+- `OpenSpool` takes a `*slog.Logger` and refuses an empty or relative state directory. `Entry` also carries `RecordType`, `ScopePrefix` (`source=<v>/surface=<v>/`, the only scope text a log line may carry), `Unreadable`. A file in `spool/` that stops parsing after open is quarantined on the next listing instead of being skipped silently. Parsed entries are cached by path (a name's content never changes), so a drain pass does not re-read every file.
+- `Put` refuses a snapshot without a UUID, a scope or an observed_at in years 1-9999 (counted as a write error) instead of writing a file that recovery would quarantine.
+- `metrics.go` is the full Task 10 file (written here instead of a stub); Task 10 adds its tests.
 
 ---
 
@@ -1044,7 +1054,7 @@ func syncDir(dir string) {
 
 The table is spec 4.3 as updated in Part A Task 25 and documented in `docs/journal-api.md` "Answers, and what the connector's spool does". The rule that decides everything else: **only the listed permanent reasons move a file to `rejected/`; an answer the table does not name is kept and alerted on, never dropped.**
 
-- [ ] **Step 5.1: Write the failing test** (every row of the documented table, plus the unknowns).
+- [x] **Step 5.1: Write the failing test** (every row of the documented table, plus the unknowns).
 
 ```go
 func TestClassifyMatchesTheJournalTable(t *testing.T) {
@@ -1098,9 +1108,9 @@ func TestReasonLabelIsBounded(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5.2: Run; expect FAIL.**
+- [x] **Step 5.2: Run; expect FAIL.**
 
-- [ ] **Step 5.3: Implement.**
+- [x] **Step 5.3: Implement.**
 
 ```go
 package records
@@ -1196,8 +1206,10 @@ func ReasonLabel(r string) string {
 }
 ```
 
-- [ ] **Step 5.4: Run; expect PASS.**
-- [ ] **Step 5.5: Commit** (`feat(records): classify journal answers by reason (spec 4.3 as built)`).
+- [x] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.5: Commit** (`feat(records): classify journal answers by reason (spec 4.3 as built)`).
+
+NOTE (B1 implementation): committed before Task 4, because the spool's metrics label answers with `Action.String()`. The documented alert rows (400 `bad_request`, 401, 403 `forbidden`, 404) need no table of their own: everything that is not accepted, erased, permanent, 409 `unknown_subject` or a 5xx falls through to `ActRetryAlert`. A 503 with a reason other than `unavailable`, `auth_unavailable` or none is `ActRetryAlert` (unknown answer), not `ActRetry`. `Action.String()` gives the metric label. Added an exhaustive test (every code 0-599 against every known reason, `""` and an unknown one): only the six permanent rows reject, only 410 `erased_subject` purges, only a 200 deletes.
 
 ---
 
@@ -1209,7 +1221,7 @@ func ReasonLabel(r string) string {
 
 Mirrors `internal/loginbroker/brokerapi.Client`: the transport refuses every host but the journal's, follows no redirect, uses no proxy; the token file is re-read for every request (the kubelet rotates it); the token is never logged. One request: `POST <journal>/v1/records`, `Content-Type: application/json`, the spool file's bytes. The answer is read up to 64 KiB and decoded leniently into `journalapi.Response`; `Retry-After` (seconds) is returned.
 
-- [ ] **Step 6.1: Write the failing tests** against an `httptest.Server`:
+- [x] **Step 6.1: Write the failing tests** against an `httptest.Server`:
 
 - the request is `POST /v1/records`, no query, `Content-Type: application/json`, `Authorization: Bearer <file contents trimmed>`, body byte-identical to the input;
 - the token file is re-read (change it between two calls; the server sees both);
@@ -1250,12 +1262,14 @@ func TestSendPresentsTheProjectedToken(t *testing.T) {
 
 Write the other cases in the same style.
 
-- [ ] **Step 6.2: Run; expect FAIL.**
+- [x] **Step 6.2: Run; expect FAIL.**
 
-- [ ] **Step 6.3: Implement** `NewClient(baseURL string, token func() (string, error), timeout time.Duration, inner http.RoundTripper) (*Client, error)`, `TokenFile(path string) func() (string, error)`, `type Answer struct { Code int; Status, Reason string; RetryAfter time.Duration }`, `func (c *Client) Send(ctx context.Context, body []byte) (Answer, error)` (an error only for transport failures and a token that cannot be read; the error never contains the token or the body). Copy the `pinned` round tripper from `brokerapi` (do not import `brokerapi`: its errors name the login broker); `CheckRedirect` returns `http.ErrUseLastResponse`; `Proxy: nil`. Answer body read through `io.LimitReader(resp.Body, 64<<10)`; drain and close.
+- [x] **Step 6.3: Implement** `NewClient(baseURL string, token func() (string, error), timeout time.Duration, inner http.RoundTripper) (*Client, error)`, `TokenFile(path string) func() (string, error)`, `type Answer struct { Code int; Status, Reason string; RetryAfter time.Duration }`, `func (c *Client) Send(ctx context.Context, body []byte) (Answer, error)` (an error only for transport failures and a token that cannot be read; the error never contains the token or the body). Copy the `pinned` round tripper from `brokerapi` (do not import `brokerapi`: its errors name the login broker); `CheckRedirect` returns `http.ErrUseLastResponse`; `Proxy: nil`. Answer body read through `io.LimitReader(resp.Body, 64<<10)`; drain and close.
 
-- [ ] **Step 6.4: Run; expect PASS.**
-- [ ] **Step 6.5: Commit** (`feat(records): pinned journal client presenting the projected token`).
+- [x] **Step 6.4: Run; expect PASS.**
+- [x] **Step 6.5: Commit** (`feat(records): pinned journal client presenting the projected token`).
+
+NOTE (B1 implementation): an answer whose body is not the journal's JSON (or is over 64 KiB) keeps its **real** HTTP code with an empty status and reason, instead of becoming `502`: a 5xx is then retried, but a 200 or 4xx that is not the journal's answer is an unknown answer and is kept and alerted on (`ActRetryAlert`), which a rewrite to 502 would have hidden. `Retry-After` is read as delay-seconds only (the journal's form; an HTTP date is 0) and capped at 24 h. A zero timeout means the 90 s default. Extra tests: errors carry neither the token nor the body (also when the token source's own error text would), a 307 is alerted on, an oversized answer is not trusted.
 
 ---
 
@@ -1267,11 +1281,11 @@ Write the other cases in the same style.
 
 Used by the sender tests here, by the PowerSchool tests and by B2. It is a real HTTP server (`httptest.Server`) and answers exactly as the journal documents, in the journal's order of checks: route (404 `not_found`), query string (400), bearer token equal to the expected one (401 `unauthenticated`), the caller's identity allowed (403 `forbidden`, via `Forbid()`), `Content-Type` (400), body size over 8 MiB (413), strict decode through `internal/journal/strictjson` (422 `schema`), a resend of a stored id (200 `duplicate`, or 422 `snapshot_id_reused` when the scope or type differs), validation through `record.ValidateSnapshot` when a `Registry` is set (its `Rejection` status and reason), erased subjects (410), unknown subjects (409), and otherwise 200 `applied` (or the scripted answer).
 
-- [ ] **Step 7.1: Write the failing tests:** one per row of the table, driven through `records.Client` so the fake and the client agree; plus `Received()` returns the accepted snapshots in arrival order and `Answers()` every (code, reason) sent.
+- [x] **Step 7.1: Write the failing tests:** one per row of the table, driven through `records.Client` so the fake and the client agree; plus `Received()` returns the accepted snapshots in arrival order and `Answers()` every (code, reason) sent.
 
-- [ ] **Step 7.2: Run; expect FAIL.**
+- [x] **Step 7.2: Run; expect FAIL.**
 
-- [ ] **Step 7.3: Implement.**
+- [x] **Step 7.3: Implement.**
 
 ```go
 // Package recordstest is a fake record journal for connector tests. It
@@ -1313,8 +1327,10 @@ func (j *Journal) Answers() []Answer
 
 The handler writes `journalapi.Response` bodies (`{"status":"rejected","reason":...,"detail":"..."}`) and `Retry-After` when scripted. For the reuse check compare the record type and the canonical scope, `record.ParseScope(snap.Scope)` then `.Canonical()` (`internal/journal/record/scope.go`), with what was stored for the id.
 
-- [ ] **Step 7.4: Run; expect PASS.**
-- [ ] **Step 7.5: Commit** (`test(records): fake journal implementing the 4.3 answer table`).
+- [x] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.5: Commit** (`test(records): fake journal implementing the 4.3 answer table`).
+
+NOTE (B1 implementation): the fake follows the journal's real order (route, ready, bearer, in-flight slot, TokenReview, then the endpoint: writes-snapshots policy, query, Content-Type, 8 MiB, strict decode with the registry-derived key caps, resend lookup, validation, policy per type, erased, unknown, late/held/applied). Knobs beyond the plan's: `SetReady` (503 `unavailable` before auth), `SetAuthUnavailable` (503 `auth_unavailable`), `NoWrites` (the first 403 `policy`), `Deny(type)` (the per-type 403 `policy`), `HoldNext`, `LoseNextAnswer` (apply, then drop the connection), `Block`/`InFlight` (a real 16-slot in-flight limit answering 503 with `Retry-After: 1`), and `Answer.Drop`. A resend of a held snapshot is answered `held`, as the journal does. Scripted answers are given after authentication and store nothing. `recordstest` does not import `records` (the package's own tests import `recordstest`); its tests are an external package driven through `records.Client` and `records.Classify`, one per table row.
 
 ---
 
@@ -1336,7 +1352,7 @@ One pass over `spool/`: group pending entries by `ScopeKey`; visit scopes in the
 
 Backoff: exponential from `min_backoff` to `max_backoff`, with +/-20% jitter (`rand` injected), reset on any `ActDelete`/`ActReject`. Global and per-scope backoff live in memory only: a restart sends at once, which is safe because every send is idempotent (A9).
 
-- [ ] **Step 8.1: Write the failing tests** with `recordstest.Journal` and a fake clock:
+- [x] **Step 8.1: Write the failing tests** with `recordstest.Journal` and a fake clock:
 
 ```go
 func TestDrainSendsOldestFirstPerScope(t *testing.T)            // 3 files, 2 scopes: arrival order at the journal is per-scope oldest first
@@ -1352,9 +1368,9 @@ func TestDrainTransportErrorIsRetried(t *testing.T)              // server close
 func TestDrainResendAfterLostAnswerIsDuplicate(t *testing.T)     // journal applies but the answer is lost (script a connection reset after apply): next pass gets duplicate and deletes
 ```
 
-- [ ] **Step 8.2: Run; expect FAIL.**
+- [x] **Step 8.2: Run; expect FAIL.**
 
-- [ ] **Step 8.3: Implement.**
+- [x] **Step 8.3: Implement.**
 
 ```go
 type Sender struct {
@@ -1472,8 +1488,10 @@ func (s *Sender) backoff(step int, retryAfter time.Duration) time.Duration {
 
 Log lines carry the file name (time and UUID) and reasons; never a scope value, subject id or field value (the subject id is a roster id, but log lines go to Loki; keep them out).
 
-- [ ] **Step 8.4: Run; expect PASS.**
-- [ ] **Step 8.5: Commit** (`feat(records): sender drains the spool in order and acts on every answer`).
+- [x] **Step 8.4: Run; expect PASS.**
+- [x] **Step 8.5: Commit** (`feat(records): sender drains the spool in order and acts on every answer`).
+
+NOTE (B1 implementation): `NewSender(spool, client, metrics, cfg, log, now)`; the jitter is a field the tests set. Changes from the sketch: `ActReject` also resets the global step (as the text above says) and clears the scope's backoff; an accepted or rejected head clears the scope's `unknown_subject` mark, a 409 sets it; a 409's scope backoff also honours `Retry-After`. `ActErased` lets `PurgeSubject` delete the answered file with the others (one count per file); a subject-less scope just deletes the file. A cancelled context ends the pass without a backoff and without counting an answer. `FailPass` backs off after a panicked pass (Task 11). Log lines carry `record_type`, `scope` (the `source=/surface=` prefix), `code` and `reason` only -- not the file name, which the sketch logged: the brief allows only the scope prefix, the record type and the reason. Tests added beyond the list: erased-subject purge through the sender, jitter bounds and the cap at a large step, context cancellation, and that a short `Retry-After` never shortens the computed backoff.
 
 ---
 
@@ -1487,7 +1505,7 @@ Spec 4.14: `max_age` (default 7 days) and `max_bytes` (default 256 MiB) apply to
 
 `Enforce` runs at the start of every drain pass and after every `Put`.
 
-- [ ] **Step 9.1: Write the failing tests.**
+- [x] **Step 9.1: Write the failing tests.**
 
 ```go
 func TestMaxAgeDropsEveryOldFileNewestIncluded(t *testing.T)     // one scope, one file, 8 days old -> gone; dropped_total{reason="max_age"} 1
@@ -1504,10 +1522,12 @@ func TestPurgeSubjectRemovesPendingAndRejected(t *testing.T)    // e_child1 file
 
 The 409 case needs memory of the last answer: the sender records, per `ScopeKey`, that its head was answered `unknown_subject` (`Spool.MarkUnknown(key)`); `Enforce` uses it for the label only. The label is the only thing that changes, so losing it at restart is harmless.
 
-- [ ] **Step 9.2: Run; expect FAIL.**
-- [ ] **Step 9.3: Implement** (files in `rejected/` that `parseEntry` cannot read -- the ones `recover()` quarantined as unreadable -- are aged by their mtime and counted toward `max_bytes` too, so `max_age` really applies to every file; add `TestMaxAgeAppliesToUnreadableRejectedFiles`) `func (s *Spool) Enforce() error`, `func (s *Spool) PurgeSubject(subject string) (int, error)`, `func (s *Spool) MarkUnknown(scopeKey string)`. Age is `now - ObservedAt` (the file name), so a clock that jumps forward expires files early rather than keeping data at rest longer; note that in the doc comment.
-- [ ] **Step 9.4: Run; expect PASS.**
-- [ ] **Step 9.5: Commit** (`feat(records): spool bounds and subject purge on erase`).
+- [x] **Step 9.2: Run; expect FAIL.**
+- [x] **Step 9.3: Implement** (files in `rejected/` that `parseEntry` cannot read -- the ones `recover()` quarantined as unreadable -- are aged by their mtime and counted toward `max_bytes` too, so `max_age` really applies to every file; add `TestMaxAgeAppliesToUnreadableRejectedFiles`) `func (s *Spool) Enforce() error`, `func (s *Spool) PurgeSubject(subject string) (int, error)`, `func (s *Spool) MarkUnknown(scopeKey string)`. Age is `now - ObservedAt` (the file name), so a clock that jumps forward expires files early rather than keeping data at rest longer; note that in the doc comment.
+- [x] **Step 9.4: Run; expect PASS.**
+- [x] **Step 9.5: Commit** (`feat(records): spool bounds and subject purge on erase`).
+
+NOTE (B1 implementation): committed before Task 8 (the sender calls `Enforce`, `PurgeSubject` and `MarkUnknown`). `MarkUnknown(scopeKey, unknown bool)` also clears the mark (the sender clears it when the scope's head is accepted); marks of scopes with no pending file are forgotten by `Enforce`. An age of exactly `max_age` is kept, older is dropped. `PurgeSubject` also remembers the subject for the life of the process, and `Put` then drops snapshots about it without writing them (counted `dropped{reason="erased_subject"}`): an erase bans all later data, and the connector would otherwise spool a fresh snapshot about the member on every poll only for it to be answered 410. `PurgeSubject("")` purges nothing. A quarantined unreadable file has no known subject, so a purge cannot reach it; it leaves with `max_age`. Over `max_bytes` with only newest-of-scope files left is logged once until the spool is under the limit again.
 
 ---
 
@@ -1530,11 +1550,13 @@ Same style as `connector/metrics.go`: OTel instruments on the framework's provid
 | `glovebox_journal_spool_write_errors_total` | counter | `connector` | Snapshots that could not be written to the spool (items are unaffected). |
 | `glovebox_journal_record_values_cut_total` | counter | `connector` | `text` values cut to 64 KiB (S8). |
 
-- [ ] **Step 10.1: Write the failing tests:** scrape through `sdkmetric.ManualReader`; after a scripted sequence (put 3, one applied, one rejected `schema`, one 409, one transport error) every series has the expected value; labels are only from the fixed sets (a reason `"x\ny"` appears as `other`); `oldest_seconds` is 0 for an empty spool and the age of the oldest file otherwise; a nil `*Metrics` is safe everywhere.
-- [ ] **Step 10.2: Run; expect FAIL.**
-- [ ] **Step 10.3: Implement** `NewMetrics(meter metric.Meter, connectorName string) (*Metrics, error)`, the recording methods used in Tasks 4-9, and `refreshGaugesLocked` in `spool.go` (one `ReadDir` of each directory).
-- [ ] **Step 10.4: Run; expect PASS.**
-- [ ] **Step 10.5: Commit** (`feat(records): spool metrics`).
+- [x] **Step 10.1: Write the failing tests:** scrape through `sdkmetric.ManualReader`; after a scripted sequence (put 3, one applied, one rejected `schema`, one 409, one transport error) every series has the expected value; labels are only from the fixed sets (a reason `"x\ny"` appears as `other`); `oldest_seconds` is 0 for an empty spool and the age of the oldest file otherwise; a nil `*Metrics` is safe everywhere.
+- [x] **Step 10.2: Run; expect FAIL.**
+- [x] **Step 10.3: Implement** `NewMetrics(meter metric.Meter, connectorName string) (*Metrics, error)`, the recording methods used in Tasks 4-9, and `refreshGaugesLocked` in `spool.go` (one `ReadDir` of each directory).
+- [x] **Step 10.4: Run; expect PASS.**
+- [x] **Step 10.5: Commit** (`feat(records): spool metrics`).
+
+NOTE (B1 implementation): `metrics.go` landed with Task 4 (see its NOTE); this commit adds the tests. The gauges are synchronous (`Int64Gauge`, `Float64Gauge`) and set by every spool operation through `refreshGaugesLocked`; the `code` label is `0` or the three-digit status. `metrics_test.go` pins a label allowlist in the style of `jmetrics`: every recorded series of every spool metric carries exactly its allowlisted label names, and every label value comes from its fixed set (a reason `"secret\nreason"` appears as `other`). The exercise uses tell-tale subject ids, keys, scope values and field values. `privacy_test.go` runs the same exercise and checks that the log output carries none of them, no file name and not the token, while it does carry the record type, the scope prefix and the reasons. The fake journal now JSON-encodes its answers (it wrote reasons unescaped).
 
 ---
 
@@ -1576,7 +1598,7 @@ func (e *Emitter) OnCut()
 
 `Run` is the only goroutine the records feature adds. A panic in a drain pass is recovered, logged and counted as a transport-style retry (the loop keeps running).
 
-- [ ] **Step 11.1: Write the failing tests.**
+- [x] **Step 11.1: Write the failing tests.**
 
 ```go
 func TestRunDeliversWhatEmitWrites(t *testing.T)                 // Emit 2 -> fake journal receives 2 within 1s; spool empty
@@ -1608,10 +1630,25 @@ func TestRestartSendsAtOnce(t *testing.T)
 
 Simulate a crash by building a second `Emitter` on the same state directory without closing the first (no shared state other than the directory), and for the temp-file case by writing the temp file by hand with `atomicfile`'s naming (`<name>.tmp-<pid>-<nanos>`). For "applied but answer lost", script the fake journal to apply and then hijack and close the connection.
 
-- [ ] **Step 11.2: Run; expect FAIL.**
-- [ ] **Step 11.3: Implement.**
-- [ ] **Step 11.4: Run; expect PASS** (`go test ./connector/records/... -count=1 -race`; also `-count=20` for the loop tests once, to shake out timing).
-- [ ] **Step 11.5: Commit** (`feat(records): emitter loop; crash and restart tests`).
+- [x] **Step 11.2: Run; expect FAIL.**
+- [x] **Step 11.3: Implement.**
+- [x] **Step 11.4: Run; expect PASS** (`go test ./connector/records/... -count=1 -race`; also `-count=20` for the loop tests once, to shake out timing).
+- [x] **Step 11.5: Commit** (`feat(records): emitter loop; crash and restart tests`).
+
+NOTE (B1 implementation):
+- **Signature.** `New(cfg Config, o Options) (*Emitter, error)`. `Options{StateDir, Connector, Meter, Log, Now}` replaces the positional arguments, so that the logger can be passed in (the sketch had none) and the tests can inject a file system, a transport and a pass hook. `New` applies the defaults and validates.
+- **Off by default.** With `cfg.Enabled` false, `New` returns `(nil, nil)` before it touches anything. Every method of a nil `*Emitter` (`Emit`, `Run`, `OnCut`) is a no-op. `TestDisabledCreatesNothing` checks that the state directory stays empty, that a counting meter sees no instrument registered (it sees all 8 once records are enabled), that nothing is logged, and that the goroutine count does not grow.
+- **The loop.** `Run` discards a wake-up left by `Emit` calls made before it started (the first pass covers them). It waits for the earliest of: a wake from `Emit`, the pass's `NextDue`, or one minute. A panicking pass is recovered, logged without its value, and backed off through `Sender.FailPass`.
+- **Errors.** `Emit` returns an error that counts the failed snapshots and carries no path. Each failed `Put` is already counted in `write_errors_total`.
+- **Crash and restart tests** (`restart_test.go`; the spool-level ones are in `crash_test.go`):
+  - `TestCrashAfterSendBeforeDeleteIsADuplicate` crashes a drain pass over `memFS` at every file operation. It then restarts the spool and sender on the durable state and drains again. Every snapshot must be applied exactly once, every answer must be a 200 (`applied` or `duplicate`), and the spool must end empty.
+  - The other three tests use a second `Emitter` on the same directory, with no state shared with the first: a hand-written `atomicfile`-style temp file is removed and never sent; replay is oldest first per scope, with scopes ordered by their oldest file; and a restart sends at once, with no backoff carried over.
+  - None of these tests sleeps. The loop tests synchronise on the pass hook.
+- Loop and crash tests passed `-count=20 -race`.
+- **Targeted mutation run** (on a `git archive` copy, deleted afterwards; only named `--- FAIL:` kills counted). 31 mutants were applied: 29 killed, 2 survived, both equivalent.
+  - Targets: the classifier, 8 mutants (permanent set, 410 gate, 503 reasons, 5xx range, 409 action, the accepted statuses, the fall-through); durability, 8 (file fsync, directory fsync after a write and after a delete, the move's fsync order, temp-file cleanup, the both-directories recovery, the rename target, recovery quarantine); bounds and overflow, 6; subject purge, 4; the off-by-default gate, 3; backoff, 2.
+  - Survivor 1: removing the quarantine from recovery. The next listing quarantines the same file.
+  - Survivor 2: `if total <= limit` changed to `if total < 0`. The drop loops then stop at once, so nothing changes.
 
 **B2 can start after this commit merges.**
 
