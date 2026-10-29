@@ -1,0 +1,18 @@
+{{- if and .Values.journal.enabled .Values.journal.rbac.create }}
+# Lets the core ask the API server whether a caller's token is genuine
+# (TokenReview), which is how the journal knows who is calling. Grants no
+# read of any object -- in particular none on ConfigMaps: the household
+# roster is mounted, never read through the API, and only Flux may change it.
+# Cluster-scoped (TokenReview has no namespace), so named with the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "glovebox.journalTokenReviewName" . }}
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: journal
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+{{- end }}

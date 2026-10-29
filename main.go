@@ -201,6 +201,16 @@ func main() {
 		}
 	}()
 
+	// The record journal (docs/journal-api.md): off unless journal.enabled,
+	// and then it has its own listener, readiness and metrics. The item
+	// pipeline never waits for it: a database, schema or roster that is not
+	// there yet leaves the journal answering 503 while it retries. Only a
+	// configuration error stops the start.
+	journalRT, err := startJournal(cfg.Journal, sc, rulesProv.SHA256, m.Provider(), inClusterAccess)
+	if err != nil {
+		log.Fatalf("start journal: %v", err)
+	}
+
 	// Start the ingest HTTP plane if enabled. Three route families with
 	// three auth models live here -- /v1/ingest (mTLS peer identity or
 	// nothing), /v1/archives* and /v1/sanitize (bearer tokens) -- and
@@ -435,6 +445,14 @@ func main() {
 
 	// Clean pending files for in-flight items
 	routing.CleanStalePending(cfg.AgentsDir, cfg.AgentAllowlist)
+
+	// The journal first, on its own budget: its listener, then its
+	// background work, then its database (journalShutdown).
+	journalCtx, journalCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := journalRT.Shutdown(journalCtx); err != nil {
+		log.Printf("journal shutdown: %v", err)
+	}
+	journalCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()

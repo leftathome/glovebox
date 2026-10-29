@@ -1,0 +1,22 @@
+{{- if .Values.journal.enabled }}
+# The record journal's listener. Callers present a ServiceAccount token
+# projected for the audience glovebox-journal, which the core verifies with a
+# TokenReview; the NetworkPolicy (journal-networkpolicy.yaml) limits who can
+# connect at all.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "glovebox.fullname" . }}-journal
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: journal
+spec:
+  type: ClusterIP
+  ports:
+    - name: journal
+      port: {{ .Values.journal.port }}
+      targetPort: journal
+      protocol: TCP
+  selector:
+    {{- include "glovebox.selectorLabels" . | nindent 4 }}
+{{- end }}

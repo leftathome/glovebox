@@ -155,7 +155,10 @@ Rejected snapshots (`4xx`) are not stored.
 - `changed jsonb` -- `{field: [old, new]}` for `updated`; the last known fields
   for `removed`
 - `scan jsonb` -- a verdict for **every `text` value stored in this row**, old
-  and new: `{"<field>": {"old": verdict, "new": verdict}}` (4.11)
+  and new: `{"<field>": {"old": verdict, "new": verdict, "scanner_version": v}}`
+  (4.11). One `scanner_version` covers both sides; it is `""` when the two
+  were judged by different scanner versions (or the old value has no verdict),
+  which a rescan always judges again. A scanner version is never empty.
 - `observed_at`, `prev_observed_at` (4.6), `approximate bool`
 - `snapshot_id uuid` (null for household writes), `actor text` (writer service,
   and for notes the person-agent on whose behalf it wrote)
@@ -224,23 +227,41 @@ assert this invariant and nothing broader.
 | Code | Body `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | `200` | `applied`, `duplicate`, `late`, `held` | accepted (4.4) | delete the file |
-| `410` | `erased_subject` | a subject in the snapshot was erased after `observed_at` | delete the file |
+| `410` | `erased_subject` | the subject was erased: an erase bans all later data about the member, whatever its `observed_at` (4.13) | delete the file |
 | `403` | `policy` | the service may not write this type or scope | move to `spool/rejected/` |
 | `409` | `unknown_subject` | a `data_subject` is not in the current roster (4.9b) -- possibly a roster change in progress | keep, retry with backoff (bounded by the spool limits) |
 | `413` | `too_large` | over a limit | move to `spool/rejected/` |
 | `422` | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
-| `5xx`, network error | -- | try again later | keep, retry with backoff |
+| `422` | `snapshot_id_reused` | the `snapshot_id` already identifies a snapshot of another writer, record type or scope: a sender bug that retrying cannot fix | move to `spool/rejected/` |
+| `400` | `bad_request` | not `application/json` | keep, retry with backoff, alert |
+| `401` | `unauthenticated` | no token, a malformed `Authorization` header (exactly one `Bearer <token>`), or a token TokenReview does not vouch for with audience `glovebox-journal` | keep, retry with backoff, alert |
+| `403` | `forbidden` | a valid token of a ServiceAccount with no journal policy | keep, retry with backoff, alert |
+| `404` | `not_found` | no such endpoint or method | keep, retry with backoff, alert |
+| `503` | `unavailable` | the journal is starting, cannot reach its database or roster, or is at its limit of concurrent requests (with `Retry-After`) | keep, retry with backoff |
+| `503` | `auth_unavailable` | TokenReview could not be asked (fails closed) | keep, retry with backoff |
+| `5xx`, network error | `internal` or none | try again later | keep, retry with backoff |
+
+The spool keys on `reason`, not on the code alone: only the reasons this
+table marks "move to `spool/rejected/`" are permanent. `401
+unauthenticated`, `403 forbidden`, `400 bad_request` and every `503` are
+kept and retried with backoff, and raise an alert while they persist (a
+deployment fault: a token audience, an allow-list, a client bug, a journal
+that is starting or overloaded), never a reason to drop data.
 
 ### 4.4 Applying a snapshot
 
-In one transaction, under a per-scope advisory lock:
+In one transaction, under a per-subject advisory lock (every write for one `data_subject` serialises, not only those of one scope: step 7 loads every row of the subject and type):
 
-1. **Idempotency.** If `snapshot_id` exists, return its stored status as
-   `duplicate` (or `held` if it is still held) with the stored stats.
+1. **Idempotency.** If `snapshot_id` exists and its writer, record type and
+   canonical scope equal the stored snapshot's, return its stored status as
+   `duplicate` (or `held` if it is still held) with the stored stats. If any
+   of the three differs the id is reused: refuse with `422 snapshot_id_reused`
+   and reveal nothing about the stored snapshot.
 2. **Validation.** Schema, limits and policy; failures return `4xx` and
    store nothing.
-3. **Erasure guard.** If any record's `data_subject` has an `erasure` row with
-   `erased_at > observed_at`, return `410 erased_subject` and store nothing.
+3. **Erasure guard.** If the snapshot's `data_subject` has any `erasure` row
+   (an erase is a ban, 4.13), return `410 erased_subject` and store nothing,
+   whatever `observed_at` is.
 4. **Ordering.** If a snapshot for the same scope with a later `observed_at`
    is already applied, store this one as `late` (payload kept, no diff, no
    events). Current state never moves backwards.
@@ -552,17 +573,66 @@ All reads require a service token and grants.
   counts-only household view. Requires `counts: true` in the service policy and
   is filtered by the reader's grants like every other read.
 - Admin (operator ServiceAccount only): `POST /v1/admin/held/{id}:confirm|discard`,
-  `POST /v1/admin/erase {data_subject}`, `POST /v1/admin/rescan`.
+  `POST /v1/admin/erase {data_subject, confirm}` (`confirm` repeats the
+  member id: an erase cannot be undone), `POST /v1/admin/rescan`.
 
 ### 4.13 Erase
 
 `POST /v1/admin/erase` deletes, in one transaction, every `snapshot` row whose
 `data_subject` is the subject (held ones included) and every `record_current`
 and `record_event` row for the subject, and writes an `erasure` row with
-counts. Later snapshots observed before the erasure get `410` (4.4 step 3) and
-the connector deletes them, so a spool replay cannot bring data back.
-Reader cursors stay valid (sequence numbers are not reused). This is the only
-operation that deletes event history.
+counts. Reader cursors stay valid (sequence numbers are not reused). This is
+the only operation that deletes or rewrites event history.
+
+Decisions of 2026-10-23 and 2026-10-24:
+
+- A member may be erased while still on the roster; removing them from the
+  roster through gitops can follow at any time. One roster snapshot, which
+  still includes the member, decides the frozen readers below.
+- The erase is a ban: once an `erasure` row exists for a member, every later
+  snapshot about them (4.4 step 3, and the confirm of a held one), every note
+  about them and every note by them is refused with `410 erased_subject`,
+  whatever its time. Connectors and the gateway treat 410 as permanent and
+  delete the item, so in-flight spools drain themselves. The erased member
+  also reads nothing: every read by them is refused as an unknown reader
+  (403), on the roster or not. There is no un-erase; putting an erased
+  person back needs a deliberate un-erase that does not exist yet. Roster
+  ids must not be reused for a different person: the ban and frozen-reader
+  rows are keyed by the id and outlive roster removal.
+- A note belongs to its author, the `on_behalf_of` member in its key. Erasing
+  a member deletes every note they wrote, about anyone (other subjects, the
+  household, themselves, notes of theirs kept earlier), and removes them as a
+  reader of kept notes; a kept note left with no reader is deleted.
+- Notes others wrote about the erased member are kept, whatever their
+  audience, for their frozen readers: exactly the roster members who can read
+  the note at the erase, under the read visibility rule (so the member's
+  guardians), plus its author if on the roster; never the erased member, and
+  never a member erased before (table `erasure_reader`). A note with no such
+  reader is deleted. A kept note moves to its own subject
+  `erased:<pseudonym>:<n>` (128 random bits per erasure, stored nowhere else,
+  so it cannot be recomputed from the id); its scope becomes the household
+  scope; key, audience, fields and text stay as written; its events are
+  rewritten in place (same `seq`, `group_key` cleared) and all kept, so it
+  still folds.
+- A kept note is visible only to its frozen readers, in every read: no
+  roster grant, `public` included, reaches it; members added later, and the
+  erased member even while still on the roster, never do. Its author sees
+  its whole history. Any other frozen reader sees only rows whose audience
+  is the one they were frozen from (table `erasure_kept`): the note, its
+  events of that audience, and old values or the previous scope across an
+  audience change only when the previous audience is that one too; the rest
+  is withheld as for a different audience, exactly as before the erase.
+- Everything else of the member is deleted as above.
+- Copies already delivered outside the journal (the openclaw inbox,
+  audiences, memory vaults) are not erased; that is a separate, later
+  improvement.
+
+Erase takes the member's author lock (which every note write takes for its
+`on_behalf_of`, before its subject lock), then the subject's lock, the
+household's and those of every subject the member wrote about, in sorted
+order. The `erasure` row records counts, including `notes_deleted_as_author`
+and `notes_pseudonymised`, and no id but the erased one.
+`docs/journal-schema.md` has the details.
 
 ### 4.14 Spool (connector side)
 

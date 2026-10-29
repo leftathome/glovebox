@@ -1,0 +1,21 @@
+{{- if and .Values.journal.enabled .Values.journal.rbac.create }}
+{{- $name := include "glovebox.journalTokenReviewName" . }}
+# Binds the TokenReview ClusterRole to the core's ServiceAccount (the one the
+# core Deployment runs as, glovebox.serviceAccountName) and to nothing else.
+# Connectors run as accounts of their own and get no TokenReview right.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: journal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "glovebox.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,279 @@
+// Package record is the record journal's data model without a database:
+// typed field values in one canonical encoding, scopes, record types and
+// their schema versions, and validation of snapshots and household notes
+// (spec 2026-10-16 sections 3, 4.3, 4.7, 4.9a).
+package record
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/leftathome/glovebox/internal/journal/journalapi"
+)
+
+// FieldType is the type of one field (spec section 3).
+type FieldType string
+
+const (
+	String     FieldType = "string"
+	Text       FieldType = "text" // untrusted free text; scanned (4.11)
+	Int        FieldType = "int"
+	Number     FieldType = "number"
+	Bool       FieldType = "bool"
+	Date       FieldType = "date"      // "YYYY-MM-DD"
+	Timestamp  FieldType = "timestamp" // RFC 3339, stored in UTC
+	StringList FieldType = "string_list"
+)
+
+// Valid reports whether t is one of the field types.
+func (t FieldType) Valid() bool {
+	switch t {
+	case String, Text, Int, Number, Bool, Date, Timestamp, StringList:
+		return true
+	}
+	return false
+}
+
+// Limits (4.3). A snapshot over any of them is refused whole.
+const (
+	MaxStringBytes = 1024
+	MaxTextBytes   = 64 << 10
+	MaxListItems   = 256
+)
+
+// Rejection refuses a snapshot or note: the HTTP status and the reason code
+// a connector's spool acts on (4.3), and a detail for the operator. A
+// detail names fields and record positions, never values.
+type Rejection struct {
+	Status int
+	Reason string
+	Detail string
+}
+
+func (r *Rejection) Error() string {
+	return fmt.Sprintf("%d %s: %s", r.Status, r.Reason, r.Detail)
+}
+
+func schemaErr(format string, a ...any) *Rejection {
+	return &Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema, Detail: fmt.Sprintf(format, a...)}
+}
+
+func tooLarge(format string, a ...any) *Rejection {
+	return &Rejection{Status: http.StatusRequestEntityTooLarge, Reason: journalapi.ReasonTooLarge, Detail: fmt.Sprintf(format, a...)}
+}
+
+func (r *Rejection) prefixed(p string) *Rejection {
+	out := *r
+	out.Detail = p + out.Detail
+	return &out
+}
+
+var (
+	nameRE  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	tokenRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+)
+
+// ValidName reports whether s is a valid field, type, rule or scope-part name.
+func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+// ValidToken reports whether s is a valid audience token.
+func ValidToken(s string) bool { return tokenRE.MatchString(s) }
+
+// NormalizeValue checks one JSON value against a field type and returns its
+// canonical encoding, or nil for null. An empty list ([]) is a value and
+// encodes as []; null is no value and is absent from Fields. A string_list
+// holds at most MaxListItems items of MaxStringBytes each (256 KiB in all).
+func NormalizeValue(t FieldType, raw json.RawMessage) (json.RawMessage, *Rejection) {
+	v := bytes.TrimSpace(raw)
+	if len(v) == 0 || string(v) == "null" {
+		return nil, nil
+	}
+	switch t {
+	case String, Text:
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, schemaErr("want a JSON string")
+		}
+		s, rej := checkString(t, s)
+		if rej != nil {
+			return nil, rej
+		}
+		return encode(s), nil
+	case Int:
+		n, rej := jsonNumber(v)
+		if rej != nil {
+			return nil, rej
+		}
+		i, err := strconv.ParseInt(n.String(), 10, 64)
+		if err != nil {
+			return nil, schemaErr("want an integer in the int64 range")
+		}
+		return encode(i), nil
+	case Number:
+		n, rej := jsonNumber(v)
+		if rej != nil {
+			return nil, rej
+		}
+		f, err := strconv.ParseFloat(n.String(), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+			return nil, schemaErr("want a finite number")
+		}
+		if f == 0 {
+			f = 0 // -0 and 0 are one number: one encoding, one hash
+		}
+		return encode(f), nil
+	case Bool:
+		var b bool
+		if err := json.Unmarshal(v, &b); err != nil {
+			return nil, schemaErr("want true or false")
+		}
+		return encode(b), nil
+	case Date:
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, schemaErr("want a date string")
+		}
+		if !ValidDate(s) {
+			return nil, schemaErr("want a date as YYYY-MM-DD")
+		}
+		return encode(s), nil
+	case Timestamp:
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, schemaErr("want a timestamp string")
+		}
+		ts, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return nil, schemaErr("want an RFC 3339 timestamp")
+		}
+		ts = ts.UTC()
+		if y := ts.Year(); y < 0 || y > 9999 {
+			return nil, schemaErr("timestamp is outside years 0000-9999 in UTC")
+		}
+		return encode(ts.Format(time.RFC3339Nano)), nil
+	case StringList:
+		var l []*string
+		if err := json.Unmarshal(v, &l); err != nil {
+			return nil, schemaErr("want a list of strings")
+		}
+		if len(l) > MaxListItems {
+			return nil, tooLarge("a string_list of %d items exceeds %d", len(l), MaxListItems)
+		}
+		out := make([]string, len(l))
+		for i, s := range l {
+			if s == nil {
+				return nil, schemaErr("null item in a string_list")
+			}
+			cs, rej := checkString(String, *s)
+			if rej != nil {
+				return nil, rej
+			}
+			out[i] = cs
+		}
+		return encode(out), nil
+	}
+	return nil, schemaErr("unknown field type %q", t)
+}
+
+// ValidDate reports whether s is a calendar date written YYYY-MM-DD.
+func ValidDate(s string) bool {
+	d, err := time.Parse("2006-01-02", s)
+	return err == nil && d.Format("2006-01-02") == s
+}
+
+func jsonNumber(v []byte) (json.Number, *Rejection) {
+	dec := json.NewDecoder(bytes.NewReader(v))
+	dec.UseNumber()
+	var x any
+	if err := dec.Decode(&x); err != nil {
+		return "", schemaErr("want a number")
+	}
+	n, ok := x.(json.Number)
+	if !ok {
+		return "", schemaErr("want a number")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", schemaErr("trailing data after a number")
+	}
+	return n, nil
+}
+
+// checkString enforces the size and control-character rules and returns the
+// value to store. In string values (which are not scanned and are shown to
+// agents) C1 controls and bidirectional controls are replaced by U+FFFD, as
+// invalid UTF-8 already is; the snapshot is not refused for them. Text is
+// scanned, so it is kept as received.
+func checkString(t FieldType, s string) (string, *Rejection) {
+	limit := MaxStringBytes
+	if t == Text {
+		limit = MaxTextBytes
+	}
+	clean := false
+	for _, r := range s {
+		if r == 0 {
+			return "", schemaErr("NUL character in a value")
+		}
+		if t != Text && (r < 0x20 || r == 0x7f) {
+			return "", schemaErr("control character in a %s value: free text belongs in text fields", t)
+		}
+		if t != Text && suspicious(r) {
+			clean = true
+		}
+	}
+	if clean {
+		s = strings.Map(func(r rune) rune {
+			if suspicious(r) {
+				return utf8.RuneError
+			}
+			return r
+		}, s)
+	}
+	if len(s) > limit {
+		return "", tooLarge("a %s value of %d bytes exceeds %d", t, len(s), limit)
+	}
+	return s, nil
+}
+
+// suspicious reports C1 controls, bidirectional formatting controls and
+// marks, zero-width characters and line/paragraph separators.
+func suspicious(r rune) bool {
+	return (r >= 0x80 && r <= 0x9f) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) ||
+		r == 0x200e || r == 0x200f || r == 0x061c || r == 0x200b || r == 0xfeff || r == 0x2028 || r == 0x2029
+}
+
+// encode is the one JSON encoding of every stored value: no HTML escaping,
+// no trailing newline. Negative zero encodes as 0 and a time.Time as its
+// UTC RFC 3339 form. It panics when v cannot be encoded (NaN, Inf, an
+// unsupported type): that is a programming error, never an input error.
+func encode(v any) json.RawMessage {
+	switch x := v.(type) {
+	case float64:
+		if x == 0 {
+			v = float64(0)
+		}
+	case time.Time:
+		v = x.UTC().Format(time.RFC3339Nano)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		panic(fmt.Sprintf("record: cannot encode %T: %v", v, err))
+	}
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
+}
+
+// Encode returns the canonical encoding of a Go string, bool, integer,
+// float64, []string or time.Time, for values built by trusted code (rules,
+// tests). It panics on a value that has no JSON encoding. It does not
+// validate or sanitise: untrusted input must go through NormalizeValue.
+func Encode(v any) json.RawMessage { return encode(v) }

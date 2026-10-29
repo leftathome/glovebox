@@ -174,7 +174,7 @@ The journal authenticates exactly as the login broker does (spec D9, 4.9): a pro
 - Test: `internal/satoken/satoken_test.go`
 - Modify: `internal/loginbroker/auth.go`, `internal/loginbroker/server.go`, `internal/loginbroker/server_test.go`
 
-- [ ] **Step 1.1: Write the fake TokenReview endpoint (test helper package).**
+- [x] **Step 1.1: Write the fake TokenReview endpoint (test helper package).**
 
 `internal/satoken/satokentest/fakeapi.go`:
 
@@ -299,7 +299,7 @@ func (f *FakeAPI) Requests() (requests, bearers []string, audiences [][]string) 
 }
 ```
 
-- [ ] **Step 1.2: Write the failing satoken tests (moved from the broker, against the fake).**
+- [x] **Step 1.2: Write the failing satoken tests (moved from the broker, against the fake).**
 
 `internal/satoken/satoken_test.go`:
 
@@ -455,12 +455,12 @@ func TestSafeName(t *testing.T) {
 }
 ```
 
-- [ ] **Step 1.3: Run them; expect a build failure.**
+- [x] **Step 1.3: Run them; expect a build failure.**
 
 Run: `go test ./internal/satoken/...`
 Expected: `undefined: NewTokenReviewer` (and the other satoken names) -- the package has no source yet.
 
-- [ ] **Step 1.4: Create `internal/satoken/satoken.go` by moving the broker's file.**
+- [x] **Step 1.4: Create `internal/satoken/satoken.go` by moving the broker's file.**
 
 ```bash
 mkdir -p internal/satoken
@@ -514,7 +514,7 @@ func SafeName(s string) string {
 
 Read the moved file once and fix any comment that still says "broker" where it now means "this service" (doc comments only; no code changes beyond the sed above).
 
-- [ ] **Step 1.5: Recreate `internal/loginbroker/auth.go` as aliases.**
+- [x] **Step 1.5: Recreate `internal/loginbroker/auth.go` as aliases.**
 
 ```go
 package loginbroker
@@ -545,18 +545,18 @@ func NewTokenReviewer(access *kubecm.Access, audience string, allowed []string) 
 }
 ```
 
-- [ ] **Step 1.6: Point the broker's server at the shared helpers and drop the moved tests.**
+- [x] **Step 1.6: Point the broker's server at the shared helpers and drop the moved tests.**
 
 In `internal/loginbroker/server.go`: replace every `bearerToken(` with `satoken.BearerToken(` and every `safeName(` with `satoken.SafeName(`; delete the two function definitions `bearerToken` and `safeName` at the end of the file; add the import `"github.com/leftathome/glovebox/internal/satoken"` and drop `"strings"`, which nothing else in the file uses.
 
 In `internal/loginbroker/server_test.go`: delete everything from the line `// --- TokenReview ----...` through the end of `TestTokenReviewerConfiguration` (the `brokerOwnToken` constant, `fakeAPI`, `newFakeAPI`, `access`, `saStatus`, `testAudience` and the three tests -- they now live in `internal/satoken`). Remove the imports the compiler then reports as unused.
 
-- [ ] **Step 1.7: Run everything that touches the move.**
+- [x] **Step 1.7: Run everything that touches the move.**
 
 Run: `go build ./... && go vet ./internal/satoken/... ./internal/loginbroker/... ./connectors/login-broker/... && go test ./internal/satoken/... ./internal/loginbroker/... ./connectors/login-broker/... -count=1 -race`
 Expected: PASS for all three package trees. Then the staticcheck line from "How to work this plan" on `./internal/satoken/... ./internal/loginbroker/...`: no findings.
 
-- [ ] **Step 1.8: Commit.**
+- [x] **Step 1.8: Commit.**
 
 ```bash
 git add internal/satoken internal/loginbroker
@@ -576,7 +576,7 @@ Everything later writes to this schema, so it comes first, with the harness that
 - Test: `internal/journal/migrate_test.go`, `internal/journal/schemadoc_test.go`
 - Modify: `go.mod`, `go.sum`
 
-- [ ] **Step 2.1: Add the driver.**
+- [x] **Step 2.1: Add the driver.**
 
 ```bash
 go get github.com/jackc/pgx/v5@v5.11.0
@@ -584,7 +584,7 @@ go get github.com/jackc/pgx/v5@v5.11.0
 
 pgx is the PostgreSQL driver the spec names (4.1); v5.11.0 was released 2026-09-07. Nothing else is added: no ORM, no testcontainers (a 20-line script does the container).
 
-- [ ] **Step 2.2: Write the harness.**
+- [x] **Step 2.2: Write the harness.**
 
 `internal/journal/journaltest/pg.go`:
 
@@ -713,7 +713,7 @@ func prepareServer(admin string) error {
 }
 ```
 
-- [ ] **Step 2.3: Write the script that runs the database tests locally.**
+- [x] **Step 2.3: Write the script that runs the database tests locally.**
 
 `scripts/journal-test-db.sh`:
 
@@ -764,7 +764,7 @@ chmod +x scripts/journal-test-db.sh
 
 (The harness waits for the server, so the script does not.)
 
-- [ ] **Step 2.4: Write the failing migration tests.**
+- [x] **Step 2.4: Write the failing migration tests.**
 
 `internal/journal/migrate_test.go`:
 
@@ -932,12 +932,12 @@ func schemaDump(t *testing.T, db *sql.DB) string {
 }
 ```
 
-- [ ] **Step 2.5: Run; expect a build failure.**
+- [x] **Step 2.5: Run; expect a build failure.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: `undefined: Migrate`, `undefined: Migrations`, `undefined: SchemaVersion`, `undefined: MigrateTo`.
 
-- [ ] **Step 2.6: Write the schema.**
+- [x] **Step 2.6: Write the schema.**
 
 `internal/journal/migrations/0001_init.sql`:
 
@@ -1061,7 +1061,7 @@ CREATE TABLE erasure (
 CREATE INDEX erasure_subject ON erasure (data_subject, erased_at);
 ```
 
-- [ ] **Step 2.7: Write the migration runner.**
+- [x] **Step 2.7: Write the migration runner.**
 
 `internal/journal/migrate.go`:
 
@@ -1216,12 +1216,12 @@ func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 }
 ```
 
-- [ ] **Step 2.8: Run the migration tests; expect PASS.**
+- [x] **Step 2.8: Run the migration tests; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: `ok  github.com/leftathome/glovebox/internal/journal` with the five tests passing. Also run `go test ./internal/journal/` without the variable: every test `SKIP`s.
 
-- [ ] **Step 2.9: Write the failing schema-document tests.**
+- [x] **Step 2.9: Write the failing schema-document tests.**
 
 `internal/journal/schemadoc_test.go`:
 
@@ -1303,11 +1303,11 @@ func docSection(doc, heading string) string {
 }
 ```
 
-- [ ] **Step 2.10: Run; expect FAIL** (`open ../../docs/journal-schema.md: no such file or directory`).
+- [x] **Step 2.10: Run; expect FAIL** (`open ../../docs/journal-schema.md: no such file or directory`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 2.11: Write `docs/journal-schema.md`.**
+- [x] **Step 2.11: Write `docs/journal-schema.md`.**
 
 ````markdown
 # Record journal schema
@@ -1497,12 +1497,12 @@ Choices this schema makes where the spec leaves room (also in the plan,
 | `0001_init` | All tables above, their indexes and the append-only trigger. |
 ````
 
-- [ ] **Step 2.12: Run; expect PASS.**
+- [x] **Step 2.12: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: all seven tests pass.
 
-- [ ] **Step 2.13: Commit.**
+- [x] **Step 2.13: Commit.**
 
 ```bash
 git add go.mod go.sum internal/journal scripts/journal-test-db.sh docs/journal-schema.md
@@ -1523,7 +1523,7 @@ One package holds every type that crosses the wire, so the server (this plan), t
 - Create: `internal/journal/journalapi/api.go`
 - Test: `internal/journal/journalapi/api_test.go`
 
-- [ ] **Step 3.1: Write the failing test.**
+- [x] **Step 3.1: Write the failing test.**
 
 `internal/journal/journalapi/api_test.go`:
 
@@ -1589,11 +1589,11 @@ func TestHeldTarget(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3.2: Run; expect a build failure** (`undefined: Snapshot`).
+- [x] **Step 3.2: Run; expect a build failure** (`undefined: Snapshot`).
 
 Run: `go test ./internal/journal/journalapi/`
 
-- [ ] **Step 3.3: Write the package.**
+- [x] **Step 3.3: Write the package.**
 
 `internal/journal/journalapi/api.go`:
 
@@ -1666,6 +1666,7 @@ const (
 	ReasonUnavailable      = "unavailable"        // 503: the journal is not ready
 	ReasonNotFound         = "not_found"          // 404
 	ReasonConflict         = "conflict"           // 409 on admin endpoints
+	ReasonSnapshotIDReused = "snapshot_id_reused" // 422: the id belongs to another writer, type or scope; permanent, move to spool/rejected/
 	ReasonInternal         = "internal"           // 500
 )
 
@@ -1860,11 +1861,11 @@ type RescanResult struct {
 }
 ```
 
-- [ ] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/journalapi/ -count=1`
 
-- [ ] **Step 3.5: Commit.**
+- [x] **Step 3.5: Commit.**
 
 ```bash
 git add internal/journal/journalapi
@@ -1880,7 +1881,7 @@ Every typed value is reduced to one canonical JSON encoding, so equality is byte
 - Create: `internal/journal/record/value.go`, `internal/journal/record/fields.go`
 - Test: `internal/journal/record/value_test.go`, `internal/journal/record/fields_test.go`
 
-- [ ] **Step 4.1: Write the failing value tests.**
+- [x] **Step 4.1: Write the failing value tests.**
 
 `internal/journal/record/value_test.go`:
 
@@ -1969,11 +1970,11 @@ func TestNamesAndTokens(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.2: Run; expect a build failure** (`undefined: NormalizeValue`).
+- [x] **Step 4.2: Run; expect a build failure** (`undefined: NormalizeValue`).
 
 Run: `go test ./internal/journal/record/`
 
-- [ ] **Step 4.3: Write `value.go`.**
+- [x] **Step 4.3: Write `value.go`.**
 
 `internal/journal/record/value.go`:
 
@@ -2205,11 +2206,11 @@ func encode(v any) json.RawMessage {
 func Encode(v any) json.RawMessage { return encode(v) }
 ```
 
-- [ ] **Step 4.4: Run the value tests; expect PASS.**
+- [x] **Step 4.4: Run the value tests; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -run 'NormalizeValue|NamesAndTokens' -count=1`
 
-- [ ] **Step 4.5: Write the failing fields tests.**
+- [x] **Step 4.5: Write the failing fields tests.**
 
 `internal/journal/record/fields_test.go`:
 
@@ -2293,7 +2294,7 @@ func TestFieldsJSONIsSortedAndEmptyIsObject(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.6: Run; expect a build failure** (`undefined: Type`, `undefined: Fields`). `Type` arrives in Task 6; to keep this task self-contained, create `types.go` now with only the two type declarations below (Task 6 adds the rest of the file).
+- [x] **Step 4.6: Run; expect a build failure** (`undefined: Type`, `undefined: Fields`). `Type` arrives in Task 6; to keep this task self-contained, create `types.go` now with only the two type declarations below (Task 6 adds the rest of the file).
 
 `internal/journal/record/types.go` (first version):
 
@@ -2319,7 +2320,7 @@ type Type struct {
 }
 ```
 
-- [ ] **Step 4.7: Write `fields.go`.**
+- [x] **Step 4.7: Write `fields.go`.**
 
 `internal/journal/record/fields.go`:
 
@@ -2470,11 +2471,11 @@ type EventScan struct {
 }
 ```
 
-- [ ] **Step 4.8: Run; expect PASS.**
+- [x] **Step 4.8: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 4.9: Commit.**
+- [x] **Step 4.9: Commit.**
 
 ```bash
 git add internal/journal/record
@@ -2491,7 +2492,7 @@ A scope is an ordered list of `name=value` parts beginning with `source` (4.3). 
 - Create: `internal/journal/record/scope.go`
 - Test: `internal/journal/record/scope_test.go`
 
-- [ ] **Step 5.1: Write the failing test.**
+- [x] **Step 5.1: Write the failing test.**
 
 `internal/journal/record/scope_test.go`:
 
@@ -2570,11 +2571,11 @@ func TestHouseholdScope(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5.2: Run; expect a build failure** (`undefined: ParseScope`).
+- [x] **Step 5.2: Run; expect a build failure** (`undefined: ParseScope`).
 
 Run: `go test ./internal/journal/record/ -run Scope`
 
-- [ ] **Step 5.3: Write `scope.go`.**
+- [x] **Step 5.3: Write `scope.go`.**
 
 `internal/journal/record/scope.go`:
 
@@ -2689,11 +2690,11 @@ func HouseholdScope(recordType, subject string) string {
 const OwnerHousehold = "household"
 ```
 
-- [ ] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 5.5: Commit.**
+- [x] **Step 5.5: Commit.**
 
 ```bash
 git add internal/journal/record
@@ -2709,7 +2710,7 @@ Record types are configuration (spec section 3). The registry enforces 4.7's "a 
 - Modify: `internal/journal/record/types.go`
 - Test: `internal/journal/record/types_test.go`
 
-- [ ] **Step 6.1: Write the failing test.**
+- [x] **Step 6.1: Write the failing test.**
 
 `internal/journal/record/types_test.go`:
 
@@ -2855,11 +2856,11 @@ func TestTypeCanonicalIgnoresNilVersusEmpty(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6.2: Run; expect a build failure** (`undefined: NewRegistry`).
+- [x] **Step 6.2: Run; expect a build failure** (`undefined: NewRegistry`).
 
 Run: `go test ./internal/journal/record/ -run 'Registry|Canonical'`
 
-- [ ] **Step 6.3: Complete `types.go`.**
+- [x] **Step 6.3: Complete `types.go`.**
 
 Replace `internal/journal/record/types.go` with:
 
@@ -3110,11 +3111,11 @@ func (r *Registry) Forward(name string, from int, f Fields) Fields {
 }
 ```
 
-- [ ] **Step 6.4: Run; expect PASS.**
+- [x] **Step 6.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 6.5: Commit.**
+- [x] **Step 6.5: Commit.**
 
 ```bash
 git add internal/journal/record
@@ -3131,7 +3132,7 @@ git commit -m "feat(journal): record types, schema versions and rename chains (g
 - Create: `internal/journal/record/validate.go`
 - Test: `internal/journal/record/validate_test.go`
 
-- [ ] **Step 7.1: Write the failing test.**
+- [x] **Step 7.1: Write the failing test.**
 
 `internal/journal/record/validate_test.go`:
 
@@ -3304,11 +3305,11 @@ func TestValidateNote(t *testing.T) {
 }
 ```
 
-- [ ] **Step 7.2: Run; expect a build failure** (`undefined: ValidateSnapshot`).
+- [x] **Step 7.2: Run; expect a build failure** (`undefined: ValidateSnapshot`).
 
 Run: `go test ./internal/journal/record/ -run Validate`
 
-- [ ] **Step 7.3: Write `validate.go`.**
+- [x] **Step 7.3: Write `validate.go`.**
 
 `internal/journal/record/validate.go`:
 
@@ -3548,11 +3549,11 @@ func hasControl(s string) bool {
 
 ```
 
-- [ ] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/record/ -count=1`
 
-- [ ] **Step 7.5: Commit.**
+- [x] **Step 7.5: Commit.**
 
 ```bash
 git add internal/journal/record
@@ -3578,7 +3579,7 @@ Rules implemented here, each with a test:
 - Create: `internal/journal/diff/diff.go`, `internal/journal/diff/guard.go`
 - Test: `internal/journal/diff/diff_test.go`, `internal/journal/diff/guard_test.go`
 
-- [ ] **Step 8.1: Write the failing diff tests.**
+- [x] **Step 8.1: Write the failing diff tests.**
 
 `internal/journal/diff/diff_test.go`:
 
@@ -3751,7 +3752,7 @@ func TestRemovalsAreSortedByKey(t *testing.T) {
 }
 ```
 
-- [ ] **Step 8.2: Write the failing guard test.**
+- [x] **Step 8.2: Write the failing guard test.**
 
 `internal/journal/diff/guard_test.go`:
 
@@ -3784,11 +3785,11 @@ func TestGuard(t *testing.T) {
 }
 ```
 
-- [ ] **Step 8.3: Run; expect a build failure** (`undefined: Diff`, `undefined: DefaultGuard`).
+- [x] **Step 8.3: Run; expect a build failure** (`undefined: Diff`, `undefined: DefaultGuard`).
 
 Run: `go test ./internal/journal/diff/`
 
-- [ ] **Step 8.4: Write `diff.go`.**
+- [x] **Step 8.4: Write `diff.go`.**
 
 `internal/journal/diff/diff.go`:
 
@@ -3981,7 +3982,7 @@ func equalStrings(a, b []string) bool {
 }
 ```
 
-- [ ] **Step 8.5: Write `guard.go`.**
+- [x] **Step 8.5: Write `guard.go`.**
 
 `internal/journal/diff/guard.go`:
 
@@ -4014,11 +4015,11 @@ func (g Guard) Hold(live, removals int) bool {
 }
 ```
 
-- [ ] **Step 8.6: Run; expect PASS.**
+- [x] **Step 8.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -count=1`
 
-- [ ] **Step 8.7: Commit.**
+- [x] **Step 8.7: Commit.**
 
 ```bash
 git add internal/journal/diff
@@ -4038,7 +4039,7 @@ one of its few keys (a corrected absence day) is recorded, not held."
 - Create: `internal/journal/diff/fold.go`
 - Test: `internal/journal/diff/fold_test.go`, `internal/journal/diff/property_test.go`
 
-- [ ] **Step 9.1: Write the failing fold test.**
+- [x] **Step 9.1: Write the failing fold test.**
 
 `internal/journal/diff/fold_test.go`:
 
@@ -4076,11 +4077,11 @@ func TestFoldReplaysEventsAndRenames(t *testing.T) {
 }
 ```
 
-- [ ] **Step 9.2: Run; expect a build failure** (`undefined: Identity`, `undefined: Fold`).
+- [x] **Step 9.2: Run; expect a build failure** (`undefined: Identity`, `undefined: Fold`).
 
 Run: `go test ./internal/journal/diff/ -run Fold`
 
-- [ ] **Step 9.3: Write `fold.go`.**
+- [x] **Step 9.3: Write `fold.go`.**
 
 `internal/journal/diff/fold.go`:
 
@@ -4151,11 +4152,11 @@ func Fold(events []FoldEvent, rename Rename) map[Identity]FoldRow {
 }
 ```
 
-- [ ] **Step 9.4: Run; expect PASS.**
+- [x] **Step 9.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -run Fold -count=1`
 
-- [ ] **Step 9.5: Write the in-memory property test.**
+- [x] **Step 9.5: Write the in-memory property test.**
 
 `internal/journal/diff/property_test.go`:
 
@@ -4274,12 +4275,12 @@ func sameFields(a, b record.Fields) bool {
 }
 ```
 
-- [ ] **Step 9.6: Run; expect PASS.**
+- [x] **Step 9.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/diff/ -count=1 -race`
 Expected: PASS. (If a seed fails, the message names it; fix the code, never the seed range.)
 
-- [ ] **Step 9.7: Commit.**
+- [x] **Step 9.7: Commit.**
 
 ```bash
 git add internal/journal/diff
@@ -4292,7 +4293,8 @@ git commit -m "feat(journal): fold events into current state; in-memory property
 Rules are configuration evaluated when an event is written (4.10). The first matching rule gives `importance`, `rule`, `notify` and `group_key`; no match is `low` with nothing else. Matching:
 
 - `record_type` equal; `kind` in the list (empty = any).
-- `field_becomes {f: v}`: after the event `f` equals `v`, and before it did not. For `created` and `restored` there is no "before" (the store passes `Before = nil`), so a restored record "becomes" its values again -- for rules whose `kind` list admits `restored` (the spec's `full_day_absence` lists only `created` and `updated`; `partial_day_absence` lists none); a `removed` event never "becomes" anything.
+- **Review amendment (owner decision):** with several `field_becomes` entries the condition is the *conjunction*: it matches when ALL listed entries hold after the event and NOT all of them held before (`Before = nil` counts as not holding). The canonical rules are `field_becomes: {classification: full_day, any_unexcused: true}` and `{classification: partial_day, any_unexcused: true}` (no `field_in` for `any_unexcused`), so a full day that changes from excused to unexcused fires, and one that stays full-unexcused does not refire. Rules decode strictly (unknown keys are an error), `Compile` refuses a nil registry, an absent group_by field renders as `%00`, and a group_key over 512 bytes becomes `sha256=<hex>`. The code blocks below are the original draft; the implemented behaviour is this paragraph.
+- `field_becomes {f: v}` (single entry): after the event `f` equals `v`, and before it did not. For `created` and `restored` there is no "before" (the store passes `Before = nil`), so a restored record "becomes" its values again -- for rules whose `kind` list admits `restored` (the spec's `full_day_absence` lists only `created` and `updated`; `partial_day_absence` lists none); a `removed` event never "becomes" anything.
 - `field_in {f: [v...]}`: the value after the event (for `removed`, the last known value) is one of the listed values.
 - Values are normalised with the field's type at compile time, so `true`, `"full_day"` and `8.50` compare byte-equal with stored values.
 - `group_by` entries: `data_subject`, `record_type`, `key`, `scope`, `field:<name>`; `group_key` is `entry=value` pairs joined by `/`, escaped like scopes.
@@ -4301,7 +4303,7 @@ Rules are configuration evaluated when an event is written (4.10). The first mat
 - Create: `internal/journal/rules/rules.go`
 - Test: `internal/journal/rules/rules_test.go`
 
-- [ ] **Step 10.1: Write the failing test.**
+- [x] **Step 10.1: Write the failing test.**
 
 `internal/journal/rules/rules_test.go`:
 
@@ -4450,11 +4452,11 @@ func TestImportanceRank(t *testing.T) {
 }
 ```
 
-- [ ] **Step 10.2: Run; expect a build failure** (`undefined: Rule`).
+- [x] **Step 10.2: Run; expect a build failure** (`undefined: Rule`).
 
 Run: `go test ./internal/journal/rules/`
 
-- [ ] **Step 10.3: Write `rules.go`.**
+- [x] **Step 10.3: Write `rules.go`.**
 
 `internal/journal/rules/rules.go`:
 
@@ -4733,11 +4735,11 @@ func plain(v json.RawMessage) string {
 
 Note `EscapeScopeValue` does not escape `:`, so the key reads `field:date=2026-10-14`, as the test expects.
 
-- [ ] **Step 10.4: Run; expect PASS.**
+- [x] **Step 10.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/rules/ -count=1`
 
-- [ ] **Step 10.5: Commit.**
+- [x] **Step 10.5: Commit.**
 
 ```bash
 git add internal/journal/rules
@@ -4754,7 +4756,7 @@ The journal computes every reader's grants from the roster openclaw reads (D8, 4
 - Create: `internal/journal/roster/roster.go`, `internal/journal/roster/holder.go`, `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/roster/roster_test.go`, `internal/journal/roster/holder_test.go`
 
-- [ ] **Step 11.1: Write the shared fixture.**
+- [x] **Step 11.1: Write the shared fixture.**
 
 `internal/journal/journaltest/fixtures.go` (first version; Tasks 14 and 25 add to it):
 
@@ -4776,7 +4778,7 @@ const HouseholdV1 = `{
 `
 ```
 
-- [ ] **Step 11.2: Write the failing adapter tests.**
+- [x] **Step 11.2: Write the failing adapter tests.**
 
 `internal/journal/roster/roster_test.go`:
 
@@ -4861,11 +4863,11 @@ func TestV1RefusesWhatOpenclawRefuses(t *testing.T) {
 
 The expected grant lists are sorted by (subject, token), `""` first.
 
-- [ ] **Step 11.3: Run; expect a build failure** (`undefined: roster.Parse`).
+- [x] **Step 11.3: Run; expect a build failure** (`undefined: roster.Parse`).
 
 Run: `go test ./internal/journal/roster/`
 
-- [ ] **Step 11.4: Write `roster.go`.**
+- [x] **Step 11.4: Write `roster.go`.**
 
 `internal/journal/roster/roster.go`:
 
@@ -5041,11 +5043,11 @@ func (r *Roster) Members() []string {
 func (r *Roster) SHA256() string { return r.sha }
 ```
 
-- [ ] **Step 11.5: Run the adapter tests; expect PASS.**
+- [x] **Step 11.5: Run the adapter tests; expect PASS.**
 
 Run: `go test ./internal/journal/roster/ -count=1`
 
-- [ ] **Step 11.6: Write the failing holder tests.**
+- [x] **Step 11.6: Write the failing holder tests.**
 
 `internal/journal/roster/holder_test.go`:
 
@@ -5122,11 +5124,11 @@ func TestHolderWatchReportsChangesAndErrors(t *testing.T) {
 }
 ```
 
-- [ ] **Step 11.7: Run; expect a build failure** (`undefined: roster.NewHolder`).
+- [x] **Step 11.7: Run; expect a build failure** (`undefined: roster.NewHolder`).
 
 Run: `go test ./internal/journal/roster/`
 
-- [ ] **Step 11.8: Write `holder.go`.**
+- [x] **Step 11.8: Write `holder.go`.**
 
 `internal/journal/roster/holder.go`:
 
@@ -5193,11 +5195,11 @@ func (h *Holder) Watch(ctx context.Context, every time.Duration, report func(r *
 }
 ```
 
-- [ ] **Step 11.9: Run; expect PASS.**
+- [x] **Step 11.9: Run; expect PASS.**
 
 Run: `go test ./internal/journal/roster/ -count=1 -race`
 
-- [ ] **Step 11.10: Commit.**
+- [x] **Step 11.10: Commit.**
 
 ```bash
 git add internal/journal/roster internal/journal/journaltest/fixtures.go
@@ -5219,7 +5221,7 @@ The property test checks the grant-based rule against an oracle written directly
 - Create: `internal/journal/access/access.go`
 - Test: `internal/journal/access/access_test.go`, `internal/journal/access/property_test.go`
 
-- [ ] **Step 12.1: Write the failing unit tests.**
+- [x] **Step 12.1: Write the failing unit tests.**
 
 `internal/journal/access/access_test.go`:
 
@@ -5288,17 +5290,30 @@ func TestText(t *testing.T) {
 
 func TestOldValue(t *testing.T) {
 	old := json.RawMessage(`"secret"`)
-	if string(OldValue(child, "e_child1", []string{"subject"}, nil, old)) != `"secret"` {
+	const withheld = `"withheld: different audience"`
+	if string(OldValue(child, "e_child1", nil, false, old)) != `"secret"` {
 		t.Error("no audience change: the old value is the reader's")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, old)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, false, old)) != `"secret"` {
+		t.Error("prev is not consulted when the audience did not change")
+	}
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, old)) != withheld {
 		t.Error("a value from a guardians-only version reached the subject")
 	}
-	if string(OldValue(parent, "e_child1", []string{"subject", "guardians"}, []string{"guardians"}, old)) != `"secret"` {
+	if string(OldValue(parent, "e_child1", []string{"guardians"}, true, old)) != `"secret"` {
 		t.Error("a reader matching both audiences lost the old value")
 	}
-	if string(OldValue(child, "e_child1", []string{"subject"}, []string{"guardians"}, nil)) != `"withheld: different audience"` {
+	if string(OldValue(child, "e_child1", []string{"guardians"}, true, nil)) != withheld {
 		t.Error("even a null old value is not the reader's to see")
+	}
+	// An empty or nil previous audience with a change matches nobody: it
+	// never releases the old value.
+	for _, prev := range [][]string{{}, nil} {
+		for _, g := range [][]roster.Grant{parent, child, nil} {
+			if string(OldValue(g, "e_child1", prev, true, old)) != withheld {
+				t.Errorf("changed with prev %#v released the old value to %v", prev, g)
+			}
+		}
 	}
 }
 
@@ -5316,11 +5331,11 @@ func TestNotices(t *testing.T) {
 }
 ```
 
-- [ ] **Step 12.2: Run; expect a build failure** (`undefined: Visible`).
+- [x] **Step 12.2: Run; expect a build failure** (`undefined: Visible`).
 
 Run: `go test ./internal/journal/access/`
 
-- [ ] **Step 12.3: Write `access.go`.**
+- [x] **Step 12.3: Write `access.go`.**
 
 `internal/journal/access/access.go`:
 
@@ -5353,7 +5368,11 @@ var (
 	withheldAudienceJSON = record.Encode(WithheldAudience)
 )
 
-// Visible is the visibility rule.
+// Visible is the visibility rule. Precondition: grants belong to an
+// authenticated reader who is present in the roster (an unknown reader has
+// no grants, and the request layer answers it with 403 before this is
+// called). A row whose audience contains "public" is visible to any such
+// reader.
 func Visible(grants []roster.Grant, subject string, audience []string) bool {
 	for _, t := range audience {
 		if t == Public {
@@ -5397,12 +5416,15 @@ func Text(v json.RawMessage, verdict string) json.RawMessage {
 	return withheldScanJSON
 }
 
-// OldValue returns an old value of an updated event as a reader may see
-// it. When the event changed the audience, only a reader matching the old
-// audience as well sees it (the event itself is visible only to readers of
-// the new one).
-func OldValue(grants []roster.Grant, subject string, audience, prevAudience []string, v json.RawMessage) json.RawMessage {
-	if prevAudience == nil || Visible(grants, subject, prevAudience) {
+// OldValue returns an old value of an updated event as a reader may see it.
+// audienceChanged says the event changed the audience (prev_audience is not
+// NULL) and prev is the audience before the change. When it changed, only a
+// reader matching the old audience as well sees the old value (the event
+// itself is visible only to readers of the new one). prev is not consulted
+// when audienceChanged is false; an empty prev with audienceChanged true
+// matches nobody, so it never releases the value (fail closed).
+func OldValue(grants []roster.Grant, subject string, prev []string, audienceChanged bool, v json.RawMessage) json.RawMessage {
+	if !audienceChanged || Visible(grants, subject, prev) {
 		return v
 	}
 	return withheldAudienceJSON
@@ -5423,11 +5445,11 @@ func Notices(grants []roster.Grant, subject string, in []rules.Notice) []rules.N
 }
 ```
 
-- [ ] **Step 12.4: Run; expect PASS.**
+- [x] **Step 12.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/access/ -count=1`
 
-- [ ] **Step 12.5: Write the property test against a relationship oracle.**
+- [x] **Step 12.5: Write the property test against a relationship oracle.**
 
 `internal/journal/access/property_test.go`:
 
@@ -5518,14 +5540,20 @@ func TestPropertyGrantsMatchRelationships(t *testing.T) {
 	for seed := int64(0); seed < 300; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		d := genRoster(r)
-		raw, _ := json.Marshal(d)
+		raw, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
 		ros, err := roster.Parse(roster.FormatOpenclawHouseholdV1, raw)
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
 		subjects := append(ros.Members(), "", "e_outsider")
 		for _, reader := range ros.Members() {
-			grants, _ := ros.Grants(reader)
+			grants, ok := ros.Grants(reader)
+			if !ok {
+				t.Fatalf("seed %d: member %s has no grants entry", seed, reader)
+			}
 			for _, subject := range subjects {
 				for mask := 1; mask < 1<<len(tokens); mask++ {
 					var aud []string
@@ -5549,11 +5577,11 @@ func TestPropertyGrantsMatchRelationships(t *testing.T) {
 }
 ```
 
-- [ ] **Step 12.6: Run; expect PASS.**
+- [x] **Step 12.6: Run; expect PASS.**
 
 Run: `go test ./internal/journal/access/ -count=1 -race`
 
-- [ ] **Step 12.7: Commit.**
+- [x] **Step 12.7: Commit.**
 
 ```bash
 git add internal/journal/access
@@ -5573,7 +5601,7 @@ The chart's `journal.services` (4.9) in Go. A caller names only a reader; what t
 - Create: `internal/journal/policy/policy.go`
 - Test: `internal/journal/policy/policy_test.go`
 
-- [ ] **Step 13.1: Write the failing test.**
+- [x] **Step 13.1: Write the failing test.**
 
 `internal/journal/policy/policy_test.go`:
 
@@ -5722,11 +5750,11 @@ func TestPolicyRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 13.2: Run; expect a build failure** (`undefined: Service`).
+- [x] **Step 13.2: Run; expect a build failure** (`undefined: Service`).
 
 Run: `go test ./internal/journal/policy/`
 
-- [ ] **Step 13.3: Write `policy.go`.**
+- [x] **Step 13.3: Write `policy.go`.**
 
 `internal/journal/policy/policy.go`:
 
@@ -5909,11 +5937,11 @@ func (s Service) MayRead(reader string) bool { return s.Read && s.Readers.Allows
 func (s Service) MayCount(reader string) bool { return s.Counts && s.Readers.Allows(reader) }
 ```
 
-- [ ] **Step 13.4: Run; expect PASS.**
+- [x] **Step 13.4: Run; expect PASS.**
 
 Run: `go test ./internal/journal/policy/ -count=1`
 
-- [ ] **Step 13.5: Commit.**
+- [x] **Step 13.5: Commit.**
 
 ```bash
 git add internal/journal/policy
@@ -5930,7 +5958,7 @@ This task creates the `Journal` value every later database task extends, the ada
 - Modify: `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/helpers_test.go`, `internal/journal/scanner_test.go`, `internal/journal/types_sync_test.go`
 
-- [ ] **Step 14.1: Extend the shared fixtures.**
+- [x] **Step 14.1: Extend the shared fixtures.**
 
 Append to `internal/journal/journaltest/fixtures.go` (and add the imports `"strings"`, `"sync"`, `"testing"`, and the `record`, `roster`, `rules` packages):
 
@@ -5966,6 +5994,9 @@ func Registry(t testing.TB, extra ...record.Type) *record.Registry {
 }
 
 // Rules are the two rules of spec 4.10.
+// NOTE (Task 10 review): build FieldBecomes in the conjunction form,
+// {"classification": class, "any_unexcused": true}, and drop the FieldIn on
+// any_unexcused; the single-field form below misses excused -> unexcused.
 func Rules() []rules.Rule {
 	day := func(name, class, importance string, kinds []string, notify []rules.Notice) rules.Rule {
 		return rules.Rule{Name: name, Importance: importance, Notify: notify, GroupBy: []string{"data_subject", "field:date"},
@@ -6037,7 +6068,7 @@ func (s *FakeScanner) Calls() int {
 
 (`encoding/json` joins the imports too.)
 
-- [ ] **Step 14.2: Write the journal test helpers.**
+- [x] **Step 14.2: Write the journal test helpers.**
 
 `internal/journal/helpers_test.go`:
 
@@ -6272,7 +6303,7 @@ func (r *rig) count(table string) int {
 }
 ```
 
-- [ ] **Step 14.3: Write the failing scanner and sync tests.**
+- [x] **Step 14.3: Write the failing scanner and sync tests.**
 
 `internal/journal/scanner_test.go`:
 
@@ -6428,11 +6459,11 @@ func TestActivationRewritesCurrentFields(t *testing.T) {
 }
 ```
 
-- [ ] **Step 14.4: Run; expect a build failure** (`undefined: Options`, `undefined: New`, `undefined: NewTextScanner`).
+- [x] **Step 14.4: Run; expect a build failure** (`undefined: Options`, `undefined: New`, `undefined: NewTextScanner`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 14.5: Write `journal.go`.**
+- [x] **Step 14.5: Write `journal.go`.**
 
 `internal/journal/journal.go`:
 
@@ -6564,7 +6595,7 @@ func lockEvents(ctx context.Context, tx *sql.Tx) error {
 }
 ```
 
-- [ ] **Step 14.6: Write `scanner.go`.**
+- [x] **Step 14.6: Write `scanner.go`.**
 
 `internal/journal/scanner.go`:
 
@@ -6625,7 +6656,7 @@ func (e *engineScanner) Verdict(text string) string {
 }
 ```
 
-- [ ] **Step 14.7: Write `types_sync.go`.**
+- [x] **Step 14.7: Write `types_sync.go`.**
 
 `internal/journal/types_sync.go`:
 
@@ -6793,12 +6824,12 @@ func rewriteFields(ctx context.Context, tx *sql.Tx, t record.Type) error {
 
 A version whose `renames` is empty needs no rewrite (its names are the previous version's).
 
-- [ ] **Step 14.8: Run; expect PASS.**
+- [x] **Step 14.8: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 Expected: the migration tests, the scanner tests and the three sync tests pass.
 
-- [ ] **Step 14.9: Commit.**
+- [x] **Step 14.9: Commit.**
 
 ```bash
 git add internal/journal
@@ -6817,7 +6848,7 @@ The core of 4.4, in one transaction under the subject lock: (1) idempotency, (3)
 - Create: `internal/journal/apply.go`
 - Test: `internal/journal/apply_test.go`
 
-- [ ] **Step 15.1: Write the failing tests.**
+- [x] **Step 15.1: Write the failing tests.**
 
 `internal/journal/apply_test.go`:
 
@@ -6880,10 +6911,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if r.count("record_event") != 1 || r.count("snapshot") != 1 {
 		t.Error("a resend wrote something")
 	}
-	if out, found, err := r.j.Lookup(ctx, uid(1)); err != nil || !found || out.Status != journalapi.StatusDuplicate {
+	if out, found, err := r.j.Lookup(ctx, uid(1), writer, "assignment", scopeKey("e_child1", "c1")); err != nil || !found || out.Status != journalapi.StatusDuplicate {
 		t.Errorf("Lookup: %+v %v %v", out, found, err)
 	}
-	if _, found, _ := r.j.Lookup(ctx, uid(99)); found {
+	if _, found, _ := r.j.Lookup(ctx, uid(99), writer, "assignment", scopeKey("e_child1", "c1")); found {
 		t.Error("Lookup found an unknown snapshot")
 	}
 }
@@ -6943,7 +6974,7 @@ func TestErasedSubjectIsRefusedForEarlierObservations(t *testing.T) {
 	if r.count("snapshot") != 0 {
 		t.Error("a refused snapshot was stored")
 	}
-	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(time.Minute), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
+	if out := r.apply(snap(2, "e_child1", "c1", erasedAt.Add(record.MaxFutureSkew), true, rec("c1:1", "e_child1", `{"title": "x"}`))); out.Status != journalapi.StatusApplied {
 		t.Errorf("an observation after the erase: %+v", out)
 	}
 }
@@ -7008,11 +7039,11 @@ func TestRulesAreStampedOnEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 15.2: Run; expect a build failure** (`r.j.Apply undefined`).
+- [x] **Step 15.2: Run; expect a build failure** (`r.j.Apply undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 15.3: Write `apply.go`.**
+- [x] **Step 15.3: Write `apply.go`.**
 
 `internal/journal/apply.go`:
 
@@ -7027,6 +7058,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/leftathome/glovebox/internal/journal/diff"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -7045,21 +7078,42 @@ type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Lookup is step 1 (idempotency): the stored outcome of a snapshot id,
-// reported as "duplicate" -- or "held" while it is still held.
-func (j *Journal) Lookup(ctx context.Context, id string) (Outcome, bool, error) {
-	return lookup(ctx, j.db, id)
+// errSnapshotIDReused is the unique violation on snapshot_pkey: the id
+// belongs to a snapshot another writer, type or scope stored first.
+var errSnapshotIDReused = errors.New("journal: snapshot_id reused")
+
+// reusedRejection answers a snapshot id that is already taken by a snapshot
+// of another writer, record type or scope. It is a 422 (a permanent sender
+// bug: retrying cannot help, the sender must use a new id), not the
+// retryable 409 of an unknown subject. It reveals nothing about the stored
+// snapshot (no stats, no status).
+func reusedRejection() *record.Rejection {
+	return &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSnapshotIDReused,
+		Detail: "snapshot_id reused: it identifies a snapshot of another writer, record type or scope"}
 }
 
-func lookup(ctx context.Context, q queryRower, id string) (Outcome, bool, error) {
-	var status string
+// Lookup is step 1 (idempotency): the stored outcome of a snapshot id,
+// reported as "duplicate" -- or "held" while it is still held. An id is a
+// duplicate only when writer, record type and canonical scope all match the
+// stored snapshot; otherwise the Outcome is the 422 refusal of an id reuse
+// (found is true, and no stored detail is returned).
+func (j *Journal) Lookup(ctx context.Context, id, writer, recordType, scope string) (Outcome, bool, error) {
+	return lookup(ctx, j.db, id, writer, recordType, scope)
+}
+
+func lookup(ctx context.Context, q queryRower, id, writer, recordType, scope string) (Outcome, bool, error) {
+	var status, w, typ, sc string
 	var stats []byte
-	err := q.QueryRowContext(ctx, `SELECT status, stats FROM snapshot WHERE id = $1::uuid`, id).Scan(&status, &stats)
+	err := q.QueryRowContext(ctx, `SELECT status, stats, writer, record_type, scope FROM snapshot WHERE id = $1::uuid`, id).
+		Scan(&status, &stats, &w, &typ, &sc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outcome{}, false, nil
 	}
 	if err != nil {
 		return Outcome{}, false, err
+	}
+	if w != writer || typ != recordType || sc != scope {
+		return Outcome{Rejection: reusedRejection()}, true, nil
 	}
 	out := Outcome{Status: journalapi.StatusDuplicate}
 	if status == journalapi.StatusHeld {
@@ -7069,18 +7123,44 @@ func lookup(ctx context.Context, q queryRower, id string) (Outcome, bool, error)
 	return out, true, nil
 }
 
+// effects collects what a write reports to the Recorder. It is emitted only
+// after the transaction commits: a rolled-back write reports nothing.
+type effects struct{ fns []func() }
+
+func (e *effects) add(f func()) { e.fns = append(e.fns, f) }
+func (e *effects) emit() {
+	for _, f := range e.fns {
+		f()
+	}
+}
+
 // Apply runs 4.4 for a snapshot that passed validation and policy.
 // payload is the request body, stored as received.
+//
+// Erasure (4.13): a snapshot is refused with 410 when its observed_at is
+// less than record.MaxFutureSkew after an erasure of its subject, not only
+// when it is before it. The writer's clock may run ahead of the journal's by
+// up to the skew validation allows, so a snapshot stamped inside that window
+// after the erase may in fact have been observed before it; it is treated
+// as pre-erasure. One observed exactly erased_at+MaxFutureSkew or later is
+// accepted.
+//
+// A snapshot id is a duplicate only if writer, record type and scope match
+// the stored snapshot; any other reuse is refused with 422 (also when two
+// writers race for the id).
 func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized, payload []byte) (Outcome, error) {
 	start := time.Now()
 	var out Outcome
+	resend := false
+	ef := &effects{}
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
 		}
-		o, found, err := lookup(ctx, tx, n.ID)
+		o, found, err := lookup(ctx, tx, n.ID, writer, n.Type.Name, n.ScopeKey)
 		if err != nil || found {
 			out = o
+			resend = o.Rejection == nil
 			return err
 		}
 		erased, err := erasedAfter(ctx, tx, n.Subject, n.ObservedAt)
@@ -7089,29 +7169,40 @@ func (j *Journal) Apply(ctx context.Context, writer string, n *record.Normalized
 		}
 		if erased {
 			out.Rejection = &record.Rejection{Status: http.StatusGone, Reason: journalapi.ReasonErasedSubject,
-				Detail: "the subject was erased after this snapshot was observed"}
+				Detail: "observed before, or within the clock-skew allowance after, the subject's erasure"}
 			return nil
 		}
 		if rej := j.checkSubject(n.Subject); rej != nil {
 			out.Rejection = rej
 			return nil
 		}
-		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, "")
+		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, "", ef)
 		return err
 	})
+	if errors.Is(err, errSnapshotIDReused) {
+		out, err = Outcome{Rejection: reusedRejection()}, nil
+	}
 	j.o.Metrics.ApplyDuration(time.Since(start))
 	if err == nil && out.Rejection == nil {
-		j.o.Metrics.Snapshot(n.Type.Name, out.Status)
+		ef.emit()
+		status := out.Status
+		if resend {
+			status = journalapi.StatusDuplicate // a resend of a held snapshot is not a second hold
+		}
+		j.o.Metrics.Snapshot(n.Type.Name, status)
 	}
 	return out, err
 }
 
+// erasedAfter reports whether the subject was erased after the observation,
+// allowing for the writer's clock skew (see Apply).
 func erasedAfter(ctx context.Context, tx *sql.Tx, subject string, observed time.Time) (bool, error) {
 	if subject == "" {
 		return false, nil
 	}
 	var one int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = $1 AND erased_at > $2 LIMIT 1`, subject, observed).Scan(&one)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM erasure WHERE data_subject = $1 AND erased_at > $2 LIMIT 1`,
+		subject, observed.Add(-record.MaxFutureSkew)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -7134,7 +7225,7 @@ func (j *Journal) checkSubject(subject string) *record.Rejection {
 // applyFromOrdering is 4.4 from step 4 on. confirmID is set when an
 // operator confirms a held snapshot: the guard is skipped and the
 // snapshot's existing row is updated instead of inserted.
-func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.Normalized, writer string, payload []byte, confirmID string) (Outcome, error) {
+func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.Normalized, writer string, payload []byte, confirmID string, ef *effects) (Outcome, error) {
 	var later int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM snapshot
 		WHERE record_type = $1 AND scope = $2 AND status = 'applied' AND observed_at > $3`,
@@ -7158,7 +7249,7 @@ func (j *Journal) applyFromOrdering(ctx context.Context, tx *sql.Tx, n *record.N
 	}
 	src := eventSource{snapshotID: sql.NullString{String: n.ID, Valid: true}, actor: writer,
 		observedAt: n.ObservedAt, approximate: n.Approximate}
-	if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan); err != nil {
+	if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan, ef); err != nil {
 		return Outcome{}, err
 	}
 	if err := j.storeSnapshot(ctx, tx, n, writer, payload, confirmID, out); err != nil {
@@ -7182,6 +7273,10 @@ func (j *Journal) storeSnapshot(ctx context.Context, tx *sql.Tx, n *record.Norma
 		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		n.ID, n.Type.Name, n.Version, n.ScopeKey, n.Subject, n.Complete, n.Approximate, n.ObservedAt,
 		j.o.Now().UTC(), writer, out.Status, payload, stats)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "snapshot_pkey" {
+		return errSnapshotIDReused
+	}
 	return err
 }
 
@@ -7231,22 +7326,35 @@ type eventSource struct {
 }
 
 // writePlan is 4.4 step 9.
-func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subject string, src eventSource, cur map[string]diff.Current, plan diff.Plan) error {
+func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subject string, src eventSource, cur map[string]diff.Current, plan diff.Plan, ef *effects) error {
 	all := append(append([]diff.Event(nil), plan.Events...), plan.Removals...)
-	if len(all) > 0 {
+	// Scanning and rule evaluation happen first, under the subject lock only:
+	// a scan can take seconds, and the events lock below is global.
+	type built struct {
+		ev       diff.Event
+		row      eventRow
+		next     currentRow
+		withheld int
+	}
+	rows := make([]built, 0, len(all))
+	for _, ev := range all {
+		row, next, withheld := j.buildEvent(t, subject, src, cur[ev.Key], ev)
+		rows = append(rows, built{ev, row, next, withheld})
+	}
+	if len(rows) > 0 {
 		if err := lockEvents(ctx, tx); err != nil {
 			return err
 		}
 	}
-	for _, ev := range all {
-		row, next, withheld := j.buildEvent(t, subject, src, cur[ev.Key], ev)
+	for _, b := range rows {
+		ev, row, next := b.ev, b.row, b.next
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO record_event (record_type, data_subject, key, kind,
 			schema_version, scope, prev_scope, audience, prev_audience, fields, changed, scan, observed_at,
 			prev_observed_at, approximate, snapshot_id, actor, importance, rule, notify, group_key)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::uuid, $17, $18, $19, $20, $21)
 			RETURNING seq`,
-			t.Name, subject, ev.Key, string(ev.Kind), t.SchemaVersion, ev.Scope, row.prevScope, ev.Audience,
+			t.Name, subject, ev.Key, string(ev.Kind), t.SchemaVersion, ev.Scope, row.prevScope, nonNil(ev.Audience),
 			ev.PrevAudience, row.fields, row.changed, row.scan, src.observedAt, row.prevObserved, src.approximate,
 			src.snapshotID, src.actor, row.importance, row.rule, row.notify, row.groupKey).Scan(&seq); err != nil {
 			return fmt.Errorf("journal: insert event: %w", err)
@@ -7255,10 +7363,13 @@ func (j *Journal) writePlan(ctx context.Context, tx *sql.Tx, t record.Type, subj
 		if err := upsertCurrent(ctx, tx, t.Name, subject, src, next); err != nil {
 			return err
 		}
-		j.o.Metrics.Event(t.Name, string(ev.Kind), row.importance)
-		if withheld > 0 {
-			j.o.Metrics.ScanWithheld(t.Name, withheld)
-		}
+		kind, importance, withheld := string(ev.Kind), row.importance, b.withheld
+		ef.add(func() {
+			j.o.Metrics.Event(t.Name, kind, importance)
+			if withheld > 0 {
+				j.o.Metrics.ScanWithheld(t.Name, withheld)
+			}
+		})
 	}
 	if len(plan.Confirm) > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE record_current
@@ -7405,19 +7516,38 @@ func upsertCurrent(ctx context.Context, tx *sql.Tx, recordType, subject string, 
 			last_seen_at = EXCLUDED.last_seen_at, last_confirmed_snapshot = EXCLUDED.last_confirmed_snapshot,
 			last_confirmed_at = EXCLUDED.last_confirmed_at, content_hash = EXCLUDED.content_hash,
 			last_event_seq = EXCLUDED.last_event_seq, scan = EXCLUDED.scan`,
-		recordType, subject, c.key, c.scope, c.audience, c.fields.JSON(), c.removed, src.observedAt, c.lastSeenAt,
+		recordType, subject, c.key, c.scope, nonNil(c.audience), c.fields.JSON(), c.removed, src.observedAt, c.lastSeenAt,
 		src.snapshotID, c.fields.Hash(), c.lastEventSeq, scan)
 	return err
+}
+
+// nonNil turns a nil list into an empty one: pgx sends a nil slice as NULL,
+// and audience columns are NOT NULL (lists are [], never null).
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 ```
 
 Notes for the implementer: `$8` (the event's `observed_at`) is both `first_seen_at` (kept on conflict) and `last_confirmed_at`; for a removal `last_seen_at` stays the last time the record was present while `last_confirmed_at` moves to the removing snapshot, which is the next event's `prev_observed_at`. Passing a nil `[]string` or nil `[]byte` sends NULL (pgx), which is what `prev_audience`, `fields`, `changed` and `notify` need when absent.
 
-- [ ] **Step 15.4: Run; expect PASS.**
+**NOTE (Task 15 review).** The code above is `internal/journal/apply.go` as committed after review (e9b957b plus the follow-up). Differences from the first draft that later tasks must follow:
+
+- Scans and rule evaluation (`buildEvent`) run before `lockEvents`; the events lock is taken immediately before the first insert (decision 3), because a scan can take seconds and the lock is global. Lock order everywhere: `lockSubject`, then `lockEvents`.
+- `Lookup(ctx, id, writer, recordType, scope)` takes the writer, record type and canonical scope: an id is a duplicate only if all three equal the stored row's. Otherwise the Outcome carries a `Rejection` (422, `journalapi.ReasonSnapshotIDReused`) and nothing of the stored row. A unique violation on `snapshot_pkey` during the insert (a concurrent reuse) maps to the same refusal.
+- `applyFromOrdering` and `writePlan` take an `*effects`. Metrics (`Event`, `ScanWithheld`) are queued on it and emitted with `ef.emit()` only after `inTx` returns nil; the `Snapshot` metric follows. A resend, including a resend of a held snapshot, counts as `duplicate`, so `held` is counted once.
+- A snapshot observed within `record.MaxFutureSkew` after an erasure is treated as pre-erasure (410); exactly erased_at + skew is accepted.
+- Extra tests live in `apply_more_test.go` and `apply_review_test.go`; `helpers_test.go` has `applyErr` besides `apply`.
+
+**NOTE (Task 15, fixed in the Task 21 review).** An updated event's `old` verdict is copied from the current row, so it carries the scanner version that judged it, not the version of the write: the event's `scanner_version` is `""` (mixed: re-judge) when the old verdict's version differs from the write's, or the row had none, and the write's version otherwise. `""` rather than the old version, because in a deployment running two scanner versions an older replica would label a newer New verdict with the older version and a newer replica would take the old pass for its own; for the same reason `NewTextScanner` refuses an empty version (test `TestNewTextScannerRefusesBadArguments`; `TestUpdatedEventOfMixedScannerVersionsIsMarkedForRejudging`). The one version covers both sides, so a later rescan that is not `all` re-judges the old and the new value of such an event instead of taking a copied verdict for current. Test `TestProbeOldVerdictStampedWithNewVersion`.
+
+- [x] **Step 15.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 15.5: Commit.**
+- [x] **Step 15.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -7436,7 +7566,7 @@ The diff already plans these (Task 8); this task pins what the store writes for 
 **Files:**
 - Test: `internal/journal/apply_removal_test.go`
 
-- [ ] **Step 16.1: Write the tests.**
+- [x] **Step 16.1: Write the tests.**
 
 `internal/journal/apply_removal_test.go`:
 
@@ -7572,11 +7702,11 @@ func TestAudienceChangeRecordsBothAudiences(t *testing.T) {
 }
 ```
 
-- [ ] **Step 16.2: Run; expect PASS** (the behaviour was built in Tasks 8 and 15; a failure here is a bug in one of them).
+- [x] **Step 16.2: Run; expect PASS** (the behaviour was built in Tasks 8 and 15; a failure here is a bug in one of them).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 16.3: Commit.**
+- [x] **Step 16.3: Commit.**
 
 ```bash
 git add internal/journal/apply_removal_test.go
@@ -7592,7 +7722,7 @@ git commit -m "test(journal): removal, restore, scope moves, complete_range and 
 - Create: `internal/journal/hold.go`
 - Test: `internal/journal/hold_test.go`
 
-- [ ] **Step 17.1: Write the failing tests.**
+- [x] **Step 17.1: Write the failing tests.**
 
 `internal/journal/hold_test.go`:
 
@@ -7602,10 +7732,14 @@ package journal
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
+	"github.com/leftathome/glovebox/internal/journal/journaltest"
+	"github.com/leftathome/glovebox/internal/journal/record"
 )
 
 func allowAll(string, record.Type, record.Scope) *record.Rejection { return nil }
@@ -7641,8 +7775,14 @@ func TestGuardHoldsAndAResendIsHeldAgain(t *testing.T) {
 	if again := r.apply(s); again.Status != journalapi.StatusHeld || again.Stats.Removed != 2 {
 		t.Errorf("resend: %+v", again)
 	}
-	if r.rec.snapshots["held"] != 2 { // every answer is counted by its status
-		t.Errorf("held answers counted %d", r.rec.snapshots["held"])
+	// NOTE (Task 15 review): a held snapshot counts once when stored; its
+	// resend counts as a duplicate.
+	if r.rec.snapshots["held"] != 1 || r.rec.snapshots["duplicate"] != 1 {
+		t.Errorf("recorder %v", r.rec.snapshots)
+	}
+	var payload []byte
+	if err := r.j.db.QueryRow(`SELECT payload FROM snapshot WHERE id = $1::uuid`, uid(2)).Scan(&payload); err != nil || len(payload) < 10 {
+		t.Errorf("held payload %q %v", payload, err)
 	}
 }
 
@@ -7679,7 +7819,7 @@ func TestConfirmAppliesWithoutTheGuardAndDiscardsOlderHeld(t *testing.T) {
 	if _, err := r.j.ConfirmHeld(ctx, uid(99), allowAll); !errors.Is(err, ErrNotFound) {
 		t.Errorf("confirming nothing: %v", err)
 	}
-	if out, _, _ := r.j.Lookup(ctx, uid(3)); out.Status != journalapi.StatusDuplicate {
+	if out, _, _ := r.j.Lookup(ctx, uid(3), writer, "assignment", scopeKey("e_child1", "c1")); out.Status != journalapi.StatusDuplicate {
 		t.Errorf("a resend after confirmation: %+v", out)
 	}
 }
@@ -7748,11 +7888,11 @@ func TestConfirmRechecksTheRoster(t *testing.T) {
 }
 ```
 
-- [ ] **Step 17.2: Run; expect a build failure** (`r.j.ConfirmHeld undefined`, `ErrNotHeld`, `ErrNotFound`).
+- [x] **Step 17.2: Run; expect a build failure** (`r.j.ConfirmHeld undefined`, `ErrNotHeld`, `ErrNotFound`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 17.3: Write `hold.go`.**
+- [x] **Step 17.3: Write `hold.go`.**
 
 `internal/journal/hold.go`:
 
@@ -7764,6 +7904,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
@@ -7803,16 +7944,17 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 	}
 	var out Outcome
 	var recordType string
+	ef := &effects{} // NOTE (Task 15 review): metrics are emitted after the commit
 	err = j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
 		}
-		var status, writer string
+		var status, writer, storedScope string
 		var payload []byte
 		var received time.Time
-		err := tx.QueryRowContext(ctx, `SELECT record_type, status, writer, payload, received_at
+		err := tx.QueryRowContext(ctx, `SELECT record_type, scope, status, writer, payload, received_at
 			FROM snapshot WHERE id = $1::uuid FOR UPDATE`, id).
-			Scan(&recordType, &status, &writer, &payload, &received)
+			Scan(&recordType, &storedScope, &status, &writer, &payload, &received)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -7831,6 +7973,12 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 			out.Rejection = rej // the configuration changed since; discard it instead
 			return nil
 		}
+		// The payload is only trusted if it still describes the row it is stored in.
+		if n.ID != id || n.Type.Name != recordType || n.ScopeKey != storedScope {
+			out.Rejection = &record.Rejection{Status: http.StatusUnprocessableEntity, Reason: journalapi.ReasonSchema,
+				Detail: "the stored payload does not match the snapshot's id, record type or scope; discard it"}
+			return nil
+		}
 		if rej := mayWrite(writer, n.Type, n.Scope); rej != nil {
 			out.Rejection = rej
 			return nil
@@ -7839,10 +7987,11 @@ func (j *Journal) ConfirmHeld(ctx context.Context, id string, mayWrite WriteChec
 			out.Rejection = rej
 			return nil
 		}
-		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, id)
+		out, err = j.applyFromOrdering(ctx, tx, n, writer, payload, id, ef)
 		return err
 	})
 	if err == nil && out.Rejection == nil {
+		ef.emit()
 		j.o.Metrics.Snapshot(recordType, out.Status)
 	}
 	return out, err
@@ -7864,11 +8013,11 @@ func (j *Journal) DiscardHeld(ctx context.Context, id string) error {
 }
 ```
 
-- [ ] **Step 17.4: Run; expect PASS.**
+- [x] **Step 17.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 17.5: Commit.**
+- [x] **Step 17.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -7885,7 +8034,7 @@ git commit -m "feat(journal): hold, confirm and discard snapshots that trip the 
 - Create: `internal/journal/notes.go`
 - Test: `internal/journal/notes_test.go`
 
-- [ ] **Step 18.1: Write the failing tests.**
+- [x] **Step 18.1: Write the failing tests.**
 
 `internal/journal/notes_test.go`:
 
@@ -7976,11 +8125,11 @@ func TestNoteTextIsScanned(t *testing.T) {
 }
 ```
 
-- [ ] **Step 18.2: Run; expect a build failure** (`r.j.WriteNote undefined`).
+- [x] **Step 18.2: Run; expect a build failure** (`r.j.WriteNote undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 18.3: Write `notes.go`.**
+- [x] **Step 18.3: Write `notes.go`.**
 
 `internal/journal/notes.go`:
 
@@ -8019,6 +8168,7 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 	}
 	now := j.o.Now().UTC()
 	resp := journalapi.NoteResponse{Status: "unchanged", Key: n.Key}
+	ef := &effects{} // NOTE (Task 15 review): metrics are emitted after the commit
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, n.Subject); err != nil {
 			return err
@@ -8033,13 +8183,16 @@ func (j *Journal) WriteNote(ctx context.Context, writer string, n *record.NormNo
 			return nil
 		}
 		src := eventSource{actor: writer + ";on_behalf_of=" + n.OnBehalfOf, observedAt: now}
-		if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan); err != nil {
+		if err := j.writePlan(ctx, tx, n.Type, n.Subject, src, cur, plan, ef); err != nil {
 			return err
 		}
 		resp.Status = string(plan.Events[0].Kind)
 		return tx.QueryRowContext(ctx, `SELECT last_event_seq FROM record_current
 			WHERE record_type = $1 AND data_subject = $2 AND key = $3`, n.Type.Name, n.Subject, n.Key).Scan(&resp.Seq)
 	})
+	if err == nil {
+		ef.emit()
+	}
 	return resp, nil, err
 }
 
@@ -8062,13 +8215,17 @@ func policyRefusal(detail string) *record.Rejection {
 }
 ```
 
-(A note whose last write is newer than the core clock -- the clock stepped back -- plans no event and is reported `unchanged`; the next write after the clock passes it goes through.)
+NOTE (Task 18 review): the code above differs from the shipped `notes.go` in three ways.
 
-- [ ] **Step 18.4: Run; expect PASS.**
+- A note whose stored row was confirmed later than the core clock (the clock stepped back) is refused with a retryable 409 `conflict`, never reported `unchanged` (that silently dropped the correction); the same write succeeds once the clock passes the stored note. A byte-identical resend under clock-back is already stored and is reported `unchanged` (Seq omitted), not 409. `journalapi.ReasonConflict` documents this use.
+- Erasure is checked inside the transaction, after `lockSubject` and before the subject-in-roster (409) and grant (403) checks, so an erased subject that left the roster is 410, as in `Apply`.
+- Erasure uses strict semantics: 410 only when `erased_at` is after the note's own time (now). A note has no writer clock and the subject lock orders it against an erase, so there is no `MaxFutureSkew` allowance (`Apply` keeps it for snapshots). The roster is read once for the whole call, and an error returns a zero `NoteResponse`.
+
+- [x] **Step 18.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 18.5: Commit.**
+- [x] **Step 18.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -8090,7 +8247,19 @@ git commit -m "feat(journal): household notes with a fixed audience, keyed by wr
 - Create: `internal/journal/read.go`
 - Test: `internal/journal/read_test.go`
 
-- [ ] **Step 19.1: Write the failing tests.**
+NOTE (Task 19 review): the code below was built differently where it matters,
+and the code in the repository wins. `StateQuery`, `EventsQuery` and `Counts`
+take a `Reader` (a roster member id), not `Grants`: the journal computes the
+grants from the roster and confirms membership on every read (`ErrUnknownReader`
+for a stranger, `ErrNoRoster` while no roster is loaded, `ErrBadQuery` for a
+limit outside 1..10000, a negative cursor or an unknown importance).
+`State` has a sibling `StateWithRoster` that also returns the roster hash that
+filtered the rows. Counts are grouped by audience and re-checked in Go;
+`rules.Compile` refuses `group_by` on a text field; and the read tests live
+in `read_test.go` and `read_review_test.go` (asymmetric roster, group keys,
+decode errors, prev_scope masking). Tasks 22 (property and cursor tests), 25 (readerOK/readErr) and 26 (handlers) below are adjusted.
+
+- [x] **Step 19.1: Write the failing tests.**
 
 `internal/journal/read_test.go`:
 
@@ -8322,11 +8491,11 @@ func (r *rig) withVersion(t *testing.T, v record.Type) {
 }
 ```
 
-- [ ] **Step 19.2: Run; expect a build failure** (`undefined: StateQuery`).
+- [x] **Step 19.2: Run; expect a build failure** (`undefined: StateQuery`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 19.3: Write `read.go`.**
+- [x] **Step 19.3: Write `read.go`.**
 
 `internal/journal/read.go`:
 
@@ -8483,15 +8652,21 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 			j.o.Metrics.VisibilityMismatch()
 			continue
 		}
+		// prev_audience NULL means the audience did not change. A value that is
+		// present but does not decode must never release an old value, so it
+		// is an error, not "unchanged".
+		audienceChanged := prevAud != nil
 		var prevAudience []string
-		if prevAud != nil {
-			_ = json.Unmarshal(prevAud, &prevAudience)
+		if audienceChanged {
+			if err := json.Unmarshal(prevAud, &prevAudience); err != nil {
+				return nil, fmt.Errorf("event %d: prev_audience: %w", e.Seq, err)
+			}
 		}
 		if prevObs.Valid {
 			t := prevObs.Time
 			e.PrevObservedAt = &t
 		}
-		if err := j.fillEventValues(&e, q.Grants, prevAudience, fields, changed, scan); err != nil {
+		if err := j.fillEventValues(&e, q.Grants, prevAudience, audienceChanged, fields, changed, scan); err != nil {
 			return nil, err
 		}
 		if notify != nil {
@@ -8507,7 +8682,7 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 }
 
 // fillEventValues decodes, renames forward and masks an event's values.
-func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, prevAudience []string, fields, changed, scan []byte) error {
+func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, prevAudience []string, audienceChanged bool, fields, changed, scan []byte) error {
 	active, _ := j.o.Registry.Active(e.RecordType)
 	name := func(f string) string { return j.o.Registry.ForwardName(e.RecordType, e.SchemaVersion, f) }
 	var es map[string]record.EventScan
@@ -8543,7 +8718,7 @@ func (j *Journal) fillEventValues(e *journalapi.Event, grants []roster.Grant, pr
 			n := name(k)
 			old, nw := nilIfNull(pair[0]), nilIfNull(pair[1])
 			old = mask(n, old, verdicts[n].Old)
-			old = access.OldValue(grants, e.DataSubject, e.Audience, prevAudience, old)
+			old = access.OldValue(grants, e.DataSubject, prevAudience, audienceChanged, old)
 			e.Changed[n] = journalapi.Change{Old: old, New: mask(n, nw, verdicts[n].New)}
 		}
 	case "removed":
@@ -8625,11 +8800,11 @@ func (j *Journal) Counts(ctx context.Context, grants []roster.Grant, subject *st
 }
 ```
 
-- [ ] **Step 19.4: Run; expect PASS.**
+- [x] **Step 19.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 19.5: Commit.**
+- [x] **Step 19.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -8649,7 +8824,7 @@ readers of both audiences (spec 4.8)."
 - Create: `internal/journal/erase.go`
 - Test: `internal/journal/erase_test.go`
 
-- [ ] **Step 20.1: Write the failing test.**
+- [x] **Step 20.1: Write the failing test.**
 
 `internal/journal/erase_test.go`:
 
@@ -8708,11 +8883,11 @@ func TestEraseRemovesEverythingAndRefusesReplays(t *testing.T) {
 }
 ```
 
-- [ ] **Step 20.2: Run; expect a build failure** (`r.j.Erase undefined`).
+- [x] **Step 20.2: Run; expect a build failure** (`r.j.Erase undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 20.3: Write `erase.go`.**
+- [x] **Step 20.3: Write `erase.go`.**
 
 `internal/journal/erase.go`:
 
@@ -8731,16 +8906,57 @@ import (
 // ErrNoSubject refuses an erase without a subject.
 var ErrNoSubject = errors.New("journal: erase needs a data_subject")
 
-// Erase deletes everything the journal holds about one subject (4.13).
+// Erase deletes everything the journal holds about one subject (4.13): every
+// snapshot (applied, late, held and discarded, payloads included), every
+// record_current row and every record_event row, and records the erasure
+// (erased_at is the journal clock) so that snapshots observed before it, or
+// within the clock-skew allowance after it, are refused with 410 (Apply).
 // It is the only operation that deletes event history.
+//
+// Everything happens in one transaction under the subject lock, so it is
+// ordered against Apply, WriteNote and ConfirmHeld of the same subject.
+// Deleting events does not take the events lock: it publishes no sequence
+// numbers (they are never reused), so readers' cursors stay valid. The
+// household (the empty data_subject) is not a subject and is refused.
+//
+// A second erase of the same subject is allowed: it deletes whatever was
+// written since, and writes another erasure row. Apply refuses against
+// the latest erased_at of any row, so the refusal window never moves
+// backward: a second erase made after the clock stepped back is a no-op for
+// the guard. Erasing a subject that holds no data still records the
+// erasure, so a spool replay that has not arrived yet is refused.
+//
+// Erase reports nothing to the Recorder: it has no metric (Task 20).
 func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.EraseResponse, error) {
 	if subject == "" {
 		return journalapi.EraseResponse{}, ErrNoSubject
 	}
-	resp := journalapi.EraseResponse{DataSubject: subject, ErasedAt: j.o.Now().UTC()}
+	resp := journalapi.EraseResponse{DataSubject: subject}
 	err := j.inTx(ctx, func(tx *sql.Tx) error {
 		if err := lockSubject(ctx, tx, subject); err != nil {
 			return err
+		}
+		// Read after the lock, so erased_at is never earlier than the deletion.
+		resp.ErasedAt = j.o.Now().UTC()
+		// Take the row locks in the order rescan does (record_current by
+		// primary key, then events by seq) before deleting, so Erase and a
+		// rescan batch, which holds row locks but no subject lock, cannot
+		// deadlock; DELETE alone locks in scan order.
+		for _, q := range []string{
+			`SELECT 1 FROM record_current WHERE data_subject = $1 ORDER BY record_type, data_subject, key FOR UPDATE`,
+			`SELECT 1 FROM record_event WHERE data_subject = $1 ORDER BY seq FOR UPDATE`,
+		} {
+			rs, err := tx.QueryContext(ctx, q, subject)
+			if err != nil {
+				return err
+			}
+			for rs.Next() {
+			}
+			if err := rs.Err(); err != nil {
+				_ = rs.Close()
+				return err
+			}
+			_ = rs.Close()
 		}
 		del := func(q string) (int64, error) {
 			res, err := tx.ExecContext(ctx, q, subject)
@@ -8759,20 +8975,80 @@ func (j *Journal) Erase(ctx context.Context, actor, subject string) (journalapi.
 		if resp.Events, err = del(`DELETE FROM record_event WHERE data_subject = $1`); err != nil {
 			return err
 		}
-		rows, _ := json.Marshal(map[string]int64{"snapshot": resp.Snapshots, "record_current": resp.Current, "record_event": resp.Events})
+		rows, err := json.Marshal(map[string]int64{"snapshot": resp.Snapshots, "record_current": resp.Current, "record_event": resp.Events})
+		if err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO erasure (data_subject, erased_at, actor, rows) VALUES ($1, $2, $3, $4)`,
 			subject, resp.ErasedAt, actor, rows)
 		return err
 	})
-	return resp, err
+	if err != nil {
+		return journalapi.EraseResponse{}, err
+	}
+	return resp, nil
 }
 ```
 
-- [ ] **Step 20.4: Run; expect PASS.**
+**NOTE (Task 20 review).** The code above is `erase.go` as committed. Differences from the first draft:
+- On error Erase returns a zero `EraseResponse`, and the `json.Marshal` error is checked.
+- It does not take `lockEvents`: deleting events publishes no sequence numbers (they are never reused), so the subject lock is enough.
+- It reports nothing to the Recorder: 4.15 lists no erase metric.
+- `erased_at` is read after `lockSubject`. Every erase, including a repeat, writes its own `erasure` row; Apply refuses against the latest `erased_at`, so the refusal window never moves backward (a stepped-back repeat erase is a no-op for the guard).
+- Before deleting, Erase locks the subject's `record_current` rows (primary-key order) and `record_event` rows (seq order) `FOR UPDATE`, to match rescan's lock order (see the note under Task 21).
+- Tests also cover removed records, the clock step-back, row-lock waits and a table-set check over `information_schema`.
+
+**NOTE (erase notes decision 2026-10-23).** Task 20 as first committed deleted every note about the erased subject and left the member's own notes about others in place (the schema doc asked Steve). Steve decided the opposite: a note belongs to its author. `erase.go` now does, in one transaction (spec 4.13; `docs/journal-schema.md`, `erasure`):
+- Rule 1: every household note the member wrote is deleted, about anyone (other subjects, the household, themselves, and their notes kept from an earlier erasure). The author is the second `:`-part of a household type's key `<date>:<on_behalf_of>` (types owned by `household` only; a school record with a lookalike key is untouched).
+- Rule 2: notes others wrote about the member whose audience has a `guardians` part are kept, moved to the household: `data_subject` `''`, key `<date>:<author>:erased:<token>`, household scope, audience `[guardians]`; their events are rewritten in place (same seq, so cursors and the fold invariant hold; `audience`/`prev_audience` keep only `guardians`, `prev_scope` becomes the household scope, `group_key` NULL because it may embed the subject). The text is kept as written. A note with no `guardians` part is deleted (nobody is left to read it).
+- Rule 3: everything else of the subject is deleted, as before.
+- Pseudonym: `erased:` + 128 random bits per erasure, recorded nowhere (not in the erasure row). A hash of the id, even keyed, was rejected: the household id space is tiny, and a keyed hash needs key management and links erasures.
+- Visibility: the rule is unchanged. A household row with audience `[guardians]` is read through the household grant `("", guardians)` that every guardian holds; no grant names a pseudonym, and nobody holds `("", subject)`. Rejected: keeping a pseudonymous `data_subject` and adding a grant rule for `erased:` subjects, which would change `access.Visible`, the SQL clause and their property test for the same reader set. Limitation: an erased member still in the roster as a guardian would read kept notes; erase is for members who left the roster.
+- Migration `0002_erase_rewrite` replaces the append-only trigger function: besides `scan`, it admits exactly this rewrite under the transaction-local `glovebox_journal.erase_rewrite = on` (subject to household only, key gaining an `:erased:<token>` suffix, scopes without `data_subject=`, audiences only shrinking, `group_key` NULL, nothing else changed). Replacing the events (delete and re-insert) was rejected: new seqs would re-deliver old notes to readers and need the events lock.
+- Locks: the subject's, the household's and every subject the member wrote about, sorted, before any row lock. The authored subjects are looked up before locking and again under the locks; one that appeared in between (WriteNote locks the note's subject, not its author) restarts the attempt with that lock added (`errRelock`, at most 10 attempts). Rows are then locked as before, now including the member's notes in other subjects: `record_current` by primary key, then `record_event` by seq.
+- `erasure.rows` and `EraseResponse` gain `notes_deleted_as_author` and `notes_pseudonymised`; `record_current`/`record_events` count every deleted row, the member's notes about others included. No id but the erased one is recorded.
+- `WriteNote` accepted no household note (no subject) at all, because the roster check refused `""`; it now skips that check for `""` (only types with `allow_no_subject` validate), and the grant check still needs `("", t)`.
+- Tests: `erase_notes_test.go` (author erased; subject erased with kept, pseudonymised, guardian-visible notes; author and subject at once; distinct pseudonyms with no key collision; held locks of the author's other subjects and the household; the recheck under the locks; concurrent erases, notes and snapshots; prev_audience narrowing; the trigger's admitted and refused rewrites; a scan of every table for the erased id, and of every member's reads). `erase_test.go` expectations follow the decision.
+- Mutation run (35 mutants of `erase.go`, migration 0002 and `notes.go`, on a `git archive` copy): 34 killed. The survivor drops the member's notes in other subjects from the row pre-lock; a `DELETE` still waits for those row locks, so only the lock order against a rescan batch differs, which no test observes (the same holds for the Task 20 pre-lock).
+
+**NOTE (erase notes privacy review, 5ed6f73).** Fixed on top (the visibility questions I1-I4 wait for Steve; who reads kept notes is unchanged):
+- Torn erase (C1): WriteNote locked only the note's subject, so a note by the author about a subject Erase had not locked could commit between Erase's rule-1 DELETEs (events, then current rows) and leave an orphan event naming the author. Now WriteNote takes the author lock `glovebox_journal:author:<on_behalf_of>` (`lockAuthor`) before its subject lock, and Erase takes the erased member's author lock first, then its subject locks sorted. Author locks always precede subject locks and no transaction takes two, so there is no cycle. Under the author lock the authored set cannot grow, so the look-up/recheck/restart loop (`errRelock`) is removed. `foldBroken` in the tests counts orphan events. Test `TestEraseIsNotTornByANoteOfTheAuthor` (the review probe made deterministic: a statement trigger holds the events DELETE open until the note's row exists, or two seconds) fails without either author lock.
+- The rewrite flag: transaction-local `set_config(..., true)`, no longer cleared by hand (it reverts at commit). `TestEraseRewriteFlagDoesNotOutliveTheErase` checks the same pooled connection and a new transaction after an erase; the trigger test checks that only `on` opens it. Documented as a guard against mistakes, not a permission boundary.
+- Events of a kept note whose audience had no `guardians` part are deleted, not kept with audience `{}` (counted in `record_event`); the fold invariant then holds for scope, audience and `last_event_seq` only.
+- Docs: xmin links kept rows to the erasure row; dead tuples until VACUUM; WAL and backups for the 30-day retention; new notes after an erase are accepted and copies already delivered are not reached.
+- Tests added: author lock both ways, sorted lock order (observed through held locks while Erase waits), prev_scope rewrite, prefix-sharing ids (`e_ann`/`e_anna`), a long non-`:erased:` key suffix.
+- Mutation run (45 mutants, `git archive` copy, whole package with -race): 44 killed. The survivor is the row pre-lock one above, unchanged.
+
+**NOTE (erase notes decisions I1-I4, 2026-10-23).** Steve decided who reads kept notes; this supersedes the household-row design above (spec 4.13, `docs/journal-schema.md` "What erase does with household notes"):
+- Erase refuses a member still on the roster in use: `ErrSubjectOnRoster`, answered 409 `journalapi.ReasonSubjectOnRoster` (`subject_on_roster`). It also refuses anything that is not a well-formed member id (`ErrNoSubject`, a pseudonym included) and runs only with a roster (`ErrNoRoster`). One roster snapshot, read at the start, decides the refusal and the frozen readers.
+- Frozen readers: for every note someone else wrote about the member, whatever its audience, `frozenReaders` computes the roster members who can read it at the erase (`access.Visible` over their roster grants, the rule reads use), plus its author if on the roster, never the erased member. They go to the new table `erasure_reader (pseudonym, member)` (migration `0003_erasure_reader`, with CHECKs on both columns). A note with no reader is deleted.
+- Marker: the kept note moves to its own subject `erased:<32 hex>:<n>` (one pseudonym per erasure, n per note), key, audience and every event kept (M3's event deletion reverted: kept notes fold to their fields again), scope and prev_scope the household scope, group_key cleared. A dedicated subject was chosen over `data_subject ''` with a pseudonym audience token: on `''` the household grants would have to be kept away by rewriting the audience, which the decisions forbid; a subject no roster id can equal (ids have no `:`) is reached by no roster grant at all, and the one new branch decides.
+- Visibility, one branch in `access.Visible` and in `visibleSQL` (a `CASE`, first): a row whose subject starts with `erased:` is visible iff the reader holds the frozen-reader grant `(subject, "erased:reader")`, whatever the audience (so not through `public` either). `grantsOf` adds those grants from `erasure_reader` at the start of every read, so State, Events, Counts, the Go re-check and `OldValue` all use the same input; notices of kept events go to nobody.
+- Erase also removes the member from `erasure_reader`, deletes kept notes left without a reader and reader rows of notes that are gone. Erases are serialized by the household lock, so kept notes (never written by anyone else) need no subject lock.
+- Trigger (0003 replaces 0002's function): the erase rewrite moves an event from a member to an `erased:<32 hex>:<n>` subject, scopes without `data_subject=`, group_key NULL; key and audiences must stay.
+- Consequence, documented: the member is off the roster when erased, so no roster grant names them; the frozen readers are in practice the author (and everyone for a `public` note). Guardians who are not the author lose access.
+- Tests: `erase_frozen_test.go` (409 both sides and nothing changed; the read rule behind the frozen set; frozen readers end to end in State, Events and Counts, later guardians and the re-added member shut out; the review probe's widening; a note with no reader dropped; an erased reader removed; author and subject; distinct pseudonyms; full history and fold with fields; SQL and Go agreement on kept notes with `public` and household audiences; the torn erase with a mid-erase roster reload; one roster snapshot; concurrency; the 0003 trigger and `erasure_reader` CHECKs) and `access/kept_test.go` (the branch, notices, old values, a property over random rosters).
+- Mutation run (59 mutants over `erase.go`, `read.go`, `access.go`, `notes.go` and migration 0003, `git archive` copy, all journal packages with -race): 58 killed. The survivor drops the kept notes the member reads from the row pre-lock; the DELETE still waits for those row locks, so only the lock order against a rescan batch changes (as for the other pre-lock survivors).
+
+**NOTE (erase rules A-C, 2026-10-24).** Steve resolved the conflict between decisions 1 and 3 (with 3, the live roster had no grant on the erased member, so frozen readers shrank to the author). This supersedes the refusal above:
+- A. Erase is allowed while the member is on the roster: `ErrSubjectOnRoster` and `journalapi.ReasonSubjectOnRoster` are removed (no doc needs them). The roster snapshot, which still includes the member, gives the frozen readers, so the member's guardians read the notes kept about them. The erased member is never a reader, nor is any member erased before (they are banned; `frozenReaders` takes the set of erased ids). The author reads unless erased. Removing the member from the roster through gitops can follow at any time.
+- B. An erase is a ban: `banned` (replacing `erasedAfter`) refuses with 410 `erased_subject` (detail: the member was erased, an erase is a ban, nothing un-erases yet) every snapshot about a member with any erasure row (Apply, ConfirmHeld of a held one) and every note about them or by them (WriteNote checks `data_subject` and `on_behalf_of`, before the roster's 403 so an erased author off the roster still gets 410), whatever the time. It runs under the write's subject (and, for notes, author) lock, which the erase also takes. The observed-time comparison, the skew window and the strict note rule are gone. There is no un-erase; re-adding an erased person needs a deliberate un-erase, which does not exist yet.
+- C. Copies already delivered outside the journal (openclaw inbox, audiences, memory vaults) are not erased: a separate, later improvement.
+- Tests: `TestEraseWhileOnTheRoster`, `TestEraseBansLaterData` (snapshot after the erase, held confirm, note about, note by, household note by; and not banned: another subject, a household note by someone else), `TestALaterEraseLeavesAnErasedMemberOut`, the Widen probe with a guardian added later, the frozen-reader rule with erased members, and the old boundary tests rewritten as ban tests (`TestErasedSubjectIsBannedWhateverTheObservedAt`, `TestErasureBanHasNoSkewBoundary`, `TestNoteErasureGuard`); a second erase still bans (`TestEraseClockStepBackKeepsRefusing`, `TestErasuresDrawDistinctPseudonyms`).
+- Mutation run (69 mutants over `erase.go`, `apply.go`, `hold.go`, `notes.go`, `read.go`, `access.go` and migration 0003, plus a no-change baseline that must survive to prove the runner's parsing; `git archive` copy, all journal packages with -race): 68 killed. The survivor is the row pre-lock one (lock order against rescan only), as before.
+
+**NOTE (erase re-review of 35ce86f, 2026-10-24).**
+- I-A, read ban: `grantsOf` refuses a reader with any erasure row (one query on the erasure index) with `ErrUnknownReader` (403), on the roster or not, before any read; a failing query fails the read. Test `TestErasedMemberCannotRead` (the review probe: household notes, a sibling's rows and public rows it read before are all refused after; others unchanged; a broken erasure table refuses reads).
+- I-B, history fails closed: migration `0004_erasure_kept` adds `erasure_kept (pseudonym, audience)` (the audience the readers were frozen from) and `erasure_reader.author`, backfilled, with a cascading foreign key. Frozen-reader grants are now `(s, erased:author)` for the author and `(s, erased:reader:<frozen audience>)` for others (`access.ReaderToken`). The kept branch of `access.Visible` and `visibleSQL` matches the author token, or the reader token of exactly the row's audience, so a non-author reader sees the note and only the events, old values and prev_scope/prev_observed_at of the frozen audience; the rest is withheld as "different audience". Tests: `TestKeptHistoryFollowsTheFrozenAudience` (the probe: the guardian sees `updated, old withheld` before and after; the author sees everything), the SQL/Go agreement test over current rows and events of another audience, `access/kept_test.go` (cases and a property), `TestMigration0004BackfillsKeptNotes`.
+- Gaps: `TestErasedAuthorOffTheRosterIs410` (ban before the non-member 403), a `public` kept note in `TestFrozenReadersFollowTheReadRule` (every roster member minus the subject and the erased), and the exact reader token in SQL (the agreement test fails if any token on the pseudonym matched).
+- Documented: roster ids must not be reused for a different person (the ban and frozen-reader rows are keyed by the id and outlive roster removal).
+- Mutation run (83 mutants plus the no-change baseline, which survived; `git archive` copy, all journal packages with -race): 82 killed. The survivor is the row pre-lock one, as before. The `erasure_reader` CHECK tests now drop the foreign key inside a rolled-back transaction, since the key would otherwise refuse those rows first.
+
+- [x] **Step 20.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 20.5: Commit.**
+- [x] **Step 20.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -8785,11 +9061,21 @@ git commit -m "feat(journal): erase a subject; replays observed before the erasu
 
 4.11: after a scanner or ruleset upgrade, re-scan every stored text value -- current values and every old and new value in events -- update the verdicts in both tables, and so release values (or withhold newly suspicious ones). Values already judged by the current scanner version are skipped unless `all` is asked for. Work goes in batches of 100 rows, each in its own transaction with the rows locked (`FOR UPDATE`). `Apply` reads its rows `FOR UPDATE` too (Task 15's `loadCurrent`), so an Apply and a rescan batch touching the same row run one after the other and neither writes verdicts computed from a value the other replaced; the test below pins it. Both lock rows in primary-key order (`ORDER BY record_type, data_subject, key ... FOR UPDATE`), and the rescan takes no advisory lock, so the lock order (Apply: subject lock, rows, event lock; rescan: rows only, same order) cannot deadlock.
 
+**NOTE (Task 20 review).** Erase deletes `record_current` and `record_event` rows of a subject while holding the subject lock, and rescan locks rows in primary-key order without a subject lock. A bare `DELETE` locks rows in scan order, so the two could deadlock. Decision: Erase, not rescan, adapts (rescan stays lock-free of the subject lock, which keeps batches short): Erase locks the subject's `record_current` rows in primary-key order, then its `record_event` rows in seq order, with `SELECT ... ORDER BY ... FOR UPDATE` before deleting (committed in Task 20, test `TestEraseWaitsForRowLocks`). Rescan must lock `record_current` rows before `record_event` rows within a batch and events in seq order. Under that order Erase cannot deadlock with rescan (both acquire rows in the same global order: current by key, then events by seq), nor with Apply (subject lock first, same as Erase, then rows).
+
+**NOTE (Task 21 implementation).** `rescan.go` and `rescan_test.go` as committed differ from the draft below:
+
+- Scanning happens outside every lock. The draft scanned inside the transaction that held the batch's rows `FOR UPDATE`, stalling Apply and Erase of those rows for the length of up to 100 scans. A batch now reads its rows with no lock, scans, then opens a transaction, locks the rows (`record_current` by primary key, or `record_event` by seq, `FOR UPDATE`) and writes. A current row is written only if, once locked, its `content_hash`, `last_event_seq` and `scan` equal what was read; an event only if its `scan` does. A row Erase deleted stays deleted (the write is an `UPDATE`, never an insert). A row that still exists but changed (an Apply rewrote it, another rescan judged it) is not written from the stale read: it is read, scanned and written again, up to 5 times, because Apply copies the verdicts of the fields it did not change together with their scanner version, so the row may still hold an old scanner's pass (the version filter keeps what that Apply already judged from being scanned again). A row still changing after the last retry fails the rescan with an error, so `Rescan` never returns nil while a row it could not judge remains; a writer that outpaces the batches can starve a rescan this way, and a later run continues. Counts are added to the result after the batch commits. The rescan never holds current and event rows in one transaction.
+- Fail closed: a scanner answer other than the exact string `pass` never releases; an empty answer, a panic and a stored value that is not a string are verdict `error`. A nil `Options.Scanner` is an error, not a panic.
+- Text is decided as on read (`kindsOf`): a type the registry does not know has only text fields, and an event field's name is carried forward (`ForwardName`) before it is looked up in the active type. The draft skipped events of an unknown version and used the writing version's field kinds.
+- The scanner version is read once per rescan. Rows that fail to decode abort the rescan with an error naming the row.
+- The Task 15 limit that an updated event's `Old` verdict was stamped with the write's scanner version is fixed in `buildEvent` (see the Task 15 note), so a non-`all` rescan selects such events.
+
 **Files:**
 - Create: `internal/journal/rescan.go`
 - Test: `internal/journal/rescan_test.go`
 
-- [ ] **Step 21.1: Write the failing test.**
+- [x] **Step 21.1: Write the failing test.**
 
 `internal/journal/rescan_test.go`:
 
@@ -8917,11 +9203,11 @@ func TestRescanCanWithholdAndCoversRemovedEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 21.2: Run; expect a build failure** (`r.j.Rescan undefined`).
+- [x] **Step 21.2: Run; expect a build failure** (`r.j.Rescan undefined`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 21.3: Write `rescan.go`.**
+- [x] **Step 21.3: Write `rescan.go`.**
 
 `internal/journal/rescan.go`:
 
@@ -9139,11 +9425,11 @@ func (j *Journal) rescanEvents(ctx context.Context, after int64, all bool, res *
 }
 ```
 
-- [ ] **Step 21.4: Run; expect PASS.**
+- [x] **Step 21.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/`
 
-- [ ] **Step 21.5: Commit.**
+- [x] **Step 21.5: Commit.**
 
 ```bash
 git add internal/journal
@@ -9164,7 +9450,7 @@ Generators are hand-rolled over `math/rand` with fixed seeds; each failure names
 **Files:**
 - Test: `internal/journal/property_test.go`, `internal/journal/visibility_property_test.go`, `internal/journal/cursor_test.go`
 
-- [ ] **Step 22.1: Write the journal-logic property tests.**
+- [x] **Step 22.1: Write the journal-logic property tests.**
 
 `internal/journal/property_test.go`:
 
@@ -9479,11 +9765,11 @@ func TestPropertyFoldAcrossASchemaActivation(t *testing.T) {
 }
 ```
 
-- [ ] **Step 22.2: Run; expect PASS** (the properties exercise code from Tasks 8-21; a failure is a real bug -- fix the code, keep the seed).
+- [x] **Step 22.2: Run; expect PASS** (the properties exercise code from Tasks 8-21; a failure is a real bug -- fix the code, keep the seed).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run Property`
 
-- [ ] **Step 22.3: Write the visibility property test.**
+- [x] **Step 22.3: Write the visibility property test.**
 
 `internal/journal/visibility_property_test.go`:
 
@@ -9618,8 +9904,13 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 		}
 		sortedAud := func(a []string) []string { b := slices.Clone(a); slices.Sort(b); return slices.Compact(b) }
 		for _, reader := range ros.Members() {
-			grants, _ := ros.Grants(reader)
-			rows, err := r.j.State(ctx, StateQuery{Grants: grants, Type: "assignment"})
+			// NOTE (Task 19 review): reads take a Reader, not Grants. Delete the
+			// `grants, _ := ros.Grants(reader)` line, use
+			// StateQuery{Reader: reader, Type: "assignment"} and
+			// EventsQuery{Reader: reader, Limit: 1000}, fail on any error, and keep
+			// r.ros.Store(ros). Also cover the asymmetric roster member of
+			// read_review_test.go (a guardian of one child only).
+			rows, err := r.j.State(ctx, StateQuery{Reader: reader, Type: "assignment"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -9638,7 +9929,7 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 					t.Fatalf("seed %d: %s entitled=%v to %s/%s (%v), returned=%v", seed, reader, want, w.subject, w.key, w.aud, got[w.subject+"/"+w.key])
 				}
 			}
-			events, err := r.j.Events(ctx, EventsQuery{Grants: grants, Limit: 1000})
+			events, err := r.j.Events(ctx, EventsQuery{Reader: reader, Limit: 1000})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -9664,11 +9955,11 @@ func TestPropertyReadsReturnExactlyWhatTheRosterEntitles(t *testing.T) {
 }
 ```
 
-- [ ] **Step 22.4: Run; expect PASS.**
+- [x] **Step 22.4: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run PropertyReads`
 
-- [ ] **Step 22.5: Write the cursor test.**
+- [x] **Step 22.5: Write the cursor test.**
 
 `internal/journal/cursor_test.go`:
 
@@ -9713,12 +10004,13 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 		}(si, subject)
 	}
 	go func() { wg.Wait(); close(done) }()
-	grants := r.grants("e_parent1")
+	// NOTE (Task 19 review): Reader: "e_parent1" replaces grants; the r.grants
+	// helper no longer exists.
 	seen := map[int64]bool{}
 	var cursor int64
 	follow := func() {
 		for {
-			evs, err := r.j.Events(ctx, EventsQuery{Grants: grants, After: cursor, Limit: 7})
+			evs, err := r.j.Events(ctx, EventsQuery{Reader: "e_parent1", After: cursor, Limit: 7})
 			if err != nil {
 				t.Error(err)
 				return
@@ -9744,7 +10036,7 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 		follow()
 	}
 	follow()
-	all, _ := r.j.Events(ctx, EventsQuery{Grants: grants, Limit: 10000})
+	all, _ := r.j.Events(ctx, EventsQuery{Reader: "e_parent1", Limit: 10000})
 	if len(all) != len(subjects)*perSubject {
 		t.Fatalf("%d events written", len(all))
 	}
@@ -9758,20 +10050,45 @@ func TestReaderCursorNeverSkipsAnEvent(t *testing.T) {
 
 (The writers call `Apply` directly and report with `t.Error`: `t.Fatal` must not be called from another goroutine.)
 
-- [ ] **Step 22.6: Run; expect PASS.**
+- [x] **Step 22.6: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/ -run 'Property|Cursor'`
 Also confirm the test can fail: temporarily delete the `lockEvents` call in `writePlan`, run `-run Cursor -count=20`; expect at least one failure on a multi-core machine (record the outcome in the commit message, then restore the call).
 
-- [ ] **Step 22.7: Commit.**
+- [x] **Step 22.7: Commit.**
 
 ```bash
 git add internal/journal
 git commit -m "test(journal): property tests for the fold, idempotence, lateness, the guard and visibility; cursor test (glovebox-wekc.18)"
 ```
 
+> NOTE (Task 22 implementation, 2026-10-25). Deviations from the draft above; the tests as committed are
+> `property_test.go`, `visibility_property_test.go`, `erase_property_test.go` (new) and `cursor_test.go`.
+>
+> - **Journal logic.** The guard oracle's SQL passes a non-nil key list (a nil array is SQL NULL and hid every removal of an empty snapshot), and the guard decision is written out in the test (`expectHold`) instead of calling `diff.DefaultGuard.Hold`, so a mutated guard cannot agree with its own oracle. A sequential reference model (`seqModel`, not derived from `internal/journal/diff`) is fed every first delivery and must predict each status (applied, late, held) and the final rows (scope, audience, fields, removed, confirmed time). It also catches a stale older observation overwriting a newer one across scopes, which the fold check cannot (events and rows stay consistent). Generators add ties (two snapshots with one observed_at). Extra checks: no orphan events and `last_event_seq` is the newest event; an applied complete snapshot wrote exactly the removals the oracle counted; every record an applied snapshot names is confirmed at or after its time. The generators must reach every branch (`requireTally`). `TestPropertyGuardBoundaries` pins the 0.3 / 3 edges through Apply.
+> - **Visibility.** Rewritten with the Task 19 changes (Reader, not Grants, fail on any error, `r.ros.Store`). The oracle is exact in both directions (what is entitled is returned, nothing else), per event kind, for old values across an audience change (value, audience marker, scan marker), for `prev_scope` / `prev_observed_at` (the update moves scope, so they are present), counts, and withheld text (no "INJECT" in any read). It also compares State and Events with `access.Visible` applied to every raw row with the reader's full grants (frozen-reader grants included): `assertSQLGoAgree`. An asymmetric roster (`asymHousehold`, a guardian of one child, an outsider) runs 4 more seeds. The oracle handles subject "" (household-wide rows).
+> - **Erase.** `erase_property_test.go` (not in the plan) keeps a model of rows, notes, authors and frozen readers computed from relationships, over random rosters, notes (three types, three authors-and-subjects shapes, one household-wide), 1 to 3 erasures per seed, members still on the roster or removed from it, and members offboarded without an erase. After each step it checks reads, events, counts, the kept notes and their exact reader sets, the erase response counts, that the erased id is nowhere (`idsEverywhere`, `readsEverywhere`), the 410 ban for snapshots and notes about or by the member at any time (a refusal changes nothing), the read ban, the fold, and SQL/Go agreement.
+> - **Cursor.** Three readers with different visibility follow their own cursors in pages of 7 while four writers apply 3-record snapshots; at the end each reader has seen exactly the events `access.Visible` allows, once, in order. A sampler checks that no lower seq becomes visible after a higher one (the property the events lock provides). Removing the `lockEvents` call fails it on the first run (also with `-count=20`).
+> - Mutants run on a `git archive` copy: 50 mutants of the visibility SQL and Go rule, fold, apply, diff, guard, roster, erase, ban and cursor code; 45 killed. The 5 survivors are equivalent for any journal this API can build: the guard clause `removals == live` (implied by the fraction test), a kept note's frozen-audience equality (the audience of a kept note never changes after the keep), the SQL twin of that check, `group_key` clearing on kept events (no rule matches a note), and removal of a row "confirmed later" in its own scope (that confirmation would have made the snapshot late).
+
 ---
 ## Task 23: Metrics and the gauges the alerts need
+
+> NOTE (Task 23 review, 2026-10-25; commits b01f903, 6e08a8f). Metrics are
+> emitted only after commit (effects). ApplyDuration records successful applies
+> and confirms only; failures show in api_requests_total{code}. Manual and
+> automatic discards count snapshots_total{status="discarded"} once each.
+> ConfirmHeld records ApplyDuration. No oldest-held-age gauge: the spec alert is
+> "a held snapshot" (held_snapshots > 0). Labels are an allowlist pinned by a
+> scrape test; record_type always comes from the registry, never caller input.
+> staleness_prefixes accept only `source=<v>/` or `source=<v>/surface=<v>/`, and
+> SetLastSnapshot also skips any prefix naming `data_subject=`, so no subject or
+> course id can reach a Prometheus label. For Task 29: a prefix with no snapshot
+> has no series, so the staleness alert is
+> `time() - max by (prefix) (glovebox_journal_last_snapshot_timestamp_seconds) > N
+> or absent(glovebox_journal_last_snapshot_timestamp_seconds{prefix="..."})`.
+
+**NOTE (Task 17 review).** Two observability gaps are deferred to this task: `ConfirmHeld` does not report `ApplyDuration`, and a discard (`DiscardHeld`, or the automatic discard of older held snapshots) changes a snapshot's status without any `glovebox_journal_snapshots_total` increment. Decide here whether either needs a metric. Task 17 also added a consistency check to `ConfirmHeld`: a stored payload whose id, record type or scope differs from its row is refused with 422 `schema` and stays held. Its tests are in `hold_test.go` and `hold_concurrency_test.go`.
 
 4.15's metrics, through the core's existing OpenTelemetry provider and Prometheus exporter (`internal/metrics`), so they appear on the core's `/metrics` with no new scrape target:
 
@@ -9795,7 +10112,7 @@ No label carries a subject, key or value. The two database-derived gauges are re
 - Create: `internal/journal/jmetrics/metrics.go`, `internal/journal/gauges.go`
 - Test: `internal/journal/jmetrics/metrics_test.go`, `internal/journal/gauges_test.go`
 
-- [ ] **Step 23.1: Write the failing tests.**
+- [x] **Step 23.1: Write the failing tests.**
 
 `internal/journal/jmetrics/metrics_test.go`:
 
@@ -9900,11 +10217,11 @@ func TestGauges(t *testing.T) {
 }
 ```
 
-- [ ] **Step 23.2: Run; expect build failures** (`undefined: New` in jmetrics; `r.j.Gauges undefined`).
+- [x] **Step 23.2: Run; expect build failures** (`undefined: New` in jmetrics; `r.j.Gauges undefined`).
 
 Run: `go test ./internal/journal/jmetrics/ && scripts/journal-test-db.sh ./internal/journal/ -run Gauges`
 
-- [ ] **Step 23.3: Write `jmetrics/metrics.go`.**
+- [x] **Step 23.3: Write `jmetrics/metrics.go`.**
 
 `internal/journal/jmetrics/metrics.go`:
 
@@ -10088,7 +10405,7 @@ func (m *Metrics) SetLastSnapshot(prefix string, t time.Time) {
 }
 ```
 
-- [ ] **Step 23.4: Write `gauges.go`.**
+- [x] **Step 23.4: Write `gauges.go`.**
 
 `internal/journal/gauges.go`:
 
@@ -10123,11 +10440,11 @@ func (j *Journal) Gauges(ctx context.Context, prefixes []string) (int64, map[str
 }
 ```
 
-- [ ] **Step 23.5: Run; expect PASS.**
+- [x] **Step 23.5: Run; expect PASS.**
 
 Run: `go test ./internal/journal/jmetrics/ -count=1 && scripts/journal-test-db.sh ./internal/journal/ -run Gauges`
 
-- [ ] **Step 23.6: Commit.**
+- [x] **Step 23.6: Commit.**
 
 ```bash
 git add internal/journal/jmetrics internal/journal/gauges.go internal/journal/gauges_test.go
@@ -10138,6 +10455,22 @@ git commit -m "feat(journal): metrics for snapshots, events, scans, API, roster 
 
 ## Task 24: Configuration (`internal/config/journal.go`)
 
+> NOTE (Task 24 review, 2026-10-24; commits 5dfac7b, 07c5d17). Deviations from the
+> code below: the journal block decodes through strictjson and a repeated or
+> case-variant top-level `journal` key is refused; `services` is RawMessage loaded
+> with policy.Parse; `scanner_version` added (default `core-scan-1`, empty refused);
+> guard range `0 < max_fraction < 1`, `0 <= min_keys <= 1000`; caps
+> `reload_seconds <= 300`, `request_timeout_seconds <= 600`, `scan_timeout_seconds
+> <= 300`, accessors clamp to [0,1h]; `Connection()` returns
+> `func(context.Context) (string, error)`, re-reads the password file each call
+> through a 4 KiB LimitReader, errors name paths only; `sslmode=disable` is
+> refused (require/verify-ca/verify-full; verify modes need an existing
+> sslrootcert; verify-full with the CNPG CA is glovebox-wekc.18.2); host refuses
+> `,` `/` `?`. For Task 28: the scanner version should be `scanner_version +
+> "+rules." + <hash of the loaded rules>` so a rules update triggers a rescan, and
+> the scanner must be warmed before readiness (glovebox-wekc.18.3). For Task 29:
+> mount the database Secret with `defaultMode: 0400` plus fsGroup.
+
 The journal is configured in `config.json` like everything else in the core, under `journal`, and is off unless `journal.enabled` is true. The chart renders it (Task 29). Policy, record types and rules use the spec's snake_case keys verbatim, so the chart can pass them through with `toJson`. `Validate` builds the registry, the rules and the policy, so a bad configuration fails at start, loudly, before anything listens. The database password is read from a file (the mounted Secret) on every new connection.
 
 **Files:**
@@ -10145,7 +10478,7 @@ The journal is configured in `config.json` like everything else in the core, und
 - Modify: `internal/config/config.go`
 - Test: `internal/config/journal_test.go`
 
-- [ ] **Step 24.1: Write the failing test.**
+- [x] **Step 24.1: Write the failing test.**
 
 `internal/config/journal_test.go`:
 
@@ -10254,11 +10587,11 @@ func TestJournalRefusals(t *testing.T) {
 }
 ```
 
-- [ ] **Step 24.2: Run; expect a build failure** (`cfg.Journal undefined`).
+- [x] **Step 24.2: Run; expect a build failure** (`cfg.Journal undefined`).
 
 Run: `go test ./internal/config/ -run Journal`
 
-- [ ] **Step 24.3: Write `internal/config/journal.go`.**
+- [x] **Step 24.3: Write `internal/config/journal.go`.**
 
 ```go
 package config
@@ -10410,7 +10743,7 @@ func readTrimmed(path string) (string, error) {
 }
 ```
 
-- [ ] **Step 24.4: Wire it into `internal/config/config.go`.**
+- [x] **Step 24.4: Wire it into `internal/config/config.go`.**
 
 Add the field at the end of `Config`:
 
@@ -10450,11 +10783,11 @@ func (c *Config) portsInUse() map[int]string {
 }
 ```
 
-- [ ] **Step 24.5: Run; expect PASS (the whole config package).**
+- [x] **Step 24.5: Run; expect PASS (the whole config package).**
 
 Run: `go test ./internal/config/ -count=1`
 
-- [ ] **Step 24.6: Commit.**
+- [x] **Step 24.6: Commit.**
 
 ```bash
 git add internal/config
@@ -10464,6 +10797,29 @@ git commit -m "feat(config): journal configuration, off by default, validated at
 ---
 ## Task 25: HTTP API -- server, authentication and `POST /v1/records`
 
+> NOTE (Task 25 implementation, 2026-10-25). The code in the repository wins; deviations from the draft below:
+>
+> - **Strict decoding.** The body decodes through `strictjson.Decode` (unknown, duplicate and case-variant keys, also inside `fields`, and trailing data are 422 `schema` with the fixed detail "the body is not a snapshot"), not `DisallowUnknownFields`, so the stored payload means exactly what was validated.
+> - **Owner versus source.** `record.ValidateSnapshot` (Task 7) already refuses a scope whose source is not the type's owner with 422 `schema`, before policy. The draft's two rows "policy: other source" and "policy: owner != source" are therefore 422 `schema`, not 403. `MayWrite`'s write_types and write_scopes checks are reached through two extra rows (the PowerSchool connector writing `lms_assignment`; a test-only `openclaw/test-scoped-writer` with `write_scopes: {source: [powerschool], course: [c1]}` writing course `c2`), each with its allowed counterpart.
+> - **Request timeout.** `Deps.RequestTimeout` (Task 28 passes `JournalConfig.RequestTimeout()`) bounds each request's context, TokenReview included; negative is refused by `New`, zero leaves only the listener's timeouts.
+> - **Panics** are recovered per route: 500 `internal` with no detail, logged, counted; a panic after the answer started aborts the connection (`http.ErrAbortHandler`). `statusWriter` records only the first status.
+> - **Unrouted requests** (unknown paths, a known path with another method) are 404 `not_found` in the refusal shape, counted as `endpoint="unrouted"`, not net/http's plain-text 404/405.
+> - **Metrics.** The early-lookup duplicate takes its `record_type` label from the registry (Task 23 note); `api_requests_total` uses fixed route names.
+> - `queryParams` parses with `url.ParseQuery` and refuses a malformed query (`r.URL.Query()` silently drops bad pairs). `readerOK`, `readErr`, `queryParams` have unit tests now (helpers_test.go) so Task 26 inherits tested helpers. `Server.rescanning` is left for Task 27 (unused fields fail staticcheck).
+> - `writeJSON` adds `X-Content-Type-Options: nosniff`. A forbidden caller and an unavailable TokenReview are logged (identity / satoken's token-free error), never the token.
+> - No per-source rate limit before TokenReview (the login broker has one): the plan's check order and the 4.3 table have no 429. Candidate follow-on.
+> - The listener stays plain HTTP inside the pod network behind the Task 29 NetworkPolicy, with SA-token auth on every request; no TokenReview cache (neither spec nor plan asks for one).
+> - Tests: `rig_test.go` adds `newAuthRig` (no database; auth and policy tests run in plain `go test`), a mutable clock, a log buffer and a metrics scrape. Extra tests beyond the draft: malformed headers never reach the authenticator, TokenReview audience, fail-closed on 500/403/401/unreachable, not-ready asks nothing, tokens never logged or echoed, timeout, panics, 404, route-name metrics, resend before validation (clock stepped back), snapshot_id reuse (other scope / type / writer, unparseable scope skips the lookup), 410 via `Erase`, strict decoding, Content-Type, the exact 8 MiB boundary, no value echo, 500 on lookup and apply failures, the stored writer, held counted once.
+> - Mutants on a `git archive` copy: 64 of the auth, policy, size limit, decoding, early lookup, status mapping and helper guards; 64 killed by named tests, 0 survivors, 0 build failures.
+>
+> NOTE (Task 25 security review, 2026-10-25). Fixed on top of 6b9ff2d:
+>
+> - **strictjson is linear.** The duplicate check folds each key to the smallest member of every rune's simple-fold orbit (exactly `strings.EqualFold`'s equivalence, proven over every rune by `TestFoldKeyIsExactlyEqualFold`) and uses a set; it was a pairwise EqualFold scan, quadratic in the keys of an object. `DecodeLimits` caps keys per object and per document (`ErrTooManyKeys`); `Decode` (configuration) has no caps. POST /v1/records caps at the widest record type version's field count (at least 9) + 16 per object and 12 + 5000 x (4 + width) + 1024 per document: 25 and 66036 with the fixtures; over is 413 `too_large`. 100k keys in one object are refused in well under a second.
+> - **In-flight limit.** At most `Deps.MaxInFlight` (default 16) requests hold a slot, taken after the bearer check and held for TokenReview plus the handler; the next is 503 `unavailable` with `Retry-After: 1`. A per-caller rate limit is a separate bead.
+> - **Bearer.** Exactly one `Authorization` header of the form `Bearer <token68>` (scheme in any case, one space, at most 8 KiB), else 401 without a TokenReview. satoken's lenient parser (the broker's) is unchanged and must agree.
+> - The owner refusal no longer echoes the scope's source value. A body read error other than the size limit is 500 `internal` (retried) with `Connection: close`; 413 closes the connection too. `journalapi.ReasonNotImplemented` names the placeholders' reason.
+> - The 4.3 table (spec and the docs draft above) lists 400, 401, 403 `forbidden`, 404, 503 `unavailable` and 503 `auth_unavailable`; the spool keys on `reason`.
+
 The listener's handler (4.1, 4.3, 4.9). Order of checks on every request: ready (else 503 `unavailable`), bearer token (401), TokenReview with audience `glovebox-journal` and the policy's callers as the allow-list (401 / 403 `forbidden` / 503 `auth_unavailable`, failing closed), then the endpoint's own policy check (403 `policy`). For records: body at most 8 MiB (413), strict decoding (unknown fields are a 422 `schema`), step 1 (a resend is answered from its stored outcome before anything else), validation, policy, `Apply`. The response table of 4.3 is exactly what comes back.
 
 **Files:**
@@ -10471,7 +10827,7 @@ The listener's handler (4.1, 4.3, 4.9). Order of checks on every request: ready 
 - Modify: `internal/journal/journaltest/fixtures.go`
 - Test: `internal/journal/httpapi/rig_test.go`, `internal/journal/httpapi/auth_test.go`, `internal/journal/httpapi/records_test.go`
 
-- [ ] **Step 25.1: Add the test policy to the shared fixtures.**
+- [x] **Step 25.1: Add the test policy to the shared fixtures.**
 
 Append to `internal/journal/journaltest/fixtures.go` (import `policy`):
 
@@ -10503,7 +10859,7 @@ func Services() map[string]policy.Service {
 }
 ```
 
-- [ ] **Step 25.2: Write the test rig.**
+- [x] **Step 25.2: Write the test rig.**
 
 `internal/journal/httpapi/rig_test.go`:
 
@@ -10644,7 +11000,7 @@ func one(key, subject, fields string) journalapi.Record {
 }
 ```
 
-- [ ] **Step 25.3: Write the failing auth and records tests.**
+- [x] **Step 25.3: Write the failing auth and records tests.**
 
 `internal/journal/httpapi/auth_test.go`:
 
@@ -10773,11 +11129,11 @@ func TestHeldAnswerAndResend(t *testing.T) {
 
 (The 410 row of the table is tested in Task 27, which adds the erase endpoint.)
 
-- [ ] **Step 25.4: Run; expect a build failure** (`undefined: New`, `undefined: Deps`).
+- [x] **Step 25.4: Run; expect a build failure** (`undefined: New`, `undefined: Deps`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 25.5: Write `server.go`.**
+- [x] **Step 25.5: Write `server.go`.**
 
 `internal/journal/httpapi/server.go`:
 
@@ -10882,7 +11238,7 @@ func (s *Server) internal(w http.ResponseWriter, what string, err error) {
 }
 ```
 
-- [ ] **Step 25.6: Write `auth.go`.**
+- [x] **Step 25.6: Write `auth.go`.**
 
 `internal/journal/httpapi/auth.go`:
 
@@ -10958,28 +11314,36 @@ func (s *Server) route(endpoint string, h func(http.ResponseWriter, *http.Reques
 	})
 }
 
-// readerGrants resolves the one access field a request may carry. allowed
-// is the service's policy for this reader. It writes the refusal itself.
-func (s *Server) readerGrants(w http.ResponseWriter, reader string, allowed bool) ([]roster.Grant, bool) {
+// readerOK checks the one access field a request may carry. allowed is the
+// service's policy for this reader. It writes the refusal itself. NOTE (Task
+// 19 review): the journal computes grants and confirms roster membership on
+// every read, so this no longer resolves grants; it returns the reader id.
+// Roster errors from the journal are mapped by readErr below.
+func (s *Server) readerOK(w http.ResponseWriter, reader string, allowed bool) (string, bool) {
 	if reader == "" {
 		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "reader is required")
-		return nil, false
+		return "", false
 	}
 	if !allowed {
 		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "this service may not act for that reader")
-		return nil, false
+		return "", false
 	}
-	r := s.d.Roster()
-	if r == nil {
-		refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "no roster is loaded")
-		return nil, false
-	}
-	grants, ok := r.Grants(reader)
-	if !ok {
+	return reader, true
+}
+
+// readErr maps a journal read error (NOTE, Task 19 review): ErrUnknownReader
+// is 403 policy, ErrNoRoster is 503, ErrBadQuery is 400, anything else 500.
+func (s *Server) readErr(w http.ResponseWriter, what string, err error) {
+	switch {
+	case errors.Is(err, journal.ErrUnknownReader):
 		refuse(w, http.StatusForbidden, journalapi.ReasonPolicy, "the reader is not in the roster")
-		return nil, false
+	case errors.Is(err, journal.ErrNoRoster):
+		refuse(w, http.StatusServiceUnavailable, journalapi.ReasonUnavailable, "no roster is loaded")
+	case errors.Is(err, journal.ErrBadQuery):
+		refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "bad query")
+	default:
+		s.internal(w, what, err)
 	}
-	return grants, true
 }
 
 // queryParams admits only the named parameters, each at most once. A
@@ -11004,7 +11368,7 @@ func isJSON(r *http.Request) bool {
 }
 ```
 
-- [ ] **Step 25.7: Write `records.go`, and stubs for the routes Tasks 26-27 fill.**
+- [x] **Step 25.7: Write `records.go`, and stubs for the routes Tasks 26-27 fill.**
 
 `internal/journal/httpapi/records.go`:
 
@@ -11056,16 +11420,26 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request, c call) {
 	}
 	// 4.4 step 1 before anything else: a resend is answered as it was,
 	// even if the configuration changed since it was first sent.
+	// NOTE (Task 15 review): an id is a duplicate only for the same caller,
+	// record type and canonical scope; without a parseable scope there is
+	// nothing to compare, so the lookup is skipped and validation refuses it.
 	if id, err := uuid.Parse(snap.SnapshotID); err == nil {
-		out, found, err := s.d.Journal.Lookup(r.Context(), id.String())
-		if err != nil {
-			s.internal(w, "lookup", err)
-			return
-		}
-		if found {
-			s.d.Metrics.Snapshot(snap.RecordType, out.Status)
-			writeJSON(w, http.StatusOK, journalapi.Response{Status: out.Status, Stats: &out.Stats})
-			return
+		if sc, rej := record.ParseScope(snap.Scope); rej == nil {
+			out, found, err := s.d.Journal.Lookup(r.Context(), id.String(), c.caller, snap.RecordType, sc.Canonical())
+			if err != nil {
+				s.internal(w, "lookup", err)
+				return
+			}
+			if found {
+				if out.Rejection != nil { // snapshot_id_reused: 422
+					reject(w, out.Rejection)
+					return
+				}
+				// A resend, held or not, is a duplicate: "held" counts once.
+				s.d.Metrics.Snapshot(snap.RecordType, journalapi.StatusDuplicate)
+				writeJSON(w, http.StatusOK, journalapi.Response{Status: out.Status, Stats: &out.Stats})
+				return
+			}
 		}
 	}
 	n, rej := record.ValidateSnapshot(s.d.Registry, snap, s.d.Now())
@@ -11126,11 +11500,11 @@ func (s *Server) handleErase(w http.ResponseWriter, r *http.Request, c call)  { 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) { refuse(w, http.StatusNotImplemented, "not_implemented", "") }
 ```
 
-- [ ] **Step 25.8: Run; expect PASS** (`TestAuthentication`, `TestAuthFailsClosedAndNotReadyIs503`, `TestRecordsResponseTable`, `TestHeldAnswerAndResend`).
+- [x] **Step 25.8: Run; expect PASS** (`TestAuthentication`, `TestAuthFailsClosedAndNotReadyIs503`, `TestRecordsResponseTable`, `TestHeldAnswerAndResend`).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 25.9: Commit.**
+- [x] **Step 25.9: Commit.**
 
 ```bash
 git add internal/journal/httpapi internal/journal/journaltest/fixtures.go
@@ -11145,11 +11519,32 @@ core's own account have no policy and are refused by the allow-list."
 
 `POST /v1/notes` decodes strictly (any access field other than `on_behalf_of` -- `audience`, `grants` -- is an unknown field and a 400), validates, checks the service may write the type on behalf of that member, then `WriteNote` (which checks the member's computed grants). Reads take `reader` and their own filters as query parameters and nothing else; a reader outside the roster or outside the service's `readers` is 403; `counts` needs `counts: true`. `GET /v1/healthz` reports the roster hash and the schema version.
 
+> NOTE (Task 26 implementation, 2026-10-25). The code in the repository wins; deviations from the draft below:
+>
+> - **Authorization model.** Reads: `readerOK` (empty reader 400; `MayRead` for state/events, `MayCount` for counts, i.e. `read`/`counts` true AND `readers` allows the id -- `"*"` any id, a list only its members; else 403 `policy`), then the journal confirms roster membership and the read ban (`ErrUnknownReader` 403, `ErrNoRoster` 503, `ErrBadQuery` 400 via `readErr`). Notes: `WritesNotes` first (new `policy.Service.WritesNotes`: a service with no household write type is 403 before its body is read, like `WritesSnapshots`), then `MayWriteNote(type, on_behalf_of)` (type in `write_types` AND `readers` allows on_behalf_of), then `WriteNote` (ban 410, non-member 403, subject not on roster 409, no grant 403). The HTTP check runs before the journal's roster confirmation (the policy package comment orders them the other way); both must pass before any data is touched.
+> - **Body caps.** Not the draft's plain `json.Decoder` with a 256 KiB `LimitReader` (silently truncating): `http.MaxBytesReader` at `maxNoteBytes` = 512 KiB (the widest note, a 64 KiB text and two 1 KiB strings with every byte `\u`-escaped, is ~405 KiB; a household type with more text must revisit it), 413 `too_large` with `Connection: close`; then `strictjson.DecodeLimits` with `noteKeyLimits(registry)`: per object `max(5, widest household field count) + 4`, per document `5 + widest + 4` (9 and 13 with the fixtures), over is 413; any other decode error is 400 `bad_request` with a fixed detail. A body read error other than the cap is 500 with `Connection: close`.
+> - **Cursor.** `nextCursor`: the last returned seq, or the request's `after` for an empty page (never 0, never forward past undelivered events). Rows the Go re-check (Task 19) drops are never delivered: a page whose every row is dropped is empty and holds the cursor; a partial drop moves `next` past a dropped row below the last delivered seq, so that row is never delivered to this reader. Neither is silent -- each dropped row counts `VisibilityMismatch` (alert `GloveboxJournalVisibilityMismatch`), and the disagreement is a bug to fix.
+> - **Lists.** `nonNil` keeps `rows`/`events`/`counts` `[]` at the HTTP layer too (the journal already never returns nil).
+> - **No echo.** `queryParams` errors no longer name the parameter; `record.ValidateNote` no longer quotes the record_type (`record_type is not a household record type`). Present-but-malformed `after`, `limit`, `include_removed`, `since` are 400 (the draft treated an empty value as absent). `subject=` (empty) filters to household rows.
+> - **Tests.** The auth rig (no database) serves a stub healthz behind the real `route` wrapper, since the real one reads the schema version; Task 25's auth tests keep using it. Test-only services `test-read-only` (read, readers [e_parent1]), `test-counts-only` (counts, readers [e_parent1]) and `test-note-writer` (attendance_note, readers [e_parent2]) separate the guards. Extra tests: reader presentation both ways for every endpoint and service, each reader gets only its view, subject never replaces the reader, on_behalf_of both ways with the actor recorded, withheld text and guardians-only rows stay out, `[]` on the wire, paging, filters, erased reader 403, no roster 503/409, 410 notes, strict decoding, key and byte caps at and over the boundary, 100k keys under a second, no echo, 500 without detail, route-name metrics. Task 25 m1: `TestInFlightLimit` now requires request 17 to answer 503 within one second.
+> - **Mutants** (`git archive` copy, DB tests, named `--- FAIL:` only): 105 mutants of the reader/MayRead/MayCount/on_behalf_of guards, policy, error mapping, body and key caps, cursor, `[]`, filters, echoes, the in-flight slot and route names, plus a no-change baseline (survived). 103 killed, 0 build failures counted (6 first-round build failures rewritten to compile and killed). 2 equivalent survivors: dropping `nonNil` on state rows (the journal never returns nil) and naming the parameter in the duplicate-parameter error (only an allowed name can reach it).
+> - NOTE (Task 26 privacy review of a3e833b, 2026-10-26; approved with fixes). Fixed on top:
+>   - **healthz auth pinned**: `TestHealthzIsAuthenticated` (database rig, real `Handler()`): no token 401, the rss token (no policy) 403 `forbidden`, an unknown token 401.
+>   - **POSTs refuse query strings**: POST /v1/notes and POST /v1/records answer any query parameter with 400 `bad_request` after their writer check and before the body is read (4.9: no access field other than the reader, which for a note is `on_behalf_of` in the body). `TestPostsRefuseQueryStrings` (`?audience=public&reader=x` and others, an oversized body with a query still 400, nothing written).
+>   - **No echoed names**: refusal details quote no caller-chosen name or value; they give a position or index at most. Changed: an undeclared field (`a field is not declared by the record type's version`), an unknown record type or version, `complete_range.field` (both), a field with no place in the active version (record index only), every `scope part` detail (part index instead of name), and policy's `MayWrite` / `MayWriteNote` details (no type name, no scope source). Still quoted: a declared field's name in a value refusal (`field "x": ...`) and a required field's name, both registry names. Tests: unknown field names in `TestNoteRefusalsDoNotEchoValues` and `TestRefusalsDoNotEchoValues`, plus unknown type, repeated and oversized scope parts and `complete_range.field`.
+>   - **Read audit log**: every state/events/counts request that passes the policy check logs one info line `journal read` with exactly `caller`, `endpoint` (route name), `reader` and `code` (the answer's status, logged when the handler returns). No filter values, no rows. A reader that is not shaped like a member id (only a `"*"` service gets that far with one) is logged as `(not a member id)`. Requests refused by policy log nothing (the route metric counts them). `TestReadAuditLog` checks the exact keys and values.
+>   - **Cursor comment** corrected (see the Cursor bullet above): a partial drop moves `next` past a dropped row.
+>   - **Policy tests**: `TestMayWriteNoteNeedsThatType` (a second household type not in `write_types` is refused), `TestAllowsIsExact` and HTTP `TestReaderIsExact` (no case folding, no trimming).
+>   - **Note byte cap derived** from the registry like the key caps: `noteByteLimit` = the widest household type's fields at their widest encoding (`fieldValueBytes`: every string byte escaped, 6 bytes; text 6x64 KiB+2, string 6x1 KiB+2, string_list 256x(6x1 KiB+3)+2, scalars 256; plus each escaped key) + `noteEnvelopeBytes` (16 KiB), capped at 8 MiB. 422,442 bytes with the fixtures. This replaces the fixed 512 KiB above. `TestNoteByteLimitFollowsTheRegistry`; `TestWidestNoteFitsTheByteCap` kept.
+>   - **Denial detail**: `readerOK` takes the 403 detail; a service without the endpoint's flag gets "this service may not read" / "may not count", one with it "this service may not act for that reader".
+>   - Mutants (`git archive` copy plus the change, DB tests, named `--- FAIL:` only): my list updated plus 30 new ones (POST query, echoes, audit, derived byte cap, denial detail), 135 in all: 133 killed, 0 build failures, 2 equivalent survivors as before. The reviewer's 32 mutants on the same copy: 29 killed. `vn-fieldname-echo-gone` no longer applies because the echo is gone; its inverse, `echo-field-name`, is killed. `pol-maywritenote-any-household` was re-pointed at the new detail text and is killed. 2 equivalent survivors, as in the reviewer's own run: `vn-obo-empty-ok` (an empty value is refused by the scope-value check anyway) and `h-note-obo-from-body-raw` (`n.OnBehalfOf` is `in.OnBehalfOf`).
+> - Pre-existing, untouched: `gofmt -l` lists five `internal/ingest` files and `staticcheck ./internal/...` reports ST1018/U1000 in `internal/engine`, `internal/ingest`, `internal/scan` test files; `staticcheck ./internal/journal/...` is clean.
+
 **Files:**
 - Modify: `internal/journal/httpapi/notes.go`, `internal/journal/httpapi/read.go`
 - Test: `internal/journal/httpapi/notes_test.go`, `internal/journal/httpapi/read_test.go`
 
-- [ ] **Step 26.1: Write the failing tests.**
+- [x] **Step 26.1: Write the failing tests.**
 
 `internal/journal/httpapi/notes_test.go`:
 
@@ -11270,11 +11665,11 @@ func TestReadRefusals(t *testing.T) {
 
 Add to `rig_test.go`: `func itoa(n int64) string { return strconv.FormatInt(n, 10) }` (import `strconv`).
 
-- [ ] **Step 26.2: Run; expect FAIL** (the placeholders answer 501).
+- [x] **Step 26.2: Run; expect FAIL** (the placeholders answer 501).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 26.3: Replace `notes.go`.**
+- [x] **Step 26.3: Replace `notes.go`.**
 
 ```go
 package httpapi
@@ -11325,7 +11720,7 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request, c call) {
 }
 ```
 
-- [ ] **Step 26.4: Replace `read.go`.**
+- [x] **Step 26.4: Replace `read.go`.**
 
 ```go
 package httpapi
@@ -11360,23 +11755,24 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayRead(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayRead(reader)); !ok {
 		return
 	}
-	sq := journal.StateQuery{Grants: grants, Subject: optional(q, "subject"), Type: q.Get("type"), Scope: q.Get("scope")}
+	sq := journal.StateQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"), Scope: q.Get("scope")}
 	if v := q.Get("include_removed"); v != "" {
 		if sq.IncludeRemoved, err = strconv.ParseBool(v); err != nil {
 			refuse(w, http.StatusBadRequest, journalapi.ReasonBadRequest, "include_removed is true or false")
 			return
 		}
 	}
-	rows, err := s.d.Journal.State(r.Context(), sq)
+	// NOTE (Task 19 review): the roster hash comes from the journal's result, so
+	// it is that of the roster which filtered the rows.
+	rows, sha, err := s.d.Journal.StateWithRoster(r.Context(), sq)
 	if err != nil {
-		s.internal(w, "state", err)
+		s.readErr(w, "state", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, journalapi.StateResponse{Rows: rows, RosterSHA256: s.d.Roster().SHA256()})
+	writeJSON(w, http.StatusOK, journalapi.StateResponse{Rows: rows, RosterSHA256: sha})
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
@@ -11386,11 +11782,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayRead(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayRead(reader)); !ok {
 		return
 	}
-	eq := journal.EventsQuery{Grants: grants, Subject: optional(q, "subject"), Type: q.Get("type"),
+	eq := journal.EventsQuery{Reader: reader, Subject: optional(q, "subject"), Type: q.Get("type"),
 		MinImportance: rules.Low, Limit: defaultEventLimit}
 	if v := q.Get("after"); v != "" {
 		if eq.After, err = strconv.ParseInt(v, 10, 64); err != nil || eq.After < 0 {
@@ -11413,7 +11808,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, c call) {
 	}
 	events, err := s.d.Journal.Events(r.Context(), eq)
 	if err != nil {
-		s.internal(w, "events", err)
+		s.readErr(w, "events", err)
 		return
 	}
 	next := eq.After
@@ -11430,8 +11825,7 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 		return
 	}
 	reader := q.Get("reader")
-	grants, ok := s.readerGrants(w, reader, c.svc.MayCount(reader))
-	if !ok {
+	if _, ok := s.readerOK(w, reader, c.svc.MayCount(reader)); !ok {
 		return
 	}
 	since := s.d.Now().Add(-defaultCountsDays * 24 * time.Hour)
@@ -11441,9 +11835,9 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 			return
 		}
 	}
-	counts, err := s.d.Journal.Counts(r.Context(), grants, optional(q, "subject"), since)
+	counts, err := s.d.Journal.Counts(r.Context(), reader, optional(q, "subject"), since)
 	if err != nil {
-		s.internal(w, "counts", err)
+		s.readErr(w, "counts", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, journalapi.CountsResponse{Since: since, Counts: counts})
@@ -11467,11 +11861,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request, _ call) {
 }
 ```
 
-- [ ] **Step 26.5: Run; expect PASS.**
+- [x] **Step 26.5: Run; expect PASS.**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 26.6: Commit.**
+- [x] **Step 26.6: Commit.**
 
 ```bash
 git add internal/journal/httpapi
@@ -11487,11 +11881,38 @@ computed from the roster."
 
 Operator-only (`admin: true` in the policy): confirm or discard a held snapshot, erase a subject, start a rescan. A rescan runs in the background (it can take minutes); a second request while one runs is a 409. Every admin action is logged with the caller.
 
+> NOTE (Task 27 implementation, 2026-10-26). The code in the repository wins; deviations from the draft below:
+>
+> - **Authorization.** `policy.Service.Admin` (`admin: true`) is the only grant, checked first in every handler (`s.admin`), after the route wrapper (ready, bearer, slot, TokenReview, policy entry). Nothing else in a policy grants it and it grants nothing else. A refusal is 403 `policy` ("this service is not an operator") and logs a WARN `journal admin refused` with `caller` and `endpoint` only. `TestAdminEndpointsAreOperatorOnly`: every non-admin test service is 403 `policy` on all four actions and nothing changes; services without a policy 403 `forbidden`; no token 401; the gateway given `admin: true` may act, the admin service without it may not.
+> - **Erase confirmation (not in the plan).** `journalapi.EraseRequest` gains `confirm`, which must equal `data_subject` exactly (no folding, no trimming), else 400 and nothing is erased. The id must pass `roster.ValidID` before the confirmation is looked at (`""`, a pseudonym, a path: 400 before the database). `ErrNoSubject` 400 `bad_request` (the handler refuses such ids first; `eraseErr` is unit-tested), `ErrNoRoster` 503 `unavailable`, anything else 500; success 200 with the `EraseResponse` counts. The erase runs under the request's context (an interrupted erase rolls back whole). Spec 4.12, `docs/journal-roster.md` and the Task 31 draft name `confirm`.
+> - **Held.** Order: operator, no query string, the path (`uuid.Parse` and the action, 400 before the database; `TestHeldPathIsParsedFirst` on the no-database rig), the body (empty or `{}`), then `ConfirmHeld(s.writerMayWrite)` / `DiscardHeld`. 404 `not_found`, 409 `conflict` (not held), a confirm's rejections as they are (writer re-check 403, ban 410, roster 409, schema 422; the snapshot stays held). A discard answers `{"status": "discarded"}` without stats. Metrics are ConfirmHeld's and DiscardHeld's own (Task 23).
+> - **Rescan.** Background, as drafted: `Server.rescanning` is back, `CompareAndSwap` after the body is accepted, so a refused request never takes the guard; concurrent rescans are 409 `conflict` and never run twice (`TestConcurrentRescansStartOnce`, 16 at once from idle, 5 rounds). `runRescan(ctx, ...)` runs under `Deps.Context` (process lifetime), never the request's context: the request timeout (whose cancel fires as soon as the 202 is written) and a client going away do not cancel it, and it holds no in-flight slot after the 202 (the guard bounds background rescans to one). Cancelling `Deps.Context` (shutdown) ends it at the next batch and frees the guard. Started/finished/failed are logged with the caller and the counts; no metric (Task 21).
+> - **Bodies.** `adminBody`: `http.MaxBytesReader` at a cap derived from the request type (`adminBodyCap`: each key escaped + each string at `record.MaxScopeValueBytes` escaped, each bool as `false`, + 256 bytes envelope: erase 3,454, rescan 283, held 256), 413 `too_large` with `Connection: close`; empty body allowed except for erase; a non-empty body must be `application/json`; `strictjson.DecodeLimits` with key caps of the field count + 2 (erase 4, rescan 3, held 2), over is 413, any other decode error 400 with a fixed detail. Every POST refuses a query string (400) before the body is read. No refusal echoes a caller-chosen name or value.
+> - **Audit log.** Every request past the operator check logs one INFO `journal admin` line when answered: `caller`, `endpoint` (route name), then `data_subject` (erase: the id if `ValidID`, else `(not a member id)`), or `snapshot_id` and `action` (parsed values or placeholders), or `all` (rescan), then `code`. No other values.
+> - `journalapi.ReasonNotImplemented` is removed (no placeholders remain). `api_requests_total` uses the fixed names `admin_held`, `admin_erase`, `admin_rescan`. The test rig's scanner is a `gateScanner` that can hold a rescan inside `Verdict`.
+> - **Mutants** (`git archive` copy plus the change, DB tests, named `--- FAIL:` only): 106 mutants of the operator check (each handler's call, the flag, widened to read/counts/writes/readers, the denial's return, status and reason), the query refusals, the erase confirmation (removed, folded, trimmed, prefix, contains, non-empty only), id validation (removed, empty only, on confirm), the erase actor, the held path parse, every error mapping and response, the writer re-check, the rescanning guard (removed, Load-only, not cleared, check-then-set, before the body), the rescan context (request, Background), `all` (dropped, forced), the body and key caps and their derivation, Content-Type, required body, the audit log (removed, code, caller, attrs, ids raw or hidden, placeholders, endpoints, the refusal warning, the started line) and the route names; plus a no-change baseline (survived). 105 killed, 0 build failures counted (4 first-round build failures -- vet's suspect-or, unused variables -- rewritten to compile and killed). 1 survivor: `rescan-guard-check-then-set` (`Load` then `Store` instead of `CompareAndSwap`), a race whose window no test hits deterministically; `TestConcurrentRescansStartOnce` would only catch it by chance.
+> - NOTE (Task 27 security review of c903aa5, 2026-10-26; approved with one Important fix). Fixed on top:
+>   - **I-1, panics audited honestly.** Each admin handler defers `auditAdmin(..., recover(), ...)`. After a panic the status writer still says 200, so a panicking handler is logged at ERROR as `journal admin ... outcome=panic`, with no code, and then re-panics, so that route's recover still answers 500 (or aborts). Test `TestAdminPanicIsAuditedAsAPanic` uses a body reader that panics, on all three routes.
+>   - **S-1.** `runRescan` recovers a panic: it logs ERROR `journal rescan panicked` with `caller` and `panic`, frees the guard, and the process goes on (`TestRescanPanicIsRecovered`, where the scanner's `Version` panics).
+>   - **S-2, the contract for Task 28.** `Server.rescans` (a `sync.WaitGroup`) counts the rescan goroutine, and `Server.Wait()` waits for it. Shutdown order: stop the listener first (`http.Server.Shutdown`, so no request can start another rescan), cancel `Deps.Context` (a running rescan stops at its next batch), call `Wait()`, and only then close the database. `TestWaitDrainsTheRescan`.
+>   - **S-3.** `Deps.Context` is required: `New` refuses nil, and the `context.Background()` default is gone (`TestNewNeedsAContext`). The test rig passes `context.Background()`.
+>   - **S-5.** `EraseResponse.subject_unknown` (computed in `Erase` from its one roster snapshot) is true when the id is not on that roster and the erase found nothing: no snapshot, row, event or note. The erase is still recorded, since it is a ban, and the handler logs WARN `journal erase of an unknown member: not on the roster and no data held` with `caller` and `data_subject` (`TestEraseHintsUnknownSubjects`: an id on the roster with no data, an id off the roster with data, and an unknown id).
+>   - **S-6.** `docs/journal-roster.md` section 6 now explains `subject_unknown` and the residual risk: one admin ServiceAccount token can erase and ban any member for good. Future mitigations named there: a two-person rule, a one-shot Job under its own RBAC, and audit-log review with an alert on every erase.
+>   - **Test gaps closed:**
+>     - T-1, `TestAdminMethodsArePinned`: PUT, GET, `post`, `Post`, DELETE and PATCH on every admin path get 404, and nothing runs.
+>     - T-2, `TestOperatorCheckComesFirst`: a non-operator with a bad path, a query string, an oversized or bad body gets 403 on every endpoint, with no audit line.
+>     - T-3, `TestEraseFollowsTheRequestContext`: with the author lock held, a cancelled request erases nothing.
+>     - T-4: `TestAdminTooLargeClosesTheConnection`; `caller` on the rescan-failed line; the held audit logs the canonical (lowercase) uuid for an uppercase path; `TestHeldQueryCheckComesBeforeThePath`.
+>   - **Targeted mutants** (`git archive` copy, DB tests, named `--- FAIL:` only). These cover only the changed lines plus the first run's survivor; the reviewer's runner was not on disk and no survivors were listed. 27 mutants and a no-change baseline (survived): the panic audit (check removed, no re-panic, INFO level, a code added, falls through, each handler's `recover()` dropped), the goroutine recover (removed, no caller, WARN level, guard kept), `caller` on the failed line, the wait group (Add removed, Done removed, `Wait` a no-op), the required context, `subject_unknown` (always false, roster ignored, data ignored, current ignored, snapshots ignored), the WARN (removed, always), erase's context (Background, `Deps.Context`), and `rescan-guard-check-then-set`.
+>     - 23 killed. `unknown-ignores-snapshots` survived at first and was then killed by the new `TestEraseOfASnapshotOnlyMemberIsNotUnknown`.
+>     - 2 survivors. `unknown-ignores-current` is equivalent: every `record_current` row has at least one event, so `Events == 0` implies `Current == 0`. `rescan-guard-check-then-set` is the race described above.
+>     - 2 not counted, 0 build failures. Both crash the test binary with no named failure. `rescan-goroutine-no-recover`: the unrecovered panic kills the process, which is the bug itself. `wg-add-removed`: the WaitGroup counter goes negative.
+
 **Files:**
 - Modify: `internal/journal/httpapi/admin.go`
 - Test: `internal/journal/httpapi/admin_test.go`
 
-- [ ] **Step 27.1: Write the failing tests.**
+- [x] **Step 27.1: Write the failing tests.**
 
 `internal/journal/httpapi/admin_test.go`:
 
@@ -11580,11 +12001,11 @@ func TestRescanRunsOnceAtATime(t *testing.T) {
 }
 ```
 
-- [ ] **Step 27.2: Run; expect FAIL** (501 placeholders).
+- [x] **Step 27.2: Run; expect FAIL** (501 placeholders).
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 27.3: Replace `admin.go`.**
+- [x] **Step 27.3: Replace `admin.go`.**
 
 ```go
 package httpapi
@@ -11720,11 +12141,11 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request, c call) {
 
 The erase log line names the erased subject id: that is an opaque id an operator chose to erase, and the `erasure` row keeps it anyway.
 
-- [ ] **Step 27.4: Run; expect PASS (the whole httpapi package).**
+- [x] **Step 27.4: Run; expect PASS (the whole httpapi package).**
 
 Run: `scripts/journal-test-db.sh ./internal/journal/httpapi/`
 
-- [ ] **Step 27.5: Commit.**
+- [x] **Step 27.5: Commit.**
 
 ```bash
 git add internal/journal/httpapi
@@ -11736,12 +12157,26 @@ git commit -m "feat(journal): operator endpoints -- held decisions, erase, resca
 
 `startJournal` (root package, beside `archive_listener.go`) builds everything from `cfg.Journal` and opens the listener; `main.go` calls it and shuts it down. The item pipeline never waits for the journal: a journal whose database, schema sync or roster is not there yet answers 503 while a background loop retries with backoff (`glovebox_journal_ready` 0 meanwhile), and items flow as before. Configuration errors were already refused by `config.Validate`. The core needs its own ServiceAccount token to ask for TokenReviews (chart, Task 29); outside a pod `startJournal` refuses to start an enabled journal.
 
+> NOTE (Task 28 implementation, 2026-10-27). The code in the repository wins; deviations from the draft below:
+>
+> - **Shape.** `startJournal(jc config.JournalConfig, sc, rulesSHA256, mp, k8s func() (*kubecm.Access, error)) (*journalRuntime, error)`; nil, nil when off, before anything is touched (no Kubernetes access asked, no metric registered, no database opened, nothing bound). `k8s` is `inClusterAccess` in `main.go` (`kubecm.InCluster` over `serviceAccountDir`, a variable only so the re-executed core in `main_test.go` can point it at a test directory). The runtime owns the listener, the loops, the database and its own context (from `context.Background()`, not the core's: the shutdown order needs the listener stopped before it is cancelled). Errors at start (all fatal in `main.go`, enabled journal only): outside a pod, Build, an empty policy (TokenReview refuses an empty allow-list), the text scanner, the database user file, the port. The listener is bound synchronously (`net.Listen`), so a port in use is a start error, not a log line.
+> - **Contracts honoured.** `jm.SetRosterReloadFailingSource(holder.Failing)` once, after `NewHolder`, before `Watch`; `jmetrics.New` only inside the enabled branch and after the Kubernetes, policy and scanner checks (a refused journal registers nothing); `Deps.RequestTimeout = jc.RequestTimeout()`, `MaxInFlight = httpapi.DefaultMaxInFlight`, `Context` = the runtime's context; `Deps.Log = slog.Default()`.
+> - **Scanner version** is `jc.ScannerVersion` (config `scanner_version`, default `core-scan-1`) + `"+rules."` + the first 12 hex of the rules file's digest (`rulesProv.SHA256`), not the binary's `Version` as drafted. `journal.NewTextScanner` returns an error now (behind the `newTextScanner` variable, a test hook).
+> - **Warm-up (glovebox-wekc.18.3).** The ready loop first runs one untimed `sc.Scan` of a prose sentence (`warmScanner`, a test hook), then tries roster, migrate, sync; ready is never reported before the warm-up returns. Backoff 1s doubling to 1m. A panic in the warm-up or an attempt is recovered (an attempt's panic is a failed attempt).
+> - **Gauges.** The gauge loop is started by the ready step, so the first refresh is at once (then every minute), not polling readiness from the start. A failed refresh is logged and the gauges keep their values; `SetLastSnapshot` refuses data_subject prefixes itself.
+> - **No crash after start.** Every journal goroutine runs under `goLoop` (counted, panics recovered and logged); the roster watch callback counts `RosterReloadError`, logs, and sets `roster_info` on a change. The core's `/readyz` is not gated on the journal.
+> - **Listener timeouts.** ReadHeaderTimeout 10s, ReadTimeout = request timeout, WriteTimeout = request timeout + 5s (so a request cut by its context can still write its 503), IdleTimeout 2m.
+> - **Shutdown** (`journalShutdown`, Task 27 S-2): `http.Server.Shutdown` (Close on deadline) and wait for Serve to return; cancel the context; wait for `Server.Wait()` and every loop; only then close the database. If the deadline passes first the database is left open and an error returned. The TokenReview transport's idle connections are closed afterwards; "journal stopped" is logged. `main.go` calls it first in the shutdown block (after the item pipeline has drained), with its own 10s budget, then the ingest and metrics servers as before.
+> - **Tests.** `journaltest.NewDBURL` added (NewDB is built on it). Root package: `TestMain` re-executes the test binary as the core. `TestCoreWithTheJournalOff` (items delivered, no `glovebox_journal_` series, nothing on the journal port, no journal log line, clean SIGTERM) and `TestCoreWithTheJournalDegraded` (database unreachable, with and without a roster: core ready, items delivered before and after retries, 503 `unavailable`, ready 0, reload-failing 1/0, retry logged with its cause, scanner version logged, journal stopped before the core). In-process: disabled starts nothing, outside a pod, empty policy, port in use, unreachable database (no blocking, 503, ready 0, roster loaded, listener closed after shutdown, no goroutine left), missing roster (failing gauge and error counter); ready-loop, shutdown-order and gauge-loop unit tests; with a database: ready, healthz, a record stored with the qualified scanner version, gauges at once after a restart, roster appearing later, the request timeout bounding a hung TokenReview, ready only after the warm-up, Shutdown waits for the loops, and a running rescan stopped by shutdown (`journal rescan failed`, never `finished`) before the database closes.
+> - **Journal-off equality.** The pre-Task-28 binary (acdcbc6) and this one, run with the same journal-off config (ingest on), opened the same listeners (metrics, ingest), exported the same 48 metric families (no `glovebox_journal_`), logged the same lines and exited 0.
+> - **Mutants** (`git archive` copy plus the change, one PostgreSQL container, named `--- FAIL:` only): 32 mutants of the enabled branch, metrics placement (outside the branch, before the Kubernetes check), the Kubernetes error, the failing-gauge source (removed, constant), the request timeout, `Deps.Context`, the shutdown order (cancel first, close before drain, close on timeout, no rescan wait, no loops wait, listener not stopped), the gauge loop (not started, no prefixes, waits a tick, held not set), the warm-up (removed, after ready, in the background), the ready steps (no sync, no migrate, no backoff growth, gauge or flag not set), the scanner version (full hash, binary version, unqualified text scanner, main without the rules digest), main without the journal shutdown, and the roster error counter. 32 killed. The first round left 4 survivors (the Kubernetes error ignored -- the satoken error also said "Kubernetes"; `Deps.Context` = Background; no `Server.Wait`; no loops wait), 1 hang (listener not stopped: Serve was awaited without the deadline, now bounded) and 2 non-compiling mutants; the tests and the bounded wait above were added and every mutant re-run.
+
 **Files:**
 - Create: `journal_listener.go`
 - Modify: `main.go`
 - Test: `journal_listener_test.go`
 
-- [ ] **Step 28.1: Write the failing tests.**
+- [x] **Step 28.1: Write the failing tests.**
 
 `journal_listener_test.go`:
 
@@ -11792,11 +12227,11 @@ func TestScannerVersion(t *testing.T) {
 }
 ```
 
-- [ ] **Step 28.2: Run; expect a build failure** (`undefined: startJournal`, `undefined: scannerVersion`).
+- [x] **Step 28.2: Run; expect a build failure** (`undefined: startJournal`, `undefined: scannerVersion`).
 
 Run: `go test . -run 'Journal|ScannerVersion'`
 
-- [ ] **Step 28.3: Write `journal_listener.go`.**
+- [x] **Step 28.3: Write `journal_listener.go`.**
 
 ```go
 package main
@@ -11966,7 +12401,7 @@ func journalGaugeLoop(ctx context.Context, j *journal.Journal, prefixes []string
 }
 ```
 
-- [ ] **Step 28.4: Call it from `main.go`.**
+- [x] **Step 28.4: Call it from `main.go`.**
 
 After the metrics server goroutine is started (and `sc` exists), add:
 
@@ -11988,11 +12423,11 @@ and in the shutdown block, beside `metricsServer.Shutdown(shutdownCtx)`:
 	}
 ```
 
-- [ ] **Step 28.5: Run the root package tests and the whole build; expect PASS.**
+- [x] **Step 28.5: Run the root package tests and the whole build; expect PASS.**
 
 Run: `go build ./... && go vet . && go test . -count=1 -race`
 
-- [ ] **Step 28.6: Commit.**
+- [x] **Step 28.6: Commit.**
 
 ```bash
 git add journal_listener.go journal_listener_test.go main.go
@@ -12005,6 +12440,35 @@ place; until then it answers 503 and items flow as before."
 ---
 ## Task 29: Chart -- listener, roster mount, database Secret, RBAC, NetworkPolicy, alerts; off by default
 
+> NOTE (Task 29 review, 2026-10-26; commits 354e19e, b8f4d3c, 782534d, fa8d48e,
+> 9f4e22b). Off by default: the default render is byte-identical to the
+> pre-Task-29 chart (pinned by scripts/test-chart-journal.sh against origin/main).
+> Deviations from the draft below: an optional database ExternalSecret; values
+> scannerVersion and database.externalSecret; only sslmode=require renders
+> (verify-* waits for glovebox-wekc.18.2); the Secret mounts username/password
+> only, effective mode 0440 via fsGroup (required); the roster ConfigMap is mounted
+> whole, read-only, with no configmap RBAC and may not carry the chart's fullname
+> prefix; ingress and API CIDRs must be single addresses; an opt-in
+> CiliumNetworkPolicy (toEntities kube-apiserver) for the Cilium cutover;
+> glovebox.journalChecks mirrors the Go validator; the `default` ServiceAccount
+> and a services entry for the core's own SA are refused; writerConnectors need
+> write_types. Alerts aggregate by namespace: RosterReloadFailing reads the
+> glovebox_journal_roster_reload_failing gauge (== 1 for 5m); NoSnapshots gates
+> its absence half on present_over_time(glovebox_journal_ready[1h] offset W);
+> VisibilityMismatch holds 24h; promtool unit tests pin the behaviour. The core
+> readinessProbe is unchanged (journal readiness is the ready gauge plus the
+> NotReady alert). Operator guide: docs/journal-roster.md (ownership, format,
+> the immutability VAP and why it lives with the roster's owner, reload and
+> deletion behaviour, erase and id reuse, the enabling checklist).
+>
+> For Task 28 (wiring), required: call
+> `m.SetRosterReloadFailingSource(holder.Failing)` once after creating the
+> roster Holder and before starting Watch; pass `jc.RequestTimeout()` as
+> httpapi.Deps.RequestTimeout; keep jmetrics.New inside the journal-enabled
+> branch (a disabled core must not export ready=0); build the scanner version as
+> `scanner_version + "+rules." + <hash of the loaded rules>` and warm the scanner
+> before reporting ready (glovebox-wekc.18.3).
+
 Rendered only with `journal.enabled=true`; with the default values the chart renders byte-identically to before (checked by the test). One object per new template file. The NetworkPolicy admits port 9095 only from named peers: the pods of connectors listed in `journal.networkPolicy.writerConnectors` (Part B adds `powerschool` and `schoology`) and peers listed verbatim in `journal.networkPolicy.from` (the openclaw gateway's pods, the dashboard's namespace, admin pods -- gitops); nothing is admitted by default. Its egress adds the database and the API server (TokenReview); DNS comes from the core's existing policy (NetworkPolicies add up). The roster ConfigMap is mounted read-only and whole (`items`, no `subPath`) so gitops changes reach the process (4.9b).
 
 **Files:**
@@ -12012,7 +12476,7 @@ Rendered only with `journal.enabled=true`; with the default values the chart ren
 - Create: `charts/glovebox/templates/journal-service.yaml`, `charts/glovebox/templates/journal-networkpolicy.yaml`, `charts/glovebox/templates/journal-clusterrole.yaml`, `charts/glovebox/templates/journal-clusterrolebinding.yaml`, `charts/glovebox/templates/journal-prometheusrule.yaml`, `scripts/testdata/journal-values.yaml`, `scripts/test-chart-journal.sh`, `internal/config/testdata/helm-rendered-journal.json`
 - Test: `scripts/test-chart-journal.sh`, `internal/config/journal_test.go` (fixture test)
 
-- [ ] **Step 29.1: Write the values used by the tests.**
+- [x] **Step 29.1: Write the values used by the tests.**
 
 `scripts/testdata/journal-values.yaml`:
 
@@ -12057,7 +12521,7 @@ metrics:
     enabled: true
 ```
 
-- [ ] **Step 29.2: Write the failing chart test.**
+- [x] **Step 29.2: Write the failing chart test.**
 
 `scripts/test-chart-journal.sh`:
 
@@ -12158,7 +12622,7 @@ scripts/test-chart-journal.sh
 
 Expected: the "disabled" checks pass (nothing renders yet) and every "enabled" check and `expect_fail` fails.
 
-- [ ] **Step 29.3: Add the `journal` block to `values.yaml`** (at the end of the file):
+- [x] **Step 29.3: Add the `journal` block to `values.yaml`** (at the end of the file):
 
 ```yaml
 # Record journal (docs/journal-api.md, docs/journal-schema.md): keyed records
@@ -12226,7 +12690,7 @@ journal:
     kubernetesAPIPorts: [443, 6443]
 ```
 
-- [ ] **Step 29.4: Render the config block** in `templates/configmap.yaml`, immediately before the `"scan_workers"` line:
+- [x] **Step 29.4: Render the config block** in `templates/configmap.yaml`, immediately before the `"scan_workers"` line:
 
 ```yaml
       {{- /*
@@ -12268,7 +12732,7 @@ journal:
       {{- end }}
 ```
 
-- [ ] **Step 29.5: Edit `templates/deployment.yaml`.**
+- [x] **Step 29.5: Edit `templates/deployment.yaml`.**
 
 1. Replace `automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}` with the lines below. The explanation is a template comment, not a YAML one, so the default render stays byte-identical (the chart test checks it):
 
@@ -12332,7 +12796,7 @@ journal:
 
 And in `templates/serviceaccount.yaml` replace `automountServiceAccountToken: {{ .Values.ingest.auth.enabled | default false }}` with `automountServiceAccountToken: {{ or .Values.ingest.auth.enabled .Values.journal.enabled }}` and extend its comment: "and with journal.enabled, whose listener asks the API server to review callers' tokens."
 
-- [ ] **Step 29.6: Create the five templates.**
+- [x] **Step 29.6: Create the five templates.**
 
 `templates/journal-service.yaml`:
 
@@ -12547,12 +13011,12 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 29.7: Run the chart test; expect PASS.**
+- [x] **Step 29.7: Run the chart test; expect PASS.**
 
 Run: `scripts/chart-checks.sh` (from !105; it runs `helm lint` and every `scripts/test-chart-*.sh`, this one included). Before !105 has merged: `helm lint charts/glovebox && scripts/test-chart-journal.sh && scripts/test-chart-serviceaccounts.sh && scripts/test-chart-networkpolicy.sh`.
 Expected: every line `ok`, including !105's duplicate-ServiceAccount guard (the journal adds no ServiceAccount) and the serviceaccount test's comparison with `origin/main` (the default render is unchanged). Verified while writing this plan: with the default values and with `ingest.auth.enabled=true`, the render is byte-identical to `origin/main` at 1ab6879.
 
-- [ ] **Step 29.8: Generate the config fixture and pin it in Go.**
+- [x] **Step 29.8: Generate the config fixture and pin it in Go.**
 
 ```bash
 helm template glovebox charts/glovebox -n openclaw -f scripts/testdata/journal-values.yaml \
@@ -12590,7 +13054,7 @@ func TestJournalHelmRenderedFixture(t *testing.T) {
 
 Run: `go test ./internal/config/ -count=1` -- expect PASS.
 
-- [ ] **Step 29.9: Commit.**
+- [x] **Step 29.9: Commit.**
 
 ```bash
 git add charts/glovebox scripts/test-chart-journal.sh scripts/testdata internal/config
@@ -12600,12 +13064,20 @@ git commit -m "feat(chart): journal listener, roster mount, TokenReview RBAC, Ne
 ---
 ## Task 30: CI -- the database tests run against PostgreSQL on every MR
 
+> NOTE (Task 30, 2026-10-25; commit f73dc9d, verified by MR !109 pipelines 4013
+> and 4014). GitLab job `test-journal-db` on the `cluster` runner with a CNPG
+> 17.10 service sidecar started by an entrypoint/command override (initdb, trust
+> auth inside the job pod only, no secret); JOURNAL_TEST_REQUIRE_DB=1 makes a
+> missing database a failure, not a skip; 1 CPU / 3Gi for the job. GitHub ci.yml
+> runs the same tests against a `docker run` Postgres on loopback; release.yml is
+> untouched. First real run: all nine journal packages ran (journal 82s).
+
 The existing `test` jobs keep running `go test ./...`, in which every database test skips (no `JOURNAL_TEST_DATABASE_URL`). A new job runs `./internal/journal/...` with a PostgreSQL service and `JOURNAL_TEST_REQUIRE_DB=1`, so a missing database is a failure, never a silent skip. The service is the CNPG image at the production version; the image has no Docker entrypoint, so the service's entrypoint runs `initdb` and starts the server. `ghcr.io` is among the registry mirror's upstreams and the tag is a concrete patch version (the floating-tag problem the `test` job's comment describes was a docker.io one).
 
 **Files:**
 - Modify: `.gitlab-ci.yml`, `.github/workflows/ci.yml`
 
-- [ ] **Step 30.1: Add the GitLab job** after the `test` job:
+- [x] **Step 30.1: Add the GitLab job** after the `test` job:
 
 ```yaml
 # ---------------------------------------------------------------------------
@@ -12641,7 +13113,7 @@ test-journal-db:
 
 The harness waits up to 90 seconds for the server, so no wait loop is needed in the job.
 
-- [ ] **Step 30.2: Add the GitHub job** (mirror) under `jobs:` in `.github/workflows/ci.yml`:
+- [x] **Step 30.2: Add the GitHub job** (mirror) under `jobs:` in `.github/workflows/ci.yml`:
 
 ```yaml
   journal-db:
@@ -12677,11 +13149,11 @@ The harness waits up to 90 seconds for the server, so no wait loop is needed in 
 
 The chart checks need no new job: `scripts/test-chart-journal.sh` is run by `scripts/chart-checks.sh` in the `chart-test` job that MR !105 adds (GitLab and GitHub).
 
-- [ ] **Step 30.3: Verify.**
+- [x] **Step 30.3: Verify.**
 
 Locally: `scripts/journal-test-db.sh` (the same image and command) -- PASS. Then push the branch to `origin` and confirm the `test-journal-db` job pulls the image through the registry mirror and passes; if the pull fails, record the failing upstream in the MR and pin the digest the cluster uses instead of the tag (`kubectl --context orac -n databases-app get pods -l cnpg.io/cluster=postgres -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'`).
 
-- [ ] **Step 30.4: Commit.**
+- [x] **Step 30.4: Commit.**
 
 ```bash
 git add .gitlab-ci.yml .github/workflows/ci.yml
@@ -12696,7 +13168,13 @@ git commit -m "ci: run the journal's database tests against the production Postg
 - Create: `docs/journal-api.md`
 - Modify: `docs/upgrading.md`, `CHANGELOG.md`, `docs/journal-schema.md` (only if anything above changed the schema -- it should not have)
 
-- [ ] **Step 31.1: Write `docs/journal-api.md`.**
+> NOTE (Task 31, 2026-10-28). The code in the repository wins; the draft below was checked against it and these deviations went into the docs:
+> - **`docs/journal-api.md`** is written from the code, not the draft. Corrections to the draft: erase bans *all* later data about or by the member, whatever its `observed_at` (the draft said "later snapshots observed before the erase"); erase is allowed while the member is on the roster; notes belong to their author and others' notes about the member are kept, pseudonymised, for the readers frozen at erase time plus the author; erase does not reach copies outside the journal (glovebox-wekc.18.1); `after` on `GET /v1/events` is optional (default 0; `limit` default 200); `in_latest_snapshot` is absent for household notes; `GET /v1/healthz` is 503 like everything else until ready (readiness is checked before the token); a scope whose `source` is not the type's `owner` is `422 schema` at validation (and `403 policy` again in `MayWrite`), not only a policy rule; the 66,036 key cap is not "with the shipped record types" (the chart ships none) but for types of at most 9 fields; the note and admin body caps are derived (note: widest household type + 16 KiB, 422,442 bytes with the fixtures; erase 3,454, rescan 283, held 256 bytes); every POST and healthz refuse a query string; notes answer `409 unknown_subject` with no roster loaded and `409 conflict` when the stored note is newer than the clock; a held confirm re-checks the writer and re-validates, and its refusals leave the snapshot held; discard answers `{"status": "discarded"}`; the scanner version is `scanner_version+rules.<12 hex>`; the shutdown order (listener, cancel, drain rescan and loops, close the database; 10s budget) and the rescan's 409 one-at-a-time rule are documented; the read and admin audit log lines are documented; metrics and alerts use the built names, `glovebox_journal_roster_reload_failing` included. The draft's own sections on upgrading notes are not duplicated: `docs/upgrading.md` already had the "Record journal" section from Task 29, which gained a pointer to the three journal docs and the two enabling blockers (0.12.0's per-connector ServiceAccounts, gitops-kxpb).
+> - **Corrected elsewhere:** `charts/glovebox/values.yaml` described the removal guard as holding "when at least minKeys would go"; the code (`diff.Guard.Hold`) holds when the scope has *more than* minKeys live keys in range and the snapshot removes all of them or more than maxFraction. Comment only; the render is unchanged. `docs/journal-roster.md` section 6 gained the "copies outside the journal are not erased" bullet (glovebox-wekc.18.1) and a link to `journal-api.md`. `docs/journal-schema.md` needed no change (its migration history already covers 0001-0004).
+> - **Known follow-ups** section in `docs/journal-api.md`: glovebox-wekc.18.1, .18.2, .18.3 (warm-up landed in Task 28; what is left is confirming its acceptance, arm64 included, and closing it), .18.4 (per-caller rate limit and slow-body slots), gitops-kxpb (blocks enabling), and the gitops checklist below.
+> - **Final verification (GOTOOLCHAIN=go1.27.1, fresh):** `go build ./...` ok; `go vet ./...` ok; staticcheck v0.8.1 over satoken, journal, config, loginbroker and `.` clean; `./scripts/check-codegen.sh` up to date; `gofmt -l` over the 119 Go files the branch adds or changes: clean (`gofmt -l` over the whole tree lists 34 files the branch does not touch, pre-existing on `origin/main`); `go test ./... -count=1 -race`: 84 packages ok, none failed (DB tests skip without a database). `scripts/journal-test-db.sh ./internal/journal/... .` (CNPG 17.10): all 12 packages ok, 0 failures (journal 79s, httpapi 24s, root package 35s). The published-port mode failed the DB tests with `no route to host` (this WSL sandbox does not route published ports); `JOURNAL_PG_HOST_NETWORK=1` in parallel still dropped a few connections to 127.0.0.1 (6 tests, all `dial ... no route to host`, no assertion failures), so the recorded run is `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`. `REQUIRE_BASE_REF=1 scripts/chart-checks.sh` against `origin/main` f75e95e: helm lint and every test-chart script passed. Off-by-default render: `helm template` of `origin/main`'s chart and this one with default values are byte-identical (and `test-chart-journal.sh`'s three disabled-render comparisons passed). The ASCII grep finds non-ASCII only in the deliberate Unicode case-folding fixtures of the strictjson, policy and rules tests; the journal docs, scripts and templates are ASCII. The new and changed docs carry only placeholder ids.
+
+- [x] **Step 31.1: Write `docs/journal-api.md`.**
 
 ````markdown
 # Record journal API
@@ -12799,12 +13277,32 @@ Answers -- the spool acts on exactly these:
 | Code | `status` / `reason` | Meaning | Spool action |
 |---|---|---|---|
 | 200 | `applied`, `duplicate`, `late`, `held` | accepted | delete the file |
-| 410 | `erased_subject` | the subject was erased after `observed_at` | delete the file |
+| 410 | `erased_subject` | the subject was erased: an erase bans all later data about the member, whatever its `observed_at` | delete the file |
 | 403 | `policy` | this service may not write this type or scope | move to `spool/rejected/` |
 | 409 | `unknown_subject` | a subject is not in the current roster | keep, retry with backoff |
 | 413 | `too_large` | over a limit | move to `spool/rejected/` |
 | 422 | `schema`, `future_observed_at`, `duplicate_key` | invalid snapshot | move to `spool/rejected/` |
-| 5xx | -- | try again later | keep, retry with backoff |
+| 422 | `snapshot_id_reused` | the id already identifies a snapshot of another writer, record type or scope | move to `spool/rejected/` |
+| 400 | `bad_request` | not `application/json` | keep, retry with backoff, alert |
+| 401 | `unauthenticated` | no token, a malformed `Authorization` header (exactly one `Bearer <token>`), or a token TokenReview does not vouch for with audience `glovebox-journal` | keep, retry with backoff, alert |
+| 403 | `forbidden` | a valid token of a ServiceAccount with no journal policy | keep, retry with backoff, alert |
+| 404 | `not_found` | no such endpoint or method | keep, retry with backoff, alert |
+| 503 | `unavailable` | the journal is starting, cannot reach its database or roster, or is at its limit of 16 concurrent requests (with `Retry-After`) | keep, retry with backoff |
+| 503 | `auth_unavailable` | TokenReview could not be asked (fails closed) | keep, retry with backoff |
+| 5xx | `internal` or none | try again later | keep, retry with backoff |
+
+The spool keys on `reason`, not on the code alone: only the reasons this
+table marks "move to `spool/rejected/`" are permanent. `401
+unauthenticated`, `403 forbidden`, `400 bad_request` and every `503` are
+kept and retried with backoff, and raise an alert while they persist (a
+deployment fault: a token audience, an allow-list, a client bug, a journal
+that is starting or overloaded), never a reason to drop data.
+
+Limits besides the 8 MiB body: at most 25 keys in any JSON object and
+66036 in the document with the shipped record types (per object: the
+widest record type version's field count, at least the 9 top-level keys,
+plus 16; per document: 12 + 5000 x (4 + that width) + 1024); over either is
+`413 too_large`, checked before the body is decoded.
 
 A 200 body: `{"status": "applied", "stats": {"created": 1, "updated": 0,
 "removed": 0, "restored": 0, "unchanged": 4, "stale": 0}}`. `late` means a
@@ -12872,7 +13370,10 @@ same roster.
 - `POST /v1/admin/held/<snapshot_id>:confirm` -- apply a held snapshot
   without the guard; older held snapshots of the scope are discarded.
 - `POST /v1/admin/held/<snapshot_id>:discard`.
-- `POST /v1/admin/erase` with `{"data_subject": "<id>"}` -- delete every
+- `POST /v1/admin/erase` with `{"data_subject": "<id>", "confirm": "<id>"}`
+  (Task 27: `confirm` must repeat the id exactly, else 400; the answer's
+  `subject_unknown` is true when the id is off the roster and held no data,
+  a possible typo) -- delete every
   snapshot, record and event of the subject; later snapshots observed before
   the erase are refused with 410.
 - `POST /v1/admin/rescan` with an optional `{"all": true}` -- re-scan stored
@@ -12900,7 +13401,7 @@ curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 ```
 ````
 
-- [ ] **Step 31.2: Add the upgrade notes** to `docs/upgrading.md`, under "Upgrading to the next release":
+- [x] **Step 31.2: Add the upgrade notes** to `docs/upgrading.md`, under "Upgrading to the next release":
 
 ```markdown
 ### Record journal (off by default; glovebox-wekc.18)
@@ -12933,7 +13434,7 @@ The journal answers 503 until its database is migrated and its roster
 loaded; items are not affected.
 ```
 
-- [ ] **Step 31.3: Add the changelog entry** under `## [Unreleased]` / `### Added`:
+- [x] **Step 31.3: Add the changelog entry** under `## [Unreleased]` / `### Added`:
 
 ```markdown
 - **Record journal, part A (off by default; glovebox-wekc.18).** Stateful
@@ -12948,7 +13449,7 @@ loaded; items are not affected.
   follow.
 ```
 
-- [ ] **Step 31.4: Final verification -- everything, fresh.**
+- [x] **Step 31.4: Final verification -- everything, fresh.**
 
 ```bash
 export GOTOOLCHAIN=go1.27.1
@@ -12964,7 +13465,7 @@ LC_ALL=C grep -rnP '[^\x00-\x7F]' internal/journal internal/satoken docs/journal
 
 Expected: all green, "ASCII only". Then check the diff for anything that must not be public: `git diff origin/main --stat` and a read of every new file for real names, ids or addresses (only `e_parent1`-style placeholders, `192.0.2.x`, and the spec's ServiceAccount names may appear).
 
-- [ ] **Step 31.5: Commit.**
+- [x] **Step 31.5: Commit.**
 
 ```bash
 git add docs CHANGELOG.md
@@ -13024,7 +13525,7 @@ Enabling:
 
 - `internal/journal/journalapi`: `Snapshot`, `Record`, `CompleteRange`, `ScopePart`, `Response`, `Stats`, the `Status*` and `Reason*` constants, `PathRecords`, and `Audience` (`glovebox-journal`) for the projected token. The spool acts on the 4.3 table as documented in `docs/journal-api.md`.
 - Scope rules: starts with `source`, which must equal the record type's `owner`; every record's `data_subject` equals the scope's `data_subject` part. `complete_range` is a date field of the type. Limits: 8 MiB, 5000 records, `string` 1024 bytes without control characters, `text` 64 KiB, no NUL anywhere.
-- Chart values to fill: `journal.recordTypes` (the 5.1 and 5.2 types, snake_case keys), `journal.services` entries for `openclaw/glovebox-glovebox-connector-powerschool` and `-schoology` (`write_types`, `write_scopes: {source: [...]}`, `write_subjects: roster_subjects`), `journal.networkPolicy.writerConnectors: [powerschool, schoology]`, `journal.staleness` prefixes, and `journal.rules` (the 4.10 attendance rules). Part B adds to the connector templates (on the !104 layout: each connector already runs as `<fullname>-connector-<name>` with no token mounted): a projected token volume with audience `glovebox-journal` and a short expiry, only for connectors with journal write rights -- every other connector keeps no token at all -- the `records.enabled` switch, the spool directory on the state volume, the spool metrics and the "spool non-empty for over an hour" alert.
+- Chart values to fill: `journal.recordTypes` (the 5.1 and 5.2 types, snake_case keys), `journal.services` entries for `openclaw/glovebox-glovebox-connector-powerschool` and `-schoology` (`write_types`, `write_scopes: {source: [...]}`, `write_subjects: roster_subjects`), `journal.networkPolicy.writerConnectors: [powerschool, schoology]`, `journal.staleness` prefixes, and `journal.rules` (the 4.10 attendance rules, written in the conjunction form `field_becomes: {classification: full_day, any_unexcused: true}` and `{classification: partial_day, any_unexcused: true}` with no `field_in` -- see the Task 10 amendment; rule JSON with unknown keys is refused). Part B adds to the connector templates (on the !104 layout: each connector already runs as `<fullname>-connector-<name>` with no token mounted): a projected token volume with audience `glovebox-journal` and a short expiry, only for connectors with journal write rights -- every other connector keeps no token at all -- the `records.enabled` switch, the spool directory on the state volume, the spool metrics and the "spool non-empty for over an hour" alert.
 - `internal/journal/record.ValidateSnapshot` can be called by connector tests to check a builder's output against the same rules the server applies.
 
 **Part C (openclaw consumer, rollout steps 4-5) builds on:**
