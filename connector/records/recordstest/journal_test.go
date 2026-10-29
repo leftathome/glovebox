@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-
 	"github.com/leftathome/glovebox/connector/records"
 	"github.com/leftathome/glovebox/connector/records/recordstest"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"

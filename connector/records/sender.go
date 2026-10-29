@@ -135,7 +135,7 @@ scopes:
 				delete(s.scopes, key)
 				s.spool.MarkUnknown(key, false)
 				s.log.Error("records snapshot refused by the journal; moved to rejected/",
-					"record_type", e.RecordType, "scope", e.ScopePrefix, "code", a.Code, "reason", ReasonLabel(a.Reason))
+					"record_type", e.RecordType, "scope", e.ScopePrefix, "code", codeLabel(a.Code), "reason", ReasonLabel(a.Reason))
 				continue
 			case ActErased:
 				// The purge deletes this file too (it is about the subject).

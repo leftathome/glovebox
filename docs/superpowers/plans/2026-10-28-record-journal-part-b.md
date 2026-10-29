@@ -1550,11 +1550,13 @@ Same style as `connector/metrics.go`: OTel instruments on the framework's provid
 | `glovebox_journal_spool_write_errors_total` | counter | `connector` | Snapshots that could not be written to the spool (items are unaffected). |
 | `glovebox_journal_record_values_cut_total` | counter | `connector` | `text` values cut to 64 KiB (S8). |
 
-- [ ] **Step 10.1: Write the failing tests:** scrape through `sdkmetric.ManualReader`; after a scripted sequence (put 3, one applied, one rejected `schema`, one 409, one transport error) every series has the expected value; labels are only from the fixed sets (a reason `"x\ny"` appears as `other`); `oldest_seconds` is 0 for an empty spool and the age of the oldest file otherwise; a nil `*Metrics` is safe everywhere.
-- [ ] **Step 10.2: Run; expect FAIL.**
-- [ ] **Step 10.3: Implement** `NewMetrics(meter metric.Meter, connectorName string) (*Metrics, error)`, the recording methods used in Tasks 4-9, and `refreshGaugesLocked` in `spool.go` (one `ReadDir` of each directory).
-- [ ] **Step 10.4: Run; expect PASS.**
-- [ ] **Step 10.5: Commit** (`feat(records): spool metrics`).
+- [x] **Step 10.1: Write the failing tests:** scrape through `sdkmetric.ManualReader`; after a scripted sequence (put 3, one applied, one rejected `schema`, one 409, one transport error) every series has the expected value; labels are only from the fixed sets (a reason `"x\ny"` appears as `other`); `oldest_seconds` is 0 for an empty spool and the age of the oldest file otherwise; a nil `*Metrics` is safe everywhere.
+- [x] **Step 10.2: Run; expect FAIL.**
+- [x] **Step 10.3: Implement** `NewMetrics(meter metric.Meter, connectorName string) (*Metrics, error)`, the recording methods used in Tasks 4-9, and `refreshGaugesLocked` in `spool.go` (one `ReadDir` of each directory).
+- [x] **Step 10.4: Run; expect PASS.**
+- [x] **Step 10.5: Commit** (`feat(records): spool metrics`).
+
+NOTE (B1 implementation): `metrics.go` landed with Task 4 (see its NOTE); this commit adds the tests. The gauges are synchronous (`Int64Gauge`, `Float64Gauge`) and set by every spool operation through `refreshGaugesLocked`; the `code` label is `0` or the three-digit status. `metrics_test.go` pins a label allowlist in the style of `jmetrics`: every recorded series of every spool metric carries exactly its allowlisted label names, and every label value comes from its fixed set (a reason `"secret\nreason"` appears as `other`). The exercise uses tell-tale subject ids, keys, scope values and field values. `privacy_test.go` runs the same exercise and checks that the log output carries none of them, no file name and not the token, while it does carry the record type, the scope prefix and the reasons. The fake journal now JSON-encodes its answers (it wrote reasons unescaped).
 
 ---
 

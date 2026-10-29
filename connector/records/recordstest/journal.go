@@ -30,6 +30,7 @@
 package recordstest
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -202,18 +203,17 @@ func (j *Journal) write(w http.ResponseWriter, a Answer) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(a.Code)
-	status := a.Status
-	if status == "" {
-		status = journalapi.StatusRejected
+	resp := journalapi.Response{Status: a.Status, Reason: a.Reason}
+	if resp.Status == "" {
+		resp.Status = journalapi.StatusRejected
 	}
-	body := `{"status":"` + status + `"`
 	if a.Reason != "" {
-		body += `,"reason":"` + a.Reason + `","detail":"fake journal"`
+		resp.Detail = "fake journal"
 	}
 	if a.Code == http.StatusOK {
-		body += `,"stats":{"created":0,"updated":0,"removed":0,"restored":0,"unchanged":0,"stale":0}`
+		resp.Stats = &journalapi.Stats{}
 	}
-	_, _ = io.WriteString(w, body+"}\n")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func drop(w http.ResponseWriter) {

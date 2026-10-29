@@ -56,9 +56,17 @@ func (m *memFS) step(what string) error {
 	return nil
 }
 
-func (m *memFS) setFailOnce(n int) { m.mu.Lock(); m.ops, m.failAt, m.crash, m.trace = 0, n, false, nil; m.mu.Unlock() }
-func (m *memFS) setCrashAt(n int)  { m.mu.Lock(); m.ops, m.failAt, m.crash, m.trace = 0, n, true, nil; m.mu.Unlock() }
-func (m *memFS) opCount() int      { m.mu.Lock(); defer m.mu.Unlock(); return m.ops }
+func (m *memFS) setFailOnce(n int) {
+	m.mu.Lock()
+	m.ops, m.failAt, m.crash, m.trace = 0, n, false, nil
+	m.mu.Unlock()
+}
+func (m *memFS) setCrashAt(n int) {
+	m.mu.Lock()
+	m.ops, m.failAt, m.crash, m.trace = 0, n, true, nil
+	m.mu.Unlock()
+}
+func (m *memFS) opCount() int { m.mu.Lock(); defer m.mu.Unlock(); return m.ops }
 
 // Restart is the file system a new process finds after a crash: only what
 // was made durable.

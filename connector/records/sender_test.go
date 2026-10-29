@@ -223,7 +223,7 @@ func TestDrainHonoursRetryAfter(t *testing.T) {
 
 func TestDrainDeploymentFaultsAreKeptAndCounted(t *testing.T) {
 	cases := map[string]func(r *senderRig){
-		"401": func(r *senderRig) { r.j.Token = "other" },
+		"401":           func(r *senderRig) { r.j.Token = "other" },
 		"403 forbidden": func(r *senderRig) { r.j.Forbid(true) },
 		"400": func(r *senderRig) {
 			r.j.Next(recordstest.Answer{Code: 400, Reason: journalapi.ReasonBadRequest})

@@ -101,7 +101,7 @@ func (s *Spool) enforceLocked() error {
 		}
 	}
 	newest := map[string]string{} // scope key -> name of its newest file
-	for _, e := range keptP {      // oldest first, so the last one wins
+	for _, e := range keptP {     // oldest first, so the last one wins
 		newest[e.ScopeKey] = e.Name
 	}
 	for _, e := range keptP {

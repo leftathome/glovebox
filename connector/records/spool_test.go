@@ -51,7 +51,11 @@ func TestPutRefusesWhatCannotBeSpooled(t *testing.T) {
 	m := newTestMetrics(t)
 	sp.m = m.Metrics
 	bad := []journalapi.Snapshot{
-		func() journalapi.Snapshot { s := testSnapshot(t, "e_child1", "c1", at(13, 0)); s.SnapshotID = "x"; return s }(),
+		func() journalapi.Snapshot {
+			s := testSnapshot(t, "e_child1", "c1", at(13, 0))
+			s.SnapshotID = "x"
+			return s
+		}(),
 		func() journalapi.Snapshot { s := testSnapshot(t, "e_child1", "c1", at(13, 0)); s.Scope = nil; return s }(),
 		func() journalapi.Snapshot {
 			s := testSnapshot(t, "e_child1", "c1", at(13, 0))

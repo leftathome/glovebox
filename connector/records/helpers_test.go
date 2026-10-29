@@ -129,8 +129,10 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func spoolDir(stateDir string) string    { return filepath.Join(stateDir, spoolDirName) }
-func rejectedDir(stateDir string) string { return filepath.Join(stateDir, spoolDirName, rejectedDirName) }
+func spoolDir(stateDir string) string { return filepath.Join(stateDir, spoolDirName) }
+func rejectedDir(stateDir string) string {
+	return filepath.Join(stateDir, spoolDirName, rejectedDirName)
+}
 
 // testMetrics is a Metrics read back through a ManualReader.
 type testMetrics struct {
