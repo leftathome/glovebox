@@ -1645,6 +1645,10 @@ NOTE (B1 implementation):
   - The other three tests use a second `Emitter` on the same directory, with no state shared with the first: a hand-written `atomicfile`-style temp file is removed and never sent; replay is oldest first per scope, with scopes ordered by their oldest file; and a restart sends at once, with no backoff carried over.
   - None of these tests sleeps. The loop tests synchronise on the pass hook.
 - Loop and crash tests passed `-count=20 -race`.
+- **Targeted mutation run** (on a `git archive` copy, deleted afterwards; only named `--- FAIL:` kills counted). 31 mutants were applied: 29 killed, 2 survived, both equivalent.
+  - Targets: the classifier, 8 mutants (permanent set, 410 gate, 503 reasons, 5xx range, 409 action, the accepted statuses, the fall-through); durability, 8 (file fsync, directory fsync after a write and after a delete, the move's fsync order, temp-file cleanup, the both-directories recovery, the rename target, recovery quarantine); bounds and overflow, 6; subject purge, 4; the off-by-default gate, 3; backoff, 2.
+  - Survivor 1: removing the quarantine from recovery. The next listing quarantines the same file.
+  - Survivor 2: `if total <= limit` changed to `if total < 0`. The drop loops then stop at once, so nothing changes.
 
 **B2 can start after this commit merges.**
 
