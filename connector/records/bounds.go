@@ -12,7 +12,9 @@ package records
 //   - on overflow of max_bytes, rejected files go first, oldest first
 //     (they will never be sent); then the oldest intermediate pending
 //     snapshots, i.e. any pending file that is not the newest of its
-//     scope. The newest pending file of each scope is always kept, even if
+//     scope (record type and scope parts, the journal's identity: two
+//     record types of one scope are two scopes). The newest pending file
+//     of each scope is always kept, even if
 //     the spool stays over the limit (logged once until it is under again).
 //
 // Enforce runs at the start of every drain pass and after every Put.

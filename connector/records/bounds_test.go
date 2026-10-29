@@ -179,6 +179,27 @@ func TestMaxBytesNeverDropsTheNewestOfAScope(t *testing.T) {
 	}
 }
 
+// A scope is the journal's identity, record type and scope parts: two
+// record types of one scope each keep their newest file.
+func TestMaxBytesNewestIsPerRecordTypeAndScope(t *testing.T) {
+	clock := newClock(at(15, 0))
+	sp, m := boundsSpool(t, t.TempDir(), clock, testSpoolConfig())
+	scope := Scope("src", "s", "e_child1", Part("course", "cA"))
+	a := put(t, sp, NewSnapshot("t1", 1, scope, true, nil, at(13, 0), nil))
+	b := put(t, sp, NewSnapshot("t2", 1, scope, true, nil, at(13, 1), nil))
+	if a.ScopeKey == b.ScopeKey {
+		t.Fatal("two record types share a scope key")
+	}
+	sp.cfg.MaxBytes = 10
+	_ = sp.Enforce()
+	if es, _ := sp.Pending(); len(es) != 2 {
+		t.Fatalf("pending %v: the newest of a record type was dropped", ids(es))
+	}
+	if m.counter(t, metricDropped, "reason", DropMaxBytes) != 0 {
+		t.Fatal("dropped")
+	}
+}
+
 func TestPutEnforcesBounds(t *testing.T) {
 	clock := newClock(at(15, 0))
 	sp, _ := boundsSpool(t, t.TempDir(), clock, testSpoolConfig())

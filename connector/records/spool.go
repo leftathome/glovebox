@@ -35,7 +35,7 @@ type Entry struct {
 	ObservedAt  time.Time // from the name; for an unreadable file, its mtime
 	ID          string
 	RecordType  string
-	ScopeKey    string // the scope's parts as JSON: a grouping key, not the canonical form
+	ScopeKey    string // record type and scope parts as JSON (the journal's identity): a grouping key, not the canonical form
 	ScopePrefix string // "source=<v>/surface=<v>/": what a log line may say about the scope
 	DataSubject string
 	Size        int64
@@ -218,11 +218,20 @@ func (s *Spool) parseEntry(dir string, fi fileInfo, rejected bool) (Entry, error
 	if err := json.Unmarshal(raw, &h); err != nil || h.SnapshotID != id || !h.ObservedAt.Equal(ts) || len(h.Scope) == 0 {
 		return Entry{}, errMismatch
 	}
-	key, _ := json.Marshal(h.Scope)
-	e := Entry{Name: fi.Name, Path: path, ObservedAt: ts, ID: id, RecordType: h.RecordType, ScopeKey: string(key),
+	e := Entry{Name: fi.Name, Path: path, ObservedAt: ts, ID: id, RecordType: h.RecordType, ScopeKey: identityKey(h.RecordType, h.Scope),
 		ScopePrefix: scopePrefix(h.Scope), DataSubject: subjectOf(h.Scope), Size: int64(len(raw)), Rejected: rejected}
 	s.cache[path] = e
 	return e, nil
+}
+
+// identityKey is a scope's identity in the journal, record type and scope
+// parts, as JSON: the grouping key of the spool's bounds and its sender.
+func identityKey(recordType string, scope []journalapi.ScopePart) string {
+	key, _ := json.Marshal(struct {
+		T string                 `json:"t"`
+		S []journalapi.ScopePart `json:"s"`
+	}{recordType, scope})
+	return string(key)
 }
 
 func subjectOf(scope []journalapi.ScopePart) string {
