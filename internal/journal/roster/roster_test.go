@@ -3,7 +3,9 @@ package roster_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/leftathome/glovebox/internal/journal/journaltest"
@@ -76,6 +78,29 @@ func TestV1RefusesWhatOpenclawRefuses(t *testing.T) {
 	}
 	if _, err := roster.Parse("some-other-format", []byte(journaltest.HouseholdV1)); err == nil {
 		t.Error("an unknown format parsed")
+	}
+}
+
+// A field this glovebox does not know -- the case an operator causes by
+// adding one to household.json for openclaw -- is ErrUnknownField, at the top
+// level and inside a person, and names the field without any value.
+func TestV1UnknownFieldIsErrUnknownField(t *testing.T) {
+	for name, tc := range map[string]struct{ doc, field string }{
+		"top level": {`{"people": {"e_a": {"agent": "a"}}, "household_members": [], "pets": ["SECRETVALUE"]}`, `"pets"`},
+		"in person": {`{"people": {"e_a": {"agent": "a", "nickname": "SECRETVALUE"}}, "household_members": []}`, `"nickname"`},
+	} {
+		_, err := roster.Parse(roster.FormatOpenclawHouseholdV1, []byte(tc.doc))
+		if !errors.Is(err, roster.ErrUnknownField) {
+			t.Errorf("%s: %v, want ErrUnknownField", name, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.field) || strings.Contains(err.Error(), "SECRETVALUE") {
+			t.Errorf("%s: %q should name %s and carry no value", name, err, tc.field)
+		}
+	}
+	// Other parse failures are not ErrUnknownField.
+	if _, err := roster.Parse(roster.FormatOpenclawHouseholdV1, []byte(`{`)); errors.Is(err, roster.ErrUnknownField) {
+		t.Errorf("malformed JSON reported as an unknown field: %v", err)
 	}
 }
 

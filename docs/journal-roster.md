@@ -11,6 +11,18 @@ The API itself (endpoints, the policy, refusals, configuration, metrics) is
 [journal-api.md](journal-api.md). Every id below (`e_parent1`, `e_child1`,
 ...) is a placeholder.
 
+> **Before you add a field to household.json, update glovebox.** glovebox
+> parses the roster strictly: a field it does not know makes it refuse the
+> whole file and keep using the last roster it accepted. Nothing else
+> changes visibly -- openclaw is happy with the new field -- but from that
+> moment membership changes stop reaching the journal, **including
+> removals**: a person you take out of the household keeps reading the
+> children's records until glovebox is updated to know the field. The alert
+> `GloveboxJournalRosterReloadFailing` fires and the core logs
+> `journal: ERROR roster refused, roster: unknown field ...`, but the access
+> stays until it is fixed. See
+> [Adding a field to household.json](#adding-a-field-to-householdjson).
+
 - [1. Ownership](#1-ownership)
 - [2. Format: openclaw-household-v1](#2-format-openclaw-household-v1)
 - [3. The immutability contract](#3-the-immutability-contract)
@@ -116,6 +128,47 @@ or `siblings` grant is ever produced for the household subject `""`. In the
 example above, `e_parent1` reads `e_child1`'s rows whose audience includes
 `guardians` or `household`, and `e_child2` reads `e_child1`'s rows whose
 audience includes `siblings` or `household`.
+
+### Adding a field to household.json
+
+household.json belongs to openclaw, and openclaw may grow new fields. glovebox
+refuses any field it does not know -- at the top level and inside a person --
+on purpose: the roster decides who may read the children's records, and an
+ignored field could be a new restriction (a member marked away, a guardian
+marked suspended). Ignoring it would quietly grant more than the file says.
+The cost of that choice is an ordering rule:
+
+1. **Teach glovebox the field first.** Release a glovebox whose roster parser
+   knows the field (`internal/journal/roster`, the v1 document type), and roll
+   it out.
+2. **Then add the field** to household.json through gitops.
+
+If the order is reversed, this is what happens, and how to see it:
+
+- glovebox refuses the new file on its next reload (within
+  `journal.roster.reloadSeconds`) and keeps the last roster it accepted. The
+  journal keeps serving with those grants.
+- **Every membership change made after that is ignored by the journal,
+  including removals.** A member removed from the file can still read until
+  glovebox accepts a roster again.
+- At start, a core with the journal enabled logs one line stating this
+  contract (`journal: WARNING the household roster is parsed strictly ...`).
+- On the refused reload it logs
+  `journal: ERROR roster refused, roster: unknown field "<name>": ...` -- the
+  field's name only, never a value -- and the gauge
+  `glovebox_journal_roster_reload_failing` is 1 for as long as the file is
+  refused, so `GloveboxJournalRosterReloadFailing` fires after 5 minutes and
+  stays firing.
+- A pod that **starts** with such a file has no previous roster to keep: the
+  journal never becomes ready and answers every request 503 (see 4).
+
+To recover, either roll out a glovebox that knows the field, or remove the
+field from household.json. Either way the next reload is accepted, the gauge
+returns to 0 and the alert clears. Check the hash afterwards:
+`glovebox_journal_roster_info`'s `sha256` must equal the hash openclaw logs.
+
+Openclaw's own household.json documentation points back here, so a change on
+either side meets this rule.
 
 ## 3. The immutability contract
 

@@ -18,10 +18,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // FormatOpenclawHouseholdV1 is openclaw's household.json (openclaw
@@ -67,11 +69,28 @@ type v1Doc struct {
 	HouseholdMembers []string            `json:"household_members"`
 }
 
+// ErrUnknownField is the roster file carrying a field this glovebox does not
+// know. The parser is strict on purpose -- an ignored field could be a new
+// restriction, so ignoring it would fail open -- but it means a field added to
+// household.json for openclaw makes glovebox refuse the whole file and keep
+// the last roster it accepted: members removed after that keep their access
+// until glovebox learns the field. Callers log it loudly
+// (docs/journal-roster.md, "Adding a field to household.json").
+var ErrUnknownField = errors.New("roster: unknown field")
+
+// unknownFieldPrefix is how encoding/json reports a field that
+// DisallowUnknownFields refused; it has no typed error for it.
+const unknownFieldPrefix = "json: unknown field "
+
 func parseV1(raw []byte) (*Roster, error) {
 	var doc v1Doc
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
+		if name, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix); ok {
+			// The field's name only (a key, never a value).
+			return nil, fmt.Errorf("%w %s", ErrUnknownField, name)
+		}
 		return nil, fmt.Errorf("roster: parse: %w", err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
