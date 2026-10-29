@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -132,6 +133,43 @@ func TestClientRefusesOtherHosts(t *testing.T) {
 	}
 	if !errors.Is(err, ErrHostBlocked) || hits.Load() != 0 {
 		t.Fatalf("err %v hits %d", err, hits.Load())
+	}
+}
+
+// recordingRT counts the requests that got past the pin.
+type recordingRT struct{ hits atomic.Int32 }
+
+func (r *recordingRT) RoundTrip(*http.Request) (*http.Response, error) {
+	r.hits.Add(1)
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+}
+
+// The pin checks the Host header and refuses userinfo, not only the URL's
+// scheme and host.
+func TestPinnedRefusesAnotherHostHeaderOrUserinfo(t *testing.T) {
+	base := &recordingRT{}
+	p := &pinned{scheme: "http", host: "journal.invalid:9095", base: base}
+	mk := func() *http.Request {
+		req, err := http.NewRequest(http.MethodPost, "http://journal.invalid:9095"+journalapi.PathRecords, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	if resp, err := p.RoundTrip(mk()); err != nil || resp.StatusCode != 200 || base.hits.Load() != 1 {
+		t.Fatalf("the journal's own request: %v (hits %d)", err, base.hits.Load())
+	}
+	hostHeader := mk()
+	hostHeader.Host = "other.invalid"
+	withUser := mk()
+	withUser.URL.User = url.UserPassword("u", "p")
+	for name, req := range map[string]*http.Request{"host header": hostHeader, "userinfo": withUser} {
+		if _, err := p.RoundTrip(req); !errors.Is(err, ErrHostBlocked) {
+			t.Errorf("%s: err %v", name, err)
+		}
+	}
+	if base.hits.Load() != 1 {
+		t.Fatalf("%d requests forwarded, want 1", base.hits.Load())
 	}
 }
 

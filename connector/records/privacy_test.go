@@ -1,6 +1,8 @@
 package records
 
 import (
+	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -22,5 +24,32 @@ func TestLogsCarryNoValuesSubjectsKeysOrToken(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Errorf("logs lack %s:\n%s", want, logs)
 		}
+	}
+}
+
+// logKeyAllowlist is every attribute a spool log line may carry, besides
+// slog's own time, level and msg. A new key is reviewed for privacy here.
+var logKeyAllowlist = map[string]bool{
+	"record_type": true, "scope": true, "code": true, "reason": true, "error": true,
+	"files": true, "bytes": true, "max_bytes": true, "failed": true, "total": true,
+}
+
+func TestLogLinesCarryOnlyAllowedKeys(t *testing.T) {
+	_, logs := exerciseAll(t)
+	lines := 0
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		var attrs map[string]any
+		if err := json.Unmarshal([]byte(line), &attrs); err != nil {
+			t.Fatalf("not a JSON log line: %q", line)
+		}
+		lines++
+		for k := range attrs {
+			if k != slog.TimeKey && k != slog.LevelKey && k != slog.MessageKey && !logKeyAllowlist[k] {
+				t.Errorf("log key %q is not in the allowlist: %s", k, line)
+			}
+		}
+	}
+	if lines < 5 {
+		t.Fatalf("%d log lines: the check would be vacuous", lines)
 	}
 }
