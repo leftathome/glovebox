@@ -63,6 +63,12 @@ func (s *Spool) enforceLocked() error {
 		}
 		keptP = append(keptP, e)
 	}
+	// A pending file the listing could not read is aged by its name.
+	for path, ts := range s.unreadable {
+		if now.Sub(ts) > maxAge {
+			drop(Entry{Path: path}, DropMaxAge)
+		}
+	}
 	for _, e := range rejected {
 		if now.Sub(e.ObservedAt) > maxAge && drop(e, DropMaxAge) {
 			continue

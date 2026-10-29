@@ -29,6 +29,22 @@ type memFS struct {
 	crash  bool // every operation from failAt on fails
 	now    func() time.Time
 	trace  []string
+
+	readErr map[string]error // ReadFile of a path fails with this until cleared
+}
+
+// failReads makes every ReadFile of path fail with err (nil: read again).
+func (m *memFS) failReads(path string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readErr == nil {
+		m.readErr = map[string]error{}
+	}
+	if err == nil {
+		delete(m.readErr, path)
+		return
+	}
+	m.readErr[path] = err
 }
 
 type memDir struct {
@@ -144,6 +160,9 @@ func (m *memFS) ReadFile(path string) ([]byte, error) {
 	f, ok := d.live[name]
 	if !ok {
 		return nil, fs.ErrNotExist
+	}
+	if err := m.readErr[path]; err != nil {
+		return nil, err
 	}
 	return append([]byte(nil), f.data...), nil
 }

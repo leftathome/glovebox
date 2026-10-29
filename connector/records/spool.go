@@ -59,17 +59,20 @@ type Spool struct {
 	log           *slog.Logger
 	now           func() time.Time
 
-	mu      sync.Mutex
-	cache   map[string]Entry // by path; a name's content never changes
-	unknown map[string]bool  // scope keys whose head was last answered 409 unknown_subject
-	erased  map[string]bool  // subjects answered 410 erased_subject since start
-	overMax bool             // over max_bytes with only newest-of-scope files left (logged once)
+	mu         sync.Mutex
+	cache      map[string]Entry     // by path; a name's content never changes
+	unreadable map[string]time.Time // pending paths whose last read failed (not their content): name time, for max_age
+	unknown    map[string]bool      // scope keys whose head was last answered 409 unknown_subject
+	erased     map[string]bool      // subjects answered 410 erased_subject since start
+	overMax    bool                 // over max_bytes with only newest-of-scope files left (logged once)
 }
 
 // OpenSpool creates spool/ and spool/rejected/ under stateDir (0700) and
 // recovers from a crash: temp files are removed; a file in both spool/ and
-// rejected/ (a crash during a move) is kept as rejected; files that cannot
-// be read as a snapshot are moved to rejected/ and counted.
+// rejected/ (a crash during a move) is kept as rejected; files whose name
+// or content is not a spool snapshot's are moved to rejected/ and counted.
+// A file that cannot be read at all (an I/O error, not its content) is
+// left in place and tried again later, as in every listing.
 func OpenSpool(stateDir string, cfg SpoolConfig, m *Metrics, log *slog.Logger, now func() time.Time) (*Spool, error) {
 	return openSpool(osFS{}, stateDir, cfg, m, log, now)
 }
@@ -85,7 +88,7 @@ func openSpool(fsy fsys, stateDir string, cfg SpoolConfig, m *Metrics, log *slog
 		now = time.Now
 	}
 	s := &Spool{fs: fsy, dir: filepath.Join(stateDir, spoolDirName), cfg: cfg, m: m, log: log, now: now,
-		cache: map[string]Entry{}, unknown: map[string]bool{}, erased: map[string]bool{}}
+		cache: map[string]Entry{}, unreadable: map[string]time.Time{}, unknown: map[string]bool{}, erased: map[string]bool{}}
 	s.rejected = filepath.Join(s.dir, rejectedDirName)
 	if err := fsy.MkdirAll(s.rejected, 0o700); err != nil {
 		return nil, fmt.Errorf("records: create spool: %w", err)
@@ -190,6 +193,14 @@ func parseName(name string) (time.Time, string, bool) {
 	return ts, id, true
 }
 
+// errMismatch marks a file whose name or content is not a spool
+// snapshot's: it can only appear by hand or by disk corruption (Put writes
+// only complete files), and no later read will change that.
+var errMismatch = errors.New("records: not a spool snapshot")
+
+// parseEntry reads one file. Its error is errMismatch for a name or
+// content that is not a snapshot's, else the read's own error (which may
+// pass: EMFILE, EIO).
 func (s *Spool) parseEntry(dir string, fi fileInfo, rejected bool) (Entry, error) {
 	path := filepath.Join(dir, fi.Name)
 	if e, ok := s.cache[path]; ok {
@@ -197,7 +208,7 @@ func (s *Spool) parseEntry(dir string, fi fileInfo, rejected bool) (Entry, error
 	}
 	ts, id, ok := parseName(fi.Name)
 	if !ok {
-		return Entry{}, errors.New("not a spool file name")
+		return Entry{}, errMismatch
 	}
 	raw, err := s.fs.ReadFile(path)
 	if err != nil {
@@ -205,7 +216,7 @@ func (s *Spool) parseEntry(dir string, fi fileInfo, rejected bool) (Entry, error
 	}
 	var h header
 	if err := json.Unmarshal(raw, &h); err != nil || h.SnapshotID != id || !h.ObservedAt.Equal(ts) || len(h.Scope) == 0 {
-		return Entry{}, errors.New("content does not match the name")
+		return Entry{}, errMismatch
 	}
 	key, _ := json.Marshal(h.Scope)
 	e := Entry{Name: fi.Name, Path: path, ObservedAt: ts, ID: id, RecordType: h.RecordType, ScopeKey: string(key),
@@ -264,28 +275,58 @@ func (s *Spool) Rejected() ([]Entry, error) {
 	return s.listRejectedLocked()
 }
 
-// listPendingLocked reads spool/. A file that cannot be read as a snapshot
-// is quarantined in rejected/ (it can only appear by hand or by disk
-// corruption: Put writes only complete files).
+// listPendingLocked reads spool/. A file whose name or content is not a
+// snapshot's is quarantined in rejected/; one that cannot be read (an I/O
+// error) is left out of this listing and kept, see pendingEntryLocked.
 func (s *Spool) listPendingLocked() ([]Entry, error) {
 	fis, err := s.fs.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
 	}
 	var out []Entry
+	seen := map[string]bool{}
 	for _, fi := range fis {
 		if fi.Dir || strings.Contains(fi.Name, tmpMarker) {
 			continue
 		}
-		e, err := s.parseEntry(s.dir, fi, false)
-		if err != nil {
-			s.quarantineLocked(fi.Name)
-			continue
+		seen[filepath.Join(s.dir, fi.Name)] = true
+		if e, ok := s.pendingEntryLocked(fi); ok {
+			out = append(out, e)
 		}
-		out = append(out, e)
+	}
+	for path := range s.unreadable {
+		if !seen[path] {
+			delete(s.unreadable, path)
+		}
 	}
 	sortEntries(out)
 	return out, nil
+}
+
+// pendingEntryLocked parses one file of spool/. A name or content that is
+// not a snapshot's is quarantined. A read error (EMFILE, EIO, ...) says
+// nothing about the file: it stays in spool/, is skipped for now and read
+// again by the next listing; meanwhile max_age still ages it by its name
+// (enforceLocked). The error's kind is logged once per file.
+func (s *Spool) pendingEntryLocked(fi fileInfo) (Entry, bool) {
+	e, err := s.parseEntry(s.dir, fi, false)
+	path := filepath.Join(s.dir, fi.Name)
+	switch {
+	case err == nil:
+		delete(s.unreadable, path)
+		return e, true
+	case errors.Is(err, errMismatch):
+		s.quarantineLocked(fi.Name)
+	case errors.Is(err, fs.ErrNotExist):
+		// Removed since the directory was read.
+	default:
+		if _, logged := s.unreadable[path]; !logged {
+			s.log.Warn("records spool file could not be read; keeping it to try again", "error", errText(err))
+		}
+		ts, _, _ := parseName(fi.Name) // the name parsed, or err would be errMismatch
+		s.unreadable[path] = ts
+	}
+	return Entry{}, false
 }
 
 func (s *Spool) listRejectedLocked() ([]Entry, error) {
@@ -335,6 +376,7 @@ func (s *Spool) Delete(e Entry) error {
 
 func (s *Spool) removeLocked(e Entry) error {
 	delete(s.cache, e.Path)
+	delete(s.unreadable, e.Path)
 	if err := s.fs.Remove(e.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -359,6 +401,7 @@ func (s *Spool) Reject(e Entry, reason string) error {
 func (s *Spool) moveToRejectedLocked(name string) error {
 	from, to := filepath.Join(s.dir, name), filepath.Join(s.rejected, name)
 	delete(s.cache, from)
+	delete(s.unreadable, from)
 	if err := s.fs.Rename(from, to); err != nil {
 		return err
 	}
@@ -412,9 +455,9 @@ func (s *Spool) recoverLocked() error {
 				return err
 			}
 		default:
-			if _, err := s.parseEntry(s.dir, fi, false); err != nil {
-				s.quarantineLocked(fi.Name)
-			}
+			// As in every listing: quarantined for its name or content,
+			// never for a read that failed.
+			s.pendingEntryLocked(fi)
 		}
 	}
 	if err := s.fs.SyncDir(s.rejected); err != nil {

@@ -31,8 +31,9 @@ const (
 	DropErasedSubject         = "erased_subject"
 )
 
-// RejectUnreadable labels a spool file that could not be read as a
-// snapshot (moved to rejected/ at recovery).
+// RejectUnreadable labels a spool file whose name or content is not a
+// snapshot's (moved to rejected/ when found in spool/). A file whose read
+// failed is not one: it is kept and read again.
 const RejectUnreadable = "unreadable"
 
 // Metrics records the spool's metrics. A nil *Metrics records nothing.

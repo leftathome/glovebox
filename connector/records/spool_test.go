@@ -1,14 +1,18 @@
 package records
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/leftathome/glovebox/connector/records/recordstest"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
 
@@ -252,4 +256,108 @@ func openMemSpool(t testing.TB, mfs *memFS, clock *fakeClock) *Spool {
 		t.Fatal(err)
 	}
 	return sp
+}
+
+// A corrupt file that turns up in spool/ while the spool runs (by hand, or
+// disk corruption) is quarantined in rejected/ and counted, never deleted.
+func TestPendingQuarantinesACorruptFileFoundAfterOpen(t *testing.T) {
+	dir := t.TempDir()
+	m := newTestMetrics(t)
+	sp, err := OpenSpool(dir, testSpoolConfig(), m.Metrics, quietLog(), fixedNow(at(15, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := testSnapshot(t, "e_child1", "c1", at(13, 0))
+	bad := filepath.Join(spoolDir(dir), fileName(other))
+	mustWrite(t, bad, `{"snapshot_id":"`+other.SnapshotID+`"`)
+	if es, _ := sp.Pending(); len(es) != 0 {
+		t.Fatalf("pending %v", ids(es))
+	}
+	if fileExists(bad) || !fileExists(filepath.Join(rejectedDir(dir), fileName(other))) {
+		t.Fatal("the corrupt file was not moved to rejected/")
+	}
+	if m.counter(t, metricRejected, "reason", RejectUnreadable) != 1 {
+		t.Fatal("not counted")
+	}
+}
+
+// A read that fails (EMFILE, EIO) says nothing about the file: at
+// recovery and in a later listing it is kept in spool/, not quarantined,
+// logged once by kind, and sent once it can be read.
+func TestReadErrorKeepsTheFileForALaterPass(t *testing.T) {
+	clock := newClock(at(15, 0))
+	mfs := newMemFS(clock.Now)
+	first := openMemSpool(t, mfs, clock)
+	atOpen := testSnapshot(t, "e_child1", "c1", at(13, 0))
+	if err := first.Put(atOpen); err != nil {
+		t.Fatal(err)
+	}
+	pathOpen := filepath.Join("/state", spoolDirName, fileName(atOpen))
+	mfs.failReads(pathOpen, errInjected)
+
+	lb, log := newLogBuffer()
+	sp, err := openSpool(mfs, "/state", testSpoolConfig(), nil, log, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := testSnapshot(t, "e_child2", "c1", at(13, 1))
+	raw, _ := json.Marshal(later)
+	pathLater := filepath.Join("/state", spoolDirName, fileName(later))
+	mfs.put(pathLater, raw)
+	mfs.failReads(pathLater, errInjected)
+	for i := 0; i < 3; i++ {
+		if es, err := sp.Pending(); err != nil || len(es) != 0 {
+			t.Fatalf("pending %v, %v", ids(es), err)
+		}
+	}
+	if n := mfs.names(filepath.Join("/state", spoolDirName, rejectedDirName)); len(n) != 0 {
+		t.Fatalf("quarantined after a read error: %v", n)
+	}
+	if n := mfs.names(filepath.Join("/state", spoolDirName)); len(n) != 2 {
+		t.Fatalf("spool/ %v", n)
+	}
+	if got := strings.Count(lb.String(), "could not be read; keeping it"); got != 2 {
+		t.Fatalf("logged %d times, want once per file:\n%s", got, lb.String())
+	}
+	if strings.Contains(lb.String(), ".json") || !strings.Contains(lb.String(), `"error":"i/o error"`) {
+		t.Fatalf("log line:\n%s", lb.String())
+	}
+
+	mfs.failReads(pathOpen, nil)
+	mfs.failReads(pathLater, nil)
+	j := recordstest.New(t, "tok-1")
+	j.Now = clock.Now
+	c, err := NewClient(j.URL, TokenFile(newTokenFile(t, "tok-1")), 5*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := NewSender(sp, c, nil, testSpoolConfig(), quietLog(), clock.Now).Drain(context.Background())
+	if res.Sent != 2 || res.Remaining != 0 {
+		t.Fatalf("%+v", res)
+	}
+}
+
+// A file that stays unreadable is still bound by max_age, by its name.
+func TestMaxAgeDropsAFileThatCannotBeRead(t *testing.T) {
+	clock := newClock(at(15, 0))
+	mfs := newMemFS(clock.Now)
+	first := openMemSpool(t, mfs, clock)
+	s := testSnapshot(t, "e_child1", "c1", at(13, 0))
+	if err := first.Put(s); err != nil {
+		t.Fatal(err)
+	}
+	mfs.failReads(filepath.Join("/state", spoolDirName, fileName(s)), errInjected)
+	sp := openMemSpool(t, mfs, clock)
+	m := newTestMetrics(t)
+	sp.m = m.Metrics
+	clock.Advance(8 * 24 * time.Hour)
+	if err := sp.Enforce(); err != nil {
+		t.Fatal(err)
+	}
+	if n := mfs.names(filepath.Join("/state", spoolDirName)); len(n) != 0 {
+		t.Fatalf("spool/ %v", n)
+	}
+	if m.counter(t, metricDropped, "reason", DropMaxAge) != 1 {
+		t.Fatal("not counted")
+	}
 }
