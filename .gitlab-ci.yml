@@ -370,86 +370,126 @@ build:
   stage: build
   needs: ["build-base"]
   rules: *build_rules
+  # THREE BUILD LANES. Every build pod is pinned to johnny (ci-templates),
+  # requests 2Gi and peaks at ~3.4Gi working set; johnny has ~9Gi left after
+  # its resident workloads, so about three fit. Unbounded, the runner starts
+  # up to `concurrent` (6) at once and the surplus pods sit Pending until the
+  # runner's 900s poll_timeout fails them (main pipeline 4092: 10 of 32 builds
+  # failed that way, none in the build itself). A resource_group per lane
+  # caps glovebox at three concurrent builds; the rest wait in GitLab's
+  # queue, which has no timeout. New matrix entries: take the next lane.
+  resource_group: glovebox-build-$BUILD_LANE
   parallel:
     matrix:
       # --- main ---
       - IMAGE: glovebox
         DOCKERFILE: ./Dockerfile
+        BUILD_LANE: "a"
       # --- connectors (distroless; no enricher base) ---
       - IMAGE: glovebox-bluesky
         DOCKERFILE: ./connectors/bluesky/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-gcalendar
         DOCKERFILE: ./connectors/gcalendar/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-gdrive
         DOCKERFILE: ./connectors/gdrive/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-github
         DOCKERFILE: ./connectors/github/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-gitlab
         DOCKERFILE: ./connectors/gitlab/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-hackernews
         DOCKERFILE: ./connectors/hackernews/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-jira
         DOCKERFILE: ./connectors/jira/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-linkedin
         DOCKERFILE: ./connectors/linkedin/Dockerfile
+        BUILD_LANE: "c"
       # The login broker: debian:bookworm-slim + Chromium like the
       # PowerSchool login job below, and for the same reason (see the
       # Dockerfile). One image for every site.
       - IMAGE: glovebox-login-broker
         DOCKERFILE: ./connectors/login-broker/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-meta
         DOCKERFILE: ./connectors/meta/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-notion
         DOCKERFILE: ./connectors/notion/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-onedrive
         DOCKERFILE: ./connectors/onedrive/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-powerschool
         DOCKERFILE: ./connectors/powerschool/Dockerfile
+        BUILD_LANE: "b"
       # debian:bookworm-slim + Chromium, not distroless: powerschool-go can
       # only drive a local browser (see the Dockerfile).
       - IMAGE: glovebox-powerschool-auth-refresher
         DOCKERFILE: ./connectors/powerschool-auth-refresher/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-rss
         DOCKERFILE: ./connectors/rss/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-schoology
         DOCKERFILE: ./connectors/schoology/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-schoology-auth-refresher
         DOCKERFILE: ./connectors/schoology-auth-refresher/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-steam
         DOCKERFILE: ./connectors/steam/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-teams
         DOCKERFILE: ./connectors/teams/Dockerfile
+        BUILD_LANE: "b"
       - IMAGE: glovebox-trello
         DOCKERFILE: ./connectors/trello/Dockerfile
+        BUILD_LANE: "c"
       - IMAGE: glovebox-x
         DOCKERFILE: ./connectors/x/Dockerfile
+        BUILD_LANE: "a"
       - IMAGE: glovebox-youtube
         DOCKERFILE: ./connectors/youtube/Dockerfile
+        BUILD_LANE: "b"
       # --- connectors (enricher-runtime base) ---
       - IMAGE: glovebox-arxiv
         DOCKERFILE: ./connectors/arxiv/Dockerfile
+        BUILD_LANE: "c"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-gmail
         DOCKERFILE: ./connectors/gmail/Dockerfile
+        BUILD_LANE: "a"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-imap
         DOCKERFILE: ./connectors/imap/Dockerfile
+        BUILD_LANE: "b"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-outlook
         DOCKERFILE: ./connectors/outlook/Dockerfile
+        BUILD_LANE: "c"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-semantic-scholar
         DOCKERFILE: ./connectors/semantic-scholar/Dockerfile
+        BUILD_LANE: "a"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       # --- importers (enricher-runtime base) ---
       - IMAGE: glovebox-apple-importer
         DOCKERFILE: ./importers/apple/Dockerfile
+        BUILD_LANE: "b"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-mbox-importer
         DOCKERFILE: ./importers/mbox/Dockerfile
+        BUILD_LANE: "c"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
       - IMAGE: glovebox-walhelm-importer
         DOCKERFILE: ./importers/walhelm/Dockerfile
+        BUILD_LANE: "a"
         ENRICHER_BASE: "$INTERNAL_REGISTRY_REPO/glovebox-enricher-runtime:$CI_COMMIT_SHORT_SHA"
 
 # ---------------------------------------------------------------------------
