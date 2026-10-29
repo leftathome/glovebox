@@ -1837,7 +1837,7 @@ From the attendance page (`extras.attendance`). One record per coded cell (`Kind
 
 Fields: `date`; `course` (`CourseName`), `period` (`Expression`), `code`, `code_description` (legend description) string; `kind` from `cfg.kindOf(entry.Category)`; `excused` per S10.
 
-- [ ] **Step 15.1: Write the failing tests.**
+- [x] **Step 15.1: Write the failing tests.**
 
 ```go
 func TestAttendanceMarksPerSchoolYearWithRange(t *testing.T)     // dates 2026-10-02..10-08 -> one snapshot, school_year 2026-27, range 10-02..10-08, records for VU and L only
@@ -1858,10 +1858,12 @@ func TestAttendanceMarksTermChangeDoesNotRemoveLastTerm(t *testing.T) {
 
 The last test checks the property the journal relies on (range disjointness). The end-to-end version against the real journal is in Task 23.
 
-- [ ] **Step 15.2: Run; expect FAIL.**
-- [ ] **Step 15.3: Implement** `BuildAttendanceMarks(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, observedAt time.Time) []journalapi.Snapshot` and `AttendanceMarkRecordKey(course *pslib.AttendanceCourse, date time.Time) string`. Dates: `day.Date` is midnight UTC of the school day; format with `Format("2006-01-02")` in UTC (as `ProcessAttendanceDays` does).
-- [ ] **Step 15.4: Run; expect PASS.**
-- [ ] **Step 15.5: Commit** (`feat(powerschool): attendance_mark record builder with complete_range per school year`).
+- [x] **Step 15.2: Run; expect FAIL.**
+- [x] **Step 15.3: Implement** `BuildAttendanceMarks(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, observedAt time.Time) []journalapi.Snapshot` and `AttendanceMarkRecordKey(course *pslib.AttendanceCourse, date time.Time) string`. Dates: `day.Date` is midnight UTC of the school day; format with `Format("2006-01-02")` in UTC (as `ProcessAttendanceDays` does).
+- [x] **Step 15.4: Run; expect PASS.**
+- [x] **Step 15.5: Commit** (`feat(powerschool): attendance_mark record builder with complete_range per school year`).
+
+NOTE (B1 implementation): `gridYears(page)` (every cell's date, by `SchoolYear`, in order) is shared with Task 17. A cell whose key repeats an earlier one (two rows the page cannot tell apart: same name, period and no enrolment date) is left out and counted `duplicate_key`, since the journal refuses a repeated key with a permanent 422. Records are in page order (course, then cell). Extra tests: left-early excused, a nil page, the duplicate-row case.
 
 ---
 
