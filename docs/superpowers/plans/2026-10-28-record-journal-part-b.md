@@ -1221,7 +1221,7 @@ NOTE (B1 implementation): committed before Task 4, because the spool's metrics l
 
 Mirrors `internal/loginbroker/brokerapi.Client`: the transport refuses every host but the journal's, follows no redirect, uses no proxy; the token file is re-read for every request (the kubelet rotates it); the token is never logged. One request: `POST <journal>/v1/records`, `Content-Type: application/json`, the spool file's bytes. The answer is read up to 64 KiB and decoded leniently into `journalapi.Response`; `Retry-After` (seconds) is returned.
 
-- [ ] **Step 6.1: Write the failing tests** against an `httptest.Server`:
+- [x] **Step 6.1: Write the failing tests** against an `httptest.Server`:
 
 - the request is `POST /v1/records`, no query, `Content-Type: application/json`, `Authorization: Bearer <file contents trimmed>`, body byte-identical to the input;
 - the token file is re-read (change it between two calls; the server sees both);
@@ -1262,12 +1262,14 @@ func TestSendPresentsTheProjectedToken(t *testing.T) {
 
 Write the other cases in the same style.
 
-- [ ] **Step 6.2: Run; expect FAIL.**
+- [x] **Step 6.2: Run; expect FAIL.**
 
-- [ ] **Step 6.3: Implement** `NewClient(baseURL string, token func() (string, error), timeout time.Duration, inner http.RoundTripper) (*Client, error)`, `TokenFile(path string) func() (string, error)`, `type Answer struct { Code int; Status, Reason string; RetryAfter time.Duration }`, `func (c *Client) Send(ctx context.Context, body []byte) (Answer, error)` (an error only for transport failures and a token that cannot be read; the error never contains the token or the body). Copy the `pinned` round tripper from `brokerapi` (do not import `brokerapi`: its errors name the login broker); `CheckRedirect` returns `http.ErrUseLastResponse`; `Proxy: nil`. Answer body read through `io.LimitReader(resp.Body, 64<<10)`; drain and close.
+- [x] **Step 6.3: Implement** `NewClient(baseURL string, token func() (string, error), timeout time.Duration, inner http.RoundTripper) (*Client, error)`, `TokenFile(path string) func() (string, error)`, `type Answer struct { Code int; Status, Reason string; RetryAfter time.Duration }`, `func (c *Client) Send(ctx context.Context, body []byte) (Answer, error)` (an error only for transport failures and a token that cannot be read; the error never contains the token or the body). Copy the `pinned` round tripper from `brokerapi` (do not import `brokerapi`: its errors name the login broker); `CheckRedirect` returns `http.ErrUseLastResponse`; `Proxy: nil`. Answer body read through `io.LimitReader(resp.Body, 64<<10)`; drain and close.
 
-- [ ] **Step 6.4: Run; expect PASS.**
-- [ ] **Step 6.5: Commit** (`feat(records): pinned journal client presenting the projected token`).
+- [x] **Step 6.4: Run; expect PASS.**
+- [x] **Step 6.5: Commit** (`feat(records): pinned journal client presenting the projected token`).
+
+NOTE (B1 implementation): an answer whose body is not the journal's JSON (or is over 64 KiB) keeps its **real** HTTP code with an empty status and reason, instead of becoming `502`: a 5xx is then retried, but a 200 or 4xx that is not the journal's answer is an unknown answer and is kept and alerted on (`ActRetryAlert`), which a rewrite to 502 would have hidden. `Retry-After` is read as delay-seconds only (the journal's form; an HTTP date is 0) and capped at 24 h. A zero timeout means the 90 s default. Extra tests: errors carry neither the token nor the body (also when the token source's own error text would), a 307 is alerted on, an oversized answer is not trusted.
 
 ---
 
