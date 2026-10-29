@@ -180,6 +180,22 @@ func (c *core) scrape(t *testing.T) string {
 	return string(b)
 }
 
+// scrapeUntil scrapes until the output contains want. A counter appears in
+// the exporter only after its first increment, which lands just after the
+// item reaches the inbox: on a loaded CI runner a single scrape straight
+// after deliver can miss it.
+func (c *core) scrapeUntil(t *testing.T, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		out := c.scrape(t)
+		if strings.Contains(out, want) || time.Now().After(deadline) {
+			return out
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // stop sends SIGTERM and requires a clean exit.
 func (c *core) stop(t *testing.T) {
 	t.Helper()
@@ -220,7 +236,7 @@ func TestCoreWithTheJournalOff(t *testing.T) {
 		"database": map[string]any{"host": "db.invalid"}})
 	c := startCore(t, cfg, base, metricsPort)
 	c.deliver(t, "20260328-off")
-	out := c.scrape(t)
+	out := c.scrapeUntil(t, "glovebox_items_processed_total")
 	if !strings.Contains(out, "glovebox_items_processed_total") {
 		t.Fatalf("the scrape is not the core's:\n%s", out)
 	}
