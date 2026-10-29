@@ -98,9 +98,11 @@ test:
   # and the root package re-runs the whole core binary under the race
   # detector. At the runner's default 4Gi limit the job was OOM-killed (exit
   # 137) on main pipeline 4056 after passing on the MR. -p 4 bounds how many
-  # packages build and run at once; the request makes the scheduler reserve it.
+  # packages build and run at once. The request stays modest (2Gi) so a burst
+  # of Renovate MR pipelines can still schedule; the 8Gi limit is what stops
+  # the OOM kill.
   variables:
-    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
   before_script:
     - "go version"
@@ -145,6 +147,11 @@ test:
 # credential here to protect.
 # ---------------------------------------------------------------------------
 test-journal-db:
+  # One database test job at a time across pipelines: a burst of Renovate MR
+  # pipelines otherwise leaves their pods Pending past the runner's 900s
+  # poll_timeout (pipelines 4063, 4065). resource_group queues the job in
+  # GitLab, which has no such timeout.
+  resource_group: glovebox-journal-db-tests
   stage: test
   tags: [cluster]
   image: golang:1.27.1-bookworm
@@ -155,7 +162,7 @@ test-journal-db:
       command: ["initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -c listen_addresses='*' -c fsync=off"]
   variables:
     KUBERNETES_CPU_REQUEST: "1"
-    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
     KUBERNETES_SERVICE_CPU_REQUEST: "500m"
     KUBERNETES_SERVICE_MEMORY_REQUEST: "512Mi"
