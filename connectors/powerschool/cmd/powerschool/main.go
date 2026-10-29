@@ -289,6 +289,9 @@ func main() {
 	}
 
 	c.SessionState = sessionState
+	// Records (records.enabled): snapshots spooled under the state
+	// directory and sent to the journal in shadow. Off, nothing is built.
+	c.NewRecords = powerschool.NewRecordsFactory(cfg.Records, stateDir, nil)
 
 	connector.Run(runOptions(c, configFile, status, os.Getenv))
 }

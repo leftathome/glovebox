@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/leftathome/glovebox/connector"
 	pslib "github.com/leftathome/powerschool-go"
@@ -90,11 +91,22 @@ type PowerSchoolConnector struct {
 	// readiness does not depend on it. Set before Run.
 	SessionState *connector.SessionState
 
+	// NewRecords, when set, builds the record sink in Wire on the
+	// framework's meter (NewRecordsFactory). nil -- records off -- builds
+	// nothing. Set before Run.
+	NewRecords func(metric.Meter) (RecordSink, error)
+
 	// Framework-provided; set by Wire().
 	wireMu  sync.Mutex
 	writer  connector.StagingBackend
 	matcher *connector.RuleMatcher
 	tel     *Telemetry
+	records RecordSink // nil: records off
+
+	// recordsDone is closed when the delivery loop started by the last
+	// Watch has returned. Guarded by recordsMu.
+	recordsMu   sync.Mutex
+	recordsDone chan struct{}
 
 	// Owned by the connector.
 	tz    *time.Location
@@ -196,10 +208,18 @@ func (c *PowerSchoolConnector) Wire(cc connector.ConnectorContext) error {
 		tel.SetRejectedSessionAge(c.PreviousRejectedAge)
 	}
 
+	var sink RecordSink
+	if c.NewRecords != nil {
+		if sink, err = c.NewRecords(cc.Metrics.Provider().Meter("glovebox.records")); err != nil {
+			return fmt.Errorf("powerschool.Wire: records: %w", err)
+		}
+	}
+
 	c.wireMu.Lock()
 	c.writer = cc.Backend
 	c.matcher = cc.Matcher
 	c.tel = tel
+	c.records = sink
 	c.wireMu.Unlock()
 	return nil
 }
@@ -240,6 +260,9 @@ func (c *PowerSchoolConnector) Poll(ctx context.Context, cp connector.Checkpoint
 // returns a PermanentError (expired session, too many failed polls), on
 // which the framework exits the process.
 func (c *PowerSchoolConnector) Watch(ctx context.Context, cp connector.Checkpoint) error {
+	// Records (when enabled) are delivered by one loop that lives as long
+	// as this Watch.
+	c.startRecords(ctx)
 	for {
 		next := c.nextPoll(c.scheduleFrom(c.now()))
 		slog.Debug("powerschool next poll scheduled", "scheduled_for", next.Format(time.RFC3339))
@@ -659,6 +682,9 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 	ctx, span := env.Tel.StartSpan(ctx, "powerschool.poll.kid", attribute.String("kid", kid.Name))
 	defer span.End()
 
+	// The start of the kid's read: the observed_at of its records.
+	readAt := c.now()
+
 	page, err := selectKidTraced(ctx, env, kid)
 	if err == nil {
 		err = verifyKidPage(page, kid)
@@ -792,6 +818,11 @@ func (c *PowerSchoolConnector) pollKid(ctx context.Context, env Env, kid Kid) (r
 		res.add(stageAssignments(ctx, env, kid, reads, c.cfg.Assignments))
 	}
 	res.add(c.stageExtraPages(ctx, env, kid, extras))
+	// Records, in shadow: from the same verified pages, after the items,
+	// and without touching anything of theirs.
+	if sink := c.recordSink(); sink != nil {
+		c.emitKidRecords(sink, env, kid, readAt, grades, reads, extras)
+	}
 	return res, true, ""
 }
 

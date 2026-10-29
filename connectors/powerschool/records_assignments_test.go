@@ -88,7 +88,8 @@ func TestAssignmentScoresAndFlags(t *testing.T) {
 // no marker.
 func TestAssignmentTextArrivesUnchanged(t *testing.T) {
 	a := sampleAssignment("5001", "Lab report")
-	comment := "Good work.\r\n\tShow the  units next time.‮ reversed"
+	rlo := string(rune(0x202e)) // RIGHT-TO-LEFT OVERRIDE, a bidi control
+	comment := "Good work.\r\n\tShow the  units next time." + rlo + " reversed"
 	a.TeacherComment, a.HasTeacherComment = comment, true
 	a.Description = strings.Repeat("d", 5000) + "\n\nend"
 	a.CategoryDescription = "Work done in class."
@@ -114,7 +115,7 @@ func TestAssignmentTextArrivesUnchanged(t *testing.T) {
 
 func TestAssignmentLongDescriptionIsCutOnce(t *testing.T) {
 	a := sampleAssignment("5001", "Lab report")
-	a.Description = strings.Repeat("€", 70<<10/3+10) // about 70 KiB of 3-byte runes
+	a.Description = strings.Repeat(string(rune(0x20ac)), 70<<10/3+10) // about 70 KiB of 3-byte runes
 	cuts := 0
 	snaps := BuildAssignments(bind1, []courseRead{{grade: sampleGrade("c1", "EXAMPLE SCIENCE 7", ""),
 		assignments: []*pslib.Assignment{a}}}, testTZ(t), obsAt, func() { cuts++ })

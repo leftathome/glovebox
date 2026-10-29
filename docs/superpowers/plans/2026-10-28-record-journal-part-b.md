@@ -2065,7 +2065,7 @@ type recordSink interface {
 
 `Watch` starts `go c.records.Run(ctx)` when `c.records != nil`. `main.go` builds the emitter only when `cfg.Records.Enabled` (`records.New(cfg.Records.Config, stateDir, "powerschool", provider.Meter("glovebox.records"), time.Now)`); the meter comes from the framework's `connector.Metrics` in `Wire` -- so construct the emitter in `Wire` from a factory set by `main.go` (`c.NewRecords = func(meter metric.Meter) (recordSink, error)`), keeping `main.go` free of metric plumbing. A failure to open the spool is fatal at start (a config that asked for records and cannot have them fails loudly, like the login broker's misconfiguration).
 
-- [ ] **Step 19.1: Write the failing tests.**
+- [x] **Step 19.1: Write the failing tests.**
 
 `records_off_test.go`:
 
@@ -2109,10 +2109,17 @@ func TestRecordsOnStagesTheSameItems(t *testing.T) {
 - for each staged item, the record with its key carries the same facts as the item's tags (grade letter and percent, absences and tardies, code and kind, score and flags, term grade and credits): a field-to-tag table per surface, compared after `OneLine` on both sides;
 - `data_subject` and `audience` of every record equal the staged item's metadata for the same kid and surface.
 
-- [ ] **Step 19.2: Run; expect FAIL.**
-- [ ] **Step 19.3: Implement.**
-- [ ] **Step 19.4: Run; expect PASS**, and the whole existing suite unchanged: `go test ./connectors/powerschool/... -count=1 -race`.
-- [ ] **Step 19.5: Commit** (`feat(powerschool): emit record snapshots in shadow behind records.enabled`).
+- [x] **Step 19.2: Run; expect FAIL.**
+- [x] **Step 19.3: Implement.**
+- [x] **Step 19.4: Run; expect PASS**, and the whole existing suite unchanged: `go test ./connectors/powerschool/... -count=1 -race`.
+- [x] **Step 19.5: Commit** (`feat(powerschool): emit record snapshots in shadow behind records.enabled`).
+
+NOTE (B1 implementation):
+- **Hook.** The sink interface is exported as `RecordSink` (the binary sets `c.NewRecords`, whose type must be nameable from `main`). `NewRecordsFactory(cfg.Records, stateDir, now)` returns nil when records are off, so `main.go` sets the field unconditionally and with records off nothing is built; it takes a clock so tests can keep the spool's `max_age` on the fixture's time. `Wire` builds the sink on `cc.Metrics.Provider().Meter("glovebox.records")`; a factory error fails `Wire` (fatal at start).
+- **The loop.** `Watch` calls `startRecords(ctx)`: the framework restarts `Watch` with a new context, so the loop of the previous `Watch` (whose context has ended) is waited for before the next starts -- one loop at a time, never none after a restart.
+- **readAt** is `c.now()` (the connector's clock, `time.Now` in production) rather than `env.now()`: `pollNow` builds its `Env` without a clock, and the tests need a fixed one. `attendance_day` uses it as "now" too.
+- **Panics and errors.** A panic anywhere in `emitKidRecords` (builders or `Emit`) is recovered and counted `powerschool_record_rows_skipped_total{reason="builder_panic"}`; an `Emit` error is logged (the emitter has already counted `write_errors_total`).
+- **Tests.** The metric checks read the records meter through their own `ManualReader` and the connector's counters through `recordMetrics`: the framework's `/metrics` handler shares the process's default Prometheus registry between every test's providers, so a scrape fails once two tests have polled. The checkpoint comparisons use an in-memory `Checkpoint` whose keys can be listed. `TestRecordsOnStagesTheSameItems` also drains the real emitter into the fake journal (with the PowerSchool registry): all 16 snapshots (8 per kid) are applied and the spool is left empty. Extra tests: `NewRecordsFactory` (off, relative or empty state directory, on), `Wire` failing without its sink, one delivery loop across a `Watch` restart, a recovered panic.
 
 ---
 
