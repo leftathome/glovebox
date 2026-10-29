@@ -607,7 +607,7 @@ NOTE (B1 implementation): `SafeKey`/`SafeScopeValue` also hash a blank value (th
 - Create: `connector/records/snapshot.go`
 - Test: `connector/records/snapshot_test.go`
 
-- [ ] **Step 3.1: Write the failing tests.**
+- [x] **Step 3.1: Write the failing tests.**
 
 ```go
 func TestScopeOrderAndSubject(t *testing.T) {
@@ -651,9 +651,9 @@ func TestSchoolYear(t *testing.T) {
 
 `testRegistry` lives in `connector/records/helpers_test.go` and builds `record.NewRegistry([]record.Type{...})`.
 
-- [ ] **Step 3.2: Run; expect FAIL.**
+- [x] **Step 3.2: Run; expect FAIL.**
 
-- [ ] **Step 3.3: Implement.**
+- [x] **Step 3.3: Implement.**
 
 ```go
 package records
@@ -702,8 +702,8 @@ func SchoolYear(d time.Time) string {
 }
 ```
 
-- [ ] **Step 3.4: Run; expect PASS.**
-- [ ] **Step 3.5: Commit** (`feat(records): scope constructor, snapshot assembly, school year`).
+- [x] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.5: Commit** (`feat(records): scope constructor, snapshot assembly, school year`).
 
 ---
 
