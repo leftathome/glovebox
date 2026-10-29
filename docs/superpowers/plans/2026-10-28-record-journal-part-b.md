@@ -335,7 +335,7 @@ git commit -m "feat(records): connector records config block, off unless enabled
 
 Every field the journal will see goes through `Fields`. Rules (A3, A6, A7, S8): every declared field present, `null` when unknown; `string` one line, no C0 controls, at most 1024 bytes; `text` valid UTF-8 without NUL, at most 64 KiB, otherwise **unchanged** (no scrubbing of format characters, no indentation, no 4 KiB cut: the journal scans it); keys and scope values pass through when clean and short, else become `h:<32 hex>`.
 
-- [ ] **Step 2.1: Write the failing tests.**
+- [x] **Step 2.1: Write the failing tests.**
 
 ```go
 package records
@@ -441,9 +441,9 @@ func TestSafeKeyAndScopeValue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2.2: Run; expect FAIL.**
+- [x] **Step 2.2: Run; expect FAIL.**
 
-- [ ] **Step 2.3: Implement.**
+- [x] **Step 2.3: Implement.**
 
 ```go
 package records
@@ -594,8 +594,10 @@ func hash32(s string) string {
 
 Check `record.Encode` handles `int64`, `bool`, `float64`, `string` (it does: `encode` uses `json.Encoder` with HTML escaping off).
 
-- [ ] **Step 2.4: Run; expect PASS.**
-- [ ] **Step 2.5: Commit** (`feat(records): field writers, safe keys and scope values`).
+- [x] **Step 2.4: Run; expect PASS.**
+- [x] **Step 2.5: Commit** (`feat(records): field writers, safe keys and scope values`).
+
+NOTE (B1 implementation): `SafeKey`/`SafeScopeValue` also hash a blank value (the journal refuses a whitespace-only key) and every Unicode format character (Cf) plus U+2028/U+2029, which is wider than the journal's own check; the byte caps come from `record.MaxKeyBytes` and `record.MaxScopeValueBytes` instead of local constants. `OneLine` trims a space left at the end by the 1024-byte cut. Extra tests: values pass `record.NormalizeValue`, and hashed scope values pass `record.ParseScope`.
 
 ---
 
