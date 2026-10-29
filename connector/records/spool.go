@@ -135,6 +135,9 @@ func (s *Spool) Put(snap journalapi.Snapshot) error {
 		s.m.writeError()
 		return fmt.Errorf("records: write spool file: %w", err)
 	}
+	if err := s.enforceLocked(); err != nil {
+		s.log.Warn("records spool bounds could not be applied", "error", errText(err))
+	}
 	s.refreshGaugesLocked()
 	return nil
 }

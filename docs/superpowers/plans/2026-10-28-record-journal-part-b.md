@@ -1503,7 +1503,7 @@ Spec 4.14: `max_age` (default 7 days) and `max_bytes` (default 256 MiB) apply to
 
 `Enforce` runs at the start of every drain pass and after every `Put`.
 
-- [ ] **Step 9.1: Write the failing tests.**
+- [x] **Step 9.1: Write the failing tests.**
 
 ```go
 func TestMaxAgeDropsEveryOldFileNewestIncluded(t *testing.T)     // one scope, one file, 8 days old -> gone; dropped_total{reason="max_age"} 1
@@ -1520,10 +1520,12 @@ func TestPurgeSubjectRemovesPendingAndRejected(t *testing.T)    // e_child1 file
 
 The 409 case needs memory of the last answer: the sender records, per `ScopeKey`, that its head was answered `unknown_subject` (`Spool.MarkUnknown(key)`); `Enforce` uses it for the label only. The label is the only thing that changes, so losing it at restart is harmless.
 
-- [ ] **Step 9.2: Run; expect FAIL.**
-- [ ] **Step 9.3: Implement** (files in `rejected/` that `parseEntry` cannot read -- the ones `recover()` quarantined as unreadable -- are aged by their mtime and counted toward `max_bytes` too, so `max_age` really applies to every file; add `TestMaxAgeAppliesToUnreadableRejectedFiles`) `func (s *Spool) Enforce() error`, `func (s *Spool) PurgeSubject(subject string) (int, error)`, `func (s *Spool) MarkUnknown(scopeKey string)`. Age is `now - ObservedAt` (the file name), so a clock that jumps forward expires files early rather than keeping data at rest longer; note that in the doc comment.
-- [ ] **Step 9.4: Run; expect PASS.**
-- [ ] **Step 9.5: Commit** (`feat(records): spool bounds and subject purge on erase`).
+- [x] **Step 9.2: Run; expect FAIL.**
+- [x] **Step 9.3: Implement** (files in `rejected/` that `parseEntry` cannot read -- the ones `recover()` quarantined as unreadable -- are aged by their mtime and counted toward `max_bytes` too, so `max_age` really applies to every file; add `TestMaxAgeAppliesToUnreadableRejectedFiles`) `func (s *Spool) Enforce() error`, `func (s *Spool) PurgeSubject(subject string) (int, error)`, `func (s *Spool) MarkUnknown(scopeKey string)`. Age is `now - ObservedAt` (the file name), so a clock that jumps forward expires files early rather than keeping data at rest longer; note that in the doc comment.
+- [x] **Step 9.4: Run; expect PASS.**
+- [x] **Step 9.5: Commit** (`feat(records): spool bounds and subject purge on erase`).
+
+NOTE (B1 implementation): committed before Task 8 (the sender calls `Enforce`, `PurgeSubject` and `MarkUnknown`). `MarkUnknown(scopeKey, unknown bool)` also clears the mark (the sender clears it when the scope's head is accepted); marks of scopes with no pending file are forgotten by `Enforce`. An age of exactly `max_age` is kept, older is dropped. `PurgeSubject` also remembers the subject for the life of the process, and `Put` then drops snapshots about it without writing them (counted `dropped{reason="erased_subject"}`): an erase bans all later data, and the connector would otherwise spool a fresh snapshot about the member on every poll only for it to be answered 410. `PurgeSubject("")` purges nothing. A quarantined unreadable file has no known subject, so a purge cannot reach it; it leaves with `max_age`. Over `max_bytes` with only newest-of-scope files left is logged once until the spool is under the limit again.
 
 ---
 
