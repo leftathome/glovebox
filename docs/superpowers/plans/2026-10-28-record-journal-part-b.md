@@ -2008,7 +2008,7 @@ func TestAttendanceDayFieldsAreTheSpecSet(t *testing.T)            // wantFields
 - [x] **Step 17.4: Run; expect PASS.**
 - [x] **Step 17.5: Commit** (`feat(powerschool): attendance_day settled days and complete_range`).
 
-NOTE (B1 implementation): a `settle` below 1 is taken as the default 3 (the config refuses it anyway) and a nil `tz` as UTC. "Followed" counts school days strictly after the date up to and including today; a grid date that is all `-` is not a school day. Extra test: a code cell on a `-` column does not count; a nil page gives nothing.
+NOTE (B1 implementation): a `settle` below 1 is taken as the default 3 (the config refuses it anyway) and a nil `tz` as UTC. "Followed" counts school days strictly after the date up to and including today; a grid date that is all `-` is not a school day. Extra test: a nil page gives nothing.
 
 ---
 
@@ -2022,11 +2022,13 @@ NOTE (B1 implementation): a `settle` below 1 is taken as the default 3 (the conf
 
 `term_comment`: one snapshot per comments page accepted this turn (`extras.comments`, each a confirmed term; a page without a confirmed term is never used, as today). Scope `(powerschool, term_comments, subject, term=<TERM>)` (S4), complete. One record per comment with visible text; key = the connector's existing key (S6) `<course_number or name:...>|<expression>:<term>` (`#n`), factored into `teacherCommentKey(cm, term, seen)` and used by both paths. Fields: `course` (`CourseName`), `term` string; `comment` text (`cm.Comment` through `Fields.Text`, not `boundText`). The teacher's name is not a field (today it goes in the body only; spec 5.1 has no teacher field for this type). Audience: the binding's audience, which `ValidateConfig` guarantees is exactly `[guardians]`; the builder refuses (returns no snapshot, counts `powerschool_record_rows_skipped_total{reason="audience_not_guardians_only"}`) if it is not, the same defence in depth as `stage`.
 
-- [ ] **Step 18.1: Write the failing tests:** keys equal the item checkpoint ids for the existing fixtures (`historyFixture`, `commentsFixture`); the golden test still passes unchanged; a comment with CRLF, tabs and doubled spaces arrives unchanged; an empty comment is not a record; an unconfirmed page gives no snapshot; two term pages give two snapshots with different `term` parts; a binding with `[subject, guardians]` gives no `term_comment` snapshot; `validateAll`.
-- [ ] **Step 18.2: Run; expect FAIL.**
-- [ ] **Step 18.3: Implement** `BuildTermGrades(b, page, observedAt)` and `BuildTermComments(b, pages, observedAt, onCut)`, plus the two key functions (exported as `TermGradeRecordKey` / `TermCommentRecordKey` wrappers for the seed).
-- [ ] **Step 18.4: Run; expect PASS** (including `go test ./connectors/powerschool/ -run TestSurfaceFingerprints_Golden`).
-- [ ] **Step 18.5: Commit** (`feat(powerschool): term_grade and term_comment record builders`).
+- [x] **Step 18.1: Write the failing tests:** keys equal the item checkpoint ids for the existing fixtures (`historyFixture`, `commentsFixture`); the golden test still passes unchanged; a comment with CRLF, tabs and doubled spaces arrives unchanged; an empty comment is not a record; an unconfirmed page gives no snapshot; two term pages give two snapshots with different `term` parts; a binding with `[subject, guardians]` gives no `term_comment` snapshot; `validateAll`.
+- [x] **Step 18.2: Run; expect FAIL.**
+- [x] **Step 18.3: Implement** `BuildTermGrades(b, page, observedAt)` and `BuildTermComments(b, pages, observedAt, onCut)`, plus the two key functions (exported as `TermGradeRecordKey` / `TermCommentRecordKey` wrappers for the seed).
+- [x] **Step 18.4: Run; expect PASS** (including `go test ./connectors/powerschool/ -run TestSurfaceFingerprints_Golden`).
+- [x] **Step 18.5: Commit** (`feat(powerschool): term_grade and term_comment record builders`).
+
+NOTE (B1 implementation): `termGradeTerm`, `termGradeKey` and `teacherCommentKey` (with a shared `withRepeat` for the `#n` suffix) are factored out of `ProcessTermGrades` / `ProcessTeacherComments` and used by both paths; `TestSurfaceFingerprints_Golden` passes unchanged. The `term` scope part is the page's term upper-cased (the throttling name `termSurface` does the same); the `term` field and the key keep the page's text, as the item does. A comment counts when its cleaned text (`boundText`) is not empty, the item path's test, but the record carries the raw text. A confirmed term page whose comments are all empty is a complete, empty snapshot for that term. The two `*RecordKey` wrappers take the row's 1-based repeat number like `AssignmentRecordKey`.
 
 ---
 
