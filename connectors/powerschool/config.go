@@ -26,6 +26,10 @@ type Config struct {
 	TeacherComments TeacherCommentsConfig `json:"teacher_comments"`
 
 	LoginOnDemand LoginOnDemandConfig `json:"login_on_demand"`
+
+	// Records sends the connector's record snapshots to the journal, in
+	// shadow (record_binding.go). Off unless enabled.
+	Records PowerSchoolRecords `json:"records"`
 }
 
 // LoginOnDemandConfig lets the connector ask for a login when it finds its
@@ -265,6 +269,7 @@ func ApplyDefaults(c *Config) {
 	if c.LoginOnDemand.MinIntervalMinutes == 0 {
 		c.LoginOnDemand.MinIntervalMinutes = 20
 	}
+	applyRecordsDefaults(&c.Records)
 }
 
 // GradesEnabled reports whether the grades surface is on.
@@ -380,6 +385,9 @@ func ValidateConfig(c *Config) error {
 			}
 			owner[key] = kind
 		}
+	}
+	if err := validateRecords(c); err != nil {
+		return err
 	}
 	if c.TermGrades.LookbackDays < 0 || c.TermGrades.MinIntervalHours < 0 {
 		return fmt.Errorf("term_grades: lookback_days and min_interval_hours must not be negative")

@@ -1677,7 +1677,7 @@ No field is `required` (every field nullable; a future version may add fields on
 
 Binding: `subjectFor(m *connector.RuleMatcher, kid Kid, surface string) (Binding, bool)` returns the matching rule's `DataSubject` and a copy of its `Audience`. `ValidateConfig` already guarantees every enabled surface of a kid resolves to one rule with a `data_subject`, one subject per kid, no subject shared by two kids, and teacher comments guardians-only. With `records.enabled` add (S11): every key of `attendance_days.kinds` is one of the seven names.
 
-- [ ] **Step 12.1: Write the failing tests.**
+- [x] **Step 12.1: Write the failing tests.**
 
 ```go
 func TestRecordTypesAreValidForTheJournal(t *testing.T) {
@@ -1724,8 +1724,8 @@ func TestSubjectForUsesTheKidsRule(t *testing.T) {
 
 `records_testkit_test.go` holds `recordRules()` (the `testRules()` set with `e_child1` / `e_child2` instead of the existing ids), `recordsRegistry(t)`, `validateAll(t, snaps)` (runs `record.ValidateSnapshot` on each and re-decodes `json.Marshal(snap)` through `strictjson.DecodeLimits` with Part A's caps), `fieldsOf(t, snap, key)`, and `wantFields(t, ty, rec)` (the record's field names equal the type's declared set exactly).
 
-- [ ] **Step 12.2: Run; expect FAIL.**
-- [ ] **Step 12.3: Implement.** In `config.go`: `Records PowerSchoolRecords \`json:"records"\`` on `Config` (the struct below); `ApplyDefaults` calls `c.Records.ApplyDefaults()` only when `c.Records.Enabled` (so a disabled block stays zero); `ValidateConfig` calls `c.Records.Validate()` and the kinds check. Add `AttendanceDaySettleSchoolDays int \`json:"attendance_day_settle_school_days"\`` to the records block **in the PowerSchool config, not the shared one** -- a PowerSchool-only setting (S1): put it in a `PowerSchoolRecords` struct embedding `records.Config`:
+- [x] **Step 12.2: Run; expect FAIL.**
+- [x] **Step 12.3: Implement.** In `config.go`: `Records PowerSchoolRecords \`json:"records"\`` on `Config` (the struct below); `ApplyDefaults` calls `c.Records.ApplyDefaults()` only when `c.Records.Enabled` (so a disabled block stays zero); `ValidateConfig` calls `c.Records.Validate()` and the kinds check. Add `AttendanceDaySettleSchoolDays int \`json:"attendance_day_settle_school_days"\`` to the records block **in the PowerSchool config, not the shared one** -- a PowerSchool-only setting (S1): put it in a `PowerSchoolRecords` struct embedding `records.Config`:
 
 ```go
 type PowerSchoolRecords struct {
@@ -1739,8 +1739,10 @@ type PowerSchoolRecords struct {
 
 `ApplyDefaults` sets `AttendanceDaySettleSchoolDays` to 3 when zero (records enabled only); `ValidateConfig` refuses values outside 1-10 when records are enabled. Code elsewhere uses `cfg.Records.Config` for the shared part. Check that `encoding/json` flattens the embedded struct's fields (it does for an anonymous struct field without a tag).
 
-- [ ] **Step 12.4: Run; expect PASS.**
-- [ ] **Step 12.5: Commit** (`feat(powerschool): record type definitions and records config`).
+- [x] **Step 12.4: Run; expect PASS.**
+- [x] **Step 12.5: Commit** (`feat(powerschool): record type definitions and records config`).
+
+NOTE (B1 implementation): `ApplyDefaults` is a package function here, so it calls `applyRecordsDefaults(&c.Records)` (a no-op when disabled) and `ValidateConfig` calls `validateRecords`, both in `record_binding.go`; no method is defined on `PowerSchoolRecords`, so the embedded `records.Config` methods are not shadowed. `Binding` carries an `OnSkip(reason)` hook (nil-safe) through which the pure builders count `powerschool_record_rows_skipped_total` without taking the telemetry; `subjectFor` also refuses a rule without `data_subject` and returns a copy of the audience. Extra tests: the field sets by name and type, the settle bounds 1-10, a disabled block left zero and never validated, and the flattened JSON of the embedded block. The tests and the implementation were written in one pass for this task (the red run was not separately observed).
 
 ---
 
