@@ -1046,7 +1046,7 @@ func syncDir(dir string) {
 
 The table is spec 4.3 as updated in Part A Task 25 and documented in `docs/journal-api.md` "Answers, and what the connector's spool does". The rule that decides everything else: **only the listed permanent reasons move a file to `rejected/`; an answer the table does not name is kept and alerted on, never dropped.**
 
-- [ ] **Step 5.1: Write the failing test** (every row of the documented table, plus the unknowns).
+- [x] **Step 5.1: Write the failing test** (every row of the documented table, plus the unknowns).
 
 ```go
 func TestClassifyMatchesTheJournalTable(t *testing.T) {
@@ -1100,9 +1100,9 @@ func TestReasonLabelIsBounded(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5.2: Run; expect FAIL.**
+- [x] **Step 5.2: Run; expect FAIL.**
 
-- [ ] **Step 5.3: Implement.**
+- [x] **Step 5.3: Implement.**
 
 ```go
 package records
@@ -1198,8 +1198,10 @@ func ReasonLabel(r string) string {
 }
 ```
 
-- [ ] **Step 5.4: Run; expect PASS.**
-- [ ] **Step 5.5: Commit** (`feat(records): classify journal answers by reason (spec 4.3 as built)`).
+- [x] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.5: Commit** (`feat(records): classify journal answers by reason (spec 4.3 as built)`).
+
+NOTE (B1 implementation): committed before Task 4, because the spool's metrics label answers with `Action.String()`. The documented alert rows (400 `bad_request`, 401, 403 `forbidden`, 404) need no table of their own: everything that is not accepted, erased, permanent, 409 `unknown_subject` or a 5xx falls through to `ActRetryAlert`. A 503 with a reason other than `unavailable`, `auth_unavailable` or none is `ActRetryAlert` (unknown answer), not `ActRetry`. `Action.String()` gives the metric label. Added an exhaustive test (every code 0-599 against every known reason, `""` and an unknown one): only the six permanent rows reject, only 410 `erased_subject` purges, only a 200 deletes.
 
 ---
 
