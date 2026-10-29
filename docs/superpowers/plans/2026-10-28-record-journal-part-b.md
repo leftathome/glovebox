@@ -1281,11 +1281,11 @@ NOTE (B1 implementation): an answer whose body is not the journal's JSON (or is 
 
 Used by the sender tests here, by the PowerSchool tests and by B2. It is a real HTTP server (`httptest.Server`) and answers exactly as the journal documents, in the journal's order of checks: route (404 `not_found`), query string (400), bearer token equal to the expected one (401 `unauthenticated`), the caller's identity allowed (403 `forbidden`, via `Forbid()`), `Content-Type` (400), body size over 8 MiB (413), strict decode through `internal/journal/strictjson` (422 `schema`), a resend of a stored id (200 `duplicate`, or 422 `snapshot_id_reused` when the scope or type differs), validation through `record.ValidateSnapshot` when a `Registry` is set (its `Rejection` status and reason), erased subjects (410), unknown subjects (409), and otherwise 200 `applied` (or the scripted answer).
 
-- [ ] **Step 7.1: Write the failing tests:** one per row of the table, driven through `records.Client` so the fake and the client agree; plus `Received()` returns the accepted snapshots in arrival order and `Answers()` every (code, reason) sent.
+- [x] **Step 7.1: Write the failing tests:** one per row of the table, driven through `records.Client` so the fake and the client agree; plus `Received()` returns the accepted snapshots in arrival order and `Answers()` every (code, reason) sent.
 
-- [ ] **Step 7.2: Run; expect FAIL.**
+- [x] **Step 7.2: Run; expect FAIL.**
 
-- [ ] **Step 7.3: Implement.**
+- [x] **Step 7.3: Implement.**
 
 ```go
 // Package recordstest is a fake record journal for connector tests. It
@@ -1327,8 +1327,10 @@ func (j *Journal) Answers() []Answer
 
 The handler writes `journalapi.Response` bodies (`{"status":"rejected","reason":...,"detail":"..."}`) and `Retry-After` when scripted. For the reuse check compare the record type and the canonical scope, `record.ParseScope(snap.Scope)` then `.Canonical()` (`internal/journal/record/scope.go`), with what was stored for the id.
 
-- [ ] **Step 7.4: Run; expect PASS.**
-- [ ] **Step 7.5: Commit** (`test(records): fake journal implementing the 4.3 answer table`).
+- [x] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.5: Commit** (`test(records): fake journal implementing the 4.3 answer table`).
+
+NOTE (B1 implementation): the fake follows the journal's real order (route, ready, bearer, in-flight slot, TokenReview, then the endpoint: writes-snapshots policy, query, Content-Type, 8 MiB, strict decode with the registry-derived key caps, resend lookup, validation, policy per type, erased, unknown, late/held/applied). Knobs beyond the plan's: `SetReady` (503 `unavailable` before auth), `SetAuthUnavailable` (503 `auth_unavailable`), `NoWrites` (the first 403 `policy`), `Deny(type)` (the per-type 403 `policy`), `HoldNext`, `LoseNextAnswer` (apply, then drop the connection), `Block`/`InFlight` (a real 16-slot in-flight limit answering 503 with `Retry-After: 1`), and `Answer.Drop`. A resend of a held snapshot is answered `held`, as the journal does. Scripted answers are given after authentication and store nothing. `recordstest` does not import `records` (the package's own tests import `recordstest`); its tests are an external package driven through `records.Client` and `records.Classify`, one per table row.
 
 ---
 
