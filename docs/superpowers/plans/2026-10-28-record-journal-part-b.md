@@ -715,7 +715,7 @@ func SchoolYear(d time.Time) string {
 
 Layout under the state directory: `spool/` holds pending files, `spool/rejected/` holds permanently refused ones. A file is `<observed_at>-<snapshot_id>.json`, `observed_at` as `20060102T150405.000Z` (UTC, fixed width, so names sort by time). Written with `internal/atomicfile.WriteFile` (temp file, fsync, rename), then the directory is fsynced. On open: stale `*.tmp-*` siblings (a crash during a write) are removed; a file whose name or content cannot be parsed is moved to `rejected/` and counted (`rejected{reason="unreadable"}`), never deleted silently and never sent.
 
-- [ ] **Step 4.1: Write the failing tests.**
+- [x] **Step 4.1: Write the failing tests.**
 
 ```go
 func TestPutWritesOneFileNamedByTimeAndID(t *testing.T) {
@@ -804,9 +804,9 @@ func TestPutFailureLeavesNothing(t *testing.T) {
 
 Helpers (`openTestSpool`, `testSnapshot` builds a one-record snapshot for scope `(src, s, subject, course)`, `at(h, m)` = 2026-10-16 h:m UTC, `listNames` ignores directories, `newTestMetrics` wraps an `sdkmetric.ManualReader`) go in `connector/records/helpers_test.go`.
 
-- [ ] **Step 4.2: Run; expect FAIL.**
+- [x] **Step 4.2: Run; expect FAIL.**
 
-- [ ] **Step 4.3: Implement.**
+- [x] **Step 4.3: Implement.**
 
 ```go
 package records
@@ -1033,8 +1033,16 @@ func syncDir(dir string) {
 
 `refreshGauges` / `refreshGaugesLocked` (count files in both directories, sum bytes, oldest pending `observed_at`) are written in Task 10; until then make them no-ops so this task compiles, and let `Metrics` be a stub with `writeError()` and `rejectedOne(string)` methods that are nil-safe. Task 10 replaces the stub.
 
-- [ ] **Step 4.4: Run; expect PASS** (`go test ./connector/records/ -run 'TestPut|TestPending|TestOpen' -count=1`).
-- [ ] **Step 4.5: Commit** (`feat(records): spool directory with atomic writes and crash recovery`).
+- [x] **Step 4.4: Run; expect PASS** (`go test ./connector/records/ -run 'TestPut|TestPending|TestOpen' -count=1`).
+- [x] **Step 4.5: Commit** (`feat(records): spool directory with atomic writes and crash recovery`).
+
+NOTE (B1 implementation):
+- **No `atomicfile.WriteFile`.** It does not fsync the directory and cannot be made to fail at a chosen step. The spool writes through a small `fsys` interface (`fs.go`: `osFS` in production) in the same order (temp `<name>.tmp-<pid>-<nanos>`, write, fsync, close, rename) and then fsyncs the directory before `Put` returns; every directory change (delete, move, recovery) is fsynced and its error returned (the plan's `syncDir` ignored errors). `OpenSpool` also fsyncs the state directory and `spool/` after creating them.
+- **Move order.** `Reject` renames into `rejected/`, fsyncs `rejected/` first and `spool/` second: a crash between them leaves the file in both, and recovery deletes the pending copy (a file in both was being rejected). The other order could lose the file.
+- **Crash tests** use `memFS` (`fs_mem_test.go`), a model that keeps only fsynced content and fsynced directory entries, and can fail one operation or crash at one (that operation and all later ones do nothing). `crash_test.go` crashes `Put`, `Reject`, `Delete` and recovery's quarantine at every operation, restarts on the durable state, and checks old-or-new, no torn file, no temp file, and that a step that returned nil survived. `TestPutFailureLeavesNothing` uses single injected failures instead of `chmod` (the tests run as root).
+- `OpenSpool` takes a `*slog.Logger` and refuses an empty or relative state directory. `Entry` also carries `RecordType`, `ScopePrefix` (`source=<v>/surface=<v>/`, the only scope text a log line may carry), `Unreadable`. A file in `spool/` that stops parsing after open is quarantined on the next listing instead of being skipped silently. Parsed entries are cached by path (a name's content never changes), so a drain pass does not re-read every file.
+- `Put` refuses a snapshot without a UUID, a scope or an observed_at in years 1-9999 (counted as a write error) instead of writing a file that recovery would quarantine.
+- `metrics.go` is the full Task 10 file (written here instead of a stub); Task 10 adds its tests.
 
 ---
 
