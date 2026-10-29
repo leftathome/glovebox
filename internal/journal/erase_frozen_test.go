@@ -710,6 +710,13 @@ func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
 		END $$`)
 	r.exec(t, `CREATE TRIGGER torn_wait BEFORE DELETE ON record_event FOR EACH STATEMENT EXECUTE FUNCTION torn_wait()`)
 	r.exec(t, `INSERT INTO torn_flag VALUES (1)`)
+	// The erase always spends the trigger's full two seconds (the note waits
+	// on the author lock, so its row never appears), so the 5s bounded()
+	// budget left a loaded CI runner too little for the rest of the work
+	// (pipeline 4069). This test checks the outcome, not blocking: a roomy
+	// deadline, still finite so a real deadlock fails the test.
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	var wg sync.WaitGroup
 	var once sync.Once
 	var noteErr error
@@ -720,11 +727,11 @@ func TestEraseIsNotTornByANoteOfTheAuthor(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, noteRej, noteErr = r.j.WriteNote(bounded(t), gateway, n)
+				_, noteRej, noteErr = r.j.WriteNote(opCtx, gateway, n)
 			}()
 		})
 	}
-	resp, err := r.j.Erase(bounded(t), "admin", "e_parent1")
+	resp, err := r.j.Erase(opCtx, "admin", "e_parent1")
 	wg.Wait()
 	if err != nil || noteErr != nil {
 		t.Fatalf("erase %v, note %v", err, noteErr)
