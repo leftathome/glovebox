@@ -331,6 +331,34 @@ func TestWatchRunsOneDeliveryLoop(t *testing.T) {
 	t.Fatal("the second Watch did not start the loop")
 }
 
+// The configured settling time reaches the attendance_day builder: Monday
+// has an unmarked cell and only Tuesday follows it on the grid, so it is
+// settled after one school day but not after three.
+func TestEmitUsesTheConfiguredSettleTime(t *testing.T) {
+	for _, tc := range []struct {
+		settle int
+		want   int // attendance_day snapshots, one per kid when Monday settles
+	}{{1, 2}, {3, 0}} {
+		client := extraFixture("111111")
+		client.AttendanceFunc = func(ctx context.Context) (*pslib.AttendancePage, error) {
+			p := gridPage([]time.Time{mon, tue}, []string{"UA", ""}, []string{".", ""})
+			p.Student = pageStudentOf(client.Selected)
+			return p, nil
+		}
+		cfg := recordsConfig()
+		cfg.Records.AttendanceDaySettleSchoolDays = tc.settle
+		sink := &recorderSink{}
+		pollWithSink(t, client, cfg, sink)
+		days := snapsOfType(sink.all(), TypeAttendanceDay)
+		if len(days) != tc.want {
+			t.Fatalf("settle %d: %d attendance_day snapshots, want %d", tc.settle, len(days), tc.want)
+		}
+		for _, s := range days {
+			wantRange(t, s, "2026-10-05", "2026-10-06")
+		}
+	}
+}
+
 type panicSink struct{ calls int }
 
 func (p *panicSink) Emit([]journalapi.Snapshot) error { p.calls++; panic("synthetic records failure") }
