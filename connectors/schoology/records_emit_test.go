@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	schoologylib "github.com/leftathome/schoology-go"
@@ -236,6 +238,26 @@ func TestNewRecordsFactory(t *testing.T) {
 		t.Fatal("no factory with records on")
 	} else if _, err := f(nil); err == nil {
 		t.Fatal("an empty state directory was accepted")
+	}
+}
+
+// A config that asked for records and cannot have them fails Wire, so the
+// process stops at start rather than run without its records.
+func TestWireFailsWithoutItsSink(t *testing.T) {
+	c, err := NewConnector(&fakeClient{}, recordsConfig(t), "v0.3.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.NewRecords = func(metric.Meter) (RecordSink, error) { return nil, errors.New("EXAMPLE spool cannot be opened") }
+	metrics, err := connector.NewMetrics("schoology-records-wire")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = metrics.Shutdown() })
+	w, _ := newTestWriter(t)
+	err = c.Wire(connector.ConnectorContext{Backend: w, Matcher: connector.NewRuleMatcher(recordRules()), Metrics: metrics})
+	if err == nil || !strings.Contains(err.Error(), "records") {
+		t.Fatalf("Wire err = %v, want the records failure", err)
 	}
 }
 
