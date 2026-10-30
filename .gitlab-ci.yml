@@ -129,7 +129,9 @@ test:
 # The `test` job above runs `go test ./...`, in which every database test
 # skips (no JOURNAL_TEST_DATABASE_URL); this job is where they actually run.
 # JOURNAL_TEST_REQUIRE_DB turns "no database" into a failure instead of a
-# skip. Runs on every MR, so any schema change reruns them.
+# skip. Runs on every MR, so any schema change reruns them. The PowerSchool
+# connector package is in the list for its end-to-end records test against
+# the journal core (TestRecordsAgainstTheJournal).
 #
 # Tagged `cluster`: services run as sidecar containers of the job pod, which
 # only the Kubernetes executor does, and the pod sizing below is honoured
@@ -171,7 +173,7 @@ test-journal-db:
   before_script:
     - "go version"
   script:
-    - "go test ./internal/journal/... . -count=1 -race -p 4"
+    - "go test ./internal/journal/... ./connectors/powerschool/ . -count=1 -race -p 4"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
       when: never

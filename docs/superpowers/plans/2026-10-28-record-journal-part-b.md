@@ -2273,10 +2273,16 @@ One test, behind `JOURNAL_TEST_DATABASE_URL` (skips without it, fails with `JOUR
 
 Assert: every snapshot was `applied`; the first poll created the expected records; the second gives `updated` for the scored assignment, `removed` for the corrected attendance mark and attendance day, and **no** removal of last term's marks (term rollover with `complete_range`, spec 8); a resend of a spooled file gives `duplicate`; `term_comment` rows are invisible to `e_child1`'s reader; nothing of `e_child2`'s turn is in `e_child1`'s rows.
 
-- [ ] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
-- [ ] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
-- [ ] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
-- [ ] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+- [x] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
+- [x] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
+- [x] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
+- [x] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+
+NOTE (B1 implementation):
+- **Assembly.** The journal's own rig (`internal/journal/httpapi/rig_test.go`) is internal to that package's tests, and `journaltest` cannot export an HTTP rig (httpapi's internal tests import journaltest, so journaltest importing httpapi would be an import cycle). The test assembles the core from exported pieces -- `journaltest.NewDB`, `journaltest.Roster`, `journaltest.NewFakeScanner`, `journal.New`, `policy.New`, `satoken.NewTokenReviewer` over `satokentest`, `httpapi.New` -- with this connector's `RecordTypes()` and the policy entry of the enabling checklist. Nothing was exported or changed outside the test.
+- **Three polls, not two.** A new term's grid cannot also show the correction of a day in the previous term, so the plan's second poll is split: poll 2 (the next day) corrects 6 Oct's code away and scores the assignment (`updated` with `score` 8; `removed` for the 6 Oct `attendance_mark` and `attendance_day` of each kid, and no other removal); poll 3 (January, same school year) shows a new term's grid, and no record is removed while last term's 2 Oct mark and day stay live next to the new term's 5 Jan ones.
+- **Assertions.** Every snapshot of every poll is answered 200 `applied` (a recording wrapper around the core's handler); poll 1 writes all seven types; the first request body re-POSTed with the connector's token is `duplicate`; `e_child1` reads only its own rows and events and never a `term_comment`; the guardian reads both kids' comments, each row's scope carries its own subject, and no comment carries the other kid's text; the token never reaches the log.
+- Run: `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal -p 1` -- PASS (4.3 s). Without the database it skips like Part A's tests.
 
 ---
 

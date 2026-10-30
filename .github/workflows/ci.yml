@@ -192,7 +192,7 @@ jobs:
         env:
           JOURNAL_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable
           JOURNAL_TEST_REQUIRE_DB: "1"
-        run: go test ./internal/journal/... . -count=1 -race
+        run: go test ./internal/journal/... ./connectors/powerschool/ . -count=1 -race
 
   # helm lint and every scripts/test-chart-*.sh (scripts/chart-checks.sh), the
   # same checks as the GitLab chart-test job. helm is pinned and verified by
