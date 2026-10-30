@@ -61,6 +61,21 @@ func validateRecords(c *Config) error {
 			return fmt.Errorf("records: attendance_days.kinds[%s] is not one of the kinds attendance_day records count %v", kind, recordKinds)
 		}
 	}
+	// Decision 2026-10-30 (fail closed): a record's audience is its rule's.
+	// audience_default is applied to items by the framework but never to
+	// records, so a rule relying on it would stage an item for one audience
+	// (say [operator]) and a record for another (the type's default).
+	m := connector.NewRuleMatcher(c.Rules)
+	for _, k := range c.Kids {
+		for _, surface := range c.enabledSurfaces() {
+			key := MatchKey(k.Name, surface)
+			if rule, ok := m.Match(key); ok && len(rule.Audience) == 0 {
+				return fmt.Errorf("records: kid %s, surface %s: the rule for %q sets no audience; with records enabled every rule "+
+					"used for records must name its audience explicitly (audience_default is not applied to records)",
+					k.Name, surface, key)
+			}
+		}
+	}
 	return nil
 }
 

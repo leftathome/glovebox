@@ -66,6 +66,8 @@ Each is restated in the task that implements it. None is invented spec: where th
 | S15 | **The seed (rollout step 3).** | Section 7: a one-time Job over retained items. | **Not in this plan or B2.** It reads a different input (items retained since 2026-10-10, parsed from tags and body lines), needs its own operator ServiceAccount and policy entry, and must produce exactly the keys the live connectors produce. B1 and B2 make the key and builder functions exported for it. Write the seed plan after B1 has shipped and an inventory of the retained items exists. |
 | S16 | **Days the grid could not settle before a term ends.** Steve 2026-10-29: carry pending attendance days across the term boundary. | 5.1: settled days only; the grid shows the current term. Silent on the last days of a term, which the rule as built never settled (today is never settled; a `.` day needs later school days in the same grid). | Carry each kid's not-yet-settled coded days in its checkpoint, settle them with the next term's school days by the same rule (the grid wins while it still shows a day), send them in a `complete: false` snapshot of their school year's scope, and drop one not settled within 30 calendar days (counted). Implemented; see the NOTE under Task 17. |
 
+NOTE (decision S17, Steve 2026-10-30, from the Part B2 review): records require an explicit rule audience (fail closed); audience_default is not applied to records. With records enabled, `validateRecords` refuses a kid's rule for an enabled surface that sets no `audience`, naming the kid and the surface (`TestRecordsConfigRefusesARuleWithoutAudience`). Without records nothing changes.
+
 ---
 
 ## Where Part A as built differs from what the spec assumed, and how this plan handles it
@@ -2179,15 +2181,22 @@ Rendering, only when `records.enabled`:
   and a mount `/var/run/secrets/glovebox-journal` read-only. Nothing else in the pod changes (`automountServiceAccountToken` stays false). Generalise the condition with a helper `glovebox.recordsEnabled` (`dict "name" $name "connector" $connector`) so B2 and later connectors reuse it; for now only `powerschool` may enable it (`fail` for any other name: no other connector has a builder).
 - `_helpers.tpl` `glovebox.recordsChecks` (called from the connector configmap when enabled; S12, S13): fail unless `journal.enabled`; fail if `loginOnDemand.enabled`; fail unless `journal.networkPolicy.writerConnectors` contains the name; fail unless `journal.services["<ns>/<connector SA>"].write_types` is non-empty (the existing reverse check stays); fail if `tokenExpirationSeconds` < 600 (the kubelet's minimum) or > 3600; `attendanceDaySettleSchoolDays` 1-10.
 
-- [ ] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
+- [x] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
   - default values render byte-identically to `BASE_REF` (`origin/main`) -- the off-by-default guarantee;
   - `journal.enabled` + records off: powerschool pod unchanged from the same render on `BASE_REF`;
   - records on (with `scripts/testdata/records-values.yaml`: journal enabled, writer connector, services entry for `openclaw/glovebox-glovebox-connector-powerschool` with the seven `write_types`, `write_scopes: {source: [powerschool]}`, `write_subjects: roster_subjects`): config.json has the `records` block with the URL `http://glovebox-glovebox-journal:9095` and the token path; the pod has exactly one projected token with audience `glovebox-journal`, `automountServiceAccountToken: false`, no other token source; the RSS connector's pod (enabled in the values) has no journal token and its SA no services entry;
   - refusals: records without `journal.enabled`; with `loginOnDemand.enabled`; without the writer connector entry; without the services entry; `tokenExpirationSeconds: 300`; records on another connector (`connectors.rss.records.enabled`).
-- [ ] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
-- [ ] **Step 20.3: Implement.**
-- [ ] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
-- [ ] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+- [x] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
+- [x] **Step 20.3: Implement.**
+- [x] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
+- [x] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+
+NOTE (B1 implementation):
+- **Helpers.** `glovebox.recordsEnabled` (dict `name`, `connector`) fails the render for records on any connector but `powerschool`; `glovebox.recordsConfig` renders the block; `glovebox.recordsChecks` holds S12, S13 and the ranges. The services check runs before the writer-connector check, so each refusal names its own missing value whichever of the two is absent.
+- **Ranges.** Besides the token lifetime (600-3600) and the settle time (1-10), the chart mirrors the connector's own ranges for `timeoutSeconds` (10-600), `spool.maxAgeHours` (1-2160) and `spool.maxBytes` (1 MiB - 4 GiB), so a render is a config the connector accepts. A zero or missing value takes its default in the chart, as the connector would take it, and the rendered block always carries every value (`max_bytes` through `int64`, so it never renders in float notation).
+- **Fixture.** `connectors/powerschool/testdata/helm-rendered-records.json` is the block the default records values render; the chart test compares the render with it and `TestHelmRenderedRecordsBlock` checks the connector accepts it and that its defaults change nothing in it.
+- **Identity tests.** `scripts/test-chart-records.sh` compares whole renders with `BASE_REF` for the default values, powerschool + rss enabled, powerschool with the PrometheusRule on, and powerschool with the login broker; and the powerschool Deployment, ConfigMap and ServiceAccount with journal values present and records off. With records on, `only_records` checks that the render differs from the records-off render in exactly the records block, the `journal-token` volume and its mount (also with the login broker, filesystem ingest, and the read-only root off).
+- **Observed, unchanged:** every connector Deployment's `checksum/config` hashes the whole `connector-configmap.yaml` render (all connectors), so enabling records rolls every connector pod once, as any connector config change already does.
 
 ---
 
@@ -2199,11 +2208,11 @@ Rendering, only when `records.enabled`:
 
 S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file's types to `record_types` in the core's config (`.Files.Get (printf "journal-record-types/%s.json" .)` decoded with `fromJsonArray`, `concat` with `.recordTypes`). A name without a file fails the render. A name in `connectorRecordTypes` whose types also appear in `recordTypes` fails (two definitions of one type version).
 
-- [ ] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
-- [ ] **Step 21.2: Run; expect FAIL.**
-- [ ] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
-- [ ] **Step 21.4: Run; expect PASS.**
-- [ ] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
+- [x] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
+- [x] **Step 21.2: Run; expect FAIL.**
+- [x] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
+- [x] **Step 21.4: Run; expect PASS.**
+- [x] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
 
 ```yaml
   #   staleness:
@@ -2217,7 +2226,12 @@ S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file'
 ```
 
   Copy the rule shapes from `internal/journal/rules` tests (the as-built schema), not from the spec's 4.10 example.
-- [ ] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+- [x] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+
+NOTE (B1 implementation):
+- `glovebox.journalRecordTypes` renders `record_types`: `recordTypes`, then each listed connector's file. With `connectorRecordTypes` empty the output is `recordTypes | toJson` as before (the journal-values core ConfigMap is compared with `BASE_REF`). Refused: a name without a file (names are matched against `^[a-z][a-z0-9-]*$` before `.Files.Get`, so `../values` cannot read another chart file), a name listed twice, and a `(name, schema_version)` defined twice anywhere in the result -- so a later version of a connector type in `recordTypes` is allowed.
+- `TestRecordTypesFileIsUpToDate` also decodes the file and builds a `record.NewRegistry` from it, as the core will.
+- Step 21.5: the rules are documented in the as-built schema (`match.record_type`, `kind`, `field_becomes`, `field_in`; `importance`, `notify`, `group_by`), copied from `internal/journal/rules` tests. `TestDocumentedJournalRulesCompile` (new, `connectors/powerschool/record_rules_doc_test.go`) compiles the same rules, as JSON, against the PowerSchool registry with `rules.Compile`, and checks `full_day` / `partial_day` are classifications the builder writes; the chart test passes them and the staleness prefix through a render. The staleness entry was already documented next to `journal.staleness`; the comment now says gitops sets it with records on.
 
 ---
 
@@ -2238,11 +2252,17 @@ Rendered when `metrics.prometheusRule.enabled` and at least one connector has `r
 
 The `NotEmpty` runbook text says that a persisting `503` (spec 4.3: retried and alerted) surfaces through this alert after an hour, and points at `glovebox_journal_spool_answers_total{reason="unavailable"}` and the core's `GloveboxJournalNotReady`.
 
-- [ ] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
-- [ ] **Step 22.2: Run; expect FAIL.**
-- [ ] **Step 22.3: Implement.**
-- [ ] **Step 22.4: Run; expect PASS.**
-- [ ] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+- [x] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
+- [x] **Step 22.2: Run; expect FAIL.**
+- [x] **Step 22.3: Implement.**
+- [x] **Step 22.4: Run; expect PASS.**
+- [x] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+
+NOTE (B1 implementation):
+- **DeploymentFault** counts every `action="retry_alert"` answer, without the reason filter in the table: the classifier already decides which answers are alert rows, and a reason list in the expression would leave some of them silent (409 `conflict`, a 503 with a reason the connector does not know, a 200 with an unknown status). 409 `unknown_subject` (`retry_scope`), 503 (`retry`) and transport errors (`retry`, code `0`) never match; a token that cannot be read is `retry_alert` with code `token`, reason `none`, and does.
+- **Counters** use the core's two-part form (`increase(...) > 0 or ((x > 0) unless (x offset w))`, aggregated by `namespace, connector, reason`), so the first increment of a series that appears at 1 is not lost. The promtool tests cover that case for each counter alert.
+- **Not alerted (kept to the plan's four):** `glovebox_journal_spool_write_errors_total` (a snapshot the connector could not write to its spool). It is counted and logged; an alert for it is a possible follow-up.
+- The template renders when `metrics.prometheusRule.enabled` and any enabled connector has records on (through `glovebox.recordsEnabled`, so records on a disabled connector render nothing). Severity, extra labels and `extraSelector` follow `metrics.prometheusRule` as the journal's rules do.
 
 ---
 
@@ -2255,10 +2275,16 @@ One test, behind `JOURNAL_TEST_DATABASE_URL` (skips without it, fails with `JOUR
 
 Assert: every snapshot was `applied`; the first poll created the expected records; the second gives `updated` for the scored assignment, `removed` for the corrected attendance mark and attendance day, and **no** removal of last term's marks (term rollover with `complete_range`, spec 8); a resend of a spooled file gives `duplicate`; `term_comment` rows are invisible to `e_child1`'s reader; nothing of `e_child2`'s turn is in `e_child1`'s rows.
 
-- [ ] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
-- [ ] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
-- [ ] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
-- [ ] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+- [x] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
+- [x] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
+- [x] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
+- [x] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+
+NOTE (B1 implementation):
+- **Assembly.** The journal's own rig (`internal/journal/httpapi/rig_test.go`) is internal to that package's tests, and `journaltest` cannot export an HTTP rig (httpapi's internal tests import journaltest, so journaltest importing httpapi would be an import cycle). The test assembles the core from exported pieces -- `journaltest.NewDB`, `journaltest.Roster`, `journaltest.NewFakeScanner`, `journal.New`, `policy.New`, `satoken.NewTokenReviewer` over `satokentest`, `httpapi.New` -- with this connector's `RecordTypes()` and the policy entry of the enabling checklist. Nothing was exported or changed outside the test.
+- **Three polls, not two.** A new term's grid cannot also show the correction of a day in the previous term, so the plan's second poll is split: poll 2 (the next day) corrects 6 Oct's code away and scores the assignment (`updated` with `score` 8; `removed` for the 6 Oct `attendance_mark` and `attendance_day` of each kid, and no other removal); poll 3 (January, same school year) shows a new term's grid, and no record is removed while last term's 2 Oct mark and day stay live next to the new term's 5 Jan ones.
+- **Assertions.** Every snapshot of every poll is answered 200 `applied` (a recording wrapper around the core's handler); poll 1 writes all seven types; the first request body re-POSTed with the connector's token is `duplicate`; `e_child1` reads only its own rows and events and never a `term_comment`; the guardian reads both kids' comments, each row's scope carries its own subject, and no comment carries the other kid's text; the token never reaches the log.
+- Run: `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal -p 1` -- PASS (4.3 s). Without the database it skips like Part A's tests.
 
 ---
 
@@ -2267,20 +2293,34 @@ Assert: every snapshot was `applied`; the first poll created the expected record
 **Files:**
 - Modify: `docs/journal-api.md` (new section "Connector side: the spool"), `docs/connectors/powerschool.md` (new section "Records (journal)"), `docs/upgrading.md`, `CHANGELOG.md`, `docs/superpowers/specs/2026-10-16-record-journal-design.md` (5.1 amendments for S4-S7, S9-S11, marked "amended by Part B1 plan, decision Sn")
 
-- [ ] **Step 24.1: Write the docs.** `journal-api.md`: spool layout, file name, what each answer does (link to the table), bounds, metrics and alerts, crash behaviour, the subject purge on 410 (and that it is the connector's share of glovebox-wekc.18.1). `powerschool.md`: the seven types (fields, keys, scopes), how `data_subject` and audience are taken from the kid's rules, what is emitted when, the settling rule, the config keys. `upgrading.md`: enabling checklist for gitops (below). `CHANGELOG.md`: an Unreleased entry.
+- [x] **Step 24.1: Write the docs.** `journal-api.md`: spool layout, file name, what each answer does (link to the table), bounds, metrics and alerts, crash behaviour, the subject purge on 410 (and that it is the connector's share of glovebox-wekc.18.1). `powerschool.md`: the seven types (fields, keys, scopes), how `data_subject` and audience are taken from the kid's rules, what is emitted when, the settling rule, the config keys. `upgrading.md`: enabling checklist for gitops (below). `CHANGELOG.md`: an Unreleased entry.
 
-- [ ] **Step 24.2: The gitops enabling checklist** (in `upgrading.md`; not done by this plan):
+- [x] **Step 24.2: The gitops enabling checklist** (in `upgrading.md`; not done by this plan):
   1. The journal is enabled and ready (Part A checklist done).
   2. **Subjects:** every `data_subject` in the PowerSchool rules is a roster member: `kubectl -n openclaw get cm openclaw-household -o jsonpath='{.data.household\.json}' | jq -r '.people|keys[]'` contains each rule's `data_subject` (otherwise those snapshots wait in the spool with 409 until `max_age`).
   3. HelmRelease values: `journal.connectorRecordTypes: [powerschool]`; `journal.services."openclaw/glovebox-glovebox-connector-powerschool": {write_types: [course_mark, assignment, attendance_mark, attendance_day, attendance_total, term_grade, term_comment], write_scopes: {source: [powerschool]}, write_subjects: roster_subjects}`; `journal.networkPolicy.writerConnectors: [powerschool]`; `journal.staleness: [{prefix: "source=powerschool/", maxAgeHours: 96}]`; `connectors.powerschool.records.enabled: true`.
   4. After the next poll window: `glovebox_journal_spool_files{dir="pending"}` returns to 0; `glovebox_journal_snapshots_total{status="applied"}` grows on the core; no `GloveboxJournalSpool*` alert; the connector's items are unchanged (the openclaw patrol sees nothing different).
   5. Rollback: `records.enabled: false`. The spool directory stays on the PVC until deleted by hand (log it in gitops' change description); nothing in the item path depends on it.
 
-- [ ] **Step 24.3: Container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeds; run it once with a records-enabled config against nothing reachable (`journal_url: http://127.0.0.1:1`) and a read-only root plus a writable `/state` and check that it starts, creates `/state/spool`, and logs no token (`podman run --read-only -v <tmp>:/state ...`, then stop it).
+- [x] **Step 24.3: Container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeds; run it once with a records-enabled config against nothing reachable (`journal_url: http://127.0.0.1:1`) and a read-only root plus a writable `/state` and check that it starts, creates `/state/spool`, and logs no token (`podman run --read-only -v <tmp>:/state ...`, then stop it).
 
-- [ ] **Step 24.4: Final verification** (fresh, `GOTOOLCHAIN=go1.27.1`): `go build ./...`; `go vet ./...`; staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...`; `gofmt -l` over the files the branch touches; `go test ./... -count=1 -race`; `scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/...`; `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`; the ASCII grep over the branch's files (`git diff --name-only origin/main | xargs grep -nP '[^\x00-\x7F]'` finds nothing); the placeholder check (no id other than `e_child*`, `e_parent*`, existing fixture ids in new files). Record the results as a NOTE under this task.
+- [x] **Step 24.4: Final verification** (fresh, `GOTOOLCHAIN=go1.27.1`): `go build ./...`; `go vet ./...`; staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...`; `gofmt -l` over the files the branch touches; `go test ./... -count=1 -race`; `scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/...`; `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`; the ASCII grep over the branch's files (`git diff --name-only origin/main | xargs grep -nP '[^\x00-\x7F]'` finds nothing); the placeholder check (no id other than `e_child*`, `e_parent*`, existing fixture ids in new files). Record the results as a NOTE under this task.
 
-- [ ] **Step 24.5: Commit** (`docs(records): connector spool, powerschool records, enabling checklist`), push the branch, open the MR. Do not enable anything in gitops from this plan.
+- [x] **Step 24.5: Commit** (`docs(records): connector spool, powerschool records, enabling checklist`), push the branch, open the MR. Do not enable anything in gitops from this plan.
+
+NOTE (B1 implementation, Tasks 20-24):
+- **Docs.** `docs/journal-api.md` "Connector side: the spool" (layout and file name, Emit synchronous on the poll, delivery only while `Watch` runs, sending order and backoff, bounds, the subject purge on 410 as the connector's share of glovebox-wekc.18.1, logs, metrics, alerts, key caps); `docs/connectors/powerschool.md` "Records (journal)" (the seven types with keys, fields, scopes and audiences; the binding from the kid's rules; what is sent when, including that a comments page whose term is not confirmed is never a record even with `require_term_confirmation: false`; the settling rule and S16; the config keys; the skip reasons); `docs/upgrading.md` "PowerSchool records (Part B1)" (what the chart renders, the refusals, the cutover rule, the enabling checklist of 24.2); `CHANGELOG.md` Unreleased; spec 5.1 amended for S4-S7, S9-S11 and, under "Settled days only", S1-S3 and S16. The cutover rule is stated in all three docs: openclaw switches to the journal only when both PowerSchool and Schoology emit records (Schoology is Part B2).
+- **Step 24.3, container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeded. Run once with `--read-only --network none`, `/state` writable, a records block with `journal_url: http://127.0.0.1:1`, a placeholder token file and a placeholder session for `example.invalid`: after 20 s it was up, had created `/state/spool` and `/state/spool/rejected`, logged "powerschool records enabled ... journal=http://127.0.0.1:1", and the token string appeared nowhere in its log. Stopped and removed.
+- **Step 24.4, final verification** (fresh, `GOTOOLCHAIN=go1.27.1`, on the branch with these docs): `go build ./...` ok. `go vet ./...` and `go test ./... -race` fail only at `internal/sanitizeapi [setup failed]` (missing go.sum entry for `github.com/getkin/kin-openapi`; that package and go.sum are untouched here, so it is pre-existing); every other package passes (85 `ok`). staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...` reports only findings in files this branch does not touch (ST1005 in `connector/enrich/...`; SA4006 `cmd/powerschool/main_test.go`, U1000 `session_probe_test.go`, SA1019 `testkit_test.go`). `gofmt -l` over the branch's Go files: nothing. `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/... . -p 1`: all ok. `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`: all passed. Lines this branch adds: ASCII only (the whole-file grep also lists older CHANGELOG and ci.yml lines); new ids are `e_child1`, `e_child2`, `e_parent1` only.
+- **Targeted mutation run (Tasks 20-23), 10 mutants**, applied one at a time and reverted (tree verified clean), named failures only: E1 attendance_mark `complete_range.from` at 1 August (`TestRecordsAgainstTheJournal`: term rollover removed a mark); M2 the loginOnDemand refusal removed ("refused: records with loginOnDemand"); M3 token floor 300 ("refused: tokenExpirationSeconds 300"); M4 token audience changed ("on: exactly one projected token ..."); M5 journal token on every connector whenever the journal is on ("off: journal enabled, records off: powerschool pod as on origin/main" and others); M6 duplicate type check removed ("types: a type version also in recordTypes"); M7 the first-increment half of the counter alerts removed ("promtool: spool alert unit tests"); M8 the erased_subject filter removed (that check and the promtool tests); M9 records merged into the values' config instead of the merged one ("on: same with the login broker"); M10 a field added to `attendance_total` (`TestRecordTypesFileIsUpToDate`). All 10 killed.
+
+NOTE (review of 0991bd6..b013fe3, fixes):
+- **I1.** `journalChecks` refuses any `journal.services` write_type that is not in the rendered `record_types` (general, not only records): with records on and `journal.connectorRecordTypes` empty the chart had rendered a policy the core refuses at startup (`policy.New: unknown record type`), exiting the core and stopping items. `records-values.yaml` lists `connectorRecordTypes: [powerschool]`; `TestJournalHelmRenderedRecordsFixture` (internal/config) loads the core config rendered from it and runs `Journal.Build()` (red first on the render without the list: "unknown record type \"course_mark\""), and the chart test pins the fixture to the render.
+- **I2.** `GloveboxJournalSpoolDeploymentFault` looks back 90m: at the maximum backoff (3600 s, +20% jitter) a persisting fault answers about every 72 minutes and the 15m window fired and resolved each hour. A promtool case with one answer every 72 minutes stays firing.
+- **I3.** The other-connector refusal is now tested with rss in `writerConnectors` and in `journal.services`, matching the guard's own message, so only `glovebox.recordsEnabled` can refuse it.
+- **I4.** `TestRecordsAgainstTheJournal` has a December poll whose grid ends with today's full-day absence (carried, S16) and two January polls: the day is created as `full_day` in the first, nothing is late, and the second's complete snapshot does not remove it.
+- **S1** `GloveboxJournalSpoolWriteErrors` (first-increment counter form, promtool case, runbook). **S2** runbook notes (a persisting 5xx `internal` shows only through NotEmpty; a single 403 `forbidden` right after enabling is expected). **S4** a render in release namespace `school`. **S5** a `records` block in `connectors.powerschool.config` is refused. **S6** docs: the ordered prerequisites, the same-change rule, the cutover sentence in journal-api.md.
+- Mutants: C8 (name guard removed) killed by "refused: records on another connector"; C7 (namespace hard-coded in the services key) killed by "on: in another namespace, keyed by that namespace"; the write_type check removed, killed by "types: records on without connectorRecordTypes"; the fault window back to 15m, killed by the promtool unit tests; the config.records refusal removed, killed by both "refused: a records block ..." checks; the carry horizon at 20 days and the carried snapshot dropped, each killed by `TestRecordsAgainstTheJournal` ("after the rollover, attendance_day 2026-12-18 of e_child1: <nil>").
 
 ---
 

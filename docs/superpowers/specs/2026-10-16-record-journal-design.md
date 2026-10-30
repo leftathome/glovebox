@@ -689,6 +689,37 @@ use one.
 Scopes with one record (`course_mark`, `attendance_total`) can never see a
 removal from `complete=true`; tests should not expect one.
 
+**Amendments to the table above** (`docs/superpowers/plans/2026-10-28-record-journal-part-b.md`;
+the connector as built follows these):
+
+- `term_comment` scope: `(powerschool, term_comments, subject, term)`. The
+  comments are read one reporting term per page, each on its own throttle,
+  so a snapshot of one term's page is complete for that term only. (amended
+  by Part B1 plan, decision S4)
+- `term_grade` key: the connector's existing item key,
+  `<course number or name:...>:<completion month>:<attempted>|<school>|<grade level>|<name>`
+  (`#n` only for rows identical in all of that), which does not depend on
+  page order and equals today's checkpoint id. (amended by Part B1 plan,
+  decision S5)
+- `term_comment` key: the connector's existing item key,
+  `<course number or name:...>|<expression>:<term>` (`#n` on collision):
+  two sections of one course in one term differ in their expression.
+  (amended by Part B1 plan, decision S6)
+- `course_mark` key fallback: the connector's `courseKey`,
+  `name:<lowercased name>|<period>` when the row has no course number; it is
+  also the `assignment` and `attendance_total` key prefix and the scopes'
+  `course` value. (amended by Part B1 plan, decision S7)
+- `assignment` gains `absent` bool: the library reports it and today's items
+  carry it. (amended by Part B1 plan, decision S9)
+- `attendance_mark.excused`: `true` for `*_excused` kinds, `false` for
+  `*_unexcused`, `null` for `authorized` and `unknown`. (amended by Part B1
+  plan, decision S10)
+- `attendance_mark.kind`: with records enabled the connector refuses a
+  configured `attendance_days.kinds` entry that is not one of the seven
+  names, so `attendance_day` knows which kinds are absences; `unknown`
+  remains for codes outside the mapping. (amended by Part B1 plan, decision
+  S11)
+
 **Term changes.** Pages are course- or term-shaped, so completeness is limited
 to what a page demonstrably covers:
 
@@ -735,6 +766,17 @@ Two rules keep the signal clean:
   cells or it is at least three school days old. Days still filling in would
   otherwise read as `partial_day` and then `full_day` and fire rules twice.
   Their codes still arrive at once as `attendance_mark` records.
+  *Amended by Part B1 plan, decisions S1-S3 and S16:* the settling time is
+  configurable (`records.attendance_day_settle_school_days`, default 3,
+  1-10); a school day is a grid date on or before today with at least one
+  cell that is not `-`; `complete_range.to` is the end of the longest run of
+  settled dates from the year's first grid date. The grid holds only the
+  current term, so a term's last days could never settle in it: the
+  connector carries each kid's unsettled coded days in its checkpoint,
+  settles them with the next term's school days by the same rule (the grid
+  wins while it still shows a day), sends them in a `complete=false`
+  snapshot of their school year's scope, and drops one not settled within
+  30 calendar days (counted).
 - **Only days with at least one code are records.** A fully present day is not
   a record. If every code on a day is later cleared, the day drops out of the
   complete scope and the journal records `removed` -- which is exactly "no
@@ -750,7 +792,29 @@ arrival are distinct signals.
 | Record type | Key | Fields | Scope (complete?) |
 |---|---|---|---|
 | `lms_assignment` | assignment id | `title`, `course`, `status`, `link` string; `due` timestamp | `(schoology, assignments, subject)` -- **no**: the overdue/upcoming listing is a window |
-| `lms_assignment_detail` | assignment id | `teacher` string; `description`, `comments` text | `(schoology, assignment_detail, subject)` -- **no**: detail reads are budgeted |
+| `lms_assignment_detail` | assignment id | `description`, `comments` text | `(schoology, assignment_detail, subject)` -- **no**: detail reads are budgeted |
+
+Amended by the Part B2 plan (`docs/superpowers/plans/2026-10-28-record-journal-part-b2-schoology.md`):
+
+- Decision T1: `lms_assignment_detail` has no `teacher` field in schema
+  version 1. schoology-go v0.3.0's `AssignmentDetail` has none (a parent's
+  page does not show a teacher); when the library exposes one, version 2
+  adds it as an optional field (4.7).
+- Decision T2: a detail record is sent only for a clean read (the id,
+  course and title checks passed, no parse error, comments read (an empty
+  or populated block; unknown or unavailable is not a read), course
+  verifiable). A degraded read would write empty or partial values over
+  good ones; its item is staged as before.
+- Decision T3: `comments` is a populated block's entries joined with a
+  blank line, in page order, as the library returned them; `null` when the
+  block is empty.
+- Decision T4: `status` and `link` are the library's values (`overdue` /
+  `upcoming`; the path-only link). No host is invented.
+- Decision T5: with records on, each kid needs an exact assignment rule
+  ahead of any `*` rule, with a subject of its own, and the detail rule
+  names the same subject.
+- Decision T6: the chart refuses Schoology records with an emptyDir state
+  volume (the spool, 4.14, must be durable).
 
 What this does and does not capture, stated plainly:
 

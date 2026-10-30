@@ -45,6 +45,20 @@
 {{- end }}
 {{- $_ := set $cfg "assignment_detail" $ad }}
 {{- end }}
+{{- /*
+Record journal (schoologyConnector.records, Part B2): where the journal is
+and which token to present, derived from the same expressions the journal's
+Service and the Deployment's projected token volume use, after the checks
+(journal, writer entry, services entry, durable state volume, ranges). The
+block is the chart's alone: one written into config would bypass them.
+*/}}
+{{- if hasKey (.Values.schoologyConnector.config | default dict) "records" }}
+{{- fail "schoologyConnector.config.records is set: the records block is rendered by the chart from schoologyConnector.records (and checked against the journal's values there); remove it from config" }}
+{{- end }}
+{{- if include "glovebox.recordsEnabled" (dict "name" "schoology" "connector" .Values.schoologyConnector "schoologyConnector" true) }}
+{{- include "glovebox.recordsChecks" (dict "name" "schoology" "connector" .Values.schoologyConnector "schoologyConnector" true "root" .) }}
+{{- $cfg = mustMergeOverwrite (deepCopy $cfg) (dict "records" (include "glovebox.recordsConfig" (dict "name" "schoology" "connector" .Values.schoologyConnector "root" .) | fromJson)) }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

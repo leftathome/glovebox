@@ -69,7 +69,7 @@ data:
           "min_keys": {{ .removalGuard.minKeys | int }}
         },
         "services": {{ .services | default dict | toJson }},
-        "record_types": {{ .recordTypes | default list | toJson }},
+        "record_types": {{ include "glovebox.journalRecordTypes" $ }},
         "rules": {{ .rules | default list | toJson }},
         "staleness_prefixes": {{ $p := list }}{{ range .staleness }}{{ $p = append $p (toString .prefix) }}{{ end }}{{ $p | toJson }}
       },

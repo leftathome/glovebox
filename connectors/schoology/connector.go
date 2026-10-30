@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/leftathome/glovebox/connector"
 )
@@ -69,6 +70,19 @@ type SchoologyConnector struct {
 	// process does not present the same dead cookie again (see
 	// RejectedSession). Set before Run; not safe to change afterwards.
 	OnSessionRejected func()
+
+	// NewRecords, when set, builds the record sink in Wire on the
+	// framework's meter (NewRecordsFactory). nil -- records off -- builds
+	// nothing, and the connector behaves exactly as before records
+	// existed. Set before Run.
+	NewRecords func(metric.Meter) (RecordSink, error)
+
+	records RecordSink // set by Wire; nil: records off
+
+	// recordsDone is closed when the delivery loop started by the last
+	// Watch has returned. Guarded by recordsMu.
+	recordsMu   sync.Mutex
+	recordsDone chan struct{}
 }
 
 // NewConnector constructs a SchoologyConnector. The returned value
@@ -155,11 +169,19 @@ func (c *SchoologyConnector) Wire(cc connector.ConnectorContext) error {
 		return fmt.Errorf("schoology.Wire: build telemetry: %w", err)
 	}
 
+	var sink RecordSink
+	if c.NewRecords != nil {
+		if sink, err = c.NewRecords(cc.Metrics.Provider().Meter("glovebox.records")); err != nil {
+			return fmt.Errorf("schoology.Wire: records: %w", err)
+		}
+	}
+
 	c.wireMu.Lock()
 	c.writer = backend
 	c.matcher = cc.Matcher
 	c.tel = tel
 	c.trigger.Tel = tel
+	c.records = sink
 	c.wireMu.Unlock()
 	return nil
 }
@@ -195,6 +217,9 @@ func (c *SchoologyConnector) Handler() http.Handler {
 // RunWatchLoop sees the PermanentError, logs it, and os.Exit(1)s -- the
 // operator runbook (docs/AUTH-RECOVERY.md) tells them what to do next.
 func (c *SchoologyConnector) Watch(ctx context.Context, cp connector.Checkpoint) error {
+	// Records (when enabled) are delivered by one loop that lives as long
+	// as this Watch.
+	c.startRecords(ctx)
 	// notBefore is the end of the window whose scheduled poll last fired;
 	// the next poll is scheduled from there so a window is never polled
 	// twice (see windowEnd).
@@ -358,7 +383,7 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	defer c.pollMu.Unlock()
 
 	c.wireMu.Lock()
-	writer, matcher, tel := c.writer, c.matcher, c.tel
+	writer, matcher, tel, sink := c.writer, c.matcher, c.tel, c.records
 	c.wireMu.Unlock()
 
 	if writer == nil || matcher == nil || tel == nil {
@@ -405,11 +430,22 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 		// switch), not the underlying HTTP request.
 		tel.RecordViewChildSwitch(kid.Name)
 
+		// The start of the kid's listing read: the observed_at of its
+		// lms_assignment snapshot.
+		var listAt time.Time
+		if sink != nil {
+			listAt = c.clock()
+		}
 		aCount, aErrs, rows, listed := processAssignments(kidCtx, c.client, writer, matcher, cp, dedup, tel, kid, c.libVersion)
 		itemsProduced += aCount
 		errsLogged = errsLogged || aErrs
 		if listed {
 			kidLists = append(kidLists, KidAssignments{Kid: kid, Rows: rows})
+			// Records, in shadow: from the listing the items were just
+			// staged from, and only for a listing that answered.
+			if sink != nil {
+				emitListing(sink, tel, matcher, kid, kidLists[len(kidLists)-1], listAt)
+			}
 		}
 
 		fCount, fAttach, fErrs := ProcessFeed(kidCtx, c.client, writer, matcher, cp, tel, dedup, kid, c.cfg.Attachments.MaxSizeMB, c.libVersion)
@@ -427,7 +463,15 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 	// has just seen refused: they are the most requests the poll makes, and
 	// none of them should be spent on a dead cookie.
 	if !sessionRefused(dedup) {
+		// Records: the clean detail reads of this poll, per kid (nil hook
+		// with records off).
+		var onVerified func(VerifiedDetail)
+		verified := map[string][]VerifiedDetail{}
+		if sink != nil {
+			onVerified = func(v VerifiedDetail) { verified[v.Kid.Name] = append(verified[v.Kid.Name], v) }
+		}
 		dCount, dErrs := ProcessAssignmentDetails(ctx, DetailDeps{
+			OnVerified: onVerified,
 			Client:     c.client,
 			Writer:     writer,
 			Matcher:    matcher,
@@ -443,6 +487,9 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 		}, kidLists)
 		itemsProduced += dCount
 		errsLogged = errsLogged || dErrs
+		if sink != nil {
+			emitDetails(sink, tel, matcher, c.cfg.Kids, verified)
+		}
 	}
 
 	c.driftCounter.RecordPoll(itemsProduced, errsLogged)

@@ -1,0 +1,261 @@
+[
+  {
+    "name": "course_mark",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "course": {
+        "type": "string"
+      },
+      "period": {
+        "type": "string"
+      },
+      "q1_letter": {
+        "type": "string"
+      },
+      "q1_percent": {
+        "type": "number"
+      },
+      "q2_letter": {
+        "type": "string"
+      },
+      "q2_percent": {
+        "type": "number"
+      },
+      "q3_letter": {
+        "type": "string"
+      },
+      "q3_percent": {
+        "type": "number"
+      },
+      "q4_letter": {
+        "type": "string"
+      },
+      "q4_percent": {
+        "type": "number"
+      },
+      "s1_letter": {
+        "type": "string"
+      },
+      "s1_percent": {
+        "type": "number"
+      },
+      "s2_letter": {
+        "type": "string"
+      },
+      "s2_percent": {
+        "type": "number"
+      },
+      "teacher": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "assignment",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "absent": {
+        "type": "bool"
+      },
+      "category": {
+        "type": "string"
+      },
+      "category_description": {
+        "type": "text"
+      },
+      "collected": {
+        "type": "bool"
+      },
+      "course": {
+        "type": "string"
+      },
+      "description": {
+        "type": "text"
+      },
+      "due": {
+        "type": "date"
+      },
+      "exempt": {
+        "type": "bool"
+      },
+      "incomplete": {
+        "type": "bool"
+      },
+      "late": {
+        "type": "bool"
+      },
+      "letter": {
+        "type": "string"
+      },
+      "max_score": {
+        "type": "number"
+      },
+      "missing": {
+        "type": "bool"
+      },
+      "percent": {
+        "type": "number"
+      },
+      "score": {
+        "type": "number"
+      },
+      "teacher_comment": {
+        "type": "text"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "attendance_total",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "absences": {
+        "type": "int"
+      },
+      "course": {
+        "type": "string"
+      },
+      "tardies": {
+        "type": "int"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "attendance_mark",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "code": {
+        "type": "string"
+      },
+      "code_description": {
+        "type": "string"
+      },
+      "course": {
+        "type": "string"
+      },
+      "date": {
+        "type": "date"
+      },
+      "excused": {
+        "type": "bool"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "period": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "attendance_day",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "absent_excused": {
+        "type": "int"
+      },
+      "absent_unexcused": {
+        "type": "int"
+      },
+      "any_unexcused": {
+        "type": "bool"
+      },
+      "authorized": {
+        "type": "int"
+      },
+      "classification": {
+        "type": "string"
+      },
+      "date": {
+        "type": "date"
+      },
+      "late": {
+        "type": "int"
+      },
+      "left_early": {
+        "type": "int"
+      },
+      "periods_met": {
+        "type": "int"
+      },
+      "periods_unmarked": {
+        "type": "int"
+      },
+      "unknown_codes": {
+        "type": "int"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "term_grade",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "attempted": {
+        "type": "number"
+      },
+      "course": {
+        "type": "string"
+      },
+      "earned": {
+        "type": "number"
+      },
+      "grade": {
+        "type": "string"
+      },
+      "term": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "term_comment",
+    "schema_version": 1,
+    "owner": "powerschool",
+    "fields": {
+      "comment": {
+        "type": "text"
+      },
+      "course": {
+        "type": "string"
+      },
+      "term": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "guardians"
+    ]
+  }
+]

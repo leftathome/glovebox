@@ -10,6 +10,8 @@
 
 **Prerequisite:** B1 (`docs/superpowers/plans/2026-10-28-record-journal-part-b.md`) Tasks 1-11 merged (the `connector/records` package and `recordstest`), and B1 Tasks 20-22 merged for the chart helpers this plan extends. Read B1's "How to work", "Rules", "Decisions" and "Part A deviations" sections first: they hold here too. Bead: the B2 child filed in B1's "How to work". Branch `feat/record-journal-part-b2` off `origin/main` after those merges. This file is the progress record.
 
+NOTE (B2 implementation): B1 Tasks 12-24 were still in open MRs (!119, !121) when B2 started, so the branch is based on `origin/feat/journal-part-b1-chart` (d687390), which carries all of B1, not on `origin/main`. Rebase onto `origin/main` once B1 merges. The whole-module `go.sum` gap in `internal/sanitizeapi` is fixed on main but not on this base; it is left alone here.
+
 **Feedback loop, every task:** B1's, with `./connectors/schoology/...` in place of `./connectors/powerschool/...`.
 
 ---
@@ -23,7 +25,9 @@
 
 ---
 
-## Decisions for Steve (open; the plan implements the recommendation)
+## Decisions for Steve (accepted at the recommended defaults)
+
+NOTE (B2 implementation, 2026-10-30): T1-T6 were accepted at the recommended defaults below; the plan implements them as written.
 
 | # | Question | Where the spec stands | Recommendation |
 |---|---|---|---|
@@ -33,6 +37,8 @@
 | T4 | **`status` and `link` values.** | `status`, `link` strings. | `status` as the library gives it (the item's `status` tag, `Overdue` / `Upcoming`); `link` the path-only URL the library gives (the item's `Link:` line). No host is invented. |
 | T5 | **Per-kid rule strictness.** | 4.9c and 5.2 assume each record has the child's subject. Today only the detail surface requires an exact per-kid rule; the assignment surface may be routed by `*`, which carries one default subject for every child. | With `records.enabled`, every kid needs an exact `schoology:<kid>:assignment` rule ahead of any `*` with a `data_subject`, distinct across kids, and the detail rule (when the surface is on for the kid) must name the same subject. Without records, unchanged. |
 | T6 | **State volume.** | 4.14: the spool is on the connector's state volume. The Schoology connector's state is an `emptyDir` unless `schoologyConnector.state.persistent` (or `existingClaim`) is set. | The chart refuses `schoologyConnector.records.enabled` with an `emptyDir` state: a spool that a pod restart wipes is not durable. |
+
+NOTE (decision, Steve 2026-10-30, from the review): records require an explicit rule audience (fail closed); audience_default is not applied to records. Implemented in both connectors (B1 plan, decision S17).
 
 Part A deviations: B1's table applies unchanged. Specific to Schoology: both scopes are `complete: false`, so the removal guard (A11) and `complete_range` never apply, and a `held` answer cannot occur.
 
@@ -63,7 +69,7 @@ Part A deviations: B1's table applies unchanged. Specific to Schoology: both sco
 - Create: `connectors/schoology/record_binding.go`
 - Test: `connectors/schoology/record_binding_test.go`, `connectors/schoology/records_testkit_test.go`
 
-- [ ] **Step 1.1: Write the failing tests.**
+- [x] **Step 1.1: Write the failing tests.**
 
 ```go
 func TestRecordsNeedAnExactAssignmentRulePerKid(t *testing.T) {
@@ -85,10 +91,12 @@ func TestWithoutRecordsTheRulesAreAsLiberalAsToday(t *testing.T)   // the * case
 
 `records_testkit_test.go`: `recordRules()` (exact rules for `schoology:k1:assignment`, `schoology:k1:assignment_detail`, the same for `k2`, subjects `e_child1` / `e_child2`, audience `[subject, guardians]`), `recordsRegistry(t)`, `validateAll(t, snaps)` (as in B1).
 
-- [ ] **Step 1.2: Run; expect FAIL.**
-- [ ] **Step 1.3: Implement** `Records records.Config` on `Config`; `ApplyDefaults` and `Validate` of the block as in B1 Task 12; `validateKidRecordRules(c)` using `firstMatchIsExact` (already in `config.go`) and `connector.NewRuleMatcher`.
-- [ ] **Step 1.4: Run; expect PASS.**
-- [ ] **Step 1.5: Commit** (`feat(schoology): records config and per-kid rule checks`).
+- [x] **Step 1.2: Run; expect FAIL.**
+- [x] **Step 1.3: Implement** `Records records.Config` on `Config`; `ApplyDefaults` and `Validate` of the block as in B1 Task 12; `validateKidRecordRules(c)` using `firstMatchIsExact` (already in `config.go`) and `connector.NewRuleMatcher`.
+- [x] **Step 1.4: Run; expect PASS.**
+- [x] **Step 1.5: Commit** (`feat(schoology): records config and per-kid rule checks`).
+
+NOTE (B2 implementation): `Records records.Config` on `Config` (`json:"records"`, no Schoology-only settings, so no wrapper struct). `ApplyDefaults` calls `applyRecordsDefaults` and `ValidateConfig` calls `validateRecords` (both in `record_binding.go`, no-ops when disabled); `validateRecords` runs before `validateAssignmentDetail` so the records refusal names records. A kid without any exact `schoology:<kid>:assignment` rule is refused with records on, even with the detail surface off (extra test). The red run was seen behaviourally: the field and a stub `subjectFor` were added first, and seven tests failed on their assertions before the implementation.
 
 ---
 
@@ -103,11 +111,13 @@ func TestWithoutRecordsTheRulesAreAsLiberalAsToday(t *testing.T)   // the * case
 | `lms_assignment` | `title`, `course`, `status`, `link` string; `due` timestamp | `[subject, guardians]` |
 | `lms_assignment_detail` | `description`, `comments` text (T1: no `teacher` in v1) | `[subject, guardians]` |
 
-- [ ] **Step 2.1: Write the failing tests:** the registry accepts the types; owner `schoology`; `TestRecordTypesFileIsUpToDate` (with `-update`), as in B1 Task 21.
-- [ ] **Step 2.2: Run; expect FAIL.**
-- [ ] **Step 2.3: Implement**; generate the JSON file.
-- [ ] **Step 2.4: Run; expect PASS.**
-- [ ] **Step 2.5: Commit** (`feat(schoology): record type definitions`).
+- [x] **Step 2.1: Write the failing tests:** the registry accepts the types; owner `schoology`; `TestRecordTypesFileIsUpToDate` (with `-update`), as in B1 Task 21.
+- [x] **Step 2.2: Run; expect FAIL.**
+- [x] **Step 2.3: Implement**; generate the JSON file.
+- [x] **Step 2.4: Run; expect PASS.**
+- [x] **Step 2.5: Commit** (`feat(schoology): record type definitions`).
+
+NOTE (B2 implementation): `RecordTypes()` in `record_types.go` (owner `schoology`, version 1, both `[subject, guardians]`, no field required, T1: no `teacher`); `TestRecordTypeFieldSets` pins the field names and types. The file was generated with `go test ./connectors/schoology/ -run TestRecordTypesFileIsUpToDate -update`. Red: with a stub returning no types, `TestRecordTypesAreValidForTheJournal` and `TestRecordTypesFileIsUpToDate` failed on their assertions.
 
 ---
 
@@ -119,11 +129,13 @@ func TestWithoutRecordsTheRulesAreAsLiberalAsToday(t *testing.T)   // the * case
 
 One snapshot per kid per listing that answered (`processAssignments`'s `listed == true`): scope `(schoology, assignments, subject)`, `complete: false`, one record per row (nil rows skipped; rows the library failed to parse are not in `rows` and are simply absent, which a windowed scope tolerates). Key: `strconv.FormatInt(a.ID, 10)`; a row with `ID == 0` is skipped and counted (`schoology_record_rows_skipped_total{reason="no_id"}`, nil-safe, in `telemetry.go`); a repeated id keeps the first. Fields: `title` (`a.Title`), `course` (`a.CourseTitle`), `status` (`string(a.Status)`), `link` (`a.URL`) through `Fields.String`; `due` (`a.DueAt`, zero is null) through `Fields.Timestamp`. An empty listing that answered gives an empty snapshot (harmless with `complete: false`; it confirms nothing and removes nothing) -- send it anyway so the journal's staleness metric sees the scope.
 
-- [ ] **Step 3.1: Write the failing tests:** fields and key for the fixture rows from `assignments_test.go`; every record has exactly the type's fields; a status change between two listings gives two snapshots whose records differ only in `status` (the journal turns that into `updated`; the item path stages nothing the second time -- assert that too, it is the gap 5.2 describes); `complete` false; `validateAll`; the record keys equal the ids `SaveLastSeenID` writes for the same rows.
-- [ ] **Step 3.2: Run; expect FAIL.**
-- [ ] **Step 3.3: Implement** `BuildAssignmentListing(b Binding, rows []*schoologylib.Assignment, observedAt time.Time) journalapi.Snapshot` and `AssignmentRecordKey(id int64) string` (for the seed).
-- [ ] **Step 3.4: Run; expect PASS.**
-- [ ] **Step 3.5: Commit** (`feat(schoology): lms_assignment record builder`).
+- [x] **Step 3.1: Write the failing tests:** fields and key for the fixture rows from `assignments_test.go`; every record has exactly the type's fields; a status change between two listings gives two snapshots whose records differ only in `status` (the journal turns that into `updated`; the item path stages nothing the second time -- assert that too, it is the gap 5.2 describes); `complete` false; `validateAll`; the record keys equal the ids `SaveLastSeenID` writes for the same rows.
+- [x] **Step 3.2: Run; expect FAIL.**
+- [x] **Step 3.3: Implement** `BuildAssignmentListing(b Binding, rows []*schoologylib.Assignment, observedAt time.Time) journalapi.Snapshot` and `AssignmentRecordKey(id int64) string` (for the seed).
+- [x] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.5: Commit** (`feat(schoology): lms_assignment record builder`).
+
+NOTE (B2 implementation): the library's `AssignmentStatus` values are lowercase (`overdue` / `upcoming`), as is the item's `status` tag; T4's "Overdue / Upcoming" is read as "the library's value", which is what the record carries. A repeated id keeps the first row and is counted `duplicate_key` besides `no_id` (the journal refuses a repeated key), both through `Binding.OnSkip` into `schoology_record_rows_skipped_total` (`Telemetry.RecordRecordRowSkipped`, nil-safe). Records are in listing order. `Binding.scope` / `Binding.record` live in `record_binding.go`. Red: against a stub builder all three tests failed (snapshot_id not a UUID); the first green run then failed on the status casing, fixed in the test as above.
 
 ---
 
@@ -146,11 +158,13 @@ In `detailRun.handle`, the read is attributed to the kid only after the id, cour
 
 Builder: one snapshot per kid per poll with at least one verified read: scope `(schoology, assignment_detail, subject)`, `complete: false`, key = the assignment id. Fields: `description` (`d.DescriptionText`) and `comments` (T3: populated -> entries' `Text` joined by `"\n\n"`; otherwise null) through `Fields.Text` -- not `cleanText`, `writeUntrusted` or the item's framing.
 
-- [ ] **Step 4.1: Write the failing tests:** a clean read gives a record with the description unchanged (fixture with line breaks, a link rendered `text (href)`, a bidi control); an unchanged re-read (seen hash equal) still gives a record and stages no item; a read with a parse error, one with a comments error, and one with `course_unverified` give no record but still stage their item as today; an id or title mismatch gives neither; comments: populated (two entries -> joined), empty -> null; `OnVerified == nil` changes nothing (compare staged items and checkpoint with and without the hook set); `validateAll`.
-- [ ] **Step 4.2: Run; expect FAIL.**
-- [ ] **Step 4.3: Implement** `VerifiedDetail`, `BuildAssignmentDetails(b Binding, reads []VerifiedDetail, observedAt time.Time, onCut func()) []journalapi.Snapshot`.
-- [ ] **Step 4.4: Run; expect PASS** (whole `./connectors/schoology/...` suite).
-- [ ] **Step 4.5: Commit** (`feat(schoology): lms_assignment_detail records from verified detail reads`).
+- [x] **Step 4.1: Write the failing tests:** a clean read gives a record with the description unchanged (fixture with line breaks, a link rendered `text (href)`, a bidi control); an unchanged re-read (seen hash equal) still gives a record and stages no item; a read with a parse error, one with a comments error, and one with `course_unverified` give no record but still stage their item as today; an id or title mismatch gives neither; comments: populated (two entries -> joined), empty -> null; `OnVerified == nil` changes nothing (compare staged items and checkpoint with and without the hook set); `validateAll`.
+- [x] **Step 4.2: Run; expect FAIL.**
+- [x] **Step 4.3: Implement** `VerifiedDetail`, `BuildAssignmentDetails(b Binding, reads []VerifiedDetail, observedAt time.Time, onCut func()) []journalapi.Snapshot`.
+- [x] **Step 4.4: Run; expect PASS** (whole `./connectors/schoology/...` suite).
+- [x] **Step 4.5: Commit** (`feat(schoology): lms_assignment_detail records from verified detail reads`).
+
+NOTE (B2 implementation): the hook sits right after the `course_unverified` bookkeeping and before the unchanged-hash return, as planned. `BuildAssignmentDetails` splits a kid's reads over several `complete: false` snapshots of the same scope and `observed_at` when one would exceed the journal's 8 MiB body (or 5000 records): a poll can read 200 details of up to 128 KiB of text each, and an oversized body is refused whole and permanently. For a windowed scope the split adds and updates exactly what one snapshot would; it is NOT the same for `in_latest_snapshot` (see the review NOTE below). A repeated id keeps the first read (`duplicate_key`), an id of 0 is `no_id`. `comments` skips nil and empty entries before joining with `"\n\n"`; a layout-unmapped block's entries are carried as the library returned them (T3), while the item body keeps its count-only line (asserted). The detail harness gained an `onVerified` field passed as `DetailDeps.OnVerified`; the existing golden and review tests pass unchanged. `TestDetailWithoutTheHookChangesNothing` compares staged items (minus the staging timestamp) and the checkpoint file across two polls with and without the hook. Red: with a stub builder and the hook not yet called, four tests failed (no reads, no snapshots, an index panic).
 
 ---
 
@@ -163,14 +177,22 @@ Builder: one snapshot per kid per poll with at least one verified read: scope `(
 
 In `pollNow`, per kid: after `processAssignments` returns `listed == true`, build the listing snapshot with the kid's assignment binding and `Emit` it (`observed_at` = the time taken just before `processAssignments`). Detail: set `DetailDeps.OnVerified` (when records are on) to collect reads per kid; after `ProcessAssignmentDetails` returns, build and emit one detail snapshot per kid that has reads. The same `recordSink` interface and factory-in-`Wire` arrangement as B1 Task 19; `Watch` starts `Run`.
 
-- [ ] **Step 5.1: Write the failing tests:**
+- [x] **Step 5.1: Write the failing tests:**
   - off: no `spool` directory, no `glovebox_journal_` series, no records log line; staged items and the seen sets equal to a run without the change (run the existing integration-style fixtures);
   - on: the same items; snapshots per kid with that kid's subject only; a listing error (GetOverdueSubmissions fails) emits nothing for that kid; a session refused (details skipped) emits only listings; a spool write failure leaves items staged and counts `write_errors_total`;
   - parity: for each item staged from the listing, a record with the same id carries the same `course`, `status`, due and link as the item's tags and body; the record set is a superset (rows already in the seen set are records too); for each detail item staged from a clean read, a record with its id exists; `data_subject` and `audience` equal the item's.
-- [ ] **Step 5.2: Run; expect FAIL.**
-- [ ] **Step 5.3: Implement.**
-- [ ] **Step 5.4: Run; expect PASS.**
-- [ ] **Step 5.5: Commit** (`feat(schoology): emit record snapshots in shadow behind records.enabled`).
+- [x] **Step 5.2: Run; expect FAIL.**
+- [x] **Step 5.3: Implement.**
+- [x] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.5: Commit** (`feat(schoology): emit record snapshots in shadow behind records.enabled`).
+
+NOTE (B2 implementation):
+- **Hook.** As B1: exported `RecordSink`, `NewRecordsFactory(cfg, stateDir, now)` (nil when off; `main.go` sets `c.NewRecords` unconditionally from `GLOVEBOX_STATE_DIR`), the sink built in `Wire` on `cc.Metrics.Provider().Meter("glovebox.records")` (a factory error fails `Wire`), and `Watch` calls `startRecords` (one loop across Watch restarts).
+- **Off is today.** With no sink, `pollNow` reads no extra clock, passes a nil `OnVerified` and calls no builder. `TestRecordsOffChangesNothing` (two polls): no sink, no `spool`, no records metric, no log line naming records or the journal, no goroutine. `TestRecordsOnStagesTheSameItems`: two polls with a status change in between, items (minus the staging timestamp) and the whole checkpoint identical to records off; the real emitter then drains 8 snapshots (a listing and a detail per kid per poll) into the fake journal, all 200 `applied`, spool empty, no item-fixture subject, no token in the log.
+- **observed_at.** The listing's is `c.clock()` taken just before `processAssignments` (only when records are on); the detail's is the detail run's clock (`VerifiedDetail.ReadAt`), the time the surface started.
+- **Errors.** A panic in a builder or `Emit` is recovered and counted `builder_panic`; an `Emit` error is logged; neither changes what was staged (`TestEmitFailuresLeaveTheItems`, `TestEmitSpoolWriteFailureLeavesItems`: 4 `write_errors_total`). A listing snapshot over the size limits is left out (`snapshot_too_large`); details are split instead (Task 4).
+- **Extra tests:** observed_at taken before the listing; no records for a kid whose rule is missing; `NewRecordsFactory` (off, empty state directory); one loop across a Watch restart.
+- Red: with the sink wired but no emission in `pollNow`, seven of the new tests failed on their assertions. The parity test was written after the emission and passed at once; it was seen failing through the mutants (Task 9 NOTE).
 
 ---
 
@@ -181,11 +203,18 @@ In `pollNow`, per kid: after `processAssignments` returns `listed == true`, buil
 
 The Schoology configmap merges the `records` block into `$cfg` before `toJson` (after the `assignment_detail` merge). The deployment adds the same `journal-token` projected volume and mount as B1 Task 20, and keeps `automountServiceAccountToken: false`.
 
-- [ ] **Step 6.1: Write the failing render tests:** default values byte-identical to `BASE_REF`; records on (journal enabled, writer `schoology`, services entry `openclaw/glovebox-glovebox-connector-schoology` with `write_types: [lms_assignment, lms_assignment_detail]`, `write_scopes: {source: [schoology]}`, `write_subjects: roster_subjects`, `state.persistent: true`): the block and token render, no other token; refusals: `state.persistent: false` without `existingClaim` (T6), no writer entry, no services entry, journal disabled; the PrometheusRule renders with only Schoology's records on.
-- [ ] **Step 6.2: Run; expect FAIL.**
-- [ ] **Step 6.3: Implement.**
-- [ ] **Step 6.4: Run; expect PASS** (`REQUIRE_BASE_REF=1 scripts/chart-checks.sh`).
-- [ ] **Step 6.5: Commit** (`feat(chart): schoology records block and projected journal token`).
+- [x] **Step 6.1: Write the failing render tests:** default values byte-identical to `BASE_REF`; records on (journal enabled, writer `schoology`, services entry `openclaw/glovebox-glovebox-connector-schoology` with `write_types: [lms_assignment, lms_assignment_detail]`, `write_scopes: {source: [schoology]}`, `write_subjects: roster_subjects`, `state.persistent: true`): the block and token render, no other token; refusals: `state.persistent: false` without `existingClaim` (T6), no writer entry, no services entry, journal disabled; the PrometheusRule renders with only Schoology's records on.
+- [x] **Step 6.2: Run; expect FAIL.**
+- [x] **Step 6.3: Implement.**
+- [x] **Step 6.4: Run; expect PASS** (`REQUIRE_BASE_REF=1 scripts/chart-checks.sh`).
+- [x] **Step 6.5: Commit** (`feat(chart): schoology records block and projected journal token`).
+
+NOTE (B2 implementation):
+- **Helpers.** `glovebox.recordsEnabled` takes `"schoologyConnector" true` for the Schoology connector's own block; without it only `connectors.powerschool` may enable records, so a generic `connectors.schoology` entry is still refused by the name guard (tested with its own ServiceAccount and services entry, so only that guard can refuse it, matching its message). `glovebox.recordsConfig` leaves out `attendance_day_settle_school_days` for `name: schoology` (the PowerSchool render is unchanged: its call passes no name). `glovebox.recordsChecks` names `schoologyConnector.records` in its messages, refuses records with an emptyDir state (T6: neither `state.persistent` nor `state.existingClaim`), and skips the settle range for Schoology.
+- **Templates.** The Schoology ConfigMap refuses `schoologyConnector.config.records` (records on or off, as B1's S5) and merges the block after the `assignment_detail` merge; the Deployment adds the `journal-token` projected volume and read-only mount (no other change; `automountServiceAccountToken: false` stays); the PrometheusRule renders when Schoology alone has records on.
+- **Test values.** A separate `scripts/testdata/records-values-schoology.yaml` instead of changing `records-values.yaml`: that file's render is pinned by B1's Go fixtures (`internal/config/testdata/helm-rendered-records.json`), and helm replaces lists, so the two connectors are combined on the command line where needed (Task 7). `connectors/schoology/testdata/helm-rendered-records.json` is the default render of the block; `TestHelmRenderedRecordsBlock` (Go) decodes it strictly (no PowerSchool key), validates it with the record rules and checks no value is left to the connector's defaults.
+- **Identity.** Against `BASE_REF`: default values; Schoology enabled; Schoology persistent with the PrometheusRule on; Schoology with PowerSchool; and the Schoology Deployment, ConfigMap and ServiceAccount with the journal values and records off (with and without a persistent state). The records-values-schoology file is not compared with the base: its services entry names the `lms_*` types, which a base without `journal-record-types/schoology.json` refuses (B1's I1 check) -- so it would fail once B1 is on main. `only_records` (now parameterised by `OR_CONN`/`OR_OFF`) proves that, with that file, records on differ from records off only in the block, the token volume and its mount (also with the read-only root off and the detail surface on). Both bases pass: `origin/main` and `origin/feat/journal-part-b1-chart`.
+- Red: 23 of the new checks failed before the implementation (the off-identity checks passed, as they should; "records without connectorRecordTypes" already passed through B1's I1 check).
 
 ---
 
@@ -194,11 +223,13 @@ The Schoology configmap merges the `records` block into `$cfg` before `toJson` (
 **Files:**
 - Modify: `scripts/test-chart-records.sh`, `charts/glovebox/values.yaml` (comment)
 
-- [ ] **Step 7.1: Write the failing test:** `journal.connectorRecordTypes: [powerschool, schoology]` renders nine types into the core config; `[schoology]` alone renders two.
-- [ ] **Step 7.2: Run; expect FAIL** (if B1's helper reads files by name it may already pass: then the step is the test only; note it).
-- [ ] **Step 7.3:** Document `journal.staleness` `source=schoology/` (`maxAgeHours: 96`) in the values comment.
-- [ ] **Step 7.4: Run; expect PASS.**
-- [ ] **Step 7.5: Commit** (`feat(chart): schoology record types`).
+- [x] **Step 7.1: Write the failing test:** `journal.connectorRecordTypes: [powerschool, schoology]` renders nine types into the core config; `[schoology]` alone renders two.
+- [x] **Step 7.2: Run; expect FAIL** (if B1's helper reads files by name it may already pass: then the step is the test only; note it).
+- [x] **Step 7.3:** Document `journal.staleness` `source=schoology/` (`maxAgeHours: 96`) in the values comment.
+- [x] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.5: Commit** (`feat(chart): schoology record types`).
+
+NOTE (B2 implementation): as Step 7.2 anticipated, B1's `glovebox.journalRecordTypes` reads `journal-record-types/<name>.json` by name, so with the file from Task 2 the new checks passed at once; this task is the tests and the values comments. Red was seen by moving `schoology.json` aside: all four new type checks (and the Schoology checks of Task 6) failed; the file was put back. Checks added: `[schoology]` renders the file's two types; `[powerschool, schoology]` renders the nine in that order; both connectors on (lists set on the command line, since helm replaces them) give each pod its block and one token, one set of alerts, and both services entries; both on with only `[powerschool]` listed is refused by B1's I1 check on `lms_assignment`; the `source=schoology/` staleness prefix passes through. The values comments name schoology in `connectorRecordTypes` and document `source=schoology/` (`maxAgeHours: 96`) next to `journal.staleness`.
 
 ---
 
@@ -211,10 +242,12 @@ As B1 Task 23, with the Schoology fake client: poll 1 lists A (Upcoming) and B (
 
 Assert through `/v1/state` and `/v1/events` as `e_parent1`: A has an `updated` event with `status` and `due` changed; B is not removed and its row has `in_latest_snapshot: false`; C is `created`; A's detail has an `updated` event on `comments`; the detail's text values carry scan verdicts (not withheld for plain text); nothing of `e_child2` appears under `e_child1`.
 
-- [ ] **Step 8.1: Write the test.**
-- [ ] **Step 8.2: Run** `scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal`; PASS.
-- [ ] **Step 8.3:** Add `./connectors/schoology/` to the CI database jobs.
-- [ ] **Step 8.4: Commit** (`test(schoology): records end to end against the journal core`).
+- [x] **Step 8.1: Write the test.**
+- [x] **Step 8.2: Run** `scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal`; PASS.
+- [x] **Step 8.3:** Add `./connectors/schoology/` to the CI database jobs.
+- [x] **Step 8.4: Commit** (`test(schoology): records end to end against the journal core`).
+
+NOTE (B2 implementation): assembled as B1's Task 23 (journaltest DB, roster, fake scanner, policy, satokentest TokenReview, httpapi), with the policy of the enabling checklist for `journaltest.SASchoology` and the connector-level fixture of Task 5. Poll 1 reads A's and B's details (the fixture reads every listed row's); B's description carries the fake scanner's trigger, so the test also shows a text value carrying its verdict: A's plain description is readable, B's is withheld (`failed content scan`). Poll 2 (an hour later): `updated` for A with exactly `status` and `due` changed, `created` for C, no removal anywhere, B kept with `in_latest_snapshot: false` and its last values. Poll 3 (22 hours after poll 1, refresh due): A's detail `updated` on `comments` only. `e_child1` reads only its own rows; k2's assignment is under `e_child2` only; the token never reaches the log. Every snapshot is answered 200 `applied`. The test passed on its first run; it was seen failing through a mutant (the listing sent `complete: true`: B removed). Run: `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal -p 1` -- PASS (1.4 s). `./connectors/schoology/` added to the `test-journal-db` GitLab job and the GitHub database step.
 
 ---
 
@@ -223,7 +256,24 @@ Assert through `/v1/state` and `/v1/events` as `e_parent1`: A has an `updated` e
 **Files:**
 - Modify: `docs/connectors/schoology.md`, `docs/upgrading.md`, `CHANGELOG.md`, spec 5.2 (T1 amendment)
 
-- [ ] **Step 9.1: Docs:** the two types, the windowed-scope semantics stated plainly (the 5.2 list above), T2's rule, config keys, and the gitops enabling checklist: (1) `schoologyConnector.state.persistent: true`; (2) every rule subject is a roster member (B1's `jq` check); (3) values `journal.connectorRecordTypes` gains `schoology`, the services entry, `writerConnectors` gains `schoology`, `staleness` gains `source=schoology/`, `schoologyConnector.records.enabled: true`; (4) after a poll window the spool is empty and no `GloveboxJournalSpool*` alert fires; (5) rollback is `records.enabled: false`.
-- [ ] **Step 9.2: Container:** `podman build -f connectors/schoology/Dockerfile -t glovebox-schoology:records-test .`; start it with a records-enabled config and a writable `/state`, check `/state/spool` appears and no token is logged.
-- [ ] **Step 9.3: Final verification:** B1 Task 24's list with the Schoology packages; record results as a NOTE.
-- [ ] **Step 9.4: Commit** (`docs(records): schoology records and enabling checklist`), push, open the MR. Nothing is enabled in gitops from this plan.
+- [x] **Step 9.1: Docs:** the two types, the windowed-scope semantics stated plainly (the 5.2 list above), T2's rule, config keys, and the gitops enabling checklist: (1) `schoologyConnector.state.persistent: true`; (2) every rule subject is a roster member (B1's `jq` check); (3) values `journal.connectorRecordTypes` gains `schoology`, the services entry, `writerConnectors` gains `schoology`, `staleness` gains `source=schoology/`, `schoologyConnector.records.enabled: true`; (4) after a poll window the spool is empty and no `GloveboxJournalSpool*` alert fires; (5) rollback is `records.enabled: false`.
+- [x] **Step 9.2: Container:** `podman build -f connectors/schoology/Dockerfile -t glovebox-schoology:records-test .`; start it with a records-enabled config and a writable `/state`, check `/state/spool` appears and no token is logged.
+- [x] **Step 9.3: Final verification:** B1 Task 24's list with the Schoology packages; record results as a NOTE.
+- [x] **Step 9.4: Commit** (`docs(records): schoology records and enabling checklist`), push, open the MR. Nothing is enabled in gitops from this plan.
+
+NOTE (B2 implementation, Task 9):
+- **Docs.** `docs/connectors/schoology.md` "Records (journal)": the two types (keys, fields, scopes, audiences; T1), the windowed-scope semantics of 5.2 stated plainly, when each type is sent (T2's clean-read rule, T3's comments, T4's values, observed_at, the size split, the session-refused case), who a record is about (T5), the config keys, the durable-state rule (T6), the skip reasons and the cutover rule. `docs/upgrading.md` "Schoology records (Part B2)": what the chart renders, every refusal, the cutover rule and the enabling checklist (state volume first, subjects, the HelmRelease values with both connectors, the after-a-poll checks, rollback). `CHANGELOG.md` Unreleased. Spec 5.2 amended for T1-T6. The "Schoology is Part B2, not built yet" sentences in `journal-api.md`, `powerschool.md` and `upgrading.md` updated.
+- **Step 9.2, container.** `podman build -f connectors/schoology/Dockerfile -t glovebox-schoology:records-test .` succeeded. Run once with `--read-only --network none`, `/state` writable, a records block with `journal_url: http://127.0.0.1:1`, exact per-kid rules for `e_child1` / `e_child2`, a placeholder token file and placeholder session credentials for `example.invalid`: after 20 s it was up, had created `/state/spool` and `/state/spool/rejected`, logged "schoology records enabled ... journal=http://127.0.0.1:1", and the token string appeared nowhere in its log. (The catch-up poll could not reach Schoology, so no listing answered and the spool stayed empty, as designed.) Stopped and removed.
+- **Step 9.3, final verification** (fresh, `GOTOOLCHAIN=go1.27.1`, on the branch with these docs): `go build ./...` ok. `go vet ./...` and `go test ./... -count=1 -race` fail only at `internal/sanitizeapi [setup failed]` (the missing `go.sum` entry for `kin-openapi`, fixed on main, not on this base; untouched here); every other package passes (85 `ok`). staticcheck v0.8.1 over `./connector/... ./connectors/schoology/...` reports only findings in code this branch does not change (ST1005 in `connector/enrich/pdf`; SA1019 `ConnectorContext.Writer` in `connector.go`'s `Wire` and older schoology tests). `gofmt -l` over the branch's Go files lists only `telemetry.go`, for its file-header comment (pre-existing, not a line this branch touches). `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/schoology/ ./connectors/powerschool/ ./internal/journal/... . -p 1`: all 14 packages ok. `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`: all passed (103 checks in `test-chart-records.sh`, 40 of them new for Schoology, promtool included); `scripts/test-chart-records.sh` also passes with `BASE_REF=origin/feat/journal-part-b1-chart`. Lines this branch adds: ASCII only; new ids are `e_child1`, `e_child2`, `e_parent1` (and the existing detail-harness `e_k1`).
+- **Targeted mutation run (Tasks 1-8), 22 mutants**, applied one at a time and restored (tree verified clean after each), named failures only. Go (`go test -run` over the records, detail, config and emit tests): M1 listing `complete: true` (`TestRecordsAgainstTheJournal`); M2 exact assignment rule check removed (`TestRecordsNeedAnExactAssignmentRulePerKid`); M3 one-subject-per-kid check removed (`TestRecordsRefuseOneSubjectForTwoKids`); M4 detail subject check removed (`TestRecordsRefuseDetailRuleWithAnotherSubject`; its first form did not compile and was rewritten); M5 defaults applied to a disabled block (`TestRecordsBlockDefaultsAndValidation`); M6 a `course_unverified` read becomes a record and M7 a parse-failed read becomes a record (`TestDetailRecordOnlyForACleanRead` subtests); M8 comments joined by one newline (`TestDetailRecordComments`); M9 description as a one-line string (`TestDetailRecordFromACleanRead`); M10 no split at the size limit (`TestBuildAssignmentDetailsSplitsAtTheSizeLimit`); M11 a repeated id kept (`TestAssignmentListingFieldsAndKeys`); M12 `due` as a date (four tests); M13 listing observed_at later than the listing (`TestEmitListingObservedAtIsBeforeTheListing`; first form did not compile, rewritten); M14 panic not recovered (`TestEmitFailuresLeaveTheItems/panic`); M15 detail observed_at not the read time (`TestEmitEveryKidsSnapshotsWithItsOwnSubject`); M16 `Wire` ignoring a factory error -- **survived** at first, so `TestWireFailsWithoutItsSink` was added (commit 3625dde) and then killed it; M17 `link` carrying the course (`TestRecordsAgreeWithTheItems`, `TestAssignmentListingFieldsAndKeys`: the parity test's red). Chart (`scripts/test-chart-records.sh`): C1 the T6 check removed ("schoology refused: records with an emptyDir state (T6)"); C2 the name guard letting `connectors.schoology` through ("schoology refused: records on a connectors.schoology entry"); C3 the settle time rendered for Schoology (the block and Go-fixture checks); C4 the `config.records` refusal removed (both refusal checks); C5 the block merged into the values' config instead of the merged one ("schoology on: same with the detail surface on"). All 22 killed (M16 after the added test).
+
+NOTE (review of d687390..6ceac66, fixes):
+- **I1.** A detail read counted as clean with its comments unread: `CommentsStateUnknown` (no block looked at) and `CommentsStateUnavailable` (the comments page refused) arrive without an error and became `comments: null`, so a later bad read could blank a stored teacher comment (a spurious `updated` event, a second notification). Now a read is clean only when the block is empty or populated (`commentsRead`); otherwise no record, counted `comments_unread`, item staged as before. Tests: three new cases in `TestDetailRecordOnlyForACleanRead` (unknown inline, unavailable inline, an assessment's comments page unavailable), `TestDetailRecordWhenTheCommentsWereRead` (inline empty, assessment empty, assessment populated) and `TestEmitCountsDetailsWithUnreadComments` (the counter, through the exported registry). Red: four of them failed before the fix. Spec 5.2 T2 and `schoology.md` say what "comments read" means.
+- **I2.** The Task 4 NOTE claimed the detail split is equivalent to one snapshot. It is for what is added and updated, not for `in_latest_snapshot`: the journal orders a scope's snapshots by `observed_at`, then `received_at`, so only the last part counts as latest. Corrected above; `schoology.md` now states that `in_latest_snapshot` carries no meaning for `lms_assignment_detail` (each poll's snapshot holds only the details read in it).
+- **S3, decided fail closed.** See the decision NOTE above: with records on, a kid's rule used for records without an explicit `audience` is refused at validation, naming the kid and surface, in both connectors (`TestRecordsRefuseARuleWithoutAudience`, PowerSchool `TestRecordsConfigRefusesARuleWithoutAudience`; both seen failing first). Docs: both connector docs and both enabling checklists.
+- **S1.** `TestWatchStartsOneRecordsLoop` now uses a sink whose `Run` lingers 200 ms after its context ends and records the peak number of live loops (must be 1).
+- **S2.** `TestRecordsOffChangesNothing` counts the clock: 4 reads in two polls (window end and detail surface per poll), none for a listing.
+- **S4.** `VerifiedDetail.Rule` removed (unused; `emitDetails` resolves the binding).
+- **S5.** The Dropped and WriteErrors runbooks are connector-neutral (a complete scope is restored by its next snapshot; Schoology's listing at the next poll, its detail values only at their next refresh read); the log line they cite is the one both connectors write. promtool tests unchanged and green.
+- **S6.** `upgrading.md` (both sections) and `schoology.md`: openclaw switches both sources in one step, never PowerSchool alone first.
+- **Mutants (7, all killed, named failures):** N1 `case <-prev:` -> `default:` (`TestWatchStartsOneRecordsLoop`); N2 the listing clock read unconditionally (`TestRecordsOffChangesNothing`); N3 unread comments become a record (`TestDetailRecordOnlyForACleanRead/comments_unknown`, `.../comments_unavailable_(inline)`, `.../comments_page_unavailable_(assessment)`); N4 an empty block not a read (`TestDetailRecordWhenTheCommentsWereRead/assessment_empty` and others); N5 `comments_unread` not counted (`TestEmitCountsDetailsWithUnreadComments`); N6 Schoology audience check removed (`TestRecordsRefuseARuleWithoutAudience`); N7 PowerSchool audience check removed (`TestRecordsConfigRefusesARuleWithoutAudience`; its first form did not compile and was rewritten).

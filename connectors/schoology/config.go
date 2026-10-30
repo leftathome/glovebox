@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
+	"github.com/leftathome/glovebox/connector/records"
 )
 
 // Config holds the connector's runtime config. Embeds connector.BaseConfig
@@ -23,6 +24,12 @@ type Config struct {
 	// AssignmentDetail configures the assignment_detail surface. It is off
 	// unless at least one kid is listed.
 	AssignmentDetail AssignmentDetailConfig `json:"assignment_detail"`
+
+	// Records is the record journal block (spec 5.2): lms_assignment and
+	// lms_assignment_detail snapshots, spooled under the state directory
+	// and sent in shadow. Off by default; a disabled block is neither
+	// defaulted nor checked.
+	Records records.Config `json:"records"`
 }
 
 // AssignmentDetailConfig configures the assignment_detail surface: one
@@ -153,6 +160,7 @@ func ApplyDefaults(c *Config) {
 	if c.AssignmentDetail.RequestSpacingMS == 0 {
 		c.AssignmentDetail.RequestSpacingMS = defaultDetailRequestSpacingMS
 	}
+	applyRecordsDefaults(c)
 }
 
 // ValidateConfig enforces spec 12 §4 invariants. Run at startup before the
@@ -190,6 +198,11 @@ func ValidateConfig(c *Config) error {
 		if endMin <= startMin {
 			return fmt.Errorf("poll_schedule.windows[%d]: end %q must be strictly after start %q", i, w.End, w.Start)
 		}
+	}
+	// Records first: with records on, the per-kid rules are held to a
+	// stricter standard than the detail surface's own check.
+	if err := validateRecords(c); err != nil {
+		return err
 	}
 	return validateAssignmentDetail(c, seen)
 }
