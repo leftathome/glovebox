@@ -57,6 +57,41 @@ func TestRecordsRefuseARuleWithoutSubject(t *testing.T) {
 	}
 }
 
+// Decision 2026-10-30 (fail closed): a record's audience is its rule's
+// audience, never audience_default. A rule that leaves the audience to
+// audience_default would give the item that default (say [operator]) and
+// the record the type's [subject, guardians]; with records on it is
+// refused, naming the kid and the surface.
+func TestRecordsRefuseARuleWithoutAudience(t *testing.T) {
+	cfg := recordsConfig(t)
+	cfg.AudienceDefault = []string{"operator"}
+	cfg.Rules[0].Audience = nil // schoology:k1:assignment
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "audience") || !strings.Contains(err.Error(), "schoology:k1:assignment") ||
+		!strings.Contains(err.Error(), "k1") {
+		t.Fatalf("assignment rule without audience: err = %v", err)
+	}
+	cfg = recordsConfig(t)
+	cfg.Rules[3].Audience = nil // schoology:k2:assignment_detail
+	if err := ValidateConfig(&cfg); err == nil || !strings.Contains(err.Error(), "schoology:k2:assignment_detail") ||
+		!strings.Contains(err.Error(), "audience") {
+		t.Fatalf("detail rule without audience: err = %v", err)
+	}
+	// The detail surface off for k2: its detail rule is not used for records.
+	cfg.AssignmentDetail.Kids = []string{"k1"}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("detail off for k2: %v", err)
+	}
+	// Records off: as liberal as before.
+	cfg = recordsConfig(t)
+	cfg.Records = records.Config{}
+	cfg.AssignmentDetail.Kids = nil
+	cfg.Rules[0].Audience = nil
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("records off: %v", err)
+	}
+}
+
 func TestRecordsRefuseDetailRuleWithAnotherSubject(t *testing.T) {
 	cfg := recordsConfig(t)
 	cfg.Rules[1].DataSubject = "e_child2" // schoology:k1:assignment_detail

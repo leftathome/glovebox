@@ -258,6 +258,7 @@ detail rule naming the same subject.
 **Cutover rule.** openclaw switches to the journal only when **both**
 PowerSchool and Schoology emit records. With this part both can; the
 switch itself is openclaw's (rollout step 4 onwards), not this change.
+openclaw switches both sources in one step; never PowerSchool alone first.
 
 **Enabling checklist (gitops; not done by any glovebox change):**
 
@@ -267,8 +268,10 @@ switch itself is openclaw's (rollout step 4 onwards), not this change.
    after any emptyDir restart); do it in its own change, before records.
 2. **Subjects.** Every `data_subject` in the Schoology rules is a roster
    member (the same `jq` check as PowerSchool's step 2), each kid has its
-   own exact `schoology:<kid>:assignment` rule ahead of `"*"`, and each
-   detail rule names its kid's subject.
+   own exact `schoology:<kid>:assignment` rule ahead of `"*"`, each
+   detail rule names its kid's subject, and every one of those rules names
+   its `audience` explicitly (`audience_default` is not applied to records;
+   the connector refuses to start otherwise, naming the kid and surface).
 3. HelmRelease values (with PowerSchool's, the lists name both):
 
    ```yaml

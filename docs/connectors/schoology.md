@@ -442,8 +442,12 @@ remove.
 records enabled the connector refuses to start unless every kid has an
 exact `schoology:<kid>:assignment` rule ahead of any `"*"` rule, with a
 `data_subject` no other kid's rule uses, and, for a kid with the detail
-surface on, a detail rule naming the same subject. (Without records the
-rules stay as liberal as before.) Every subject must be a member of the
+surface on, a detail rule naming the same subject. Each of those rules
+must also name its `audience` explicitly: `audience_default` is applied to
+items but never to records, so a rule relying on it would stage the item
+for one audience and the record for another (fail closed; the error names
+the kid and the surface). (Without records the rules stay as liberal as
+before.) Every subject must be a member of the
 household roster, or the journal answers `409 unknown_subject` and the
 scope waits in the spool.
 

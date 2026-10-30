@@ -51,6 +51,9 @@ func validateRecords(c *Config) error {
 		if rule.DataSubject == "" {
 			return fmt.Errorf("records: the rule for %q has no data_subject", key)
 		}
+		if err := recordAudience(kid, assignmentSurface, key, rule); err != nil {
+			return err
+		}
 		if other, ok := owner[rule.DataSubject]; ok {
 			return fmt.Errorf("records: kids %s and %s are both routed with data_subject %s; each kid needs its own",
 				other, kid.Name, rule.DataSubject)
@@ -58,11 +61,29 @@ func validateRecords(c *Config) error {
 		owner[rule.DataSubject] = kid.Name
 		if c.AssignmentDetail.Enabled(kid.Name) {
 			dkey := detailMatchKey(kid.Name)
-			if d, ok := m.Match(dkey); !ok || d.DataSubject != rule.DataSubject {
+			d, ok := m.Match(dkey)
+			if !ok || d.DataSubject != rule.DataSubject {
 				return fmt.Errorf("records: the rule for %q must name the same data_subject as %q (%s)",
 					dkey, key, rule.DataSubject)
 			}
+			if err := recordAudience(kid, detailSurface, dkey, d); err != nil {
+				return err
+			}
 		}
+	}
+	return nil
+}
+
+// recordAudience refuses a rule used for records that sets no audience
+// (decision 2026-10-30, fail closed). A record's audience is its rule's;
+// audience_default is applied to items by the framework but never to
+// records, so a rule relying on it would stage an item for one audience
+// (say [operator]) and a record for another (the type's default).
+func recordAudience(kid Kid, surface, key string, rule connector.MatchResult) error {
+	if len(rule.Audience) == 0 {
+		return fmt.Errorf("records: kid %s, surface %s: the rule for %q sets no audience; with records enabled every rule "+
+			"used for records must name its audience explicitly (audience_default is not applied to records)",
+			kid.Name, surface, key)
 	}
 	return nil
 }
