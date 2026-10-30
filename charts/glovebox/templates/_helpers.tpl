@@ -829,6 +829,45 @@ otherwise collide.
 {{- end }}
 
 {{/*
+The journal's record_types, as JSON: journal.recordTypes, then the types of
+each connector in journal.connectorRecordTypes, read from the chart's
+journal-record-types/<name>.json (generated from the connector's Go
+definitions; decision S14). A name without a file, a name listed twice, and
+a type version defined twice (in recordTypes and a connector's file, or in
+two files) fail the render. With connectorRecordTypes empty this is exactly
+recordTypes, rendered as before.
+*/}}
+{{- define "glovebox.journalRecordTypes" -}}
+{{- $j := .Values.journal -}}
+{{- $types := $j.recordTypes | default list -}}
+{{- $listed := dict -}}
+{{- range ($j.connectorRecordTypes | default list) -}}
+{{- $name := toString . -}}
+{{- if hasKey $listed $name -}}
+{{- fail (printf "journal.connectorRecordTypes lists %q twice" $name) -}}
+{{- end -}}
+{{- $_ := set $listed $name true -}}
+{{- $file := "" -}}
+{{- if regexMatch "^[a-z][a-z0-9-]*$" $name -}}
+{{- $file = $.Files.Get (printf "journal-record-types/%s.json" $name) -}}
+{{- end -}}
+{{- if not $file -}}
+{{- fail (printf "journal.connectorRecordTypes names %q, but the chart has no journal-record-types/%s.json: only connectors that write records ship their types (powerschool)" $name $name) -}}
+{{- end -}}
+{{- $types = concat $types ($file | fromJsonArray) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $types -}}
+{{- $v := printf "%s version %v" (toString .name) .schema_version -}}
+{{- if hasKey $seen $v -}}
+{{- fail (printf "journal record type %s is defined twice (journal.recordTypes and journal.connectorRecordTypes, or two connectors): drop one of them" $v) -}}
+{{- end -}}
+{{- $_ := set $seen $v true -}}
+{{- end -}}
+{{- $types | toJson -}}
+{{- end }}
+
+{{/*
 "true" when a connectors.<name> entry has records enabled (record journal
 Part B), "" otherwise. Takes (dict "name" <key> "connector" <entry>). Only
 the PowerSchool connector builds records; records on any other entry fail

@@ -2930,12 +2930,48 @@ journal:
   services: {}
   # Record type definitions (snake_case keys, design spec 4.7).
   recordTypes: []
-  # Importance, grouping and notification rules (spec 4.10).
+  # Connectors whose own record type definitions are appended to
+  # recordTypes (decision S14 of the Part B1 plan). Each name loads
+  # journal-record-types/<name>.json from the chart, which is generated from
+  # the connector's Go definitions (a test fails when they drift). Only
+  # powerschool exists. A type version defined both here and in recordTypes
+  # fails the render.
+  #   connectorRecordTypes: [powerschool]
+  connectorRecordTypes: []
+  # Importance, grouping and notification rules (spec 4.10). Each rule
+  # matches one record_type, optionally event kinds (created, updated,
+  # removed) and a conjunction of conditions: field_becomes (every listed
+  # field has that value after the change and at least one of them did not
+  # before; never a removal) and field_in (the field's value after the
+  # change, or before a removal, is one of a list). Keys are decoded
+  # strictly; a misspelled one fails the core's start. With
+  # connectorRecordTypes: [powerschool], the attendance rules Part B needs
+  # in gitops (no defaults change here):
+  #   - name: full_day_absence
+  #     match:
+  #       record_type: attendance_day
+  #       kind: [created, updated]
+  #       field_becomes: {classification: full_day, any_unexcused: true}
+  #     importance: high
+  #     notify:
+  #       - {token: guardians, mode: push}
+  #       - {token: subject, mode: prompt, purpose: attendance_followup}
+  #     group_by: [data_subject, "field:date"]
+  #   - name: partial_day_absence
+  #     match:
+  #       record_type: attendance_day
+  #       field_becomes: {classification: partial_day, any_unexcused: true}
+  #     importance: normal
+  #     notify:
+  #       - {token: guardians, mode: digest}
+  #       - {token: subject, mode: prompt, purpose: attendance_followup}
+  #     group_by: [data_subject, "field:date"]
   rules: []
   # Scope prefixes watched by the GloveboxJournalNoSnapshots alert, each
   # `source=<v>/` or `source=<v>/surface=<v>/` (a prefix becomes a metric
   # label, so nothing finer is allowed). maxAgeHours 96 is two school days
-  # across a weekend:
+  # across a weekend. With connectors.powerschool.records enabled, gitops
+  # sets:
   #   - prefix: "source=powerschool/"
   #     maxAgeHours: 96
   staleness: []

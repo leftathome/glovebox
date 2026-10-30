@@ -235,4 +235,37 @@ check "edge values Go accepts render" \
   "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=600 --set connectors.powerschool.records.attendanceDaySettleSchoolDays=10 \
   --set connectors.powerschool.records.spool.maxAgeHours=2160 --set connectors.powerschool.records.spool.maxBytes=1048576
 
+# --- connector record types (S14) ------------------------------------------
+TYPES="$CHART/journal-record-types/powerschool.json"
+check "types: none by default (journal on)" \
+  "core_config['journal']['record_types'] == []" "${V[@]}"
+check "types: connectorRecordTypes [powerschool] renders the file's seven types" \
+  "core_config['journal']['record_types'] == json.load(open('$TYPES')) and len(core_config['journal']['record_types']) == 7 and all(t['owner'] == 'powerschool' for t in core_config['journal']['record_types'])" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}'
+check "types: recordTypes come first, then the connector's" \
+  "[t['name'] for t in core_config['journal']['record_types']] == ['household_note'] + [t['name'] for t in json.load(open('$TYPES'))]" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \
+  --set-json 'journal.recordTypes=[{"name":"household_note","schema_version":1,"owner":"household","fields":{"text":{"type":"text"}},"fixed_audience":["guardians"]}]'
+check "types: a later version of a connector type in recordTypes is not a duplicate" \
+  "len(core_config['journal']['record_types']) == 8" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \
+  --set-json 'journal.recordTypes=[{"name":"assignment","schema_version":2,"owner":"powerschool","fields":{"title":{"type":"string"}}}]'
+expect_fail "types: unknown connector name" "journal.connectorRecordTypes names \"nosuch\"" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={nosuch}'
+expect_fail "types: a name with a path in it" "journal.connectorRecordTypes names \"../values\"" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={../values}'
+expect_fail "types: listed twice" "journal.connectorRecordTypes lists \"powerschool\" twice" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool,powerschool}'
+expect_fail "types: a type version also in recordTypes" "assignment version 1 is defined twice" \
+  -f "$JVALUES" --set 'journal.connectorRecordTypes={powerschool}'
+check "types: the documented attendance rules and staleness pass through" \
+  "[r['name'] for r in core_config['journal']['rules']] == ['full_day_absence', 'partial_day_absence'] and core_config['journal']['staleness_prefixes'] == ['source=powerschool/']" \
+  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \
+  --set-json 'journal.staleness=[{"prefix":"source=powerschool/","maxAgeHours":96}]' \
+  --set-json 'journal.rules=[{"name":"full_day_absence","match":{"record_type":"attendance_day","kind":["created","updated"],"field_becomes":{"classification":"full_day","any_unexcused":true}},"importance":"high"},{"name":"partial_day_absence","match":{"record_type":"attendance_day","field_becomes":{"classification":"partial_day","any_unexcused":true}},"importance":"normal"}]'
+if [ -d "$TMP/base" ]; then
+  same_objects "types: journal values without connectorRecordTypes: core config as on $BASE_REF" \
+    "ConfigMap/glovebox-glovebox-config" -f "$JVALUES"
+fi
+
 exit "$FAILED"

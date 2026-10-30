@@ -2206,11 +2206,11 @@ NOTE (B1 implementation):
 
 S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file's types to `record_types` in the core's config (`.Files.Get (printf "journal-record-types/%s.json" .)` decoded with `fromJsonArray`, `concat` with `.recordTypes`). A name without a file fails the render. A name in `connectorRecordTypes` whose types also appear in `recordTypes` fails (two definitions of one type version).
 
-- [ ] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
-- [ ] **Step 21.2: Run; expect FAIL.**
-- [ ] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
-- [ ] **Step 21.4: Run; expect PASS.**
-- [ ] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
+- [x] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
+- [x] **Step 21.2: Run; expect FAIL.**
+- [x] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
+- [x] **Step 21.4: Run; expect PASS.**
+- [x] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
 
 ```yaml
   #   staleness:
@@ -2224,7 +2224,12 @@ S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file'
 ```
 
   Copy the rule shapes from `internal/journal/rules` tests (the as-built schema), not from the spec's 4.10 example.
-- [ ] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+- [x] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+
+NOTE (B1 implementation):
+- `glovebox.journalRecordTypes` renders `record_types`: `recordTypes`, then each listed connector's file. With `connectorRecordTypes` empty the output is `recordTypes | toJson` as before (the journal-values core ConfigMap is compared with `BASE_REF`). Refused: a name without a file (names are matched against `^[a-z][a-z0-9-]*$` before `.Files.Get`, so `../values` cannot read another chart file), a name listed twice, and a `(name, schema_version)` defined twice anywhere in the result -- so a later version of a connector type in `recordTypes` is allowed.
+- `TestRecordTypesFileIsUpToDate` also decodes the file and builds a `record.NewRegistry` from it, as the core will.
+- Step 21.5: the rules are documented in the as-built schema (`match.record_type`, `kind`, `field_becomes`, `field_in`; `importance`, `notify`, `group_by`), copied from `internal/journal/rules` tests. `TestDocumentedJournalRulesCompile` (new, `connectors/powerschool/record_rules_doc_test.go`) compiles the same rules, as JSON, against the PowerSchool registry with `rules.Compile`, and checks `full_day` / `partial_day` are classifications the builder writes; the chart test passes them and the staleness prefix through a render. The staleness entry was already documented next to `journal.staleness`; the comment now says gitops sets it with records on.
 
 ---
 
