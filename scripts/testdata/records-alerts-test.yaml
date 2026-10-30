@@ -40,11 +40,11 @@ tests:
         exp_alerts: []
   # A deployment fault (401) that keeps coming: fires on the first answer
   # (the series appears already at 1) and while answers continue, clears
-  # 15 minutes after the last one.
+  # 90 minutes after the last one.
   - interval: 1m
     input_series:
       - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="401",reason="unauthenticated",action="retry_alert",pod="a"}'
-        values: '_x10 1+1x20 21x60'
+        values: '_x10 1+1x20 21x150'
     alert_rule_test:
       - eval_time: 5m
         alertname: GloveboxJournalSpoolDeploymentFault
@@ -59,6 +59,59 @@ tests:
           - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: unauthenticated}
       - eval_time: 50m
         alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: unauthenticated}
+      - eval_time: 115m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: unauthenticated}
+      - eval_time: 125m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+  # A persistent fault at the sender's maximum backoff (3600 s, +20% jitter)
+  # answers about once every 72 minutes: the alert stays up between answers
+  # instead of firing and resolving each hour.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="403",reason="forbidden",action="retry_alert",pod="a"}'
+        values: '1x71 2x71 3x71 4x71 5x71'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: forbidden}
+      - eval_time: 70m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: forbidden}
+      - eval_time: 140m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: forbidden}
+      - eval_time: 215m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: forbidden}
+      - eval_time: 286m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: forbidden}
+  # A snapshot the connector could not write to its spool (S1): fires on
+  # the first one and clears an hour later.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_write_errors_total{namespace="openclaw",connector="powerschool",pod="a"}'
+        values: '_x10 1x120'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GloveboxJournalSpoolWriteErrors
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: GloveboxJournalSpoolWriteErrors
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool}
+      - eval_time: 80m
+        alertname: GloveboxJournalSpoolWriteErrors
         exp_alerts: []
   # A token that cannot be read: code "token", reason "none".
   - interval: 1m
@@ -152,4 +205,7 @@ tests:
         exp_alerts: []
       - eval_time: 100m
         alertname: GloveboxJournalSpoolDropped
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolWriteErrors
         exp_alerts: []

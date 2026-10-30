@@ -275,8 +275,8 @@ check "types: the documented attendance rules and staleness pass through" \
   --set-json 'journal.rules=[{"name":"full_day_absence","match":{"record_type":"attendance_day","kind":["created","updated"],"field_becomes":{"classification":"full_day","any_unexcused":true}},"importance":"high"},{"name":"partial_day_absence","match":{"record_type":"attendance_day","field_becomes":{"classification":"partial_day","any_unexcused":true}},"importance":"normal"}]'
 
 # --- spool alerts ---------------------------------------------------------
-ALERTS="{'GloveboxJournalSpoolNotEmpty', 'GloveboxJournalSpoolDeploymentFault', 'GloveboxJournalSpoolRejected', 'GloveboxJournalSpoolDropped'}"
-check "alerts: the four spool alerts with records on" "set(alerts) == $ALERTS" "${V[@]}"
+ALERTS="{'GloveboxJournalSpoolNotEmpty', 'GloveboxJournalSpoolDeploymentFault', 'GloveboxJournalSpoolRejected', 'GloveboxJournalSpoolDropped', 'GloveboxJournalSpoolWriteErrors'}"
+check "alerts: the five spool alerts with records on" "set(alerts) == $ALERTS" "${V[@]}"
 check "alerts: every alert has a summary and a runbook description" \
   "all(r['annotations'].get('summary') and len(r['annotations'].get('description', '')) > 200 for r in alerts.values())" "${V[@]}"
 check "alerts: aggregated by namespace and connector" \

@@ -719,10 +719,11 @@ namespace and connector; each description is its runbook):
 
 | Alert | Fires on | For |
 |---|---|---|
-| `GloveboxJournalSpoolNotEmpty` | `glovebox_journal_spool_oldest_seconds > 3600` (a persisting 503 or 409 shows here) | 5m |
-| `GloveboxJournalSpoolDeploymentFault` | any `answers_total{action="retry_alert"}` within 15m (401, 403 `forbidden`, 400, 404, no token, an unknown answer) | -- |
+| `GloveboxJournalSpoolNotEmpty` | `glovebox_journal_spool_oldest_seconds > 3600` (a persisting 503, 409 or 5xx `internal` shows here, and only here for the 5xx) | 5m |
+| `GloveboxJournalSpoolDeploymentFault` | any `answers_total{action="retry_alert"}` within 90m (401, 403 `forbidden`, 400, 404, no token, an unknown answer); 90m covers the sender's maximum backoff (3600 s, +20% jitter), so a persisting fault stays up | -- |
 | `GloveboxJournalSpoolRejected` | any `rejected_total` within 1h | -- |
 | `GloveboxJournalSpoolDropped` | any `dropped_total` other than `erased_subject` within 1h | -- |
+| `GloveboxJournalSpoolWriteErrors` | any `write_errors_total` within 1h (a snapshot the poll could not write to the spool) | -- |
 
 **Key caps (A4).** The journal caps the keys of one JSON object at the widest
 configured record type's field count plus 16. With the PowerSchool types
