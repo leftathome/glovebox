@@ -10,6 +10,8 @@
 
 **Prerequisite:** B1 (`docs/superpowers/plans/2026-10-28-record-journal-part-b.md`) Tasks 1-11 merged (the `connector/records` package and `recordstest`), and B1 Tasks 20-22 merged for the chart helpers this plan extends. Read B1's "How to work", "Rules", "Decisions" and "Part A deviations" sections first: they hold here too. Bead: the B2 child filed in B1's "How to work". Branch `feat/record-journal-part-b2` off `origin/main` after those merges. This file is the progress record.
 
+NOTE (B2 implementation): B1 Tasks 12-24 were still in open MRs (!119, !121) when B2 started, so the branch is based on `origin/feat/journal-part-b1-chart` (d687390), which carries all of B1, not on `origin/main`. Rebase onto `origin/main` once B1 merges. The whole-module `go.sum` gap in `internal/sanitizeapi` is fixed on main but not on this base; it is left alone here.
+
 **Feedback loop, every task:** B1's, with `./connectors/schoology/...` in place of `./connectors/powerschool/...`.
 
 ---
@@ -23,7 +25,9 @@
 
 ---
 
-## Decisions for Steve (open; the plan implements the recommendation)
+## Decisions for Steve (accepted at the recommended defaults)
+
+NOTE (B2 implementation, 2026-10-30): T1-T6 were accepted at the recommended defaults below; the plan implements them as written.
 
 | # | Question | Where the spec stands | Recommendation |
 |---|---|---|---|
