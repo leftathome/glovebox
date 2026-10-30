@@ -135,6 +135,79 @@ prerequisites with an example for each.
    projected `glovebox-journal` token (Part B) and its name in
    `writerConnectors`.
 
+### PowerSchool records (Part B1)
+
+`connectors.powerschool.records` (off by default) makes the PowerSchool
+connector write its seven record types to the journal in shadow: its items
+are unchanged ([powerschool.md, "Records (journal)"](connectors/powerschool.md#records-journal)).
+With it off the chart renders exactly as before (`scripts/test-chart-records.sh`
+compares the render with `origin/main`), so upgrading needs no action.
+
+With it on the chart renders, and nothing else: the `records` block in the
+connector's `config.json` (journal URL and token path); a `journal-token`
+volume on the connector pod, a ServiceAccount token projected for the
+audience `glovebox-journal` (600 s, `tokenExpirationSeconds`) mounted
+read-only at `/var/run/secrets/glovebox-journal`, with
+`automountServiceAccountToken` still false; and, with
+`metrics.prometheusRule.enabled`, the `<fullname>-connector-records`
+PrometheusRule (the spool alerts). Every connector pod rolls once, because
+the connector config checksum covers all connectors' ConfigMaps. The spool
+is `/state/spool` on the connector's state PVC.
+
+The render is refused, rather than half-working, with records on and the
+journal off, with `loginOnDemand` (the mailbox mode mounts the API token;
+use `loginBroker`), without `powerschool` in
+`journal.networkPolicy.writerConnectors`, without `write_types` for
+`<namespace>/<fullname>-connector-powerschool` in `journal.services`, or
+with values outside the connector's ranges.
+
+**Cutover rule.** Enabling PowerSchool records changes nothing openclaw
+reads. openclaw switches to the journal only when **both** PowerSchool and
+Schoology emit records; Schoology's records are Part B2 and not built yet.
+
+**Enabling checklist (gitops; not done by any glovebox change):**
+
+1. The journal is enabled and ready (the prerequisites above done;
+   `glovebox_journal_ready` is 1).
+2. **Subjects.** Every `data_subject` in the PowerSchool connector's rules
+   is a roster member:
+   `kubectl -n openclaw get cm openclaw-household -o jsonpath='{.data.household\.json}' | jq -r '.people|keys[]'`
+   lists each rule's `data_subject`. A subject that is not there is answered
+   `409 unknown_subject`: its scopes wait in the spool, retried, until
+   `records.spool.maxAgeHours` drops them.
+3. HelmRelease values:
+
+   ```yaml
+   journal:
+     connectorRecordTypes: [powerschool]
+     services:
+       openclaw/glovebox-glovebox-connector-powerschool:
+         write_types: [course_mark, assignment, attendance_mark, attendance_day,
+                       attendance_total, term_grade, term_comment]
+         write_scopes: {source: [powerschool]}
+         write_subjects: roster_subjects
+     networkPolicy:
+       writerConnectors: [powerschool]
+     staleness:
+       - prefix: "source=powerschool/"
+         maxAgeHours: 96
+   connectors:
+     powerschool:
+       records:
+         enabled: true
+   ```
+
+   `journal.rules` for the attendance signals are documented in
+   `values.yaml` next to `journal.rules`.
+4. After the next poll window: `glovebox_journal_spool_files{dir="pending"}`
+   on the connector returns to 0; `glovebox_journal_snapshots_total{status="applied"}`
+   grows on the core; no `GloveboxJournalSpool*` alert; the connector's
+   items are unchanged (the openclaw patrol sees nothing different).
+5. **Rollback:** `connectors.powerschool.records.enabled: false`. The spool
+   directory stays on the PVC until it is deleted by hand (say so in the
+   gitops change's description); nothing in the item path depends on it.
+   What the journal already holds stays there.
+
 ---
 
 ## Upgrading to 0.12.0 (from 0.11.0)
