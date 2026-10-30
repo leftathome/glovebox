@@ -173,7 +173,7 @@ test-journal-db:
   before_script:
     - "go version"
   script:
-    - "go test ./internal/journal/... ./connectors/powerschool/ . -count=1 -race -p 4"
+    - "go test ./internal/journal/... ./connectors/powerschool/ ./connectors/schoology/ . -count=1 -race -p 4"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
       when: never

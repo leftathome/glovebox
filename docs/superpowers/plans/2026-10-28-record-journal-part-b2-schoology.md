@@ -240,10 +240,12 @@ As B1 Task 23, with the Schoology fake client: poll 1 lists A (Upcoming) and B (
 
 Assert through `/v1/state` and `/v1/events` as `e_parent1`: A has an `updated` event with `status` and `due` changed; B is not removed and its row has `in_latest_snapshot: false`; C is `created`; A's detail has an `updated` event on `comments`; the detail's text values carry scan verdicts (not withheld for plain text); nothing of `e_child2` appears under `e_child1`.
 
-- [ ] **Step 8.1: Write the test.**
-- [ ] **Step 8.2: Run** `scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal`; PASS.
-- [ ] **Step 8.3:** Add `./connectors/schoology/` to the CI database jobs.
-- [ ] **Step 8.4: Commit** (`test(schoology): records end to end against the journal core`).
+- [x] **Step 8.1: Write the test.**
+- [x] **Step 8.2: Run** `scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal`; PASS.
+- [x] **Step 8.3:** Add `./connectors/schoology/` to the CI database jobs.
+- [x] **Step 8.4: Commit** (`test(schoology): records end to end against the journal core`).
+
+NOTE (B2 implementation): assembled as B1's Task 23 (journaltest DB, roster, fake scanner, policy, satokentest TokenReview, httpapi), with the policy of the enabling checklist for `journaltest.SASchoology` and the connector-level fixture of Task 5. Poll 1 reads A's and B's details (the fixture reads every listed row's); B's description carries the fake scanner's trigger, so the test also shows a text value carrying its verdict: A's plain description is readable, B's is withheld (`failed content scan`). Poll 2 (an hour later): `updated` for A with exactly `status` and `due` changed, `created` for C, no removal anywhere, B kept with `in_latest_snapshot: false` and its last values. Poll 3 (22 hours after poll 1, refresh due): A's detail `updated` on `comments` only. `e_child1` reads only its own rows; k2's assignment is under `e_child2` only; the token never reaches the log. Every snapshot is answered 200 `applied`. The test passed on its first run; it was seen failing through a mutant (the listing sent `complete: true`: B removed). Run: `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/schoology/ -run TestRecordsAgainstTheJournal -p 1` -- PASS (1.4 s). `./connectors/schoology/` added to the `test-journal-db` GitLab job and the GitHub database step.
 
 ---
 
