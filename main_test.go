@@ -67,6 +67,9 @@ type core struct {
 	base    string
 	metrics int
 	done    chan error
+	// exited is closed once Wait has returned. Cleanup checks it rather than
+	// cmd.ProcessState, which Wait writes from another goroutine.
+	exited chan struct{}
 }
 
 // coreConfig is a core config in base: ingest off, one agent, the default
@@ -108,18 +111,23 @@ func startCore(t *testing.T, cfg []byte, base string, metricsPort int, env ...st
 		}
 	}
 	path := writeFile(t, filepath.Join(base, "config.json"), string(cfg))
-	c := &core{out: &syncBuffer{}, base: base, metrics: metricsPort, done: make(chan error, 1)}
+	c := &core{out: &syncBuffer{}, base: base, metrics: metricsPort, done: make(chan error, 1), exited: make(chan struct{})}
 	c.cmd = exec.Command(os.Args[0])
 	c.cmd.Env = append(os.Environ(), append([]string{"GLOVEBOX_TEST_RUN_CORE=1", "GLOVEBOX_TEST_CORE_CONFIG=" + path}, env...)...)
 	c.cmd.Stdout, c.cmd.Stderr = c.out, c.out
 	if err := c.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() { c.done <- c.cmd.Wait() }()
+	go func() {
+		c.done <- c.cmd.Wait()
+		close(c.exited)
+	}()
 	t.Cleanup(func() {
-		if c.cmd.ProcessState == nil {
+		select {
+		case <-c.exited:
+		default:
 			_ = c.cmd.Process.Kill()
-			<-c.done
+			<-c.exited
 		}
 	})
 	deadline := time.Now().Add(60 * time.Second)
