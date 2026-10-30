@@ -95,7 +95,8 @@ func checkpointMap(t *testing.T, cp connector.Checkpoint) map[string]string {
 	defer m.mu.Unlock()
 	out := map[string]string{}
 	for k, v := range m.m {
-		if k == lastPollKey || strings.HasPrefix(k, "meta:last_read:") {
+		// Records' own state (decision S16) is not the items' checkpoint.
+		if k == lastPollKey || strings.HasPrefix(k, "meta:last_read:") || strings.HasPrefix(k, "meta:records_") {
 			continue
 		}
 		out[k] = v
@@ -256,6 +257,15 @@ func TestRecordsOffChangesNothing(t *testing.T) {
 	if strings.Contains(strings.ToLower(run.logs.String()), "record") {
 		t.Fatalf("records log line with records off:\n%s", run.logs.String())
 	}
+	// No records state in the checkpoint (carried attendance days, S16).
+	cp := run.cp.(*memCheckpoint)
+	cp.mu.Lock()
+	for k := range cp.m {
+		if strings.HasPrefix(k, "meta:records_") {
+			t.Errorf("records state %q written with records off", k)
+		}
+	}
+	cp.mu.Unlock()
 	// Watch starts nothing extra.
 	ctx, cancel := context.WithCancel(context.Background())
 	run.c.startRecords(ctx)

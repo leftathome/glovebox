@@ -98,6 +98,11 @@ func (c *PowerSchoolConnector) emitKidRecords(sink RecordSink, env Env, kid Kid,
 		return b, ok
 	}
 	var snaps []journalapi.Snapshot
+	// The attendance days to carry to the next poll (decision S16); saved
+	// only when this turn read the attendance page and the snapshots were
+	// spooled.
+	var carry []pendingDay
+	carryRead := false
 	if c.cfg.GradesEnabled() {
 		if b, ok := bind(gradeSurface); ok {
 			snaps = append(snaps, BuildCourseMarks(b, grades, readAt)...)
@@ -117,8 +122,10 @@ func (c *PowerSchoolConnector) emitKidRecords(sink RecordSink, env Env, kid Kid,
 		if c.cfg.AttendanceDaysEnabled() && extras.attendance != nil {
 			if b, ok := bind(attendanceDaySurface); ok {
 				snaps = append(snaps, BuildAttendanceMarks(b, extras.attendance, c.cfg.AttendanceDays, readAt)...)
-				snaps = append(snaps, BuildAttendanceDays(b, extras.attendance, c.cfg.AttendanceDays,
-					c.cfg.Records.AttendanceDaySettleSchoolDays, readAt, env.tz(), readAt)...)
+				days, next := buildAttendanceDaysCarry(b, extras.attendance, c.cfg.AttendanceDays,
+					c.cfg.Records.AttendanceDaySettleSchoolDays, readAt, env.tz(), readAt, loadPendingDays(env.CP, kid.Name))
+				snaps = append(snaps, days...)
+				carry, carryRead = next, true
 			}
 		}
 		if c.cfg.TermGradesEnabled() && extras.history != nil {
@@ -132,11 +139,19 @@ func (c *PowerSchoolConnector) emitKidRecords(sink RecordSink, env Env, kid Kid,
 			}
 		}
 	}
-	if len(snaps) == 0 {
-		return
+	if len(snaps) > 0 {
+		if err := sink.Emit(snaps); err != nil {
+			// The carried days stay as they were: the ones settled now
+			// may not have been spooled.
+			slog.Warn("powerschool record snapshots were not all spooled; items are unaffected",
+				"kid", kid.Name, "snapshots", len(snaps))
+			return
+		}
 	}
-	if err := sink.Emit(snaps); err != nil {
-		slog.Warn("powerschool record snapshots were not all spooled; items are unaffected",
-			"kid", kid.Name, "snapshots", len(snaps))
+	if carryRead {
+		if err := savePendingDays(env.CP, kid.Name, carry); err != nil {
+			slog.Error("powerschool carried attendance days could not be saved",
+				"record_type", TypeAttendanceDay, "kid", kid.Name, "error", err)
+		}
 	}
 }
