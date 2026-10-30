@@ -380,8 +380,37 @@ func TestRecordsAgainstTheJournal(t *testing.T) {
 		seq2 = seq1
 	}
 
-	// Poll 3, January: a new term's grid (same school year). Its range
-	// starts at the term's first date, so last term's marks and days stay.
+	// Poll 3, 18 December, the last day of term: a full-day unexcused
+	// absence today. Today is never settled, so no attendance_day yet; the
+	// connector carries the day in its checkpoint (decision S16).
+	const lastDay = "2026-12-18"
+	decGrid := []pslib.AttendanceDay{
+		{Date: day(2026, 12, 14), Kind: pslib.CellPresent},
+		{Date: day(2026, 12, 15), Kind: pslib.CellPresent},
+		{Date: day(2026, 12, 16), Kind: pslib.CellPresent},
+		{Date: day(2026, 12, 17), Kind: pslib.CellPresent},
+		codeDay(day(2026, 12, 18), "UA"),
+	}
+	poll(time.Date(2026, 12, 18, 23, 30, 0, 0, time.UTC), e2ePages{attendance: decGrid, scored: true})
+	parentRows = jrn.state("e_parent1")
+	for _, subject := range []string{"e_child1", "e_child2"} {
+		if r := findRow(parentRows, TypeAttendanceDay, subject, lastDay); r != nil {
+			t.Fatalf("the last day of term was sent before it settled: %+v", r)
+		}
+	}
+	evDec := jrn.events("e_parent1", seq2)
+	for _, e := range evDec {
+		if e.Kind == journalapi.KindRemoved {
+			t.Fatalf("the December poll removed %s %s of %s", e.RecordType, e.Key, e.DataSubject)
+		}
+	}
+	if s := lastSeq(evDec); s > seq2 {
+		seq2 = s
+	}
+
+	// Poll 4, January: a new term's grid (same school year). Its range
+	// starts at the term's first date, so last term's marks and days stay;
+	// the carried 18 December settles and is sent on its own, complete=false.
 	term2 := []pslib.AttendanceDay{
 		{Date: day(2027, 1, 4), Kind: pslib.CellPresent},
 		codeDay(day(2027, 1, 5), "UA"),
@@ -399,12 +428,39 @@ func TestRecordsAgainstTheJournal(t *testing.T) {
 		for _, want := range []struct{ ty, key string }{
 			{TypeAttendanceMark, markOct2}, {TypeAttendanceDay, "2026-10-02"},
 			{TypeAttendanceMark, "example science 7a|1(A):2027-01-05"}, {TypeAttendanceDay, "2027-01-05"},
+			{TypeAttendanceMark, "example science 7a|1(A):" + lastDay}, {TypeAttendanceDay, lastDay},
 		} {
 			if r := findRow(parentRows, want.ty, subject, want.key); r == nil || r.Removed {
 				t.Fatalf("after the rollover, %s %s of %s: %+v", want.ty, want.key, subject, r)
 			}
 		}
 	}
+	wantCarried := func(when string) {
+		t.Helper()
+		rows := jrn.state("e_parent1")
+		for _, subject := range []string{"e_child1", "e_child2"} {
+			r := findRow(rows, TypeAttendanceDay, subject, lastDay)
+			if r == nil || r.Removed || string(r.Fields["classification"]) != `"full_day"` || string(r.Fields["any_unexcused"]) != "true" {
+				t.Fatalf("%s, the carried %s of %s: %+v", when, lastDay, subject, r)
+			}
+		}
+	}
+	wantCarried("after the first January poll")
+	if e := findEvent(ev3, TypeAttendanceDay, "e_child1", lastDay); e == nil || e.Kind != journalapi.KindCreated {
+		t.Fatalf("the carried day's event %+v, want created", e)
+	}
+	seq3 := lastSeq(ev3)
+
+	// Poll 5, the next day: the new term's complete snapshot again. Its
+	// range does not reach back to 18 December, which stays.
+	poll(time.Date(2027, 1, 13, 23, 30, 0, 0, time.UTC), e2ePages{attendance: term2, scored: true})
+	for _, e := range jrn.events("e_parent1", seq3) {
+		if e.Kind == journalapi.KindRemoved {
+			t.Fatalf("the second January poll removed %s %s of %s", e.RecordType, e.Key, e.DataSubject)
+		}
+	}
+	wantCarried("after the second January poll")
+	parentRows = jrn.state("e_parent1")
 
 	// Visibility: a child reads only its own rows, and never a term
 	// comment (audience guardians); the guardian reads both children's.
