@@ -115,6 +115,13 @@ test:
   # packages build and run at once. The request stays modest (2Gi) so a burst
   # of Renovate MR pipelines can still schedule; the 8Gi limit is what stops
   # the OOM kill.
+  #
+  # Cluster runner only. The KUBERNETES_* sizing above means nothing to the
+  # untagged tak runner (docker executor in Docker Desktop), and there the root
+  # package's test binary was killed (`signal: killed`, main pipeline 4138) or
+  # missed its 60s delivery deadlines (MR !119 pipeline 4128); on the cluster
+  # runner the same commits pass.
+  tags: [cluster]
   variables:
     KUBERNETES_MEMORY_REQUEST: "2Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
