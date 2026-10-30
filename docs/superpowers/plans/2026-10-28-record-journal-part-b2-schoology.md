@@ -221,11 +221,13 @@ NOTE (B2 implementation):
 **Files:**
 - Modify: `scripts/test-chart-records.sh`, `charts/glovebox/values.yaml` (comment)
 
-- [ ] **Step 7.1: Write the failing test:** `journal.connectorRecordTypes: [powerschool, schoology]` renders nine types into the core config; `[schoology]` alone renders two.
-- [ ] **Step 7.2: Run; expect FAIL** (if B1's helper reads files by name it may already pass: then the step is the test only; note it).
-- [ ] **Step 7.3:** Document `journal.staleness` `source=schoology/` (`maxAgeHours: 96`) in the values comment.
-- [ ] **Step 7.4: Run; expect PASS.**
-- [ ] **Step 7.5: Commit** (`feat(chart): schoology record types`).
+- [x] **Step 7.1: Write the failing test:** `journal.connectorRecordTypes: [powerschool, schoology]` renders nine types into the core config; `[schoology]` alone renders two.
+- [x] **Step 7.2: Run; expect FAIL** (if B1's helper reads files by name it may already pass: then the step is the test only; note it).
+- [x] **Step 7.3:** Document `journal.staleness` `source=schoology/` (`maxAgeHours: 96`) in the values comment.
+- [x] **Step 7.4: Run; expect PASS.**
+- [x] **Step 7.5: Commit** (`feat(chart): schoology record types`).
+
+NOTE (B2 implementation): as Step 7.2 anticipated, B1's `glovebox.journalRecordTypes` reads `journal-record-types/<name>.json` by name, so with the file from Task 2 the new checks passed at once; this task is the tests and the values comments. Red was seen by moving `schoology.json` aside: all four new type checks (and the Schoology checks of Task 6) failed; the file was put back. Checks added: `[schoology]` renders the file's two types; `[powerschool, schoology]` renders the nine in that order; both connectors on (lists set on the command line, since helm replaces them) give each pod its block and one token, one set of alerts, and both services entries; both on with only `[powerschool]` listed is refused by B1's I1 check on `lms_assignment`; the `source=schoology/` staleness prefix passes through. The values comments name schoology in `connectorRecordTypes` and document `source=schoology/` (`maxAgeHours: 96`) next to `journal.staleness`.
 
 ---
 

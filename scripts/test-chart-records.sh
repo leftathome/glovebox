@@ -342,6 +342,24 @@ check "types: none without connectorRecordTypes (journal values)" \
 check "types: connectorRecordTypes [powerschool] renders the file's seven types" \
   "core_config['journal']['record_types'] == json.load(open('$TYPES')) and len(core_config['journal']['record_types']) == 7 and all(t['owner'] == 'powerschool' for t in core_config['journal']['record_types'])" \
   "${V[@]}"
+STYPES="$CHART/journal-record-types/schoology.json"
+check "types: connectorRecordTypes [schoology] renders the file's two types" \
+  "core_config['journal']['record_types'] == json.load(open('$STYPES')) and [t['name'] for t in core_config['journal']['record_types']] == ['lms_assignment', 'lms_assignment_detail'] and all(t['owner'] == 'schoology' for t in core_config['journal']['record_types'])" \
+  "${SV[@]}"
+# Both connectors: lists replace, so the merged lists are set here.
+BOTH=("${V[@]}" "${SV[@]}" --set 'journal.connectorRecordTypes={powerschool,schoology}' --set 'journal.networkPolicy.writerConnectors={powerschool,schoology}')
+check "types: connectorRecordTypes [powerschool, schoology] renders nine types, in that order" \
+  "core_config['journal']['record_types'] == json.load(open('$TYPES')) + json.load(open('$STYPES')) and len(core_config['journal']['record_types']) == 9" \
+  "${BOTH[@]}"
+check "both on: each connector has its block and one journal token; one set of alerts" \
+  "'records' in cfg('powerschool') and 'records' in cfg('schoology') and len(tokens('powerschool')) == 1 and len(tokens('schoology')) == 1 and set(alerts) == $ALERTS_SET and sorted(k for k in core_config['journal']['services'] if 'connector-' in k) == ['openclaw/glovebox-glovebox-connector-powerschool', 'openclaw/glovebox-glovebox-connector-schoology']" \
+  "${BOTH[@]}"
+expect_fail "types: both on, schoology's types missing" \
+  "may write record type \"lms_assignment\", which is not in the journal's record_types" \
+  "${V[@]}" "${SV[@]}" --set 'journal.connectorRecordTypes={powerschool}' --set 'journal.networkPolicy.writerConnectors={powerschool,schoology}'
+check "types: the documented schoology staleness prefix passes through" \
+  "core_config['journal']['staleness_prefixes'] == ['source=powerschool/', 'source=schoology/']" \
+  "${BOTH[@]}" --set-json 'journal.staleness=[{"prefix":"source=powerschool/","maxAgeHours":96},{"prefix":"source=schoology/","maxAgeHours":96}]'
 check "types: the core config is the Go fixture (internal/config TestJournalHelmRenderedRecordsFixture)" \
   "core_config == json.load(open('$ROOT/internal/config/testdata/helm-rendered-records.json'))" "${V[@]}"
 # A write_type the core does not have would stop the core at startup

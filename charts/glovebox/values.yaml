@@ -2967,10 +2967,11 @@ journal:
   # Connectors whose own record type definitions are appended to
   # recordTypes (decision S14 of the Part B1 plan). Each name loads
   # journal-record-types/<name>.json from the chart, which is generated from
-  # the connector's Go definitions (a test fails when they drift). Only
-  # powerschool exists. A type version defined both here and in recordTypes
-  # fails the render.
-  #   connectorRecordTypes: [powerschool]
+  # the connector's Go definitions (a test fails when they drift):
+  # powerschool (seven types) and schoology (lms_assignment,
+  # lms_assignment_detail). A type version defined both here and in
+  # recordTypes fails the render.
+  #   connectorRecordTypes: [powerschool, schoology]
   connectorRecordTypes: []
   # Importance, grouping and notification rules (spec 4.10). Each rule
   # matches one record_type, optionally event kinds (created, updated,
@@ -3005,8 +3006,12 @@ journal:
   # `source=<v>/` or `source=<v>/surface=<v>/` (a prefix becomes a metric
   # label, so nothing finer is allowed). maxAgeHours 96 is two school days
   # across a weekend. With connectors.powerschool.records enabled, gitops
-  # sets:
+  # sets the first; with schoologyConnector.records enabled, the second (a
+  # listing that answered is sent every poll, even empty, so the scope stays
+  # fresh while the connector polls):
   #   - prefix: "source=powerschool/"
+  #     maxAgeHours: 96
+  #   - prefix: "source=schoology/"
   #     maxAgeHours: 96
   staleness: []
   rbac:
