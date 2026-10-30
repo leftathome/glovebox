@@ -156,11 +156,13 @@ In `detailRun.handle`, the read is attributed to the kid only after the id, cour
 
 Builder: one snapshot per kid per poll with at least one verified read: scope `(schoology, assignment_detail, subject)`, `complete: false`, key = the assignment id. Fields: `description` (`d.DescriptionText`) and `comments` (T3: populated -> entries' `Text` joined by `"\n\n"`; otherwise null) through `Fields.Text` -- not `cleanText`, `writeUntrusted` or the item's framing.
 
-- [ ] **Step 4.1: Write the failing tests:** a clean read gives a record with the description unchanged (fixture with line breaks, a link rendered `text (href)`, a bidi control); an unchanged re-read (seen hash equal) still gives a record and stages no item; a read with a parse error, one with a comments error, and one with `course_unverified` give no record but still stage their item as today; an id or title mismatch gives neither; comments: populated (two entries -> joined), empty -> null; `OnVerified == nil` changes nothing (compare staged items and checkpoint with and without the hook set); `validateAll`.
-- [ ] **Step 4.2: Run; expect FAIL.**
-- [ ] **Step 4.3: Implement** `VerifiedDetail`, `BuildAssignmentDetails(b Binding, reads []VerifiedDetail, observedAt time.Time, onCut func()) []journalapi.Snapshot`.
-- [ ] **Step 4.4: Run; expect PASS** (whole `./connectors/schoology/...` suite).
-- [ ] **Step 4.5: Commit** (`feat(schoology): lms_assignment_detail records from verified detail reads`).
+- [x] **Step 4.1: Write the failing tests:** a clean read gives a record with the description unchanged (fixture with line breaks, a link rendered `text (href)`, a bidi control); an unchanged re-read (seen hash equal) still gives a record and stages no item; a read with a parse error, one with a comments error, and one with `course_unverified` give no record but still stage their item as today; an id or title mismatch gives neither; comments: populated (two entries -> joined), empty -> null; `OnVerified == nil` changes nothing (compare staged items and checkpoint with and without the hook set); `validateAll`.
+- [x] **Step 4.2: Run; expect FAIL.**
+- [x] **Step 4.3: Implement** `VerifiedDetail`, `BuildAssignmentDetails(b Binding, reads []VerifiedDetail, observedAt time.Time, onCut func()) []journalapi.Snapshot`.
+- [x] **Step 4.4: Run; expect PASS** (whole `./connectors/schoology/...` suite).
+- [x] **Step 4.5: Commit** (`feat(schoology): lms_assignment_detail records from verified detail reads`).
+
+NOTE (B2 implementation): the hook sits right after the `course_unverified` bookkeeping and before the unchanged-hash return, as planned; `VerifiedDetail.Rule` is the kid's `assignment_detail` rule. `BuildAssignmentDetails` splits a kid's reads over several `complete: false` snapshots of the same scope and `observed_at` when one would exceed the journal's 8 MiB body (or 5000 records): a poll can read 200 details of up to 128 KiB of text each, and an oversized body is refused whole and permanently. For a windowed scope the split says exactly what one snapshot would. A repeated id keeps the first read (`duplicate_key`), an id of 0 is `no_id`. `comments` skips nil and empty entries before joining with `"\n\n"`; a layout-unmapped block's entries are carried as the library returned them (T3), while the item body keeps its count-only line (asserted). The detail harness gained an `onVerified` field passed as `DetailDeps.OnVerified`; the existing golden and review tests pass unchanged. `TestDetailWithoutTheHookChangesNothing` compares staged items (minus the staging timestamp) and the checkpoint file across two polls with and without the hook. Red: with a stub builder and the hook not yet called, four tests failed (no reads, no snapshots, an index panic).
 
 ---
 

@@ -134,6 +134,13 @@ type DetailDeps struct {
 	// request is started that could not finish before it. Zero is no
 	// deadline (a poll made outside any window).
 	Deadline time.Time
+	// OnVerified, when set (records on), is called for every clean read
+	// of a kid's assignment: the id, course and title checks passed, the
+	// page parsed without error, the comments were read and the course
+	// could be checked (decision T2). It is called whether or not the
+	// content changed since the last read, and before the item is staged;
+	// it must not touch the item path. nil (records off) changes nothing.
+	OnVerified func(VerifiedDetail)
 }
 
 // detailWork is one assignment whose detail is due to be read for one kid.
@@ -685,6 +692,13 @@ func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) 
 		if degraded == "" {
 			degraded = "the detail page shows no course to check against the list row"
 		}
+	}
+
+	// Records (decision T2): only a clean read, changed or not. A degraded
+	// read would blank good values in the journal; its item is staged as
+	// before.
+	if deps.OnVerified != nil && !parseFailed && !courseUnverified {
+		deps.OnVerified(VerifiedDetail{Kid: kid, Rule: ks.rule, Row: w.row, Detail: d, Comments: f.comments, ReadAt: run.now})
 	}
 
 	opts := buildDetailItemOptions(w.row, d, f.comments, ks.rule)

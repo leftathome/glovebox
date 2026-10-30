@@ -53,6 +53,8 @@ type detailHarness struct {
 	// ctx and deadline override the poll context and window end.
 	ctx      context.Context
 	deadline time.Time
+	// onVerified is DetailDeps.OnVerified (nil: records off).
+	onVerified func(VerifiedDetail)
 }
 
 func newDetailHarness(t *testing.T) *detailHarness {
@@ -129,6 +131,7 @@ func (h *detailHarness) poll(lists ...KidAssignments) (int, bool, *ReceiptDedup)
 	}
 	staged, errs := ProcessAssignmentDetails(ctx, DetailDeps{
 		Deadline:   h.deadline,
+		OnVerified: h.onVerified,
 		Client:     h.client(),
 		Writer:     h.writer,
 		Matcher:    h.matcher,
