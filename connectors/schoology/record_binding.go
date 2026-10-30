@@ -5,6 +5,8 @@ import (
 	"slices"
 
 	"github.com/leftathome/glovebox/connector"
+	"github.com/leftathome/glovebox/connector/records"
+	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
 
 // applyRecordsDefaults fills the records block, only when it is enabled: a
@@ -79,6 +81,22 @@ type Binding struct {
 	// OnSkip counts a row or snapshot a builder left out, by reason
 	// (schoology_record_rows_skipped_total). nil: not counted.
 	OnSkip func(reason string)
+}
+
+func (b Binding) skip(reason string) {
+	if b.OnSkip != nil {
+		b.OnSkip(reason)
+	}
+}
+
+// scope is a scope of this binding's subject on one record surface.
+func (b Binding) scope(surface string) []journalapi.ScopePart {
+	return records.Scope(recordSource, surface, b.DataSubject)
+}
+
+// record is one record about the binding's subject, with its audience.
+func (b Binding) record(key string, f *records.Fields) journalapi.Record {
+	return journalapi.Record{Key: key, DataSubject: b.DataSubject, Audience: slices.Clone(b.Audience), Fields: f.Map()}
 }
 
 // subjectFor resolves the binding of a kid's surface. Without a rule, or a

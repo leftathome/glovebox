@@ -51,6 +51,7 @@ type Telemetry struct {
 	triggerRequestsTotal    metric.Int64Counter
 	viewChildSwitchesTotal  metric.Int64Counter
 	detailFetchesTotal      metric.Int64Counter
+	recordRowsSkipped       metric.Int64Counter
 
 	tracer trace.Tracer
 }
@@ -125,8 +126,23 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 	if err != nil {
 		return nil, fmt.Errorf("construct schoology_assignment_detail_fetches_total: %w", err)
 	}
+	t.recordRowsSkipped, err = meter.Int64Counter("schoology_record_rows_skipped_total",
+		metric.WithDescription("Rows or snapshots the record builders left out, by reason (no_id, duplicate_key, "+
+			"snapshot_too_large, builder_panic). Records only; items are not affected."))
+	if err != nil {
+		return nil, fmt.Errorf("construct schoology_record_rows_skipped_total: %w", err)
+	}
 
 	return t, nil
+}
+
+// RecordRecordRowSkipped adds one to
+// schoology_record_rows_skipped_total{reason}.
+func (t *Telemetry) RecordRecordRowSkipped(reason string) {
+	if t == nil {
+		return
+	}
+	t.recordRowsSkipped.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // RecordAssignmentDetailFetch increments

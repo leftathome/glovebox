@@ -127,11 +127,13 @@ NOTE (B2 implementation): `RecordTypes()` in `record_types.go` (owner `schoology
 
 One snapshot per kid per listing that answered (`processAssignments`'s `listed == true`): scope `(schoology, assignments, subject)`, `complete: false`, one record per row (nil rows skipped; rows the library failed to parse are not in `rows` and are simply absent, which a windowed scope tolerates). Key: `strconv.FormatInt(a.ID, 10)`; a row with `ID == 0` is skipped and counted (`schoology_record_rows_skipped_total{reason="no_id"}`, nil-safe, in `telemetry.go`); a repeated id keeps the first. Fields: `title` (`a.Title`), `course` (`a.CourseTitle`), `status` (`string(a.Status)`), `link` (`a.URL`) through `Fields.String`; `due` (`a.DueAt`, zero is null) through `Fields.Timestamp`. An empty listing that answered gives an empty snapshot (harmless with `complete: false`; it confirms nothing and removes nothing) -- send it anyway so the journal's staleness metric sees the scope.
 
-- [ ] **Step 3.1: Write the failing tests:** fields and key for the fixture rows from `assignments_test.go`; every record has exactly the type's fields; a status change between two listings gives two snapshots whose records differ only in `status` (the journal turns that into `updated`; the item path stages nothing the second time -- assert that too, it is the gap 5.2 describes); `complete` false; `validateAll`; the record keys equal the ids `SaveLastSeenID` writes for the same rows.
-- [ ] **Step 3.2: Run; expect FAIL.**
-- [ ] **Step 3.3: Implement** `BuildAssignmentListing(b Binding, rows []*schoologylib.Assignment, observedAt time.Time) journalapi.Snapshot` and `AssignmentRecordKey(id int64) string` (for the seed).
-- [ ] **Step 3.4: Run; expect PASS.**
-- [ ] **Step 3.5: Commit** (`feat(schoology): lms_assignment record builder`).
+- [x] **Step 3.1: Write the failing tests:** fields and key for the fixture rows from `assignments_test.go`; every record has exactly the type's fields; a status change between two listings gives two snapshots whose records differ only in `status` (the journal turns that into `updated`; the item path stages nothing the second time -- assert that too, it is the gap 5.2 describes); `complete` false; `validateAll`; the record keys equal the ids `SaveLastSeenID` writes for the same rows.
+- [x] **Step 3.2: Run; expect FAIL.**
+- [x] **Step 3.3: Implement** `BuildAssignmentListing(b Binding, rows []*schoologylib.Assignment, observedAt time.Time) journalapi.Snapshot` and `AssignmentRecordKey(id int64) string` (for the seed).
+- [x] **Step 3.4: Run; expect PASS.**
+- [x] **Step 3.5: Commit** (`feat(schoology): lms_assignment record builder`).
+
+NOTE (B2 implementation): the library's `AssignmentStatus` values are lowercase (`overdue` / `upcoming`), as is the item's `status` tag; T4's "Overdue / Upcoming" is read as "the library's value", which is what the record carries. A repeated id keeps the first row and is counted `duplicate_key` besides `no_id` (the journal refuses a repeated key), both through `Binding.OnSkip` into `schoology_record_rows_skipped_total` (`Telemetry.RecordRecordRowSkipped`, nil-safe). Records are in listing order. `Binding.scope` / `Binding.record` live in `record_binding.go`. Red: against a stub builder all three tests failed (snapshot_id not a UUID); the first green run then failed on the status casing, fixed in the test as above.
 
 ---
 
