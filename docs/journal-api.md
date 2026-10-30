@@ -631,8 +631,8 @@ own state volume and a separate loop sends them (`connector/records`, spec
 4.14). Items are not affected by anything here: a snapshot that cannot be
 written, sent or accepted never changes what the connector stages or its
 checkpoints. openclaw switches from items to the journal only when **both**
-PowerSchool and Schoology emit records (Schoology is Part B2, not built
-yet); until then connector records are shadow data.
+PowerSchool and Schoology emit records (Schoology is Part B2; both are
+off by default); until then connector records are shadow data.
 
 **Layout.** `<state>/spool/` (the connector's `/state`, its PVC), mode 0700,
 holds one file per snapshot named `<observed_at>-<snapshot_id>.json`

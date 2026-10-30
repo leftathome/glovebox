@@ -792,7 +792,28 @@ arrival are distinct signals.
 | Record type | Key | Fields | Scope (complete?) |
 |---|---|---|---|
 | `lms_assignment` | assignment id | `title`, `course`, `status`, `link` string; `due` timestamp | `(schoology, assignments, subject)` -- **no**: the overdue/upcoming listing is a window |
-| `lms_assignment_detail` | assignment id | `teacher` string; `description`, `comments` text | `(schoology, assignment_detail, subject)` -- **no**: detail reads are budgeted |
+| `lms_assignment_detail` | assignment id | `description`, `comments` text | `(schoology, assignment_detail, subject)` -- **no**: detail reads are budgeted |
+
+Amended by the Part B2 plan (`docs/superpowers/plans/2026-10-28-record-journal-part-b2-schoology.md`):
+
+- Decision T1: `lms_assignment_detail` has no `teacher` field in schema
+  version 1. schoology-go v0.3.0's `AssignmentDetail` has none (a parent's
+  page does not show a teacher); when the library exposes one, version 2
+  adds it as an optional field (4.7).
+- Decision T2: a detail record is sent only for a clean read (the id,
+  course and title checks passed, no parse error, comments read, course
+  verifiable). A degraded read would write empty or partial values over
+  good ones; its item is staged as before.
+- Decision T3: `comments` is a populated block's entries joined with a
+  blank line, in page order, as the library returned them; `null` when the
+  block is empty.
+- Decision T4: `status` and `link` are the library's values (`overdue` /
+  `upcoming`; the path-only link). No host is invented.
+- Decision T5: with records on, each kid needs an exact assignment rule
+  ahead of any `*` rule, with a subject of its own, and the detail rule
+  names the same subject.
+- Decision T6: the chart refuses Schoology records with an emptyDir state
+  volume (the spool, 4.14, must be durable).
 
 What this does and does not capture, stated plainly:
 

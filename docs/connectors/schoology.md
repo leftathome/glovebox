@@ -354,6 +354,117 @@ Metric: `schoology_assignment_detail_fetches_total{kid,outcome}` with outcome
 `schoology.poll.assignment_detail`, `schoology.lib.GetAssignment`,
 `schoology.lib.GetAssignmentComments`, `schoology.lib.ValidateSession`.
 
+## Records (journal)
+
+With `records.enabled` (chart: `schoologyConnector.records.enabled`; off
+by default) the connector also writes record snapshots to the record
+journal (spec `docs/superpowers/specs/2026-10-16-record-journal-design.md`
+5.2), in shadow: the items above are staged exactly as before. The spool,
+the sending and the metrics are the shared `connector/records` package
+([journal-api.md, "Connector side: the spool"](../journal-api.md)). With
+records off nothing new is built: no spool, no metric, no log line, and the
+poll is the same request for request and item for item.
+
+| Record type | Key | Fields | Scope | Audience |
+|---|---|---|---|---|
+| `lms_assignment` | assignment id | `title`, `course`, `status`, `link` string; `due` timestamp | `(schoology, assignments, <subject>)`, `complete: false` | `[subject, guardians]` by default; the kid's assignment rule |
+| `lms_assignment_detail` | assignment id | `description`, `comments` text | `(schoology, assignment_detail, <subject>)`, `complete: false` | `[subject, guardians]` by default; the kid's detail rule |
+
+Both types are owned by `schoology`, schema version 1, every field
+nullable. The definitions live in Go (`RecordTypes()` in
+`connectors/schoology/record_types.go`); the chart's
+`charts/glovebox/journal-record-types/schoology.json` is generated from
+them and a test fails when they drift. `lms_assignment_detail` has no
+`teacher` field: schoology-go v0.3.0 does not expose one (a parent's page
+does not show it). When the library does, version 2 adds it as an optional
+field.
+
+**What this captures, and what it does not.** Both scopes are windows, so
+both snapshots are `complete: false`: they add and update, and never
+remove.
+
+- A change while an assignment is in the overdue/upcoming listing (its
+  status, due date or title) becomes an `updated` event. The item path's
+  seen set stages nothing for it.
+- An assignment that leaves the listing produces no event: the listing
+  does not say why it left. Its row keeps its last values with
+  `in_latest_snapshot: false`.
+- PowerSchool's `assignment` (a complete scope) is the authoritative record
+  of submitted and scored work.
+- Posts and messages stay items; they are not records.
+
+**When records are sent.**
+
+- `lms_assignment`: one snapshot per kid per poll whose listing answered
+  (a listing that failed sends nothing for that kid), one record per listed
+  row, in listing order. An empty listing that answered is an empty
+  snapshot: it removes nothing and keeps the journal's staleness check
+  (`source=schoology/`) fed. `observed_at` is the time just before the
+  kid's listing was requested. `status` and `link` are the library's values
+  (`overdue` / `upcoming`, and the path-only link of the item's `Link:`
+  line; no host is added).
+- `lms_assignment_detail`: one snapshot per kid per poll with at least one
+  **clean** detail read: the page's id, course and title matched the kid's
+  listing, the page parsed without error, its comments were read, and the
+  course could be checked. A degraded read (a parse error, an unreadable
+  comments page, `course_unverified`) is no record -- it would blank good
+  values -- but its item is staged as before. A clean read is a record
+  whether or not it changed since the last read; the journal skips
+  unchanged content. `description` is the library's text, unchanged (no
+  framing, no cleaning: the journal scans text). `comments` is a populated
+  block's entries joined with a blank line, in page order, each as the
+  library returned it (while the library reports the layout unmapped an
+  entry is author, time and body run together); `null` for an empty
+  block. A text value over 64 KiB is cut (counted in
+  `glovebox_journal_record_values_cut_total`). A poll's reads are split over
+  more than one snapshot of the same scope when one would exceed the
+  journal's 8 MiB body. `observed_at` is the time the detail surface
+  started. With the session refused on another surface the detail surface
+  is skipped, so only the listings are sent.
+- A record never affects an item: a builder that fails, or a spool that
+  cannot be written, is counted and logged, and the poll goes on.
+
+**Who a record is about.** A record carries the `data_subject` and
+`audience` of the rule that routes the kid's items on that surface
+(`schoology:<kid>:assignment`, `schoology:<kid>:assignment_detail`). With
+records enabled the connector refuses to start unless every kid has an
+exact `schoology:<kid>:assignment` rule ahead of any `"*"` rule, with a
+`data_subject` no other kid's rule uses, and, for a kid with the detail
+surface on, a detail rule naming the same subject. (Without records the
+rules stay as liberal as before.) Every subject must be a member of the
+household roster, or the journal answers `409 unknown_subject` and the
+scope waits in the spool.
+
+**Keys.** The assignment id in decimal, the same id the item path's seen
+set holds (`AssignmentRecordKey`).
+
+**Config keys** (`records` in `config.json`; the chart renders them from
+`schoologyConnector.records` and refuses a `records` block written into
+`schoologyConnector.config`):
+
+| Key | Default | Range |
+|---|---|---|
+| `enabled` | `false` | |
+| `journal_url` | -- | `http(s)://host[:port]` |
+| `token_file` | -- | absolute path of the projected token |
+| `timeout_seconds` | 90 | 10-600 |
+| `spool.max_age_hours` | 168 | 1-2160 |
+| `spool.max_bytes` | 268435456 | 1 MiB - 4 GiB |
+
+The spool is `/state/spool`, so the state volume must survive a restart:
+the chart refuses `schoologyConnector.records.enabled` unless
+`schoologyConnector.state.persistent` (or `state.existingClaim`) is set.
+
+**Skipped rows** are counted in `schoology_record_rows_skipped_total` by
+`reason`: `no_id` (a listed row without an id), `duplicate_key` (an id
+listed or read twice), `snapshot_too_large` (a listing over the journal's
+limits; not sent), `builder_panic`.
+
+**Cutover.** openclaw switches from items to the journal only when both
+PowerSchool and Schoology emit records. Enabling these records changes
+nothing openclaw reads. The enabling checklist is in
+[upgrading.md, "Schoology records (Part B2)"](../upgrading.md#schoology-records-part-b2).
+
 ## Enabling in the Helm chart
 
 Schoology is **not** wired through the generic `connectors:` map. It has

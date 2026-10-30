@@ -734,7 +734,7 @@ decisions S1-S16 are referred to below.
 
 **Cutover.** openclaw keeps reading items. It switches to the journal only
 when **both** school connectors emit records: PowerSchool (this, Part B1)
-and Schoology (Part B2, not done yet). Until then the PowerSchool records
+and Schoology (Part B2, `schoology.md`). Until then the PowerSchool records
 are shadow data for the comparison of rollout step 4, and nothing reads
 them in production.
 
