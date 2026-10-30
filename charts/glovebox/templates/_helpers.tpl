@@ -869,7 +869,7 @@ recordTypes, rendered as before.
 {{- $file = $.Files.Get (printf "journal-record-types/%s.json" $name) -}}
 {{- end -}}
 {{- if not $file -}}
-{{- fail (printf "journal.connectorRecordTypes names %q, but the chart has no journal-record-types/%s.json: only connectors that write records ship their types (powerschool)" $name $name) -}}
+{{- fail (printf "journal.connectorRecordTypes names %q, but the chart has no journal-record-types/%s.json: only connectors that write records ship their types (powerschool, schoology)" $name $name) -}}
 {{- end -}}
 {{- $types = concat $types ($file | fromJsonArray) -}}
 {{- end -}}
@@ -885,16 +885,19 @@ recordTypes, rendered as before.
 {{- end }}
 
 {{/*
-"true" when a connectors.<name> entry has records enabled (record journal
-Part B), "" otherwise. Takes (dict "name" <key> "connector" <entry>). Only
-the PowerSchool connector builds records; records on any other entry fail
-the render rather than render a token and a block nothing reads.
+"true" when a connector has records enabled (record journal Part B), ""
+otherwise. Takes (dict "name" <key> "connector" <entry>) for a
+connectors.<name> entry, plus "schoologyConnector" true for the Schoology
+connector's own block (Part B2). Only the PowerSchool connector
+(connectors.powerschool) and the Schoology connector (schoologyConnector)
+build records; records on any other entry fail the render rather than
+render a token and a block nothing reads.
 */}}
 {{- define "glovebox.recordsEnabled" -}}
 {{- $r := (.connector | default dict).records | default dict -}}
 {{- if $r.enabled -}}
-{{- if ne (toString .name) "powerschool" -}}
-{{- fail (printf "connectors.%s.records.enabled: only the powerschool connector writes records to the journal; no other connector here has record builders" (toString .name)) -}}
+{{- if not (or (and .schoologyConnector (eq (toString .name) "schoology")) (and (not .schoologyConnector) (eq (toString .name) "powerschool"))) -}}
+{{- fail (printf "connectors.%s.records.enabled: only the powerschool connector writes records to the journal (and the Schoology connector, under schoologyConnector.records); no other connector here has record builders" (toString .name)) -}}
 {{- end -}}
 true
 {{- end -}}
@@ -902,24 +905,27 @@ true
 
 {{/*
 The records block of a records-enabled connector's config.json, as JSON
-(records.Config plus the PowerSchool settle time). Takes (dict "connector"
-<entry> "root" $). A zero or missing value takes its default here, as the
-connector would, so the rendered block shows what runs. glovebox.recordsChecks
-bounds every value first.
+(records.Config, plus the PowerSchool settle time for any connector but
+the Schoology one). Takes (dict "connector" <entry> "root" $, and "name"
+"schoology" for the Schoology connector). A zero or missing value takes its
+default here, as the connector would, so the rendered block shows what
+runs. glovebox.recordsChecks bounds every value first.
 */}}
 {{- define "glovebox.recordsConfig" -}}
 {{- $r := .connector.records | default dict -}}
 {{- $spool := $r.spool | default dict -}}
-{{- dict
+{{- $block := dict
   "enabled" true
   "journal_url" (printf "http://%s-journal:%d" (include "glovebox.fullname" .root) (int .root.Values.journal.port))
   "token_file" "/var/run/secrets/glovebox-journal/token"
   "timeout_seconds" (int ($r.timeoutSeconds | default 90))
-  "attendance_day_settle_school_days" (int ($r.attendanceDaySettleSchoolDays | default 3))
   "spool" (dict
     "max_age_hours" (int ($spool.maxAgeHours | default 168))
-    "max_bytes" (int64 ($spool.maxBytes | default 268435456)))
-  | toJson -}}
+    "max_bytes" (int64 ($spool.maxBytes | default 268435456))) -}}
+{{- if ne (toString .name) "schoology" -}}
+{{- $_ := set $block "attendance_day_settle_school_days" (int ($r.attendanceDaySettleSchoolDays | default 3)) -}}
+{{- end -}}
+{{- $block | toJson -}}
 {{- end }}
 
 {{/*
@@ -938,9 +944,22 @@ the PowerSchool settle time), so values that render are values it accepts.
 {{- $root := .root -}}
 {{- $j := $root.Values.journal | default dict -}}
 {{- $r := .connector.records | default dict -}}
+{{- $sc := and .schoologyConnector (eq (toString .name) "schoology") -}}
 {{- $p := printf "connectors.%s.records" (toString .name) -}}
+{{- if $sc -}}{{- $p = "schoologyConnector.records" -}}{{- end -}}
 {{- if not $j.enabled -}}
 {{- fail (printf "%s.enabled needs journal.enabled: the connector would spool snapshots for a journal that does not exist" $p) -}}
+{{- end -}}
+{{- /*
+  Decision T6 (Part B2): the spool is on the connector's state volume, and
+  the Schoology connector's state is an emptyDir unless made persistent. A
+  spool a pod restart wipes is not durable.
+*/ -}}
+{{- if $sc -}}
+{{- $state := .connector.state | default dict -}}
+{{- if not (or $state.persistent $state.existingClaim) -}}
+{{- fail (printf "%s.enabled needs a durable state volume: set schoologyConnector.state.persistent (or state.existingClaim). The spool lives under /state/spool, and with the default emptyDir a pod restart would lose every snapshot not yet sent" $p) -}}
+{{- end -}}
 {{- end -}}
 {{- if (.connector.loginOnDemand | default dict).enabled -}}
 {{- fail (printf "%s.enabled is refused together with connectors.%s.loginOnDemand.enabled: that mode mounts the connector's Kubernetes API token, and a connector with journal rights holds only a token projected for the journal (spec 4.9c). Use the login broker (loginBroker) instead" $p (toString .name)) -}}
@@ -961,9 +980,11 @@ the PowerSchool settle time), so values that render are values it accepts.
 {{- if or (lt $timeout 10) (gt $timeout 600) -}}
 {{- fail (printf "%s.timeoutSeconds must be 10-600, got %v" $p $r.timeoutSeconds) -}}
 {{- end -}}
+{{- if not $sc -}}
 {{- $settle := int ($r.attendanceDaySettleSchoolDays | default 3) -}}
 {{- if or (lt $settle 1) (gt $settle 10) -}}
 {{- fail (printf "%s.attendanceDaySettleSchoolDays must be 1-10, got %v" $p $r.attendanceDaySettleSchoolDays) -}}
+{{- end -}}
 {{- end -}}
 {{- $spool := $r.spool | default dict -}}
 {{- $age := int ($spool.maxAgeHours | default 168) -}}

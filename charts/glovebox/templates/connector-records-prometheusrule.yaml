@@ -27,6 +27,10 @@ stays.
 {{- $any = true }}
 {{- end }}
 {{- end }}
+{{- $sc := .Values.schoologyConnector | default dict }}
+{{- if and $sc.enabled (include "glovebox.recordsEnabled" (dict "name" "schoology" "connector" $sc "schoologyConnector" true)) }}
+{{- $any = true }}
+{{- end }}
 {{- if and $any $pr.enabled }}
 {{- $extra := "" }}
 {{- with $pr.extraSelector }}{{- $extra = printf ",%s" . }}{{- end }}

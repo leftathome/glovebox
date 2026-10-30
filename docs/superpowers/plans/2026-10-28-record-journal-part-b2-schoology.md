@@ -201,11 +201,18 @@ NOTE (B2 implementation):
 
 The Schoology configmap merges the `records` block into `$cfg` before `toJson` (after the `assignment_detail` merge). The deployment adds the same `journal-token` projected volume and mount as B1 Task 20, and keeps `automountServiceAccountToken: false`.
 
-- [ ] **Step 6.1: Write the failing render tests:** default values byte-identical to `BASE_REF`; records on (journal enabled, writer `schoology`, services entry `openclaw/glovebox-glovebox-connector-schoology` with `write_types: [lms_assignment, lms_assignment_detail]`, `write_scopes: {source: [schoology]}`, `write_subjects: roster_subjects`, `state.persistent: true`): the block and token render, no other token; refusals: `state.persistent: false` without `existingClaim` (T6), no writer entry, no services entry, journal disabled; the PrometheusRule renders with only Schoology's records on.
-- [ ] **Step 6.2: Run; expect FAIL.**
-- [ ] **Step 6.3: Implement.**
-- [ ] **Step 6.4: Run; expect PASS** (`REQUIRE_BASE_REF=1 scripts/chart-checks.sh`).
-- [ ] **Step 6.5: Commit** (`feat(chart): schoology records block and projected journal token`).
+- [x] **Step 6.1: Write the failing render tests:** default values byte-identical to `BASE_REF`; records on (journal enabled, writer `schoology`, services entry `openclaw/glovebox-glovebox-connector-schoology` with `write_types: [lms_assignment, lms_assignment_detail]`, `write_scopes: {source: [schoology]}`, `write_subjects: roster_subjects`, `state.persistent: true`): the block and token render, no other token; refusals: `state.persistent: false` without `existingClaim` (T6), no writer entry, no services entry, journal disabled; the PrometheusRule renders with only Schoology's records on.
+- [x] **Step 6.2: Run; expect FAIL.**
+- [x] **Step 6.3: Implement.**
+- [x] **Step 6.4: Run; expect PASS** (`REQUIRE_BASE_REF=1 scripts/chart-checks.sh`).
+- [x] **Step 6.5: Commit** (`feat(chart): schoology records block and projected journal token`).
+
+NOTE (B2 implementation):
+- **Helpers.** `glovebox.recordsEnabled` takes `"schoologyConnector" true` for the Schoology connector's own block; without it only `connectors.powerschool` may enable records, so a generic `connectors.schoology` entry is still refused by the name guard (tested with its own ServiceAccount and services entry, so only that guard can refuse it, matching its message). `glovebox.recordsConfig` leaves out `attendance_day_settle_school_days` for `name: schoology` (the PowerSchool render is unchanged: its call passes no name). `glovebox.recordsChecks` names `schoologyConnector.records` in its messages, refuses records with an emptyDir state (T6: neither `state.persistent` nor `state.existingClaim`), and skips the settle range for Schoology.
+- **Templates.** The Schoology ConfigMap refuses `schoologyConnector.config.records` (records on or off, as B1's S5) and merges the block after the `assignment_detail` merge; the Deployment adds the `journal-token` projected volume and read-only mount (no other change; `automountServiceAccountToken: false` stays); the PrometheusRule renders when Schoology alone has records on.
+- **Test values.** A separate `scripts/testdata/records-values-schoology.yaml` instead of changing `records-values.yaml`: that file's render is pinned by B1's Go fixtures (`internal/config/testdata/helm-rendered-records.json`), and helm replaces lists, so the two connectors are combined on the command line where needed (Task 7). `connectors/schoology/testdata/helm-rendered-records.json` is the default render of the block; `TestHelmRenderedRecordsBlock` (Go) decodes it strictly (no PowerSchool key), validates it with the record rules and checks no value is left to the connector's defaults.
+- **Identity.** Against `BASE_REF`: default values; Schoology enabled; Schoology persistent with the PrometheusRule on; Schoology with PowerSchool; and the Schoology Deployment, ConfigMap and ServiceAccount with the journal values and records off (with and without a persistent state). The records-values-schoology file is not compared with the base: its services entry names the `lms_*` types, which a base without `journal-record-types/schoology.json` refuses (B1's I1 check) -- so it would fail once B1 is on main. `only_records` (now parameterised by `OR_CONN`/`OR_OFF`) proves that, with that file, records on differ from records off only in the block, the token volume and its mount (also with the read-only root off and the detail surface on). Both bases pass: `origin/main` and `origin/feat/journal-part-b1-chart`.
+- Red: 23 of the new checks failed before the implementation (the off-identity checks passed, as they should; "records without connectorRecordTypes" already passed through B1's I1 check).
 
 ---
 
