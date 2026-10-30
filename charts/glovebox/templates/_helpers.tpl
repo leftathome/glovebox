@@ -762,6 +762,23 @@ journal.enabled.
 {{- fail (printf "journal.networkPolicy.writerConnectors names %q, but journal.services gives its ServiceAccount %q no write_types: only connectors with write rights may reach the journal port" (toString .) $key) -}}
 {{- end -}}
 {{- end -}}
+{{- /*
+  Every write_type must be a record type the core loads: an unknown one is
+  a policy error at startup (policy.New), and the core exits -- item
+  processing included. With connector records on this usually means
+  journal.connectorRecordTypes is missing the connector.
+*/ -}}
+{{- $typeNames := list -}}
+{{- range (include "glovebox.journalRecordTypes" . | fromJsonArray) -}}
+{{- $typeNames = append $typeNames (toString .name) -}}
+{{- end -}}
+{{- range $key := keys $services | sortAlpha -}}
+{{- range ((index $services $key) | default dict).write_types | default list -}}
+{{- if not (has (toString .) $typeNames) -}}
+{{- fail (printf "journal.services %q may write record type %q, which is not in the journal's record_types (journal.recordTypes, or a connector in journal.connectorRecordTypes such as powerschool): the core would refuse its policy and exit at startup" $key (toString .)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $fn := include "glovebox.fullname" . -}}
 {{- $cm := toString $j.roster.configMap -}}
 {{- if or (eq $cm $fn) (hasPrefix (printf "%s-" $fn) $cm) -}}

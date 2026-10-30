@@ -9,6 +9,9 @@ journal:
     existingSecret: glovebox-journal-db
   roster:
     configMap: openclaw-household
+  # The connector's record types; without them the services entry below
+  # names types the core does not have, and the render is refused.
+  connectorRecordTypes: [powerschool]
   services:
     openclaw/openclaw-gateway:
       read: true

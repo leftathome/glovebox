@@ -237,11 +237,21 @@ check "edge values Go accepts render" \
 
 # --- connector record types (S14) ------------------------------------------
 TYPES="$CHART/journal-record-types/powerschool.json"
-check "types: none by default (journal on)" \
-  "core_config['journal']['record_types'] == []" "${V[@]}"
+check "types: none without connectorRecordTypes (journal values)" \
+  "[t['name'] for t in core_config['journal']['record_types']] == ['assignment']" -f "$JVALUES"
 check "types: connectorRecordTypes [powerschool] renders the file's seven types" \
   "core_config['journal']['record_types'] == json.load(open('$TYPES')) and len(core_config['journal']['record_types']) == 7 and all(t['owner'] == 'powerschool' for t in core_config['journal']['record_types'])" \
-  "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}'
+  "${V[@]}"
+check "types: the core config is the Go fixture (internal/config TestJournalHelmRenderedRecordsFixture)" \
+  "core_config == json.load(open('$ROOT/internal/config/testdata/helm-rendered-records.json'))" "${V[@]}"
+# A write_type the core does not have would stop the core at startup
+# (policy.New: unknown record type), and every item with it.
+expect_fail "types: records on without connectorRecordTypes" \
+  "journal.services \"openclaw/glovebox-glovebox-connector-powerschool\" may write record type \"course_mark\", which is not in the journal's record_types" \
+  "${V[@]}" --set 'journal.connectorRecordTypes=null'
+expect_fail "types: any services write_type outside record_types" \
+  "may write record type \"nosuch\", which is not in the journal's record_types" \
+  -f "$JVALUES" --set-json 'journal.services."openclaw/glovebox-glovebox-connector-powerschool".write_types=["assignment","nosuch"]'
 check "types: recordTypes come first, then the connector's" \
   "[t['name'] for t in core_config['journal']['record_types']] == ['household_note'] + [t['name'] for t in json.load(open('$TYPES'))]" \
   "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \

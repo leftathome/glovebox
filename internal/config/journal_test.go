@@ -597,3 +597,30 @@ func TestJournalHelmRenderedFixture(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 }
+
+// The core config the chart renders with PowerSchool records on
+// (scripts/testdata/records-values.yaml) builds: every write_type of the
+// connector's services entry is a record type the core loads. Without
+// journal.connectorRecordTypes the core would exit at startup on "unknown
+// record type", and the chart refuses that render. Regenerate with:
+//
+//	helm template glovebox charts/glovebox -n openclaw -f scripts/testdata/records-values.yaml \
+//	  | python3 -c "import sys, yaml; [print(d['data']['config.json']) for d in yaml.safe_load_all(sys.stdin) if d and d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'glovebox-glovebox-config']" \
+//	  > internal/config/testdata/helm-rendered-records.json
+//
+// scripts/test-chart-records.sh fails when the fixture and the render drift.
+func TestJournalHelmRenderedRecordsFixture(t *testing.T) {
+	cfg, err := LoadConfig("testdata/helm-rendered-records.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, _, pol, err := cfg.Journal.Build()
+	if err != nil || pol == nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, name := range []string{"course_mark", "assignment", "attendance_total", "attendance_mark", "attendance_day", "term_grade", "term_comment"} {
+		if _, ok := reg.Active(name); !ok {
+			t.Errorf("record type %s not loaded", name)
+		}
+	}
+}
