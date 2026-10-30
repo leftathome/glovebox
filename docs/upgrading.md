@@ -168,7 +168,8 @@ outside the connector's ranges.
 
 **Cutover rule.** Enabling PowerSchool records changes nothing openclaw
 reads. openclaw switches to the journal only when **both** PowerSchool and
-Schoology emit records (Schoology's are Part B2, below).
+Schoology emit records (Schoology's are Part B2, below), and it switches
+both sources in one step: never PowerSchool alone first.
 
 **Enabling checklist (gitops; not done by any glovebox change):**
 
@@ -182,7 +183,10 @@ Schoology emit records (Schoology's are Part B2, below).
    `kubectl -n openclaw get cm openclaw-household -o jsonpath='{.data.household\.json}' | jq -r '.people|keys[]'`
    lists each rule's `data_subject`. A subject that is not there is answered
    `409 unknown_subject`: its scopes wait in the spool, retried, until
-   `records.spool.maxAgeHours` drops them.
+   `records.spool.maxAgeHours` drops them. **Audiences.** Every kid's rule
+   for an enabled surface names its `audience` explicitly:
+   `audience_default` is not applied to records, and the connector refuses
+   to start with records on otherwise, naming the kid and surface.
 3. HelmRelease values:
 
    ```yaml

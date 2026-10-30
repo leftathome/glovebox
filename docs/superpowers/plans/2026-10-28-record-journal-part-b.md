@@ -66,6 +66,8 @@ Each is restated in the task that implements it. None is invented spec: where th
 | S15 | **The seed (rollout step 3).** | Section 7: a one-time Job over retained items. | **Not in this plan or B2.** It reads a different input (items retained since 2026-10-10, parsed from tags and body lines), needs its own operator ServiceAccount and policy entry, and must produce exactly the keys the live connectors produce. B1 and B2 make the key and builder functions exported for it. Write the seed plan after B1 has shipped and an inventory of the retained items exists. |
 | S16 | **Days the grid could not settle before a term ends.** Steve 2026-10-29: carry pending attendance days across the term boundary. | 5.1: settled days only; the grid shows the current term. Silent on the last days of a term, which the rule as built never settled (today is never settled; a `.` day needs later school days in the same grid). | Carry each kid's not-yet-settled coded days in its checkpoint, settle them with the next term's school days by the same rule (the grid wins while it still shows a day), send them in a `complete: false` snapshot of their school year's scope, and drop one not settled within 30 calendar days (counted). Implemented; see the NOTE under Task 17. |
 
+NOTE (decision S17, Steve 2026-10-30, from the Part B2 review): records require an explicit rule audience (fail closed); audience_default is not applied to records. With records enabled, `validateRecords` refuses a kid's rule for an enabled surface that sets no `audience`, naming the kid and the surface (`TestRecordsConfigRefusesARuleWithoutAudience`). Without records nothing changes.
+
 ---
 
 ## Where Part A as built differs from what the spec assumed, and how this plan handles it
