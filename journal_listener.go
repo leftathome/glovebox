@@ -60,6 +60,26 @@ var warmScanner = func(sc *scan.Scanner) { _, _ = sc.Scan([]byte(warmUpText), "t
 // can hold a rescan inside a verdict.
 var newTextScanner = journal.NewTextScanner
 
+// rosterStrictWarning is logged once at start: the roster contract adopters
+// must know before they ever edit household.json.
+const rosterStrictWarning = "journal: WARNING the household roster is parsed strictly: " +
+	"a field this glovebox does not know makes it refuse the whole file and keep the last roster it accepted, " +
+	"so members removed after that keep their access until glovebox is updated. " +
+	"Update glovebox before adding a field to household.json (docs/journal-roster.md, " +
+	"\"Adding a field to household.json\"); alert GloveboxJournalRosterReloadFailing fires while this lasts"
+
+// rosterReloadMessage is the log line for a failed roster load. An unknown
+// field gets its own, explicit line: it is the case an operator causes by
+// adding an openclaw field, and the one where revocations silently stop.
+func rosterReloadMessage(err error) string {
+	if errors.Is(err, roster.ErrUnknownField) {
+		return "journal: ERROR roster refused, " + err.Error() + ": this glovebox does not know that household.json field. " +
+			"Keeping the last roster accepted: membership changes, INCLUDING REMOVALS, are not applied " +
+			"until glovebox is updated to know the field (docs/journal-roster.md, \"Adding a field to household.json\")"
+	}
+	return fmt.Sprintf("journal: roster reload failed, keeping the previous roster: %v", err)
+}
+
 // readyAttemptTimeout bounds one ready-loop attempt (migrations and type
 // sync); gaugeRefreshTimeout bounds one gauge refresh. Variables so tests
 // can shorten them.
@@ -187,6 +207,9 @@ func startJournal(jc config.JournalConfig, sc *scan.Scanner, rulesSHA256 string,
 					return nil
 				}
 				if _, err := holder.Reload(); err != nil {
+					if errors.Is(err, roster.ErrUnknownField) {
+						log.Print(rosterReloadMessage(err))
+					}
 					return fmt.Errorf("roster: %w", err)
 				}
 				jm.SetRosterSHA(holder.Current().SHA256())
@@ -209,7 +232,7 @@ func startJournal(jc config.JournalConfig, sc *scan.Scanner, rulesSHA256 string,
 		holder.Watch(ctx, jc.Roster.Reload(), func(r *roster.Roster, changed bool, err error) {
 			if err != nil {
 				jm.RosterReloadError()
-				log.Printf("journal: roster reload failed, keeping the previous roster: %v", err)
+				log.Print(rosterReloadMessage(err))
 				return
 			}
 			if changed && r != nil {
@@ -218,6 +241,7 @@ func startJournal(jc config.JournalConfig, sc *scan.Scanner, rulesSHA256 string,
 			}
 		})
 	})
+	log.Print(rosterStrictWarning)
 	go func() {
 		defer close(rt.served)
 		log.Printf("journal listening on %s (%d record type versions, %d services, scanner %s)",

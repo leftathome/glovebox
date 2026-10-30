@@ -22,7 +22,16 @@ The API, the policy, the spool's handling of each answer, the
 configuration bounds and the metrics are in
 [journal-api.md](journal-api.md); the roster and the enabling checklist in
 [journal-roster.md](journal-roster.md); the database in
-[journal-schema.md](journal-schema.md). Before enabling it, the
+[journal-schema.md](journal-schema.md).
+
+**Once the journal is on, update glovebox before adding any field to
+household.json.** glovebox parses the roster strictly: an unknown field makes
+it refuse the file and keep the last roster it accepted, so members removed
+afterwards keep their access until glovebox learns the field.
+`GloveboxJournalRosterReloadFailing` fires while that lasts. See
+[Adding a field to household.json](journal-roster.md#adding-a-field-to-householdjson).
+
+Before enabling it, the
 per-connector ServiceAccounts of 0.12.0 must be deployed, and gitops-kxpb
 must be fixed: the openclaw Telegram watchdog's Role can exec into every
 pod in the namespace, the glovebox core included, which would expose the
