@@ -13,6 +13,9 @@ data:
   {{- $config := $connector.config }}
   {{- $lod := $connector.loginOnDemand | default dict }}
   {{- $lb := $connector.loginBroker | default dict }}
+  {{- if and (eq $name "powerschool") (hasKey ($connector.config | default dict) "records") }}
+  {{- fail "connectors.powerschool.config.records is set: the records block is rendered by the chart from connectors.powerschool.records (and checked against the journal's values there); remove it from config" }}
+  {{- end }}
   {{- if and (eq $name "powerschool") $lod.enabled $lb.enabled }}
   {{- fail "connectors.powerschool.loginOnDemand and connectors.powerschool.loginBroker are both enabled: they are two ways of asking for a login, and with both a dead session would be answered twice -- once by the broker, and again later by the request mailbox, over the session the broker had just made. Enable exactly one" }}
   {{- end }}

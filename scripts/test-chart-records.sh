@@ -23,7 +23,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAILED=0
 
-render() { helm template glovebox "$CHART" -n openclaw "$@"; }
+# NS overrides the release namespace for one call (NS=school check ...).
+render() { helm template glovebox "$CHART" -n "${NS:-openclaw}" "$@"; }
 
 # check NAME PYTHON_EXPR [helm args...]; the expression sees docs,
 # find(kind, name), kinds, pod(name) (a connector Deployment's pod spec or
@@ -229,7 +230,22 @@ expect_fail "refused: maxAgeHours -1" "spool.maxAgeHours must be 1-2160" "${V[@]
 expect_fail "refused: maxAgeHours 2161" "spool.maxAgeHours must be 1-2160" "${V[@]}" --set connectors.powerschool.records.spool.maxAgeHours=2161
 expect_fail "refused: maxBytes below 1 MiB" "spool.maxBytes must be" "${V[@]}" --set connectors.powerschool.records.spool.maxBytes=1048575
 expect_fail "refused: maxBytes above 4 GiB" "spool.maxBytes must be" "${V[@]}" --set connectors.powerschool.records.spool.maxBytes=4294967297
-expect_fail "refused: records on another connector" "connectors.rss.records.enabled" "${V[@]}" --set connectors.rss.records.enabled=true
+# Only the name guard can refuse this one: rss has a services entry with
+# write_types and is a writer connector, so every other check passes.
+expect_fail "refused: records on another connector" "connectors.rss.records.enabled: only the powerschool connector writes records" \
+  "${V[@]}" --set connectors.rss.records.enabled=true --set 'journal.networkPolicy.writerConnectors={powerschool,rss}' \
+  --set-json 'journal.services={"openclaw/openclaw-gateway":{"read":true,"readers":"*"},"openclaw/glovebox-glovebox-connector-powerschool":{"write_types":["assignment"],"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects"},"openclaw/glovebox-glovebox-connector-rss":{"write_types":["assignment"],"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects"}}'
+# The records block belongs to the chart: one written into the connector's
+# config by hand would bypass every check above.
+expect_fail "refused: a records block in connectors.powerschool.config (records on)" "connectors.powerschool.config.records" \
+  "${V[@]}" --set-json 'connectors.powerschool.config.records={"enabled":true}'
+expect_fail "refused: a records block in connectors.powerschool.config (records off)" "connectors.powerschool.config.records" \
+  --set connectors.powerschool.enabled=true --set-json 'connectors.powerschool.config.records={"enabled":false}'
+# Another release namespace: the services key and the URL follow it.
+NS=school check "on: in another namespace, keyed by that namespace" \
+  "cfg('powerschool')['records']['journal_url'] == 'http://glovebox-glovebox-journal:9095' and tokens('powerschool')[0]['audience'] == 'glovebox-journal' and 'school/glovebox-glovebox-connector-powerschool' in core_config['journal']['services']" \
+  "${V[@]}" --set-json 'journal.services={"school/openclaw-gateway":{"read":true,"readers":"*"},"school/glovebox-glovebox-connector-powerschool":{"write_types":["course_mark","assignment"],"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects"}}'
+NS=school expect_fail "refused: in another namespace, a services entry keyed by openclaw" "no write_types" "${V[@]}"
 check "edge values Go accepts render" \
   "cfg('powerschool')['records']['timeout_seconds'] == 600 and cfg('powerschool')['records']['attendance_day_settle_school_days'] == 10 and cfg('powerschool')['records']['spool'] == {'max_age_hours': 2160, 'max_bytes': 1048576} and tokens('powerschool')[0]['expirationSeconds'] == 600" \
   "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=600 --set connectors.powerschool.records.attendanceDaySettleSchoolDays=10 \
@@ -251,7 +267,7 @@ expect_fail "types: records on without connectorRecordTypes" \
   "${V[@]}" --set 'journal.connectorRecordTypes=null'
 expect_fail "types: any services write_type outside record_types" \
   "may write record type \"nosuch\", which is not in the journal's record_types" \
-  -f "$JVALUES" --set-json 'journal.services."openclaw/glovebox-glovebox-connector-powerschool".write_types=["assignment","nosuch"]'
+  -f "$JVALUES" --set-json 'journal.services={"openclaw/openclaw-gateway":{"read":true,"readers":"*"},"openclaw/glovebox-glovebox-connector-powerschool":{"write_types":["assignment","nosuch"],"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects"}}'
 check "types: recordTypes come first, then the connector's" \
   "[t['name'] for t in core_config['journal']['record_types']] == ['household_note'] + [t['name'] for t in json.load(open('$TYPES'))]" \
   "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \
