@@ -35,6 +35,20 @@ stages:
   - chart
   - release
 
+# RETRY INFRASTRUCTURE FAILURES ONLY. Main pipeline 4101 lost four image
+# builds and test-journal-db (4102 lost test-journal-db again) to
+# runner_system_failure: the job pod was SIGKILLed mid-run (exit 137,
+# reason Error) or went Failed before starting, with no OOM kill and no
+# eviction recorded on johnny. A retry re-runs the job on a fresh pod; a
+# test or build that fails on its own merits (script_failure) is never
+# retried, so this cannot hide a real failure.
+default:
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+
 variables:
   GOPATH: "$CI_PROJECT_DIR/.cache/go"
   GOMODCACHE: "$CI_PROJECT_DIR/.cache/go/pkg/mod"
