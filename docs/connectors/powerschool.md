@@ -858,8 +858,11 @@ kinds are absences. The chart (`connectors.powerschool.records.*`, camelCase)
 renders the block, mirrors these ranges, and refuses records without the
 journal, without this connector in `journal.networkPolicy.writerConnectors`
 or without `write_types` for its ServiceAccount in `journal.services` (S13),
-and together with `loginOnDemand` (S12: that mode mounts the API token; the
-login broker is fine). Enabling checklist: [upgrading.md](../upgrading.md#powerschool-records-part-b1).
+together with `loginOnDemand` (S12: that mode mounts the API token; the
+login broker is fine), with a `records` block written into
+`connectors.powerschool.config`, and with a `journal.services` write_type
+that is not in the rendered record types (list `powerschool` in
+`journal.connectorRecordTypes` in the same change). Enabling checklist: [upgrading.md](../upgrading.md#powerschool-records-part-b1).
 
 `powerschool_record_rows_skipped_total{reason}` counts what the builders
 left out: `duplicate_key` (a second row with an existing key; the first is

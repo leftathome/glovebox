@@ -158,8 +158,13 @@ The render is refused, rather than half-working, with records on and the
 journal off, with `loginOnDemand` (the mailbox mode mounts the API token;
 use `loginBroker`), without `powerschool` in
 `journal.networkPolicy.writerConnectors`, without `write_types` for
-`<namespace>/<fullname>-connector-powerschool` in `journal.services`, or
-with values outside the connector's ranges.
+`<namespace>/<fullname>-connector-powerschool` in `journal.services`, with
+a `write_types` entry (for any caller) that is not in the rendered
+`record_types` -- with records on that means `journal.connectorRecordTypes`
+lacks `powerschool`, and the core would refuse its policy and exit at
+startup --, with a `records` block written into
+`connectors.powerschool.config` (the chart renders it), or with values
+outside the connector's ranges.
 
 **Cutover rule.** Enabling PowerSchool records changes nothing openclaw
 reads. openclaw switches to the journal only when **both** PowerSchool and
@@ -167,8 +172,11 @@ Schoology emit records; Schoology's records are Part B2 and not built yet.
 
 **Enabling checklist (gitops; not done by any glovebox change):**
 
-1. The journal is enabled and ready (the prerequisites above done;
-   `glovebox_journal_ready` is 1).
+1. The journal is enabled and ready (`glovebox_journal_ready` is 1), its
+   prerequisites done in this order: the roster ConfigMap and its
+   ValidatingAdmissionPolicy; the CNPG database and role; the credentials in
+   Vault; the NetworkPolicies on the database side; then the HelmRelease
+   values that enable the journal.
 2. **Subjects.** Every `data_subject` in the PowerSchool connector's rules
    is a roster member:
    `kubectl -n openclaw get cm openclaw-household -o jsonpath='{.data.household\.json}' | jq -r '.people|keys[]'`
@@ -197,12 +205,17 @@ Schoology emit records; Schoology's records are Part B2 and not built yet.
          enabled: true
    ```
 
-   `journal.rules` for the attendance signals are documented in
-   `values.yaml` next to `journal.rules`.
+   `journal.connectorRecordTypes` and the services entry land in the same
+   change: the chart refuses a services entry whose `write_types` the core
+   does not have. `journal.rules` for the attendance signals are documented
+   in `values.yaml` next to `journal.rules`.
 4. After the next poll window: `glovebox_journal_spool_files{dir="pending"}`
    on the connector returns to 0; `glovebox_journal_snapshots_total{status="applied"}`
    grows on the core; no `GloveboxJournalSpool*` alert; the connector's
-   items are unchanged (the openclaw patrol sees nothing different).
+   items are unchanged (the openclaw patrol sees nothing different). A
+   single `403 forbidden` answer right after enabling is expected when the
+   connector polls before the core has rolled with the new policy; the next
+   retry delivers.
 5. **Rollback:** `connectors.powerschool.records.enabled: false`. The spool
    directory stays on the PVC until it is deleted by hand (say so in the
    gitops change's description); nothing in the item path depends on it.
