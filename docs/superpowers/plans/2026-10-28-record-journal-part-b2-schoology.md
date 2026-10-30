@@ -109,11 +109,13 @@ NOTE (B2 implementation): `Records records.Config` on `Config` (`json:"records"`
 | `lms_assignment` | `title`, `course`, `status`, `link` string; `due` timestamp | `[subject, guardians]` |
 | `lms_assignment_detail` | `description`, `comments` text (T1: no `teacher` in v1) | `[subject, guardians]` |
 
-- [ ] **Step 2.1: Write the failing tests:** the registry accepts the types; owner `schoology`; `TestRecordTypesFileIsUpToDate` (with `-update`), as in B1 Task 21.
-- [ ] **Step 2.2: Run; expect FAIL.**
-- [ ] **Step 2.3: Implement**; generate the JSON file.
-- [ ] **Step 2.4: Run; expect PASS.**
-- [ ] **Step 2.5: Commit** (`feat(schoology): record type definitions`).
+- [x] **Step 2.1: Write the failing tests:** the registry accepts the types; owner `schoology`; `TestRecordTypesFileIsUpToDate` (with `-update`), as in B1 Task 21.
+- [x] **Step 2.2: Run; expect FAIL.**
+- [x] **Step 2.3: Implement**; generate the JSON file.
+- [x] **Step 2.4: Run; expect PASS.**
+- [x] **Step 2.5: Commit** (`feat(schoology): record type definitions`).
+
+NOTE (B2 implementation): `RecordTypes()` in `record_types.go` (owner `schoology`, version 1, both `[subject, guardians]`, no field required, T1: no `teacher`); `TestRecordTypeFieldSets` pins the field names and types. The file was generated with `go test ./connectors/schoology/ -run TestRecordTypesFileIsUpToDate -update`. Red: with a stub returning no types, `TestRecordTypesAreValidForTheJournal` and `TestRecordTypesFileIsUpToDate` failed on their assertions.
 
 ---
 
