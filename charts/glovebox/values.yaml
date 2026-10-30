@@ -1795,6 +1795,36 @@ connectors:
       # How long one call may take. A call lasts as long as the login it
       # may cause (the broker bounds its own work at 6 minutes). 60-900.
       timeoutSeconds: 420
+    # Record journal snapshots (rollout step 2, in shadow: items are staged
+    # unchanged; docs/connectors/powerschool.md, "Records (journal)"). Off by
+    # default; with it off nothing below is rendered. Enabling it:
+    #   - needs journal.enabled, this connector in
+    #     journal.networkPolicy.writerConnectors, and its ServiceAccount
+    #     (<fullname>-connector-powerschool) in journal.services with
+    #     write_types (the chart refuses to render otherwise; nothing is
+    #     added implicitly);
+    #   - renders a token projected for the audience glovebox-journal,
+    #     mounted at /var/run/secrets/glovebox-journal; still no API token;
+    #   - is refused together with loginOnDemand (that mode mounts the API
+    #     token); the login broker is fine;
+    #   - keeps the spool under /state/spool, on the state PVC.
+    records:
+      enabled: false
+      # Lifetime of the projected token; the kubelet rotates it. 600-3600.
+      tokenExpirationSeconds: 600
+      # Upper bound on one request to the journal (10-600); above the
+      # journal's own requestTimeoutSeconds.
+      timeoutSeconds: 90
+      # A day with unmarked cells becomes an attendance_day record once this
+      # many school days have followed it (decision S1). 1-10.
+      attendanceDaySettleSchoolDays: 3
+      spool:
+        # A spool file older than this is dropped, sent or not (1-2160).
+        maxAgeHours: 168
+        # Bytes the spool may hold. Beyond it rejected files go first, then
+        # pending files a newer snapshot of the same scope supersedes,
+        # oldest first (1 MiB - 4 GiB).
+        maxBytes: 268435456
     externalSecret:
       enabled: false
       # One minute, where other connectors use an hour: this is how quickly

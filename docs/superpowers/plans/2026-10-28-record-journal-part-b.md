@@ -2179,15 +2179,22 @@ Rendering, only when `records.enabled`:
   and a mount `/var/run/secrets/glovebox-journal` read-only. Nothing else in the pod changes (`automountServiceAccountToken` stays false). Generalise the condition with a helper `glovebox.recordsEnabled` (`dict "name" $name "connector" $connector`) so B2 and later connectors reuse it; for now only `powerschool` may enable it (`fail` for any other name: no other connector has a builder).
 - `_helpers.tpl` `glovebox.recordsChecks` (called from the connector configmap when enabled; S12, S13): fail unless `journal.enabled`; fail if `loginOnDemand.enabled`; fail unless `journal.networkPolicy.writerConnectors` contains the name; fail unless `journal.services["<ns>/<connector SA>"].write_types` is non-empty (the existing reverse check stays); fail if `tokenExpirationSeconds` < 600 (the kubelet's minimum) or > 3600; `attendanceDaySettleSchoolDays` 1-10.
 
-- [ ] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
+- [x] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
   - default values render byte-identically to `BASE_REF` (`origin/main`) -- the off-by-default guarantee;
   - `journal.enabled` + records off: powerschool pod unchanged from the same render on `BASE_REF`;
   - records on (with `scripts/testdata/records-values.yaml`: journal enabled, writer connector, services entry for `openclaw/glovebox-glovebox-connector-powerschool` with the seven `write_types`, `write_scopes: {source: [powerschool]}`, `write_subjects: roster_subjects`): config.json has the `records` block with the URL `http://glovebox-glovebox-journal:9095` and the token path; the pod has exactly one projected token with audience `glovebox-journal`, `automountServiceAccountToken: false`, no other token source; the RSS connector's pod (enabled in the values) has no journal token and its SA no services entry;
   - refusals: records without `journal.enabled`; with `loginOnDemand.enabled`; without the writer connector entry; without the services entry; `tokenExpirationSeconds: 300`; records on another connector (`connectors.rss.records.enabled`).
-- [ ] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
-- [ ] **Step 20.3: Implement.**
-- [ ] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
-- [ ] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+- [x] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
+- [x] **Step 20.3: Implement.**
+- [x] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
+- [x] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+
+NOTE (B1 implementation):
+- **Helpers.** `glovebox.recordsEnabled` (dict `name`, `connector`) fails the render for records on any connector but `powerschool`; `glovebox.recordsConfig` renders the block; `glovebox.recordsChecks` holds S12, S13 and the ranges. The services check runs before the writer-connector check, so each refusal names its own missing value whichever of the two is absent.
+- **Ranges.** Besides the token lifetime (600-3600) and the settle time (1-10), the chart mirrors the connector's own ranges for `timeoutSeconds` (10-600), `spool.maxAgeHours` (1-2160) and `spool.maxBytes` (1 MiB - 4 GiB), so a render is a config the connector accepts. A zero or missing value takes its default in the chart, as the connector would take it, and the rendered block always carries every value (`max_bytes` through `int64`, so it never renders in float notation).
+- **Fixture.** `connectors/powerschool/testdata/helm-rendered-records.json` is the block the default records values render; the chart test compares the render with it and `TestHelmRenderedRecordsBlock` checks the connector accepts it and that its defaults change nothing in it.
+- **Identity tests.** `scripts/test-chart-records.sh` compares whole renders with `BASE_REF` for the default values, powerschool + rss enabled, powerschool with the PrometheusRule on, and powerschool with the login broker; and the powerschool Deployment, ConfigMap and ServiceAccount with journal values present and records off. With records on, `only_records` checks that the render differs from the records-off render in exactly the records block, the `journal-token` volume and its mount (also with the login broker, filesystem ingest, and the read-only root off).
+- **Observed, unchanged:** every connector Deployment's `checksum/config` hashes the whole `connector-configmap.yaml` render (all connectors), so enabling records rolls every connector pod once, as any connector config change already does.
 
 ---
 

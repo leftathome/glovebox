@@ -827,3 +827,95 @@ otherwise collide.
 {{- define "glovebox.journalTokenReviewName" -}}
 {{- printf "%s-%s-journal-tokenreview" .Release.Namespace (include "glovebox.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end }}
+
+{{/*
+"true" when a connectors.<name> entry has records enabled (record journal
+Part B), "" otherwise. Takes (dict "name" <key> "connector" <entry>). Only
+the PowerSchool connector builds records; records on any other entry fail
+the render rather than render a token and a block nothing reads.
+*/}}
+{{- define "glovebox.recordsEnabled" -}}
+{{- $r := (.connector | default dict).records | default dict -}}
+{{- if $r.enabled -}}
+{{- if ne (toString .name) "powerschool" -}}
+{{- fail (printf "connectors.%s.records.enabled: only the powerschool connector writes records to the journal; no other connector here has record builders" (toString .name)) -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The records block of a records-enabled connector's config.json, as JSON
+(records.Config plus the PowerSchool settle time). Takes (dict "connector"
+<entry> "root" $). A zero or missing value takes its default here, as the
+connector would, so the rendered block shows what runs. glovebox.recordsChecks
+bounds every value first.
+*/}}
+{{- define "glovebox.recordsConfig" -}}
+{{- $r := .connector.records | default dict -}}
+{{- $spool := $r.spool | default dict -}}
+{{- dict
+  "enabled" true
+  "journal_url" (printf "http://%s-journal:%d" (include "glovebox.fullname" .root) (int .root.Values.journal.port))
+  "token_file" "/var/run/secrets/glovebox-journal/token"
+  "timeout_seconds" (int ($r.timeoutSeconds | default 90))
+  "attendance_day_settle_school_days" (int ($r.attendanceDaySettleSchoolDays | default 3))
+  "spool" (dict
+    "max_age_hours" (int ($spool.maxAgeHours | default 168))
+    "max_bytes" (int64 ($spool.maxBytes | default 268435456)))
+  | toJson -}}
+{{- end }}
+
+{{/*
+Refuse a records-enabled connector that could not write, or should not
+(decisions S12, S13 of the Part B1 plan). Takes (dict "name" <key>
+"connector" <entry> "root" $). Renders nothing; included from the
+connector's ConfigMap when glovebox.recordsEnabled.
+
+Every grant is an explicit value reviewed in gitops: the chart adds nothing
+to journal.services or writerConnectors by itself. journalChecks already
+refuses a writer connector without write_types; this is the reverse check.
+The ranges are the connector's own (connector/records Config.Validate and
+the PowerSchool settle time), so values that render are values it accepts.
+*/}}
+{{- define "glovebox.recordsChecks" -}}
+{{- $root := .root -}}
+{{- $j := $root.Values.journal | default dict -}}
+{{- $r := .connector.records | default dict -}}
+{{- $p := printf "connectors.%s.records" (toString .name) -}}
+{{- if not $j.enabled -}}
+{{- fail (printf "%s.enabled needs journal.enabled: the connector would spool snapshots for a journal that does not exist" $p) -}}
+{{- end -}}
+{{- if (.connector.loginOnDemand | default dict).enabled -}}
+{{- fail (printf "%s.enabled is refused together with connectors.%s.loginOnDemand.enabled: that mode mounts the connector's Kubernetes API token, and a connector with journal rights holds only a token projected for the journal (spec 4.9c). Use the login broker (loginBroker) instead" $p (toString .name)) -}}
+{{- end -}}
+{{- $key := printf "%s/%s" $root.Release.Namespace (include "glovebox.connectorServiceAccountName" (dict "name" .name "connector" .connector "root" $root)) -}}
+{{- $entry := index ($j.services | default dict) $key | default dict -}}
+{{- if not $entry.write_types -}}
+{{- fail (printf "%s.enabled, but journal.services gives the connector's ServiceAccount %q no write_types: every snapshot would be refused. Add the entry (write_types, write_scopes, write_subjects: roster_subjects; docs/upgrading.md)" $p $key) -}}
+{{- end -}}
+{{- if not (has (toString .name) (($j.networkPolicy | default dict).writerConnectors | default list)) -}}
+{{- fail (printf "%s.enabled needs %q in journal.networkPolicy.writerConnectors: without it the journal's NetworkPolicy does not admit the connector's pod" $p (toString .name)) -}}
+{{- end -}}
+{{- $exp := int ($r.tokenExpirationSeconds | default 600) -}}
+{{- if or (lt $exp 600) (gt $exp 3600) -}}
+{{- fail (printf "%s.tokenExpirationSeconds must be 600-3600 (600 is the kubelet's minimum), got %v" $p $r.tokenExpirationSeconds) -}}
+{{- end -}}
+{{- $timeout := int ($r.timeoutSeconds | default 90) -}}
+{{- if or (lt $timeout 10) (gt $timeout 600) -}}
+{{- fail (printf "%s.timeoutSeconds must be 10-600, got %v" $p $r.timeoutSeconds) -}}
+{{- end -}}
+{{- $settle := int ($r.attendanceDaySettleSchoolDays | default 3) -}}
+{{- if or (lt $settle 1) (gt $settle 10) -}}
+{{- fail (printf "%s.attendanceDaySettleSchoolDays must be 1-10, got %v" $p $r.attendanceDaySettleSchoolDays) -}}
+{{- end -}}
+{{- $spool := $r.spool | default dict -}}
+{{- $age := int ($spool.maxAgeHours | default 168) -}}
+{{- if or (lt $age 1) (gt $age 2160) -}}
+{{- fail (printf "%s.spool.maxAgeHours must be 1-2160, got %v" $p $spool.maxAgeHours) -}}
+{{- end -}}
+{{- $bytes := int64 ($spool.maxBytes | default 268435456) -}}
+{{- if or (lt $bytes 1048576) (gt $bytes 4294967296) -}}
+{{- fail (printf "%s.spool.maxBytes must be 1048576-4294967296 (1 MiB - 4 GiB), got %v" $p $spool.maxBytes) -}}
+{{- end -}}
+{{- end }}

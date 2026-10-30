@@ -1,0 +1,32 @@
+# Values for scripts/test-chart-records.sh: the PowerSchool connector with
+# records enabled against the journal (record journal Part B1, Task 20).
+# Placeholder addresses and ids only. Release "glovebox" in namespace
+# "openclaw", as in journal-values.yaml.
+journal:
+  enabled: true
+  database:
+    host: postgres-rw.databases-app.svc.cluster.local
+    existingSecret: glovebox-journal-db
+  roster:
+    configMap: openclaw-household
+  services:
+    openclaw/openclaw-gateway:
+      read: true
+      readers: "*"
+    openclaw/glovebox-glovebox-connector-powerschool:
+      write_types: [course_mark, assignment, attendance_mark, attendance_day, attendance_total, term_grade, term_comment]
+      write_scopes: {source: [powerschool]}
+      write_subjects: roster_subjects
+  networkPolicy:
+    writerConnectors: [powerschool]
+    kubernetesAPICIDRs: [192.0.2.10/32]
+connectors:
+  rss:
+    enabled: true
+  powerschool:
+    enabled: true
+    records:
+      enabled: true
+metrics:
+  prometheusRule:
+    enabled: true

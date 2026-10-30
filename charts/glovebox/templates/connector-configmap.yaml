@@ -78,6 +78,16 @@ data:
         "wait_seconds" $wait
         "min_interval_minutes" $interval)) }}
   {{- end }}
+  {{- if include "glovebox.recordsEnabled" (dict "name" $name "connector" $connector) }}
+  {{- /*
+  Record journal (connectors.<name>.records): where the journal is and which
+  token to present. Both are derived here, from the same expressions the
+  journal's Service and this connector's projected token volume use. Merged
+  into the final $config, after the login merges.
+  */}}
+  {{- include "glovebox.recordsChecks" (dict "name" $name "connector" $connector "root" $) }}
+  {{- $config = mustMergeOverwrite (deepCopy $config) (dict "records" (include "glovebox.recordsConfig" (dict "connector" $connector "root" $) | fromJson)) }}
+  {{- end }}
   config.json: |
     {{- $config | toJson | nindent 4 }}
 {{- end }}
