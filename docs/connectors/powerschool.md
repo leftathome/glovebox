@@ -734,7 +734,7 @@ decisions S1-S16 are referred to below.
 
 **Cutover.** openclaw keeps reading items. It switches to the journal only
 when **both** school connectors emit records: PowerSchool (this, Part B1)
-and Schoology (Part B2, not done yet). Until then the PowerSchool records
+and Schoology (Part B2, `schoology.md`). Until then the PowerSchool records
 are shadow data for the comparison of rollout step 4, and nothing reads
 them in production.
 
@@ -770,7 +770,11 @@ one subject per kid, no subject shared by two kids, and teacher comments for
 the guardians only. No new mapping is configured. A surface with no rule
 gets no records. The `term_comment` builder refuses an audience other than
 exactly `[guardians]` (counted `audience_not_guardians_only`), as the item
-path does.
+path does. With records enabled, every kid's rule for an enabled surface
+must name its `audience` explicitly: `audience_default` is applied to items
+but never to records, so a rule relying on it would stage the item for one
+audience and the record for another. The connector refuses to start
+otherwise (fail closed), naming the kid and the surface.
 
 ### What is sent, and when
 

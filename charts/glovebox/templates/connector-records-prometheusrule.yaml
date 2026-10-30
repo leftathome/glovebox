@@ -27,6 +27,10 @@ stays.
 {{- $any = true }}
 {{- end }}
 {{- end }}
+{{- $sc := .Values.schoologyConnector | default dict }}
+{{- if and $sc.enabled (include "glovebox.recordsEnabled" (dict "name" "schoology" "connector" $sc "schoologyConnector" true)) }}
+{{- $any = true }}
+{{- end }}
 {{- if and $any $pr.enabled }}
 {{- $extra := "" }}
 {{- with $pr.extraSelector }}{{- $extra = printf ",%s" . }}{{- end }}
@@ -73,14 +77,14 @@ stays.
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "A connector's record spool dropped snapshots unsent"
-      "description" "Snapshots were deleted from the connector's spool without the journal accepting them, by reason: max_age (older than records.spool.maxAgeHours: the journal was unreachable or refusing for that long), max_bytes (the spool reached records.spool.maxBytes and superseded snapshots were removed), unknown_subject_expired (a scope whose data_subject the roster never gained). The journal's state for those scopes is missing the dropped observations until the next snapshot of each scope is delivered; a complete snapshot then restores it. Find why delivery stopped (GloveboxJournalSpoolNotEmpty, GloveboxJournalSpoolDeploymentFault). Drops of an erased subject's snapshots (reason erased_subject) are expected and do not alert. Clears an hour after the last drop."))
+      "description" "Snapshots were deleted from the connector's spool without the journal accepting them, by reason: max_age (older than records.spool.maxAgeHours: the journal was unreachable or refusing for that long), max_bytes (the spool reached records.spool.maxBytes and superseded snapshots were removed), unknown_subject_expired (a scope whose data_subject the roster never gained). The journal's state for those scopes is missing the dropped observations until the next snapshot of each scope is delivered: a complete scope (PowerSchool) is restored by its next snapshot, a windowed one (Schoology) only for what that snapshot holds -- the next listing restores the overdue/upcoming window, a detail value only at its next refresh read. Find why delivery stopped (GloveboxJournalSpoolNotEmpty, GloveboxJournalSpoolDeploymentFault). Drops of an erased subject's snapshots (reason erased_subject) are expected and do not alert. Clears an hour after the last drop."))
   (dict
     "alert" "GloveboxJournalSpoolWriteErrors"
     "expr" (index $counterFires "writeErrors")
     "labels" (dict "severity" $sev)
     "annotations" (dict
       "summary" "A connector could not write snapshots to its record spool"
-      "description" "The poll built record snapshots but could not write them to the spool on the connector's state volume (/state/spool on its PVC), so those observations never reach the journal; items are unaffected. Usually a full or read-only state volume, or a permissions change on it: check the PVC's usage and the pod's events, and the connector's log (\"records snapshots could not be written to the spool\"). Nothing to clear by hand: the next poll writes complete snapshots again once the volume is writable. Clears an hour after the last failed write."))
+      "description" "The poll built record snapshots but could not write them to the spool on the connector's state volume (/state/spool on its PVC), so those observations never reach the journal; items are unaffected. Usually a full or read-only state volume, or a permissions change on it: check the PVC's usage and the pod's events, and the connector's log (\"record snapshots were not all spooled\"). Nothing to clear by hand: once the volume is writable the next poll spools again -- complete scopes (PowerSchool) and the Schoology listings are whole after it, Schoology detail values at their next refresh read. Clears an hour after the last failed write."))
 }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule

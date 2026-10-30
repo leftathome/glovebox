@@ -2518,6 +2518,40 @@ schoologyConnector:
     refreshHours: 20
     # Pause between two detail requests, in milliseconds (1000-60000).
     requestSpacingMs: 1500
+  # Record journal snapshots (rollout step 2, in shadow: items are staged
+  # unchanged; docs/connectors/schoology.md, "Records (journal)"):
+  # lms_assignment from each kid's overdue/upcoming listing and
+  # lms_assignment_detail from each clean detail read. Off by default; with
+  # it off nothing below is rendered. Enabling it:
+  #   - needs journal.enabled, "schoology" in
+  #     journal.networkPolicy.writerConnectors, and its ServiceAccount
+  #     (<fullname>-connector-schoology) in journal.services with
+  #     write_types [lms_assignment, lms_assignment_detail], and
+  #     journal.connectorRecordTypes listing schoology (the chart refuses to
+  #     render otherwise; nothing is added implicitly);
+  #   - needs a durable state volume (state.persistent or
+  #     state.existingClaim): the spool lives under /state/spool, and an
+  #     emptyDir would lose it with the pod (decision T6);
+  #   - renders a token projected for the audience glovebox-journal,
+  #     mounted at /var/run/secrets/glovebox-journal; still no API token;
+  #   - makes the connector refuse rules that would route a kid's records by
+  #     "*", give two kids one data_subject, or give a kid's detail rule
+  #     another subject than its assignment rule (decision T5; checked when
+  #     the connector starts).
+  # The records block is the chart's: one in config below is refused.
+  records:
+    enabled: false
+    # Lifetime of the projected token; the kubelet rotates it. 600-3600.
+    tokenExpirationSeconds: 600
+    # Upper bound on one request to the journal (10-600).
+    timeoutSeconds: 90
+    spool:
+      # A spool file older than this is dropped, sent or not (1-2160).
+      maxAgeHours: 168
+      # Bytes the spool may hold. Beyond it rejected files go first, then
+      # pending files a newer snapshot of the same scope supersedes,
+      # oldest first (1 MiB - 4 GiB).
+      maxBytes: 268435456
   # Operator config rendered verbatim into config.json. Per spec 12 §10
   # kids use opaque labels (k1, k2) -- never legal names -- so PII stays
   # out of metadata/audit logs. The per-kid rules carry data_subject so
@@ -2933,10 +2967,11 @@ journal:
   # Connectors whose own record type definitions are appended to
   # recordTypes (decision S14 of the Part B1 plan). Each name loads
   # journal-record-types/<name>.json from the chart, which is generated from
-  # the connector's Go definitions (a test fails when they drift). Only
-  # powerschool exists. A type version defined both here and in recordTypes
-  # fails the render.
-  #   connectorRecordTypes: [powerschool]
+  # the connector's Go definitions (a test fails when they drift):
+  # powerschool (seven types) and schoology (lms_assignment,
+  # lms_assignment_detail). A type version defined both here and in
+  # recordTypes fails the render.
+  #   connectorRecordTypes: [powerschool, schoology]
   connectorRecordTypes: []
   # Importance, grouping and notification rules (spec 4.10). Each rule
   # matches one record_type, optionally event kinds (created, updated,
@@ -2971,8 +3006,12 @@ journal:
   # `source=<v>/` or `source=<v>/surface=<v>/` (a prefix becomes a metric
   # label, so nothing finer is allowed). maxAgeHours 96 is two school days
   # across a weekend. With connectors.powerschool.records enabled, gitops
-  # sets:
+  # sets the first; with schoologyConnector.records enabled, the second (a
+  # listing that answered is sent every poll, even empty, so the scope stays
+  # fresh while the connector polls):
   #   - prefix: "source=powerschool/"
+  #     maxAgeHours: 96
+  #   - prefix: "source=schoology/"
   #     maxAgeHours: 96
   staleness: []
   rbac:

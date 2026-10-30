@@ -124,6 +124,8 @@ yaml.safe_dump([got[w] for w in want], sys.stdout, sort_keys=True)
 }
 
 PSOBJS="Deployment/glovebox-glovebox-powerschool,ConfigMap/glovebox-glovebox-powerschool-config,ServiceAccount/glovebox-glovebox-connector-powerschool"
+SVALUES="$ROOT/scripts/testdata/records-values-schoology.yaml"
+SCOBJS="Deployment/glovebox-glovebox-schoology,ConfigMap/glovebox-glovebox-schoology-config,ServiceAccount/glovebox-glovebox-connector-schoology"
 if git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>&1; then
   mkdir -p "$TMP/base"
   git -C "$ROOT" archive "$BASE_REF" charts/glovebox | tar -x -C "$TMP/base"
@@ -138,6 +140,19 @@ if git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>&
     -f "$VALUES" --set connectors.powerschool.records.enabled=false
   same_objects "off: journal values, records off: powerschool pod as on $BASE_REF" "$PSOBJS" \
     -f "$JVALUES" --set connectors.powerschool.enabled=true
+  # Schoology (Part B2): off, its objects are as before records existed.
+  same "off: schoology enabled renders exactly as $BASE_REF" --set schoologyConnector.enabled=true
+  same "off: schoology persistent, with metrics.prometheusRule, renders exactly as $BASE_REF" \
+    --set schoologyConnector.enabled=true --set schoologyConnector.state.persistent=true --set metrics.prometheusRule.enabled=true
+  same "off: schoology and powerschool enabled render exactly as $BASE_REF" \
+    --set schoologyConnector.enabled=true --set connectors.powerschool.enabled=true
+  # (Not with records-values-schoology.yaml: its services entry names the
+  # lms_* types, which a base without journal-record-types/schoology.json
+  # refuses. only_records below covers that file with records off.)
+  same_objects "off: journal values, persistent state, schoology records off: schoology pod as on $BASE_REF" "$SCOBJS" \
+    -f "$JVALUES" --set schoologyConnector.enabled=true --set schoologyConnector.state.persistent=true
+  same_objects "off: journal values, schoology records off: schoology pod as on $BASE_REF" "$SCOBJS" \
+    -f "$JVALUES" --set schoologyConnector.enabled=true
 else
   if [ -n "${CI:-}${REQUIRE_BASE_REF:-}" ]; then
     echo "FAIL off: $BASE_REF not available in CI"; FAILED=1
@@ -171,19 +186,22 @@ check "on: the RSS pod has no journal token and no records block" \
   "tokens('rss') == [] and 'journal-token' not in vols('rss') and 'records' not in cfg('rss') and not any(k.endswith('connector-rss') for k in core_config['journal']['services'])" "${V[@]}"
 # only_records NAME [helm args...]: rendered with records on and with records
 # off (same values otherwise), the two differ in exactly the records block of
-# the powerschool config.json, the journal-token volume and mount, the
-# config checksum annotation and the records alerts.
+# the connector's config.json, the journal-token volume and mount, the
+# config checksum annotation and the records alerts. The connector is
+# powerschool, or OR_CONN (its Deployment glovebox-glovebox-$OR_CONN), with
+# records turned off by OR_OFF (a --set value).
 only_records() {
   local name="$1"; shift
-  render "$@" >"$TMP/on.yaml" 2>"$TMP/err" && render "$@" --set connectors.powerschool.records.enabled=false >"$TMP/off.yaml" 2>>"$TMP/err" || {
+  local conn="${OR_CONN:-powerschool}" off="${OR_OFF:-connectors.powerschool.records.enabled=false}"
+  render "$@" >"$TMP/on.yaml" 2>"$TMP/err" && render "$@" --set "$off" >"$TMP/off.yaml" 2>>"$TMP/err" || {
     echo "FAIL $name"; cat "$TMP/err"; FAILED=1; return; }
   if python3 -I -c "
 import sys, yaml, json
 def load(p):
     return {d['kind'] + '/' + d['metadata']['name']: d for d in yaml.safe_load_all(open(p)) if d}
 on, off = load(sys.argv[1]), load(sys.argv[2])
-cm = 'ConfigMap/glovebox-glovebox-powerschool-config'
-dep = 'Deployment/glovebox-glovebox-powerschool'
+cm = 'ConfigMap/glovebox-glovebox-' + sys.argv[3] + '-config'
+dep = 'Deployment/glovebox-glovebox-' + sys.argv[3]
 c = json.loads(on[cm]['data']['config.json'])
 assert c.pop('records')['enabled'] is True
 assert c == json.loads(off[cm]['data']['config.json']), 'config differs beyond records'
@@ -204,7 +222,7 @@ assert len(mounts) == len(c0['volumeMounts']) - 1, 'no journal-token mount'
 c0['volumeMounts'] = mounts
 on.pop('PrometheusRule/glovebox-glovebox-connector-records', None)
 assert on == off, sorted(k for k in set(on) | set(off) if on.get(k) != off.get(k))
-" "$TMP/on.yaml" "$TMP/off.yaml" 2>"$TMP/err"; then echo "ok   $name"; else echo "FAIL $name"; cat "$TMP/err"; FAILED=1; fi
+" "$TMP/on.yaml" "$TMP/off.yaml" "$conn" 2>"$TMP/err"; then echo "ok   $name"; else echo "FAIL $name"; cat "$TMP/err"; FAILED=1; fi
 }
 only_records "on: records add only the block, the token volume and its mount" "${V[@]}"
 only_records "on: same with the login broker" "${V[@]}" "${LB[@]}"
@@ -251,6 +269,72 @@ check "edge values Go accepts render" \
   "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=600 --set connectors.powerschool.records.attendanceDaySettleSchoolDays=10 \
   --set connectors.powerschool.records.spool.maxAgeHours=2160 --set connectors.powerschool.records.spool.maxBytes=1048576
 
+# --- schoology (Part B2) ----------------------------------------------------
+SV=(-f "$SVALUES")
+SCOFF="schoologyConnector.records.enabled=false"
+ALERTS_SET="{'GloveboxJournalSpoolNotEmpty', 'GloveboxJournalSpoolDeploymentFault', 'GloveboxJournalSpoolRejected', 'GloveboxJournalSpoolDropped', 'GloveboxJournalSpoolWriteErrors'}"
+check "schoology on: records block in config.json, no PowerSchool settle time" \
+  "cfg('schoology')['records'] == {'enabled': True, 'journal_url': 'http://glovebox-glovebox-journal:9095', 'token_file': '/var/run/secrets/glovebox-journal/token', 'timeout_seconds': 90, 'spool': {'max_age_hours': 168, 'max_bytes': 268435456}}" "${SV[@]}"
+check "schoology on: records block is the Go fixture (connectors/schoology TestHelmRenderedRecordsBlock)" \
+  "cfg('schoology')['records'] == json.load(open('$ROOT/connectors/schoology/testdata/helm-rendered-records.json'))" "${SV[@]}"
+check "schoology on: values reach the block" \
+  "cfg('schoology')['records']['timeout_seconds'] == 120 and cfg('schoology')['records']['spool'] == {'max_age_hours': 72, 'max_bytes': 4294967296}" \
+  "${SV[@]}" --set schoologyConnector.records.timeoutSeconds=120 \
+  --set schoologyConnector.records.spool.maxAgeHours=72 --set schoologyConnector.records.spool.maxBytes=4294967296
+check "schoology on: exactly one projected token, audience glovebox-journal, no API token" \
+  "tokens('schoology') == [{'audience': 'glovebox-journal', 'expirationSeconds': 600, 'path': 'token'}] and pod('schoology')['automountServiceAccountToken'] is False and vols('schoology')['journal-token']['projected']['defaultMode'] == 0o440" "${SV[@]}"
+check "schoology on: token mounted read-only where token_file points, state on its PVC" \
+  "mounts('schoology')['journal-token'] == {'name': 'journal-token', 'mountPath': '/var/run/secrets/glovebox-journal', 'readOnly': True} and vols('schoology')['state']['persistentVolumeClaim']['claimName'] == 'glovebox-glovebox-schoology-state'" "${SV[@]}"
+check "schoology on: tokenExpirationSeconds reaches the projection" \
+  "tokens('schoology')[0]['expirationSeconds'] == 3600" "${SV[@]}" --set schoologyConnector.records.tokenExpirationSeconds=3600
+check "schoology on: an existing claim is a durable state volume" \
+  "vols('schoology')['state']['persistentVolumeClaim']['claimName'] == 'schoology-state-example' and 'records' in cfg('schoology')" \
+  "${SV[@]}" --set schoologyConnector.state.persistent=false --set schoologyConnector.state.existingClaim=schoology-state-example
+check "schoology on: no other pod gets a journal token" \
+  "[d['metadata']['name'] for d in docs if d['kind'] == 'Deployment' and any(v['name'] == 'journal-token' for v in d['spec']['template']['spec'].get('volumes', []))] == ['glovebox-glovebox-schoology']" \
+  "${SV[@]}" --set connectors.rss.enabled=true --set connectors.powerschool.enabled=true
+check "schoology on: the PowerSchool records are independent (powerschool on, its records off)" \
+  "'records' in cfg('schoology') and 'records' not in cfg('powerschool') and tokens('powerschool') == []" \
+  "${SV[@]}" --set connectors.powerschool.enabled=true
+OR_CONN=schoology OR_OFF="$SCOFF" only_records "schoology on: records add only the block, the token volume and its mount" "${SV[@]}"
+OR_CONN=schoology OR_OFF="$SCOFF" only_records "schoology on: same with the read-only root off" "${SV[@]}" --set schoologyConnector.readOnlyRootFilesystem=false
+OR_CONN=schoology OR_OFF="$SCOFF" only_records "schoology on: same with the detail surface on" "${SV[@]}" \
+  --set 'schoologyConnector.assignmentDetail.kids={k1}' \
+  --set-json 'schoologyConnector.config.rules=[{"match":"schoology:k1:assignment","destination":"school","data_subject":"k1"},{"match":"schoology:k1:assignment_detail","destination":"school","data_subject":"k1"},{"match":"*","destination":"school"}]'
+# Refusals (T6, S13, ranges).
+expect_fail "schoology refused: records with an emptyDir state (T6)" \
+  "schoologyConnector.records.enabled needs a durable state volume" "${SV[@]}" --set schoologyConnector.state.persistent=false
+expect_fail "schoology refused: records without journal.enabled" \
+  "schoologyConnector.records.enabled needs journal.enabled" "${SV[@]}" --set journal.enabled=false
+expect_fail "schoology refused: records without the writer connector entry" \
+  "schoologyConnector.records.enabled needs \"schoology\" in journal.networkPolicy.writerConnectors" "${SV[@]}" \
+  --set 'journal.networkPolicy.writerConnectors=null'
+expect_fail "schoology refused: records without the services entry" \
+  "schoologyConnector.records.enabled, but journal.services gives the connector's ServiceAccount \"openclaw/glovebox-glovebox-connector-schoology\" no write_types" "${SV[@]}" \
+  --set-json 'journal.services={"openclaw/openclaw-gateway":{"read":true,"readers":"*"}}' --set 'journal.networkPolicy.writerConnectors=null'
+expect_fail "schoology refused: tokenExpirationSeconds 300" "schoologyConnector.records.tokenExpirationSeconds must be 600-3600" \
+  "${SV[@]}" --set schoologyConnector.records.tokenExpirationSeconds=300
+expect_fail "schoology refused: timeoutSeconds 601" "schoologyConnector.records.timeoutSeconds must be 10-600" \
+  "${SV[@]}" --set schoologyConnector.records.timeoutSeconds=601
+expect_fail "schoology refused: maxAgeHours 2161" "schoologyConnector.records.spool.maxAgeHours must be 1-2160" \
+  "${SV[@]}" --set schoologyConnector.records.spool.maxAgeHours=2161
+expect_fail "schoology refused: records without connectorRecordTypes" \
+  "journal.services \"openclaw/glovebox-glovebox-connector-schoology\" may write record type \"lms_assignment\", which is not in the journal's record_types" \
+  "${SV[@]}" --set 'journal.connectorRecordTypes=null'
+expect_fail "schoology refused: a records block in schoologyConnector.config (records on)" "schoologyConnector.config.records" \
+  "${SV[@]}" --set-json 'schoologyConnector.config.records={"enabled":true}'
+expect_fail "schoology refused: a records block in schoologyConnector.config (records off)" "schoologyConnector.config.records" \
+  --set schoologyConnector.enabled=true --set-json 'schoologyConnector.config.records={"enabled":false}'
+# connectors.<name> stays guarded: a generic connector entry named
+# schoology is not the Schoology connector and has no record builders.
+expect_fail "schoology refused: records on a connectors.schoology entry" "connectors.schoology.records.enabled: only the powerschool connector writes records" \
+  "${SV[@]}" --set connectors.schoology.enabled=true --set connectors.schoology.records.enabled=true \
+  --set connectors.schoology.serviceAccount.name=glovebox-example-generic \
+  --set-json 'journal.services.openclaw/glovebox-example-generic={"write_types":["lms_assignment"],"write_scopes":{"source":["schoology"]},"write_subjects":"roster_subjects"}'
+check "schoology alerts: the five spool alerts with only Schoology's records on" "set(alerts) == $ALERTS_SET" "${SV[@]}"
+check "schoology alerts: none with Schoology's records off" "not alerts" "${SV[@]}" --set "$SCOFF"
+check "schoology alerts: none with records on but the connector disabled" "not alerts" "${SV[@]}" --set schoologyConnector.enabled=false
+
 # --- connector record types (S14) ------------------------------------------
 TYPES="$CHART/journal-record-types/powerschool.json"
 check "types: none without connectorRecordTypes (journal values)" \
@@ -258,6 +342,24 @@ check "types: none without connectorRecordTypes (journal values)" \
 check "types: connectorRecordTypes [powerschool] renders the file's seven types" \
   "core_config['journal']['record_types'] == json.load(open('$TYPES')) and len(core_config['journal']['record_types']) == 7 and all(t['owner'] == 'powerschool' for t in core_config['journal']['record_types'])" \
   "${V[@]}"
+STYPES="$CHART/journal-record-types/schoology.json"
+check "types: connectorRecordTypes [schoology] renders the file's two types" \
+  "core_config['journal']['record_types'] == json.load(open('$STYPES')) and [t['name'] for t in core_config['journal']['record_types']] == ['lms_assignment', 'lms_assignment_detail'] and all(t['owner'] == 'schoology' for t in core_config['journal']['record_types'])" \
+  "${SV[@]}"
+# Both connectors: lists replace, so the merged lists are set here.
+BOTH=("${V[@]}" "${SV[@]}" --set 'journal.connectorRecordTypes={powerschool,schoology}' --set 'journal.networkPolicy.writerConnectors={powerschool,schoology}')
+check "types: connectorRecordTypes [powerschool, schoology] renders nine types, in that order" \
+  "core_config['journal']['record_types'] == json.load(open('$TYPES')) + json.load(open('$STYPES')) and len(core_config['journal']['record_types']) == 9" \
+  "${BOTH[@]}"
+check "both on: each connector has its block and one journal token; one set of alerts" \
+  "'records' in cfg('powerschool') and 'records' in cfg('schoology') and len(tokens('powerschool')) == 1 and len(tokens('schoology')) == 1 and set(alerts) == $ALERTS_SET and sorted(k for k in core_config['journal']['services'] if 'connector-' in k) == ['openclaw/glovebox-glovebox-connector-powerschool', 'openclaw/glovebox-glovebox-connector-schoology']" \
+  "${BOTH[@]}"
+expect_fail "types: both on, schoology's types missing" \
+  "may write record type \"lms_assignment\", which is not in the journal's record_types" \
+  "${V[@]}" "${SV[@]}" --set 'journal.connectorRecordTypes={powerschool}' --set 'journal.networkPolicy.writerConnectors={powerschool,schoology}'
+check "types: the documented schoology staleness prefix passes through" \
+  "core_config['journal']['staleness_prefixes'] == ['source=powerschool/', 'source=schoology/']" \
+  "${BOTH[@]}" --set-json 'journal.staleness=[{"prefix":"source=powerschool/","maxAgeHours":96},{"prefix":"source=schoology/","maxAgeHours":96}]'
 check "types: the core config is the Go fixture (internal/config TestJournalHelmRenderedRecordsFixture)" \
   "core_config == json.load(open('$ROOT/internal/config/testdata/helm-rendered-records.json'))" "${V[@]}"
 # A write_type the core does not have would stop the core at startup

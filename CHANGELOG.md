@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/connectors/powerschool.md` ("Records (journal)"),
   `docs/journal-api.md` ("Connector side: the spool") and the enabling
   checklist in `docs/upgrading.md`.
+- **Record journal, part B2: Schoology records (off by default).** With
+  `schoologyConnector.records.enabled` the Schoology connector writes
+  `lms_assignment` (each kid's overdue/upcoming listing) and
+  `lms_assignment_detail` (each clean detail read; degraded reads are no
+  record) through the same spool, in shadow: items are unchanged. Both
+  scopes are windows (`complete: false`): a change while an assignment is
+  listed becomes an `updated` event, and nothing is ever removed. With
+  records on the connector requires an exact per-kid assignment rule with a
+  subject of its own, and the chart requires a durable state volume
+  (`schoologyConnector.state.persistent` or `existingClaim`), renders the
+  records block and a token projected for `glovebox-journal`, and ships the
+  types (`journal.connectorRecordTypes: [schoology]`). With records off the
+  chart renders exactly as before. See `docs/connectors/schoology.md`
+  ("Records (journal)") and the enabling checklist in `docs/upgrading.md`.
 
 ## [0.12.0] - 2026-10-16
 

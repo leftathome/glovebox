@@ -85,6 +85,32 @@ func TestRecordsConfigRefusesCustomAttendanceKinds(t *testing.T) {
 	}
 }
 
+// Decision 2026-10-30 (fail closed): a record's audience is its rule's,
+// never audience_default. With records on, a kid's rule for an enabled
+// surface that sets no audience is refused, naming the kid and surface.
+func TestRecordsConfigRefusesARuleWithoutAudience(t *testing.T) {
+	cfg := validRecordsConfig(t)
+	cfg.AudienceDefault = []string{"operator"}
+	found := false
+	for i := range cfg.Rules {
+		if cfg.Rules[i].Match == MatchKey("k2", gradeSurface) {
+			cfg.Rules[i].Audience, found = nil, true
+		}
+	}
+	if !found {
+		t.Fatal("fixture has no powerschool:k2:grade rule")
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "audience") || !strings.Contains(err.Error(), MatchKey("k2", gradeSurface)) ||
+		!strings.Contains(err.Error(), "k2") {
+		t.Fatalf("err = %v", err)
+	}
+	cfg.Records.Enabled = false
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("without records the rule may rely on audience_default as today: %v", err)
+	}
+}
+
 func TestRecordsConfigDefaultsAndBounds(t *testing.T) {
 	cfg := validRecordsConfig(t)
 	if cfg.Records.AttendanceDaySettleSchoolDays != 3 || cfg.Records.TimeoutSeconds != 90 {
