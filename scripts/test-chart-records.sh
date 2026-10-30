@@ -263,6 +263,58 @@ check "types: the documented attendance rules and staleness pass through" \
   "${V[@]}" --set 'journal.connectorRecordTypes={powerschool}' \
   --set-json 'journal.staleness=[{"prefix":"source=powerschool/","maxAgeHours":96}]' \
   --set-json 'journal.rules=[{"name":"full_day_absence","match":{"record_type":"attendance_day","kind":["created","updated"],"field_becomes":{"classification":"full_day","any_unexcused":true}},"importance":"high"},{"name":"partial_day_absence","match":{"record_type":"attendance_day","field_becomes":{"classification":"partial_day","any_unexcused":true}},"importance":"normal"}]'
+
+# --- spool alerts ---------------------------------------------------------
+ALERTS="{'GloveboxJournalSpoolNotEmpty', 'GloveboxJournalSpoolDeploymentFault', 'GloveboxJournalSpoolRejected', 'GloveboxJournalSpoolDropped'}"
+check "alerts: the four spool alerts with records on" "set(alerts) == $ALERTS" "${V[@]}"
+check "alerts: every alert has a summary and a runbook description" \
+  "all(r['annotations'].get('summary') and len(r['annotations'].get('description', '')) > 200 for r in alerts.values())" "${V[@]}"
+check "alerts: aggregated by namespace and connector" \
+  "all('by (namespace, connector' in r['expr'] for r in alerts.values())" "${V[@]}"
+check "alerts: deployment fault counts retry_alert answers only; dropped leaves out erased subjects" \
+  "'action=\"retry_alert\"' in alerts['GloveboxJournalSpoolDeploymentFault']['expr'] and 'reason!=\"erased_subject\"' in alerts['GloveboxJournalSpoolDropped']['expr'] and alerts['GloveboxJournalSpoolNotEmpty']['for'] == '5m'" "${V[@]}"
+check "alerts: extraSelector reaches every expression" \
+  "all(r['expr'].count('glovebox_journal_spool_') == r['expr'].count('namespace=\"openclaw\"') for r in alerts.values())" \
+  "${V[@]}" --set 'metrics.prometheusRule.extraSelector=namespace="openclaw"'
+check "alerts: severity and labels from metrics.prometheusRule" \
+  "all(r['labels'] == {'severity': 'critical'} for r in alerts.values()) and find('PrometheusRule', 'glovebox-glovebox-connector-records')['metadata']['labels']['release'] == 'kps'" \
+  "${V[@]}" --set metrics.prometheusRule.severity=critical --set metrics.prometheusRule.labels.release=kps
+check "alerts: none without metrics.prometheusRule.enabled" "not alerts" "${V[@]}" --set metrics.prometheusRule.enabled=false
+check "alerts: none with records off" "not alerts" "${V[@]}" --set connectors.powerschool.records.enabled=false
+check "alerts: none with records on but powerschool disabled" "not alerts" "${V[@]}" --set connectors.powerschool.enabled=false
+
+if command -v promtool >/dev/null 2>&1; then
+  for extra in "" 'namespace="openclaw"'; do
+    render "${V[@]}" --set "metrics.prometheusRule.extraSelector=$extra" | python3 -I -c "
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d and d['kind'] == 'PrometheusRule' and d['metadata']['name'] == 'glovebox-glovebox-connector-records']
+yaml.safe_dump({'groups': docs[0]['spec']['groups']}, sys.stdout)
+" >"$TMP/rules.yaml"
+    if promtool check rules "$TMP/rules.yaml" >"$TMP/err" 2>&1; then
+      echo "ok   promtool: spool rules parse (extraSelector '$extra')"
+    else
+      echo "FAIL promtool: spool rules (extraSelector '$extra')"; cat "$TMP/err"; FAILED=1
+    fi
+  done
+  render "${V[@]}" | python3 -I -c "
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d and d['kind'] == 'PrometheusRule' and d['metadata']['name'] == 'glovebox-glovebox-connector-records']
+groups = docs[0]['spec']['groups']
+for g in groups:
+    for r in g['rules']:
+        r.pop('annotations', None)
+yaml.safe_dump({'groups': groups}, sys.stdout)
+" >"$TMP/rules.yaml"
+  cp "$ROOT/scripts/testdata/records-alerts-test.yaml" "$TMP/records-alerts-test.yaml"
+  if (cd "$TMP" && promtool test rules records-alerts-test.yaml) >"$TMP/err" 2>&1; then
+    echo "ok   promtool: spool alert unit tests"
+  else
+    echo "FAIL promtool: spool alert unit tests"; cat "$TMP/err"; FAILED=1
+  fi
+else
+  echo "skip promtool: not installed"
+fi
+
 if [ -d "$TMP/base" ]; then
   same_objects "types: journal values without connectorRecordTypes: core config as on $BASE_REF" \
     "ConfigMap/glovebox-glovebox-config" -f "$JVALUES"

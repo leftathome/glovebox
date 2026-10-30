@@ -1,0 +1,155 @@
+# promtool unit tests for the connector spool alerts
+# (templates/connector-records-prometheusrule.yaml). scripts/test-chart-records.sh
+# renders the chart with records-values.yaml, writes the PrometheusRule's
+# groups (annotations dropped) to rules.yaml next to a copy of this file and
+# runs `promtool test rules`. promtool's clock starts at 0.
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # A spool that stays behind: the oldest file passes an hour and the alert
+  # fires 5 minutes later; it clears when the spool drains.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_oldest_seconds{namespace="openclaw",connector="powerschool",pod="a"}'
+        values: '0x10 3000+60x20 0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool}
+      - eval_time: 40m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+  # A spool that empties within the hour never alerts.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_oldest_seconds{namespace="openclaw",connector="powerschool",pod="a"}'
+        values: '0+60x59 0x60'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+  # A deployment fault (401) that keeps coming: fires on the first answer
+  # (the series appears already at 1) and while answers continue, clears
+  # 15 minutes after the last one.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="401",reason="unauthenticated",action="retry_alert",pod="a"}'
+        values: '_x10 1+1x20 21x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: unauthenticated}
+      - eval_time: 25m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: unauthenticated}
+      - eval_time: 50m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+  # A token that cannot be read: code "token", reason "none".
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="token",reason="none",action="retry_alert",pod="a"}'
+        values: '0x5 1+1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: none}
+  # 409 unknown_subject, 503 and transport errors are retried without this
+  # alert, as are accepted answers.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="409",reason="unknown_subject",action="retry_scope",pod="a"}'
+        values: '_x5 1+1x60'
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="503",reason="unavailable",action="retry",pod="a"}'
+        values: '_x5 1+1x60'
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="0",reason="none",action="retry",pod="a"}'
+        values: '_x5 1+1x60'
+      - series: 'glovebox_journal_spool_answers_total{namespace="openclaw",connector="powerschool",code="200",reason="none",action="delete",pod="a"}'
+        values: '_x5 1+1x60'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+  # A permanent refusal fires on the first one and clears an hour later.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_rejected_total{namespace="openclaw",connector="powerschool",reason="schema",pod="a"}'
+        values: '_x10 1x120'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: schema}
+      - eval_time: 80m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts: []
+  # A later rejection on a long-lived series fires through increase().
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_rejected_total{namespace="openclaw",connector="powerschool",reason="too_large",pod="a"}'
+        values: '1x120 2x60'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: too_large}
+  # A drop past max_age alerts; dropping an erased subject's files does not.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_dropped_total{namespace="openclaw",connector="powerschool",reason="max_age",pod="a"}'
+        values: '_x10 3x120'
+      - series: 'glovebox_journal_spool_dropped_total{namespace="openclaw",connector="powerschool",reason="erased_subject",pod="a"}'
+        values: '_x10 4x60 9x60'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: GloveboxJournalSpoolDropped
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: openclaw, connector: powerschool, reason: max_age}
+      - eval_time: 75m
+        alertname: GloveboxJournalSpoolDropped
+        exp_alerts: []
+  # Healthy: every gauge at 0 and no counter series; nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'glovebox_journal_spool_oldest_seconds{namespace="openclaw",connector="powerschool",pod="a"}'
+        values: '0x120'
+      - series: 'glovebox_journal_spool_files{namespace="openclaw",connector="powerschool",dir="pending",pod="a"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolNotEmpty
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolDeploymentFault
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolRejected
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: GloveboxJournalSpoolDropped
+        exp_alerts: []

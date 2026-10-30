@@ -2250,11 +2250,17 @@ Rendered when `metrics.prometheusRule.enabled` and at least one connector has `r
 
 The `NotEmpty` runbook text says that a persisting `503` (spec 4.3: retried and alerted) surfaces through this alert after an hour, and points at `glovebox_journal_spool_answers_total{reason="unavailable"}` and the core's `GloveboxJournalNotReady`.
 
-- [ ] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
-- [ ] **Step 22.2: Run; expect FAIL.**
-- [ ] **Step 22.3: Implement.**
-- [ ] **Step 22.4: Run; expect PASS.**
-- [ ] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+- [x] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
+- [x] **Step 22.2: Run; expect FAIL.**
+- [x] **Step 22.3: Implement.**
+- [x] **Step 22.4: Run; expect PASS.**
+- [x] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+
+NOTE (B1 implementation):
+- **DeploymentFault** counts every `action="retry_alert"` answer, without the reason filter in the table: the classifier already decides which answers are alert rows, and a reason list in the expression would leave some of them silent (409 `conflict`, a 503 with a reason the connector does not know, a 200 with an unknown status). 409 `unknown_subject` (`retry_scope`), 503 (`retry`) and transport errors (`retry`, code `0`) never match; a token that cannot be read is `retry_alert` with code `token`, reason `none`, and does.
+- **Counters** use the core's two-part form (`increase(...) > 0 or ((x > 0) unless (x offset w))`, aggregated by `namespace, connector, reason`), so the first increment of a series that appears at 1 is not lost. The promtool tests cover that case for each counter alert.
+- **Not alerted (kept to the plan's four):** `glovebox_journal_spool_write_errors_total` (a snapshot the connector could not write to its spool). It is counted and logged; an alert for it is a possible follow-up.
+- The template renders when `metrics.prometheusRule.enabled` and any enabled connector has records on (through `glovebox.recordsEnabled`, so records on a disabled connector render nothing). Severity, extra labels and `extraSelector` follow `metrics.prometheusRule` as the journal's rules do.
 
 ---
 
