@@ -175,14 +175,22 @@ NOTE (B2 implementation): the hook sits right after the `course_unverified` book
 
 In `pollNow`, per kid: after `processAssignments` returns `listed == true`, build the listing snapshot with the kid's assignment binding and `Emit` it (`observed_at` = the time taken just before `processAssignments`). Detail: set `DetailDeps.OnVerified` (when records are on) to collect reads per kid; after `ProcessAssignmentDetails` returns, build and emit one detail snapshot per kid that has reads. The same `recordSink` interface and factory-in-`Wire` arrangement as B1 Task 19; `Watch` starts `Run`.
 
-- [ ] **Step 5.1: Write the failing tests:**
+- [x] **Step 5.1: Write the failing tests:**
   - off: no `spool` directory, no `glovebox_journal_` series, no records log line; staged items and the seen sets equal to a run without the change (run the existing integration-style fixtures);
   - on: the same items; snapshots per kid with that kid's subject only; a listing error (GetOverdueSubmissions fails) emits nothing for that kid; a session refused (details skipped) emits only listings; a spool write failure leaves items staged and counts `write_errors_total`;
   - parity: for each item staged from the listing, a record with the same id carries the same `course`, `status`, due and link as the item's tags and body; the record set is a superset (rows already in the seen set are records too); for each detail item staged from a clean read, a record with its id exists; `data_subject` and `audience` equal the item's.
-- [ ] **Step 5.2: Run; expect FAIL.**
-- [ ] **Step 5.3: Implement.**
-- [ ] **Step 5.4: Run; expect PASS.**
-- [ ] **Step 5.5: Commit** (`feat(schoology): emit record snapshots in shadow behind records.enabled`).
+- [x] **Step 5.2: Run; expect FAIL.**
+- [x] **Step 5.3: Implement.**
+- [x] **Step 5.4: Run; expect PASS.**
+- [x] **Step 5.5: Commit** (`feat(schoology): emit record snapshots in shadow behind records.enabled`).
+
+NOTE (B2 implementation):
+- **Hook.** As B1: exported `RecordSink`, `NewRecordsFactory(cfg, stateDir, now)` (nil when off; `main.go` sets `c.NewRecords` unconditionally from `GLOVEBOX_STATE_DIR`), the sink built in `Wire` on `cc.Metrics.Provider().Meter("glovebox.records")` (a factory error fails `Wire`), and `Watch` calls `startRecords` (one loop across Watch restarts).
+- **Off is today.** With no sink, `pollNow` reads no extra clock, passes a nil `OnVerified` and calls no builder. `TestRecordsOffChangesNothing` (two polls): no sink, no `spool`, no records metric, no log line naming records or the journal, no goroutine. `TestRecordsOnStagesTheSameItems`: two polls with a status change in between, items (minus the staging timestamp) and the whole checkpoint identical to records off; the real emitter then drains 8 snapshots (a listing and a detail per kid per poll) into the fake journal, all 200 `applied`, spool empty, no item-fixture subject, no token in the log.
+- **observed_at.** The listing's is `c.clock()` taken just before `processAssignments` (only when records are on); the detail's is the detail run's clock (`VerifiedDetail.ReadAt`), the time the surface started.
+- **Errors.** A panic in a builder or `Emit` is recovered and counted `builder_panic`; an `Emit` error is logged; neither changes what was staged (`TestEmitFailuresLeaveTheItems`, `TestEmitSpoolWriteFailureLeavesItems`: 4 `write_errors_total`). A listing snapshot over the size limits is left out (`snapshot_too_large`); details are split instead (Task 4).
+- **Extra tests:** observed_at taken before the listing; no records for a kid whose rule is missing; `NewRecordsFactory` (off, empty state directory); one loop across a Watch restart.
+- Red: with the sink wired but no emission in `pollNow`, seven of the new tests failed on their assertions. The parity test was written after the emission and passed at once; it was seen failing through the mutants (Task 9 NOTE).
 
 ---
 
