@@ -93,7 +93,7 @@ test:
   # This keeps the toolchain at 1.27, matching the GitHub mirror, rather than
   # reverting the Go bump to work around a registry fault. Revert to the
   # floating tag once gitops-br8e is fixed.
-  image: golang:1.27.1-bookworm
+  image: golang:1.27.3-bookworm
   # Memory: `go test -race ./...` builds and runs every package in parallel,
   # and the root package re-runs the whole core binary under the race
   # detector. At the runner's default 4Gi limit the job was OOM-killed (exit
@@ -154,7 +154,7 @@ test-journal-db:
   resource_group: glovebox-journal-db-tests
   stage: test
   tags: [cluster]
-  image: golang:1.27.1-bookworm
+  image: golang:1.27.3-bookworm
   services:
     - name: ghcr.io/cloudnative-pg/postgresql:17.10
       alias: postgres
@@ -197,7 +197,7 @@ test-journal-db:
 # ---------------------------------------------------------------------------
 chart-test:
   stage: test
-  image: golang:1.27.1-bookworm
+  image: golang:1.27.3-bookworm
   cache: []
   before_script:
     - "apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-yaml >/dev/null"
@@ -254,7 +254,7 @@ chart-test:
   # This keeps the toolchain at 1.27, matching the GitHub mirror, rather than
   # reverting the Go bump to work around a registry fault. Revert to the
   # floating tag once gitops-br8e is fixed.
-  image: golang:1.27.1-bookworm
+  image: golang:1.27.3-bookworm
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
