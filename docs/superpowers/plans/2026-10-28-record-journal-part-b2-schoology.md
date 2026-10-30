@@ -67,7 +67,7 @@ Part A deviations: B1's table applies unchanged. Specific to Schoology: both sco
 - Create: `connectors/schoology/record_binding.go`
 - Test: `connectors/schoology/record_binding_test.go`, `connectors/schoology/records_testkit_test.go`
 
-- [ ] **Step 1.1: Write the failing tests.**
+- [x] **Step 1.1: Write the failing tests.**
 
 ```go
 func TestRecordsNeedAnExactAssignmentRulePerKid(t *testing.T) {
@@ -89,10 +89,12 @@ func TestWithoutRecordsTheRulesAreAsLiberalAsToday(t *testing.T)   // the * case
 
 `records_testkit_test.go`: `recordRules()` (exact rules for `schoology:k1:assignment`, `schoology:k1:assignment_detail`, the same for `k2`, subjects `e_child1` / `e_child2`, audience `[subject, guardians]`), `recordsRegistry(t)`, `validateAll(t, snaps)` (as in B1).
 
-- [ ] **Step 1.2: Run; expect FAIL.**
-- [ ] **Step 1.3: Implement** `Records records.Config` on `Config`; `ApplyDefaults` and `Validate` of the block as in B1 Task 12; `validateKidRecordRules(c)` using `firstMatchIsExact` (already in `config.go`) and `connector.NewRuleMatcher`.
-- [ ] **Step 1.4: Run; expect PASS.**
-- [ ] **Step 1.5: Commit** (`feat(schoology): records config and per-kid rule checks`).
+- [x] **Step 1.2: Run; expect FAIL.**
+- [x] **Step 1.3: Implement** `Records records.Config` on `Config`; `ApplyDefaults` and `Validate` of the block as in B1 Task 12; `validateKidRecordRules(c)` using `firstMatchIsExact` (already in `config.go`) and `connector.NewRuleMatcher`.
+- [x] **Step 1.4: Run; expect PASS.**
+- [x] **Step 1.5: Commit** (`feat(schoology): records config and per-kid rule checks`).
+
+NOTE (B2 implementation): `Records records.Config` on `Config` (`json:"records"`, no Schoology-only settings, so no wrapper struct). `ApplyDefaults` calls `applyRecordsDefaults` and `ValidateConfig` calls `validateRecords` (both in `record_binding.go`, no-ops when disabled); `validateRecords` runs before `validateAssignmentDetail` so the records refusal names records. A kid without any exact `schoology:<kid>:assignment` rule is refused with records on, even with the detail surface off (extra test). The red run was seen behaviourally: the field and a stub `subjectFor` were added first, and seven tests failed on their assertions before the implementation.
 
 ---
 
