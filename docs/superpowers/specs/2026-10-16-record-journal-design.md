@@ -801,7 +801,8 @@ Amended by the Part B2 plan (`docs/superpowers/plans/2026-10-28-record-journal-p
   page does not show a teacher); when the library exposes one, version 2
   adds it as an optional field (4.7).
 - Decision T2: a detail record is sent only for a clean read (the id,
-  course and title checks passed, no parse error, comments read, course
+  course and title checks passed, no parse error, comments read (an empty
+  or populated block; unknown or unavailable is not a read), course
   verifiable). A degraded read would write empty or partial values over
   good ones; its item is staged as before.
 - Decision T3: `comments` is a populated block's entries joined with a

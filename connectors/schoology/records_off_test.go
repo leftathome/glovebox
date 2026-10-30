@@ -305,10 +305,18 @@ func TestRecordsOffChangesNothing(t *testing.T) {
 	stateDir := t.TempDir()
 	before := runtime.NumGoroutine()
 	run := newRecordsRun(t, stateDir, false, nil)
+	// The clock is read as before records existed: once for the poll
+	// window's end (windowDeadline) and once by the detail surface, and
+	// never for a listing's observed_at.
+	var reads int
+	run.c.now = func() time.Time { reads++; return run.now }
 	for i := 0; i < 2; i++ {
 		if err := run.poll(t); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if reads != 4 {
+		t.Fatalf("the clock was read %d times in two polls, want 4 (window end and detail surface per poll)", reads)
 	}
 	if run.c.NewRecords != nil || run.c.records != nil {
 		t.Fatal("records sink built with records off")

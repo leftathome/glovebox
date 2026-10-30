@@ -47,9 +47,6 @@ func TestDetailRecordFromACleanRead(t *testing.T) {
 	if len(*reads) != 1 || (*reads)[0].Kid.Name != "k1" || (*reads)[0].Row.ID != 1 || !(*reads)[0].ReadAt.Equal(h.now) {
 		t.Fatalf("reads %+v", *reads)
 	}
-	if (*reads)[0].Rule.DataSubject != "e_k1" {
-		t.Fatalf("the read carries the kid's detail rule: %+v", (*reads)[0].Rule)
-	}
 	snaps := BuildAssignmentDetails(bind1, *reads, obsAt, nil)
 	validateAll(t, snaps)
 	s := snaps[0]
@@ -108,6 +105,23 @@ func TestDetailRecordOnlyForACleanRead(t *testing.T) {
 			d.CourseTitle = ""
 			h.details[1] = d
 		},
+		// Comments not read: a later bad read must not blank a stored
+		// teacher comment. Unknown is "no block looked at", unavailable is
+		// the comments page refused (403); both come with no error.
+		"comments unknown": func(h *detailHarness) {
+			d := regularDetail(1, "A", "EXAMPLE SCIENCE 7")
+			d.Comments = schoologylib.AssignmentComments{State: schoologylib.CommentsStateUnknown}
+			h.details[1] = d
+		},
+		"comments unavailable (inline)": func(h *detailHarness) {
+			d := regularDetail(1, "A", "EXAMPLE SCIENCE 7")
+			d.Comments = schoologylib.AssignmentComments{State: schoologylib.CommentsStateUnavailable}
+			h.details[1] = d
+		},
+		"comments page unavailable (assessment)": func(h *detailHarness) {
+			h.details[1] = assessmentDetail(1, "A", "EXAMPLE SCIENCE 7")
+			h.comments[1] = &schoologylib.AssignmentComments{State: schoologylib.CommentsStateUnavailable}
+		},
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -118,6 +132,30 @@ func TestDetailRecordOnlyForACleanRead(t *testing.T) {
 			}
 			if len(*reads) != 0 {
 				t.Fatalf("%d verified reads for a degraded read", len(*reads))
+			}
+		})
+	}
+}
+
+// The comment states that count as read: an empty block (a regular
+// assignment's inline block, or an assessment's comments page) and a
+// populated one.
+func TestDetailRecordWhenTheCommentsWereRead(t *testing.T) {
+	for name, setup := range map[string]func(h *detailHarness){
+		"inline empty":     func(h *detailHarness) { h.details[1] = regularDetail(1, "A", "EXAMPLE SCIENCE 7") },
+		"assessment empty": func(h *detailHarness) { h.details[1] = assessmentDetail(1, "A", "EXAMPLE SCIENCE 7") },
+		"assessment populated": func(h *detailHarness) {
+			h.details[1] = assessmentDetail(1, "A", "EXAMPLE SCIENCE 7")
+			h.comments[1] = &schoologylib.AssignmentComments{State: schoologylib.CommentsStatePopulated,
+				Comments: []*schoologylib.AssignmentComment{{Text: "EXAMPLE comment"}}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, reads := recordingHarness(t)
+			setup(h)
+			h.poll(k1List(listRow(1, "A", "EXAMPLE SCIENCE 7")))
+			if len(*reads) != 1 {
+				t.Fatalf("%d verified reads, want 1", len(*reads))
 			}
 		})
 	}

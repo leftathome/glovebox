@@ -127,7 +127,7 @@ func NewTelemetry(base *connector.Metrics, meterName, tracerName string) (*Telem
 		return nil, fmt.Errorf("construct schoology_assignment_detail_fetches_total: %w", err)
 	}
 	t.recordRowsSkipped, err = meter.Int64Counter("schoology_record_rows_skipped_total",
-		metric.WithDescription("Rows or snapshots the record builders left out, by reason (no_id, duplicate_key, "+
+		metric.WithDescription("Rows or snapshots the record builders left out, by reason (no_id, duplicate_key, comments_unread, "+
 			"snapshot_too_large, builder_panic). Records only; items are not affected."))
 	if err != nil {
 		return nil, fmt.Errorf("construct schoology_record_rows_skipped_total: %w", err)

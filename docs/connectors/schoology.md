@@ -405,10 +405,14 @@ remove.
   line; no host is added).
 - `lms_assignment_detail`: one snapshot per kid per poll with at least one
   **clean** detail read: the page's id, course and title matched the kid's
-  listing, the page parsed without error, its comments were read, and the
-  course could be checked. A degraded read (a parse error, an unreadable
-  comments page, `course_unverified`) is no record -- it would blank good
-  values -- but its item is staged as before. A clean read is a record
+  listing, the page parsed without error, its comments were read (the block
+  is empty or populated), and the course could be checked. A degraded read
+  (a parse error, an unreadable comments page, `course_unverified`) is no
+  record -- it would blank good values -- and neither is a read whose
+  comments were not read (no block looked at, or the comments page refused:
+  these come without an error, and would write `comments: null` over a
+  stored teacher comment; counted `comments_unread`). Their items are
+  staged as before. A clean read is a record
   whether or not it changed since the last read; the journal skips
   unchanged content. `description` is the library's text, unchanged (no
   framing, no cleaning: the journal scans text). `comments` is a populated
@@ -421,6 +425,14 @@ remove.
   journal's 8 MiB body. `observed_at` is the time the detail surface
   started. With the session refused on another surface the detail surface
   is skipped, so only the listings are sent.
+- **`in_latest_snapshot` carries no meaning for `lms_assignment_detail`.**
+  Each poll's detail snapshot holds only the details read in that poll
+  (new or changed rows, and those due for refresh), and a poll's reads may
+  be split over several snapshots of one `observed_at`, of which the
+  journal counts only one as the latest. A detail row with
+  `in_latest_snapshot: false` may well be current; nothing downstream may
+  read that flag as "still current" for this type. (For `lms_assignment`
+  it means "in the latest listing".)
 - A record never affects an item: a builder that fails, or a spool that
   cannot be written, is counted and logged, and the poll goes on.
 
@@ -458,10 +470,12 @@ the chart refuses `schoologyConnector.records.enabled` unless
 **Skipped rows** are counted in `schoology_record_rows_skipped_total` by
 `reason`: `no_id` (a listed row without an id), `duplicate_key` (an id
 listed or read twice), `snapshot_too_large` (a listing over the journal's
-limits; not sent), `builder_panic`.
+limits; not sent), `comments_unread` (a detail read whose comments were
+not read), `builder_panic`.
 
 **Cutover.** openclaw switches from items to the journal only when both
-PowerSchool and Schoology emit records. Enabling these records changes
+PowerSchool and Schoology emit records, and it switches both sources in one
+step: never PowerSchool alone first. Enabling these records changes
 nothing openclaw reads. The enabling checklist is in
 [upgrading.md, "Schoology records (Part B2)"](../upgrading.md#schoology-records-part-b2).
 

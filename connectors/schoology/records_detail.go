@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leftathome/glovebox/connector"
 	"github.com/leftathome/glovebox/connector/records"
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 	"github.com/leftathome/glovebox/internal/journal/record"
@@ -15,10 +14,9 @@ import (
 // VerifiedDetail is one clean read of an assignment's detail for one kid
 // (DetailDeps.OnVerified): the page passed the id, course and title checks
 // against the kid's listing, parsed without error, and its comments were
-// read.
+// read (an empty or populated block; see commentsRead).
 type VerifiedDetail struct {
 	Kid      Kid
-	Rule     connector.MatchResult // the kid's assignment_detail rule
 	Row      *schoologylib.Assignment
 	Detail   *schoologylib.AssignmentDetail
 	Comments schoologylib.AssignmentComments
@@ -89,6 +87,12 @@ func BuildAssignmentDetails(b Binding, reads []VerifiedDetail, observedAt time.T
 	}
 	flush()
 	return out
+}
+
+// commentsRead reports whether a comment block was read: empty or
+// populated. Unknown and unavailable are not a reading of the comments.
+func commentsRead(c schoologylib.AssignmentComments) bool {
+	return c.State == schoologylib.CommentsStateEmpty || c.State == schoologylib.CommentsStatePopulated
 }
 
 // commentsText is the comments field (decision T3): a populated block's

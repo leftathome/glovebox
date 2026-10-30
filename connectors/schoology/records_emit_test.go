@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -241,6 +242,30 @@ func TestNewRecordsFactory(t *testing.T) {
 	}
 }
 
+// A detail whose comments were not read is no record (decision T2: a clean
+// read includes its comments) and is counted comments_unread; its item is
+// staged as before.
+func TestEmitCountsDetailsWithUnreadComments(t *testing.T) {
+	sink := &recorderSink{}
+	run := newRecordsRun(t, t.TempDir(), true, sink)
+	run.fixture.comments[9100000012] = &schoologylib.AssignmentComments{State: schoologylib.CommentsStateUnavailable}
+	before, _ := exportedCounter("schoology_record_rows_skipped_total", "reason", "comments_unread")
+	if err := run.poll(t); err != nil {
+		t.Fatal(err)
+	}
+	idx := bySubjectAndType(t, sink.all())
+	if got := keysOfSnap(idx["e_child1"][TypeLMSAssignmentDetail]); strings.Join(got, ",") != "9100000011" {
+		t.Fatalf("k1's detail keys %v, want only the read with its comments", got)
+	}
+	after, _ := exportedCounter("schoology_record_rows_skipped_total", "reason", "comments_unread")
+	if after-before != 1 {
+		t.Fatalf("comments_unread counted %v, want 1", after-before)
+	}
+	if len(run.items(t)) != 6 {
+		t.Fatalf("%d items, want the 6 of records off", len(run.items(t)))
+	}
+}
+
 // A config that asked for records and cannot have them fails Wire, so the
 // process stops at start rather than run without its records.
 func TestWireFailsWithoutItsSink(t *testing.T) {
@@ -261,21 +286,40 @@ func TestWireFailsWithoutItsSink(t *testing.T) {
 	}
 }
 
-// runSink signals each Run and returns when its context ends.
+// runSink signals each Run and returns a while after its context ends (a
+// pass in flight finishing), recording the most loops alive at once.
 type runSink struct {
 	recorderSink
 	started chan struct{}
+	linger  time.Duration
+	active  atomic.Int32
+	peak    atomic.Int32
 }
 
 func (s *runSink) Run(ctx context.Context) {
+	n := s.active.Add(1)
+	for {
+		p := s.peak.Load()
+		if n <= p || s.peak.CompareAndSwap(p, n) {
+			break
+		}
+	}
 	s.started <- struct{}{}
 	<-ctx.Done()
+	time.Sleep(s.linger)
+	s.active.Add(-1)
 }
 
 // Watch starts the delivery loop; a restarted Watch starts it again only
-// after the previous loop has returned, so one runs at a time.
+// after the previous loop has returned, so one runs at a time -- also when
+// the previous loop is still finishing after its context ended.
 func TestWatchStartsOneRecordsLoop(t *testing.T) {
-	sink := &runSink{started: make(chan struct{}, 4)}
+	sink := &runSink{started: make(chan struct{}, 4), linger: 200 * time.Millisecond}
+	defer func() {
+		if p := sink.peak.Load(); p != 1 {
+			t.Errorf("%d records loops alive at once, want 1", p)
+		}
+	}()
 	run := newRecordsRun(t, t.TempDir(), true, sink)
 	for i := 0; i < 2; i++ {
 		ctx, cancel := context.WithCancel(context.Background())

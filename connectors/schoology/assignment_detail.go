@@ -694,11 +694,18 @@ func (run *detailRun) handle(ctx context.Context, w detailWork, f *detailFetch) 
 		}
 	}
 
-	// Records (decision T2): only a clean read, changed or not. A degraded
-	// read would blank good values in the journal; its item is staged as
-	// before.
+	// Records (decision T2): only a clean read, changed or not -- and a
+	// read is clean only when its comments were read (an empty or a
+	// populated block). Unknown (no block looked at) and unavailable (the
+	// page refused) carry no error but would write comments: null over a
+	// stored teacher comment. A degraded read would blank good values in
+	// the journal; its item is staged as before.
 	if deps.OnVerified != nil && !parseFailed && !courseUnverified {
-		deps.OnVerified(VerifiedDetail{Kid: kid, Rule: ks.rule, Row: w.row, Detail: d, Comments: f.comments, ReadAt: run.now})
+		if commentsRead(f.comments) {
+			deps.OnVerified(VerifiedDetail{Kid: kid, Row: w.row, Detail: d, Comments: f.comments, ReadAt: run.now})
+		} else {
+			deps.Tel.RecordRecordRowSkipped("comments_unread")
+		}
 	}
 
 	opts := buildDetailItemOptions(w.row, d, f.comments, ks.rule)
