@@ -199,6 +199,10 @@ func main() {
 		}
 	}
 
+	// Records (records.enabled): snapshots spooled under the state
+	// directory and sent to the journal in shadow. Off, nothing is built.
+	c.NewRecords = schoology.NewRecordsFactory(cfg.Records, os.Getenv("GLOVEBOX_STATE_DIR"), nil)
+
 	connector.Run(runOptions(c, configFile, status, os.Getenv))
 }
 

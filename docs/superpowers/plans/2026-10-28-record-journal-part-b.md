@@ -64,6 +64,9 @@ Each is restated in the task that implements it. None is invented spec: where th
 | S13 | **Records without the journal.** | Silent. | The chart refuses `connectors.powerschool.records.enabled` unless `journal.enabled`, `journal.networkPolicy.writerConnectors` lists `powerschool`, and `journal.services` has the connector's entry with `write_types`. Explicit values, reviewed in gitops; nothing is added implicitly. |
 | S14 | **Where the record type definitions live.** | Part A: "the chart ships none". | Defined once in Go in the connector (`RecordTypes()`), written to `charts/glovebox/journal-record-types/powerschool.json` by a generator test, and rendered into the journal config when `journal.connectorRecordTypes` lists `powerschool` (default `[]`). A test fails when the file and the Go definitions drift. |
 | S15 | **The seed (rollout step 3).** | Section 7: a one-time Job over retained items. | **Not in this plan or B2.** It reads a different input (items retained since 2026-10-10, parsed from tags and body lines), needs its own operator ServiceAccount and policy entry, and must produce exactly the keys the live connectors produce. B1 and B2 make the key and builder functions exported for it. Write the seed plan after B1 has shipped and an inventory of the retained items exists. |
+| S16 | **Days the grid could not settle before a term ends.** Steve 2026-10-29: carry pending attendance days across the term boundary. | 5.1: settled days only; the grid shows the current term. Silent on the last days of a term, which the rule as built never settled (today is never settled; a `.` day needs later school days in the same grid). | Carry each kid's not-yet-settled coded days in its checkpoint, settle them with the next term's school days by the same rule (the grid wins while it still shows a day), send them in a `complete: false` snapshot of their school year's scope, and drop one not settled within 30 calendar days (counted). Implemented; see the NOTE under Task 17. |
+
+NOTE (decision S17, Steve 2026-10-30, from the Part B2 review): records require an explicit rule audience (fail closed); audience_default is not applied to records. With records enabled, `validateRecords` refuses a kid's rule for an enabled surface that sets no `audience`, naming the kid and the surface (`TestRecordsConfigRefusesARuleWithoutAudience`). Without records nothing changes.
 
 ---
 
@@ -1677,7 +1680,7 @@ No field is `required` (every field nullable; a future version may add fields on
 
 Binding: `subjectFor(m *connector.RuleMatcher, kid Kid, surface string) (Binding, bool)` returns the matching rule's `DataSubject` and a copy of its `Audience`. `ValidateConfig` already guarantees every enabled surface of a kid resolves to one rule with a `data_subject`, one subject per kid, no subject shared by two kids, and teacher comments guardians-only. With `records.enabled` add (S11): every key of `attendance_days.kinds` is one of the seven names.
 
-- [ ] **Step 12.1: Write the failing tests.**
+- [x] **Step 12.1: Write the failing tests.**
 
 ```go
 func TestRecordTypesAreValidForTheJournal(t *testing.T) {
@@ -1724,8 +1727,8 @@ func TestSubjectForUsesTheKidsRule(t *testing.T) {
 
 `records_testkit_test.go` holds `recordRules()` (the `testRules()` set with `e_child1` / `e_child2` instead of the existing ids), `recordsRegistry(t)`, `validateAll(t, snaps)` (runs `record.ValidateSnapshot` on each and re-decodes `json.Marshal(snap)` through `strictjson.DecodeLimits` with Part A's caps), `fieldsOf(t, snap, key)`, and `wantFields(t, ty, rec)` (the record's field names equal the type's declared set exactly).
 
-- [ ] **Step 12.2: Run; expect FAIL.**
-- [ ] **Step 12.3: Implement.** In `config.go`: `Records PowerSchoolRecords \`json:"records"\`` on `Config` (the struct below); `ApplyDefaults` calls `c.Records.ApplyDefaults()` only when `c.Records.Enabled` (so a disabled block stays zero); `ValidateConfig` calls `c.Records.Validate()` and the kinds check. Add `AttendanceDaySettleSchoolDays int \`json:"attendance_day_settle_school_days"\`` to the records block **in the PowerSchool config, not the shared one** -- a PowerSchool-only setting (S1): put it in a `PowerSchoolRecords` struct embedding `records.Config`:
+- [x] **Step 12.2: Run; expect FAIL.**
+- [x] **Step 12.3: Implement.** In `config.go`: `Records PowerSchoolRecords \`json:"records"\`` on `Config` (the struct below); `ApplyDefaults` calls `c.Records.ApplyDefaults()` only when `c.Records.Enabled` (so a disabled block stays zero); `ValidateConfig` calls `c.Records.Validate()` and the kinds check. Add `AttendanceDaySettleSchoolDays int \`json:"attendance_day_settle_school_days"\`` to the records block **in the PowerSchool config, not the shared one** -- a PowerSchool-only setting (S1): put it in a `PowerSchoolRecords` struct embedding `records.Config`:
 
 ```go
 type PowerSchoolRecords struct {
@@ -1739,8 +1742,10 @@ type PowerSchoolRecords struct {
 
 `ApplyDefaults` sets `AttendanceDaySettleSchoolDays` to 3 when zero (records enabled only); `ValidateConfig` refuses values outside 1-10 when records are enabled. Code elsewhere uses `cfg.Records.Config` for the shared part. Check that `encoding/json` flattens the embedded struct's fields (it does for an anonymous struct field without a tag).
 
-- [ ] **Step 12.4: Run; expect PASS.**
-- [ ] **Step 12.5: Commit** (`feat(powerschool): record type definitions and records config`).
+- [x] **Step 12.4: Run; expect PASS.**
+- [x] **Step 12.5: Commit** (`feat(powerschool): record type definitions and records config`).
+
+NOTE (B1 implementation): `ApplyDefaults` is a package function here, so it calls `applyRecordsDefaults(&c.Records)` (a no-op when disabled) and `ValidateConfig` calls `validateRecords`, both in `record_binding.go`; no method is defined on `PowerSchoolRecords`, so the embedded `records.Config` methods are not shadowed. `Binding` carries an `OnSkip(reason)` hook (nil-safe) through which the pure builders count `powerschool_record_rows_skipped_total` without taking the telemetry; `subjectFor` also refuses a rule without `data_subject` and returns a copy of the audience. Extra tests: the field sets by name and type, the settle bounds 1-10, a disabled block left zero and never validated, and the flattened JSON of the embedded block. The tests and the implementation were written in one pass for this task (the red run was not separately observed).
 
 ---
 
@@ -1752,7 +1757,7 @@ type PowerSchoolRecords struct {
 
 Both come from the home page grade rows (`page.Grades`), one record per course, one scope per course (`(powerschool, grades|attendance_totals, subject, course=<courseKey>)`, complete). Unlike today's items, every row becomes a record, including a course with no grade posted and a course with 0 absences and 0 tardies: records describe state, not change. (These scopes have one record each, so `complete` can never remove anything; tests do not expect a removal -- spec 5.1.)
 
-- [ ] **Step 13.1: Write the failing tests.**
+- [x] **Step 13.1: Write the failing tests.**
 
 ```go
 func TestCourseMarksOneScopePerCourse(t *testing.T) {
@@ -1796,10 +1801,12 @@ func TestCourseKeyWithControlCharactersIsHashedConsistently(t *testing.T) {
 }
 ```
 
-- [ ] **Step 13.2: Run; expect FAIL.**
-- [ ] **Step 13.3: Implement.** `recordCourseKey(g) = records.SafeKey(courseKey(g))` (export as `CourseRecordKey` for the seed, S15); percent through `splitGrade` then `strconv.ParseFloat` (an unparsable percent is null, the letter keeps the raw cell, as `splitGrade` does); `Fields.String` for every string. A nil row is skipped. Two rows with the same course key on one page (should not happen; `frn` is per enrolment): keep the first, count `powerschool_record_rows_skipped_total{reason="duplicate_key"}` -- add the counter to `telemetry.go`, nil-safe like the others.
-- [ ] **Step 13.4: Run; expect PASS.**
-- [ ] **Step 13.5: Commit** (`feat(powerschool): course_mark and attendance_total record builders`).
+- [x] **Step 13.2: Run; expect FAIL.**
+- [x] **Step 13.3: Implement.** `recordCourseKey(g) = records.SafeKey(courseKey(g))` (export as `CourseRecordKey` for the seed, S15); percent through `splitGrade` then `strconv.ParseFloat` (an unparsable percent is null, the letter keeps the raw cell, as `splitGrade` does); `Fields.String` for every string. A nil row is skipped. Two rows with the same course key on one page (should not happen; `frn` is per enrolment): keep the first, count `powerschool_record_rows_skipped_total{reason="duplicate_key"}` -- add the counter to `telemetry.go`, nil-safe like the others.
+- [x] **Step 13.4: Run; expect PASS.**
+- [x] **Step 13.5: Commit** (`feat(powerschool): course_mark and attendance_total record builders`).
+
+NOTE (B1 implementation): the duplicate-key counter is reached through `Binding.OnSkip` (Task 12's NOTE); `Telemetry.RecordRecordRowSkipped` is the nil-safe recorder. Shared helpers on `Binding` (`scope`, `record`, `fits`) live in `record_binding.go`; `fits` leaves out any snapshot over 5000 records or 8 MiB encoded (counted `snapshot_too_large`, logged with the record type only) for every builder, not only `assignment`. The scope's `course` part is `records.Part("course", courseKey(g))`, i.e. `SafeScopeValue` (1-256 bytes), while the record key is `CourseRecordKey` = `SafeKey` (1-512 bytes). They agree when `courseKey` is clean and at most 256 bytes, and when it is hashed for a control or format character (both give the same `h:` + 32 hex). They differ for a clean `courseKey` of 257-512 bytes: the key is the raw value, the scope value its hash. The seed (S15) must therefore build the scope with `records.Part` and the key with `CourseRecordKey` separately, never one from the other. (The `attendance_total` and `assignment` scopes' `course` part is built the same way, with `records.Part`.)
 
 ---
 
@@ -1813,11 +1820,13 @@ One snapshot per course **read** in this turn (`reads []courseRead`, built by `r
 
 Fields: `course` (`g.CourseName`), `category`, `title` (`a.Title`), `letter` (`a.LetterGrade`) string; `due` from `dueDay` (the calendar date; undated is null); `score` (`a.Score`; but an entered zero with `Score == nil` and `Status == graded` is `0` -- the same rule as `isScored`), `max_score` (`a.MaxScore`, null when 0 and unscored), `percent` (`a.Percentage`) number; the six flags from `flagSet`; `teacher_comment` (`a.TeacherComment` when `a.HasTeacherComment`), `description` (`a.Description`), `category_description` (`a.CategoryDescription`, null when equal to `description`, as `textOf` does) text -- through `Fields.Text`, i.e. **not** `boundText`: no 4 KiB cut, no cleaning.
 
-- [ ] **Step 14.1: Write the failing tests:** keys equal the checkpoint ids `stageAssignments` writes for the same reads (run `stageAssignments` on a test env with the same reads, collect `CheckpointKey(assignmentSurface, "k1", key)` ids, compare); an assignment far outside the lookback window is present; a shared-section id repeated gives `id`, `id#2`; the teacher comment fixture from `assignment_text_test.go` with line breaks, tabs and a bidi control arrives unchanged in `teacher_comment`; a 70 KiB description is cut to <= 64 KiB and `OnCut` fires once; a snapshot whose encoded size exceeds 8 MiB is not emitted but logged and counted (`powerschool_record_rows_skipped_total{reason="snapshot_too_large"}`) instead of being refused 413 on every poll; an entered zero is `score: 0`; two courses give two snapshots; zero reads give zero snapshots; every record has exactly the type's field set; `validateAll` passes.
-- [ ] **Step 14.2: Run; expect FAIL.**
-- [ ] **Step 14.3: Implement** `BuildAssignments(b Binding, reads []courseRead, tz *time.Location, observedAt time.Time, onCut func()) []journalapi.Snapshot` and `AssignmentRecordKey(g *pslib.Grade, id string, n int) string` (exported for the seed).
-- [ ] **Step 14.4: Run; expect PASS.**
-- [ ] **Step 14.5: Commit** (`feat(powerschool): assignment record builder`).
+- [x] **Step 14.1: Write the failing tests:** keys equal the checkpoint ids `stageAssignments` writes for the same reads (run `stageAssignments` on a test env with the same reads, collect `CheckpointKey(assignmentSurface, "k1", key)` ids, compare); an assignment far outside the lookback window is present; a shared-section id repeated gives `id`, `id#2`; the teacher comment fixture from `assignment_text_test.go` with line breaks, tabs and a bidi control arrives unchanged in `teacher_comment`; a 70 KiB description is cut to <= 64 KiB and `OnCut` fires once; a snapshot whose encoded size exceeds 8 MiB is not emitted but logged and counted (`powerschool_record_rows_skipped_total{reason="snapshot_too_large"}`) instead of being refused 413 on every poll; an entered zero is `score: 0`; two courses give two snapshots; zero reads give zero snapshots; every record has exactly the type's field set; `validateAll` passes.
+- [x] **Step 14.2: Run; expect FAIL.**
+- [x] **Step 14.3: Implement** `BuildAssignments(b Binding, reads []courseRead, tz *time.Location, observedAt time.Time, onCut func()) []journalapi.Snapshot` and `AssignmentRecordKey(g *pslib.Grade, id string, n int) string` (exported for the seed).
+- [x] **Step 14.4: Run; expect PASS.**
+- [x] **Step 14.5: Commit** (`feat(powerschool): assignment record builder`).
+
+NOTE (B1 implementation): the `<courseKey>:<id>` / `#n` expression is factored out of `stageAssignments` into `assignmentKey(g, id, seen)` and used by both paths (the golden test is unchanged). `category_description` is null when its cleaned text equals the description's cleaned text (`boundText`, the comparison `textOf` makes), but the value written is the raw text. A course read with no assignments gives a complete, empty snapshot (the course was read; it has none). The too-large check is the shared `Binding.fits` (Task 13's NOTE); its test builds 140 assignments with 60 KiB descriptions.
 
 ---
 
@@ -1831,7 +1840,7 @@ From the attendance page (`extras.attendance`). One record per coded cell (`Kind
 
 Fields: `date`; `course` (`CourseName`), `period` (`Expression`), `code`, `code_description` (legend description) string; `kind` from `cfg.kindOf(entry.Category)`; `excused` per S10.
 
-- [ ] **Step 15.1: Write the failing tests.**
+- [x] **Step 15.1: Write the failing tests.**
 
 ```go
 func TestAttendanceMarksPerSchoolYearWithRange(t *testing.T)     // dates 2026-10-02..10-08 -> one snapshot, school_year 2026-27, range 10-02..10-08, records for VU and L only
@@ -1852,10 +1861,12 @@ func TestAttendanceMarksTermChangeDoesNotRemoveLastTerm(t *testing.T) {
 
 The last test checks the property the journal relies on (range disjointness). The end-to-end version against the real journal is in Task 23.
 
-- [ ] **Step 15.2: Run; expect FAIL.**
-- [ ] **Step 15.3: Implement** `BuildAttendanceMarks(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, observedAt time.Time) []journalapi.Snapshot` and `AttendanceMarkRecordKey(course *pslib.AttendanceCourse, date time.Time) string`. Dates: `day.Date` is midnight UTC of the school day; format with `Format("2006-01-02")` in UTC (as `ProcessAttendanceDays` does).
-- [ ] **Step 15.4: Run; expect PASS.**
-- [ ] **Step 15.5: Commit** (`feat(powerschool): attendance_mark record builder with complete_range per school year`).
+- [x] **Step 15.2: Run; expect FAIL.**
+- [x] **Step 15.3: Implement** `BuildAttendanceMarks(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, observedAt time.Time) []journalapi.Snapshot` and `AttendanceMarkRecordKey(course *pslib.AttendanceCourse, date time.Time) string`. Dates: `day.Date` is midnight UTC of the school day; format with `Format("2006-01-02")` in UTC (as `ProcessAttendanceDays` does).
+- [x] **Step 15.4: Run; expect PASS.**
+- [x] **Step 15.5: Commit** (`feat(powerschool): attendance_mark record builder with complete_range per school year`).
+
+NOTE (B1 implementation): `gridYears(page)` (every cell's date, by `SchoolYear`, in order) is shared with Task 17. A cell whose key repeats an earlier one (two rows the page cannot tell apart: same name, period and no enrolment date) is left out and counted `duplicate_key`, since the journal refuses a repeated key with a permanent 422. Records are in page order (course, then cell). Extra tests: left-early excused, a nil page, the duplicate-row case.
 
 ---
 
@@ -1879,9 +1890,9 @@ Per date, across all course rows of the page (spec 5.1):
 
 This task builds the pure aggregation and classification (`dayTally`, `classify`); Task 17 adds settling and the snapshot.
 
-- [ ] **Step 16.1: Write the failing table test** with the cases spec 8 names: full (every met period `UA` or `EA`), partial (one of four `UA`), late-or-left-early (`L` and `LE`, no absence), no-meeting (`-` cells do not count: two met periods both `UA` plus two `-` is `full_day`), unmarked (one `.` among three met, two `UA` -> marked 2, `full_day`), authorized only (`FT` -> `other`, `any_unexcused` false), unknown code (`ZZ` not in the legend -> `unknown_codes` 1, `other`), mixed excused and unexcused absence (`full_day`, `any_unexcused` true), a late unexcused plus an excused absence (partial with `any_unexcused` true), and a day with no codes (no candidate).
-- [ ] **Step 16.2: Run; expect FAIL.**
-- [ ] **Step 16.3: Implement.**
+- [x] **Step 16.1: Write the failing table test** with the cases spec 8 names: full (every met period `UA` or `EA`), partial (one of four `UA`), late-or-left-early (`L` and `LE`, no absence), no-meeting (`-` cells do not count: two met periods both `UA` plus two `-` is `full_day`), unmarked (one `.` among three met, two `UA` -> marked 2, `full_day`), authorized only (`FT` -> `other`, `any_unexcused` false), unknown code (`ZZ` not in the legend -> `unknown_codes` 1, `other`), mixed excused and unexcused absence (`full_day`, `any_unexcused` true), a late unexcused plus an excused absence (partial with `any_unexcused` true), and a day with no codes (no candidate).
+- [x] **Step 16.2: Run; expect FAIL.**
+- [x] **Step 16.3: Implement.**
 
 ```go
 type dayTally struct {
@@ -1955,8 +1966,8 @@ func (t *dayTally) classification() string {
 
 (`abs > marked` cannot happen: every absence cell is a met, marked cell.)
 
-- [ ] **Step 16.4: Run; expect PASS.**
-- [ ] **Step 16.5: Commit** (`feat(powerschool): attendance_day tally and classification`).
+- [x] **Step 16.4: Run; expect PASS.**
+- [x] **Step 16.5: Commit** (`feat(powerschool): attendance_day tally and classification`).
 
 ---
 
@@ -1970,7 +1981,7 @@ Settled (spec 5.1 with S1, S2): a date is settled when it is before today in the
 
 Snapshot per school year (S3): `from` = the first grid date of the year; `to` = the last date of the longest prefix (from `from`, in date order over grid dates of that year that are before today) in which every date is settled; records = coded days within `[from, to]`; scope `(powerschool, attendance_days, subject, school_year=<y>)`, complete, `complete_range {date, from, to}`. If no date of the year is settled, no snapshot for that year. Key: the date.
 
-- [ ] **Step 17.1: Write the failing tests** (spec 8: "unmarked-then-settled and corrected days"):
+- [x] **Step 17.1: Write the failing tests** (spec 8: "unmarked-then-settled and corrected days"):
 
 ```go
 func TestDayWithUnmarkedCellIsNotSettledUntilThreeSchoolDays(t *testing.T) {
@@ -1995,10 +2006,14 @@ func TestAttendanceDaysSplitAtTheSchoolYear(t *testing.T)
 func TestAttendanceDayFieldsAreTheSpecSet(t *testing.T)            // wantFields + validateAll
 ```
 
-- [ ] **Step 17.2: Run; expect FAIL.**
-- [ ] **Step 17.3: Implement** `BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int, now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot`. "Today" is `now.In(tz)`'s calendar date compared with the grid's UTC-midnight dates by `YYYY-MM-DD` string.
-- [ ] **Step 17.4: Run; expect PASS.**
-- [ ] **Step 17.5: Commit** (`feat(powerschool): attendance_day settled days and complete_range`).
+- [x] **Step 17.2: Run; expect FAIL.**
+- [x] **Step 17.3: Implement** `BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int, now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot`. "Today" is `now.In(tz)`'s calendar date compared with the grid's UTC-midnight dates by `YYYY-MM-DD` string.
+- [x] **Step 17.4: Run; expect PASS.**
+- [x] **Step 17.5: Commit** (`feat(powerschool): attendance_day settled days and complete_range`).
+
+NOTE (B1 implementation): a `settle` below 1 is taken as the default 3 (the config refuses it anyway) and a nil `tz` as UTC. "Followed" counts school days strictly after the date up to and including today; a grid date that is all `-` is not a school day. Extra test: a nil page gives nothing.
+
+NOTE (decision S16, after review): as first built, today was never settled and a day with a `.` needed `settle` later school days in the same grid. The library's grid holds only the current term, so the last day(s) of each term were lost when the grid rolled. Now `buildAttendanceDaysCarry` (used by `emitKidRecords`; `BuildAttendanceDays` is the same with nothing carried) returns the coded grid days on or before today that lie after the settled range, as `pendingDay`s (date, the day's counts, the school days counted after it and the date counted through: no course, code or name). The connector keeps them per kid in its checkpoint under `meta:records_pending_attendance_days:<kid>` (written through the checkpoint's atomic save, and only with records enabled; no key, as in state from before S16, or an unreadable value is "nothing carried"). On a later poll a carried day the grid still shows is ignored -- the grid wins, so a correction is picked up; any other carried day adds the grid's school days after it (and after the last day already counted, so a repeated poll counts nothing twice) and settles by the same rule. **Shape:** a settled carried day is sent in a `complete: false` snapshot (no `complete_range`) of the scope of its own school year, `(powerschool, attendance_days, subject, school_year)`. Spec 4.3/4.4 step 8: a `complete=false` snapshot adds or updates and never removes, so the carried day does not widen the current term's range over the break between terms (which would tell the journal the days in between were absent), and a carried day of the previous school year lands in that year's scope. The snapshot has the same `observed_at` as the turn's other snapshots, so it is not `late` (4.4 step 4 needs a strictly later one). A carried day not settled 30 calendar days (`carryHorizonDays`) after its date is dropped, counted `powerschool_record_rows_skipped_total{reason="attendance_day_carry_expired"}` and logged with the record type only. If `Emit` fails the carried set is not saved, so days settled in that turn are tried again. Tests (`records_attendance_carry_test.go`): a fully marked last day of term settles after the rollover, in its own snapshot, the next term's range starting at its first date; a `.` day settles once next-term school days complete the three, a `-` day and a repeated poll counting nothing; a correction while still in the grid; the horizon (kept on day 30, dropped on day 31); a restart mid-carry through a real checkpoint file; nothing written with records off; old or unreadable state loads as nothing. Targeted mutation run on the carry logic: 10 mutants, all killed by named tests (grid-wins check, horizon boundary, counting from the last day counted, the carried count, saving the updated count, pending from today's grid, `complete=false`, removing the key when empty, saving the state, loading the state). The red step was a build failure (the tests were written against the missing functions); the behavioural failures were seen through the mutants.
 
 ---
 
@@ -2012,11 +2027,13 @@ func TestAttendanceDayFieldsAreTheSpecSet(t *testing.T)            // wantFields
 
 `term_comment`: one snapshot per comments page accepted this turn (`extras.comments`, each a confirmed term; a page without a confirmed term is never used, as today). Scope `(powerschool, term_comments, subject, term=<TERM>)` (S4), complete. One record per comment with visible text; key = the connector's existing key (S6) `<course_number or name:...>|<expression>:<term>` (`#n`), factored into `teacherCommentKey(cm, term, seen)` and used by both paths. Fields: `course` (`CourseName`), `term` string; `comment` text (`cm.Comment` through `Fields.Text`, not `boundText`). The teacher's name is not a field (today it goes in the body only; spec 5.1 has no teacher field for this type). Audience: the binding's audience, which `ValidateConfig` guarantees is exactly `[guardians]`; the builder refuses (returns no snapshot, counts `powerschool_record_rows_skipped_total{reason="audience_not_guardians_only"}`) if it is not, the same defence in depth as `stage`.
 
-- [ ] **Step 18.1: Write the failing tests:** keys equal the item checkpoint ids for the existing fixtures (`historyFixture`, `commentsFixture`); the golden test still passes unchanged; a comment with CRLF, tabs and doubled spaces arrives unchanged; an empty comment is not a record; an unconfirmed page gives no snapshot; two term pages give two snapshots with different `term` parts; a binding with `[subject, guardians]` gives no `term_comment` snapshot; `validateAll`.
-- [ ] **Step 18.2: Run; expect FAIL.**
-- [ ] **Step 18.3: Implement** `BuildTermGrades(b, page, observedAt)` and `BuildTermComments(b, pages, observedAt, onCut)`, plus the two key functions (exported as `TermGradeRecordKey` / `TermCommentRecordKey` wrappers for the seed).
-- [ ] **Step 18.4: Run; expect PASS** (including `go test ./connectors/powerschool/ -run TestSurfaceFingerprints_Golden`).
-- [ ] **Step 18.5: Commit** (`feat(powerschool): term_grade and term_comment record builders`).
+- [x] **Step 18.1: Write the failing tests:** keys equal the item checkpoint ids for the existing fixtures (`historyFixture`, `commentsFixture`); the golden test still passes unchanged; a comment with CRLF, tabs and doubled spaces arrives unchanged; an empty comment is not a record; an unconfirmed page gives no snapshot; two term pages give two snapshots with different `term` parts; a binding with `[subject, guardians]` gives no `term_comment` snapshot; `validateAll`.
+- [x] **Step 18.2: Run; expect FAIL.**
+- [x] **Step 18.3: Implement** `BuildTermGrades(b, page, observedAt)` and `BuildTermComments(b, pages, observedAt, onCut)`, plus the two key functions (exported as `TermGradeRecordKey` / `TermCommentRecordKey` wrappers for the seed).
+- [x] **Step 18.4: Run; expect PASS** (including `go test ./connectors/powerschool/ -run TestSurfaceFingerprints_Golden`).
+- [x] **Step 18.5: Commit** (`feat(powerschool): term_grade and term_comment record builders`).
+
+NOTE (B1 implementation): `termGradeTerm`, `termGradeKey` and `teacherCommentKey` (with a shared `withRepeat` for the `#n` suffix) are factored out of `ProcessTermGrades` / `ProcessTeacherComments` and used by both paths; `TestSurfaceFingerprints_Golden` passes unchanged. The `term` scope part is the page's term upper-cased (the throttling name `termSurface` does the same); the `term` field and the key keep the page's text, as the item does. A comment counts when its cleaned text (`boundText`) is not empty, the item path's test, but the record carries the raw text. A confirmed term page whose comments are all empty is a complete, empty snapshot for that term. The two `*RecordKey` wrappers take the row's 1-based repeat number like `AssignmentRecordKey`.
 
 ---
 
@@ -2053,7 +2070,7 @@ type recordSink interface {
 
 `Watch` starts `go c.records.Run(ctx)` when `c.records != nil`. `main.go` builds the emitter only when `cfg.Records.Enabled` (`records.New(cfg.Records.Config, stateDir, "powerschool", provider.Meter("glovebox.records"), time.Now)`); the meter comes from the framework's `connector.Metrics` in `Wire` -- so construct the emitter in `Wire` from a factory set by `main.go` (`c.NewRecords = func(meter metric.Meter) (recordSink, error)`), keeping `main.go` free of metric plumbing. A failure to open the spool is fatal at start (a config that asked for records and cannot have them fails loudly, like the login broker's misconfiguration).
 
-- [ ] **Step 19.1: Write the failing tests.**
+- [x] **Step 19.1: Write the failing tests.**
 
 `records_off_test.go`:
 
@@ -2097,10 +2114,21 @@ func TestRecordsOnStagesTheSameItems(t *testing.T) {
 - for each staged item, the record with its key carries the same facts as the item's tags (grade letter and percent, absences and tardies, code and kind, score and flags, term grade and credits): a field-to-tag table per surface, compared after `OneLine` on both sides;
 - `data_subject` and `audience` of every record equal the staged item's metadata for the same kid and surface.
 
-- [ ] **Step 19.2: Run; expect FAIL.**
-- [ ] **Step 19.3: Implement.**
-- [ ] **Step 19.4: Run; expect PASS**, and the whole existing suite unchanged: `go test ./connectors/powerschool/... -count=1 -race`.
-- [ ] **Step 19.5: Commit** (`feat(powerschool): emit record snapshots in shadow behind records.enabled`).
+- [x] **Step 19.2: Run; expect FAIL.**
+- [x] **Step 19.3: Implement.**
+- [x] **Step 19.4: Run; expect PASS**, and the whole existing suite unchanged: `go test ./connectors/powerschool/... -count=1 -race`.
+- [x] **Step 19.5: Commit** (`feat(powerschool): emit record snapshots in shadow behind records.enabled`).
+
+NOTE (B1 Tasks 12-19, targeted mutation run): 20 mutants applied one at a time in the worktree and restored after each (tree verified clean); only named `--- FAIL:` kills counted. 19 compiled and all 19 were killed; M16 (`full_day` over all met periods instead of marked ones: `abs == t.met`) did not compile (`marked` unused) and was not rewritten. First compile attempt of M8 also left a variable unused; its compiling form (`cat == desc && false`) was killed.
+- Targets: term_comment default audience; the S11 kinds check; defaults applied to a disabled block; the 8 MiB size check; the duplicate course key; entered-zero score; `max_score` null rule; `category_description` dedup; `teacher_comment` as text, not string; S10 excused; the attendance_mark range end; settling (no unmarked cell, `>= settle`, today never settled, a school day needs a met period); the term_comment audience guard; the term-confirmed guard; the grades surface switch; `readAt` as observed_at.
+- Killing tests: `TestTermCommentDefaultAudienceIsGuardiansOnly`, `TestRecordsConfigRefusesCustomAttendanceKinds`, `TestRecordsOffConfigIsUntouched`, `TestAssignmentSnapshotTooLargeIsNotEmitted`, `TestCourseMarksDuplicateKeyKeepsTheFirst`, `TestAssignmentScoresAndFlags` (2), `TestAssignmentTextArrivesUnchanged` (2), `TestAttendanceMarksExcused`, `TestAttendanceMarksPerSchoolYearWithRange`, `TestDayWithUnmarkedCellIsNotSettledUntilThreeSchoolDays` (3), `TestNoMeetingDaysAreNotSchoolDays`, `TestTermCommentsRefuseAWiderAudience`, `TestTermCommentsPerTermAndUnconfirmed`, `TestEmitFollowsTheSurfaceSwitches`, `TestEmitEverySurfaceForEveryKid`.
+
+NOTE (B1 implementation):
+- **Hook.** The sink interface is exported as `RecordSink` (the binary sets `c.NewRecords`, whose type must be nameable from `main`). `NewRecordsFactory(cfg.Records, stateDir, now)` returns nil when records are off, so `main.go` sets the field unconditionally and with records off nothing is built; it takes a clock so tests can keep the spool's `max_age` on the fixture's time. `Wire` builds the sink on `cc.Metrics.Provider().Meter("glovebox.records")`; a factory error fails `Wire` (fatal at start).
+- **The loop.** `Watch` calls `startRecords(ctx)`: the framework restarts `Watch` with a new context, so the loop of the previous `Watch` (whose context has ended) is waited for before the next starts -- one loop at a time, never none after a restart.
+- **readAt** is `c.now()` (the connector's clock, `time.Now` in production) rather than `env.now()`: `pollNow` builds its `Env` without a clock, and the tests need a fixed one. `attendance_day` uses it as "now" too.
+- **Panics and errors.** A panic anywhere in `emitKidRecords` (builders or `Emit`) is recovered and counted `powerschool_record_rows_skipped_total{reason="builder_panic"}`; an `Emit` error is logged (the emitter has already counted `write_errors_total`).
+- **Tests.** The metric checks read the records meter through their own `ManualReader` and the connector's counters through `recordMetrics`: the framework's `/metrics` handler shares the process's default Prometheus registry between every test's providers, so a scrape fails once two tests have polled. The checkpoint comparisons use an in-memory `Checkpoint` whose keys can be listed. `TestRecordsOnStagesTheSameItems` also drains the real emitter into the fake journal (with the PowerSchool registry): all 16 snapshots (8 per kid) are applied and the spool is left empty. Extra tests: `NewRecordsFactory` (off, relative or empty state directory, on), `Wire` failing without its sink, one delivery loop across a `Watch` restart, a recovered panic.
 
 ---
 
@@ -2153,15 +2181,22 @@ Rendering, only when `records.enabled`:
   and a mount `/var/run/secrets/glovebox-journal` read-only. Nothing else in the pod changes (`automountServiceAccountToken` stays false). Generalise the condition with a helper `glovebox.recordsEnabled` (`dict "name" $name "connector" $connector`) so B2 and later connectors reuse it; for now only `powerschool` may enable it (`fail` for any other name: no other connector has a builder).
 - `_helpers.tpl` `glovebox.recordsChecks` (called from the connector configmap when enabled; S12, S13): fail unless `journal.enabled`; fail if `loginOnDemand.enabled`; fail unless `journal.networkPolicy.writerConnectors` contains the name; fail unless `journal.services["<ns>/<connector SA>"].write_types` is non-empty (the existing reverse check stays); fail if `tokenExpirationSeconds` < 600 (the kubelet's minimum) or > 3600; `attendanceDaySettleSchoolDays` 1-10.
 
-- [ ] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
+- [x] **Step 20.1: Write the failing render tests** in `scripts/test-chart-records.sh` (same harness shape as `test-chart-journal.sh`: `check NAME PYEXPR args`, `expect_fail NAME FRAGMENT args`):
   - default values render byte-identically to `BASE_REF` (`origin/main`) -- the off-by-default guarantee;
   - `journal.enabled` + records off: powerschool pod unchanged from the same render on `BASE_REF`;
   - records on (with `scripts/testdata/records-values.yaml`: journal enabled, writer connector, services entry for `openclaw/glovebox-glovebox-connector-powerschool` with the seven `write_types`, `write_scopes: {source: [powerschool]}`, `write_subjects: roster_subjects`): config.json has the `records` block with the URL `http://glovebox-glovebox-journal:9095` and the token path; the pod has exactly one projected token with audience `glovebox-journal`, `automountServiceAccountToken: false`, no other token source; the RSS connector's pod (enabled in the values) has no journal token and its SA no services entry;
   - refusals: records without `journal.enabled`; with `loginOnDemand.enabled`; without the writer connector entry; without the services entry; `tokenExpirationSeconds: 300`; records on another connector (`connectors.rss.records.enabled`).
-- [ ] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
-- [ ] **Step 20.3: Implement.**
-- [ ] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
-- [ ] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+- [x] **Step 20.2: Run; expect FAIL** (`scripts/test-chart-records.sh`).
+- [x] **Step 20.3: Implement.**
+- [x] **Step 20.4: Run; expect PASS**, then `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`.
+- [x] **Step 20.5: Commit** (`feat(chart): powerschool records block and projected journal token`).
+
+NOTE (B1 implementation):
+- **Helpers.** `glovebox.recordsEnabled` (dict `name`, `connector`) fails the render for records on any connector but `powerschool`; `glovebox.recordsConfig` renders the block; `glovebox.recordsChecks` holds S12, S13 and the ranges. The services check runs before the writer-connector check, so each refusal names its own missing value whichever of the two is absent.
+- **Ranges.** Besides the token lifetime (600-3600) and the settle time (1-10), the chart mirrors the connector's own ranges for `timeoutSeconds` (10-600), `spool.maxAgeHours` (1-2160) and `spool.maxBytes` (1 MiB - 4 GiB), so a render is a config the connector accepts. A zero or missing value takes its default in the chart, as the connector would take it, and the rendered block always carries every value (`max_bytes` through `int64`, so it never renders in float notation).
+- **Fixture.** `connectors/powerschool/testdata/helm-rendered-records.json` is the block the default records values render; the chart test compares the render with it and `TestHelmRenderedRecordsBlock` checks the connector accepts it and that its defaults change nothing in it.
+- **Identity tests.** `scripts/test-chart-records.sh` compares whole renders with `BASE_REF` for the default values, powerschool + rss enabled, powerschool with the PrometheusRule on, and powerschool with the login broker; and the powerschool Deployment, ConfigMap and ServiceAccount with journal values present and records off. With records on, `only_records` checks that the render differs from the records-off render in exactly the records block, the `journal-token` volume and its mount (also with the login broker, filesystem ingest, and the read-only root off).
+- **Observed, unchanged:** every connector Deployment's `checksum/config` hashes the whole `connector-configmap.yaml` render (all connectors), so enabling records rolls every connector pod once, as any connector config change already does.
 
 ---
 
@@ -2173,11 +2208,11 @@ Rendering, only when `records.enabled`:
 
 S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file's types to `record_types` in the core's config (`.Files.Get (printf "journal-record-types/%s.json" .)` decoded with `fromJsonArray`, `concat` with `.recordTypes`). A name without a file fails the render. A name in `connectorRecordTypes` whose types also appear in `recordTypes` fails (two definitions of one type version).
 
-- [ ] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
-- [ ] **Step 21.2: Run; expect FAIL.**
-- [ ] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
-- [ ] **Step 21.4: Run; expect PASS.**
-- [ ] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
+- [x] **Step 21.1: Write the failing tests.** Go: `TestRecordTypesFileIsUpToDate` reads `../../charts/glovebox/journal-record-types/powerschool.json` and compares it with `json.MarshalIndent(RecordTypes(), "", "  ")`; with `-update` (a test flag) it writes the file. Chart: `connectorRecordTypes: [powerschool]` renders seven types into the core config; an unknown name fails; a duplicate fails; default renders unchanged.
+- [x] **Step 21.2: Run; expect FAIL.**
+- [x] **Step 21.3: Implement**; generate the file with `go test ./connectors/powerschool/ -run TestRecordTypesFileIsUpToDate -update`.
+- [x] **Step 21.4: Run; expect PASS.**
+- [x] **Step 21.5:** Document in `values.yaml` comments, next to `journal.staleness` and `journal.rules`, the values Part B needs in gitops (no defaults change):
 
 ```yaml
   #   staleness:
@@ -2191,7 +2226,12 @@ S14: `journal.connectorRecordTypes: []`; listing `powerschool` appends the file'
 ```
 
   Copy the rule shapes from `internal/journal/rules` tests (the as-built schema), not from the spec's 4.10 example.
-- [ ] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+- [x] **Step 21.6: Commit** (`feat(chart): connector record types from the connector's own definitions`).
+
+NOTE (B1 implementation):
+- `glovebox.journalRecordTypes` renders `record_types`: `recordTypes`, then each listed connector's file. With `connectorRecordTypes` empty the output is `recordTypes | toJson` as before (the journal-values core ConfigMap is compared with `BASE_REF`). Refused: a name without a file (names are matched against `^[a-z][a-z0-9-]*$` before `.Files.Get`, so `../values` cannot read another chart file), a name listed twice, and a `(name, schema_version)` defined twice anywhere in the result -- so a later version of a connector type in `recordTypes` is allowed.
+- `TestRecordTypesFileIsUpToDate` also decodes the file and builds a `record.NewRegistry` from it, as the core will.
+- Step 21.5: the rules are documented in the as-built schema (`match.record_type`, `kind`, `field_becomes`, `field_in`; `importance`, `notify`, `group_by`), copied from `internal/journal/rules` tests. `TestDocumentedJournalRulesCompile` (new, `connectors/powerschool/record_rules_doc_test.go`) compiles the same rules, as JSON, against the PowerSchool registry with `rules.Compile`, and checks `full_day` / `partial_day` are classifications the builder writes; the chart test passes them and the staleness prefix through a render. The staleness entry was already documented next to `journal.staleness`; the comment now says gitops sets it with records on.
 
 ---
 
@@ -2212,11 +2252,17 @@ Rendered when `metrics.prometheusRule.enabled` and at least one connector has `r
 
 The `NotEmpty` runbook text says that a persisting `503` (spec 4.3: retried and alerted) surfaces through this alert after an hour, and points at `glovebox_journal_spool_answers_total{reason="unavailable"}` and the core's `GloveboxJournalNotReady`.
 
-- [ ] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
-- [ ] **Step 22.2: Run; expect FAIL.**
-- [ ] **Step 22.3: Implement.**
-- [ ] **Step 22.4: Run; expect PASS.**
-- [ ] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+- [x] **Step 22.1: Write the failing promtool unit tests** (`promtool test rules`, skipped with a note when promtool is absent, as `test-chart-journal.sh` does): each alert fires on its series and not on a healthy one; `NotEmpty` does not fire for a spool that empties within the hour; `DeploymentFault` does not fire for 409 or 503.
+- [x] **Step 22.2: Run; expect FAIL.**
+- [x] **Step 22.3: Implement.**
+- [x] **Step 22.4: Run; expect PASS.**
+- [x] **Step 22.5: Commit** (`feat(chart): spool alerts for record-writing connectors`).
+
+NOTE (B1 implementation):
+- **DeploymentFault** counts every `action="retry_alert"` answer, without the reason filter in the table: the classifier already decides which answers are alert rows, and a reason list in the expression would leave some of them silent (409 `conflict`, a 503 with a reason the connector does not know, a 200 with an unknown status). 409 `unknown_subject` (`retry_scope`), 503 (`retry`) and transport errors (`retry`, code `0`) never match; a token that cannot be read is `retry_alert` with code `token`, reason `none`, and does.
+- **Counters** use the core's two-part form (`increase(...) > 0 or ((x > 0) unless (x offset w))`, aggregated by `namespace, connector, reason`), so the first increment of a series that appears at 1 is not lost. The promtool tests cover that case for each counter alert.
+- **Not alerted (kept to the plan's four):** `glovebox_journal_spool_write_errors_total` (a snapshot the connector could not write to its spool). It is counted and logged; an alert for it is a possible follow-up.
+- The template renders when `metrics.prometheusRule.enabled` and any enabled connector has records on (through `glovebox.recordsEnabled`, so records on a disabled connector render nothing). Severity, extra labels and `extraSelector` follow `metrics.prometheusRule` as the journal's rules do.
 
 ---
 
@@ -2229,10 +2275,16 @@ One test, behind `JOURNAL_TEST_DATABASE_URL` (skips without it, fails with `JOUR
 
 Assert: every snapshot was `applied`; the first poll created the expected records; the second gives `updated` for the scored assignment, `removed` for the corrected attendance mark and attendance day, and **no** removal of last term's marks (term rollover with `complete_range`, spec 8); a resend of a spooled file gives `duplicate`; `term_comment` rows are invisible to `e_child1`'s reader; nothing of `e_child2`'s turn is in `e_child1`'s rows.
 
-- [ ] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
-- [ ] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
-- [ ] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
-- [ ] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+- [x] **Step 23.1: Write the test** (look at `internal/journal/httpapi/rig_test.go` for how the API is assembled in tests; reuse `journaltest` and export any helper the test needs from there rather than duplicating it).
+- [x] **Step 23.2: Run** `scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal` (on this WSL host use `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`, see the Part A Task 31 note); expect FAIL until the wiring is right, then PASS.
+- [x] **Step 23.3:** Add `./connectors/powerschool/` to the `test-journal-db` GitLab job's package list and to `.github/workflows/ci.yml`'s database step.
+- [x] **Step 23.4: Commit** (`test(powerschool): records end to end against the journal core`).
+
+NOTE (B1 implementation):
+- **Assembly.** The journal's own rig (`internal/journal/httpapi/rig_test.go`) is internal to that package's tests, and `journaltest` cannot export an HTTP rig (httpapi's internal tests import journaltest, so journaltest importing httpapi would be an import cycle). The test assembles the core from exported pieces -- `journaltest.NewDB`, `journaltest.Roster`, `journaltest.NewFakeScanner`, `journal.New`, `policy.New`, `satoken.NewTokenReviewer` over `satokentest`, `httpapi.New` -- with this connector's `RecordTypes()` and the policy entry of the enabling checklist. Nothing was exported or changed outside the test.
+- **Three polls, not two.** A new term's grid cannot also show the correction of a day in the previous term, so the plan's second poll is split: poll 2 (the next day) corrects 6 Oct's code away and scores the assignment (`updated` with `score` 8; `removed` for the 6 Oct `attendance_mark` and `attendance_day` of each kid, and no other removal); poll 3 (January, same school year) shows a new term's grid, and no record is removed while last term's 2 Oct mark and day stay live next to the new term's 5 Jan ones.
+- **Assertions.** Every snapshot of every poll is answered 200 `applied` (a recording wrapper around the core's handler); poll 1 writes all seven types; the first request body re-POSTed with the connector's token is `duplicate`; `e_child1` reads only its own rows and events and never a `term_comment`; the guardian reads both kids' comments, each row's scope carries its own subject, and no comment carries the other kid's text; the token never reaches the log.
+- Run: `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/powerschool/ -run TestRecordsAgainstTheJournal -p 1` -- PASS (4.3 s). Without the database it skips like Part A's tests.
 
 ---
 
@@ -2241,20 +2293,34 @@ Assert: every snapshot was `applied`; the first poll created the expected record
 **Files:**
 - Modify: `docs/journal-api.md` (new section "Connector side: the spool"), `docs/connectors/powerschool.md` (new section "Records (journal)"), `docs/upgrading.md`, `CHANGELOG.md`, `docs/superpowers/specs/2026-10-16-record-journal-design.md` (5.1 amendments for S4-S7, S9-S11, marked "amended by Part B1 plan, decision Sn")
 
-- [ ] **Step 24.1: Write the docs.** `journal-api.md`: spool layout, file name, what each answer does (link to the table), bounds, metrics and alerts, crash behaviour, the subject purge on 410 (and that it is the connector's share of glovebox-wekc.18.1). `powerschool.md`: the seven types (fields, keys, scopes), how `data_subject` and audience are taken from the kid's rules, what is emitted when, the settling rule, the config keys. `upgrading.md`: enabling checklist for gitops (below). `CHANGELOG.md`: an Unreleased entry.
+- [x] **Step 24.1: Write the docs.** `journal-api.md`: spool layout, file name, what each answer does (link to the table), bounds, metrics and alerts, crash behaviour, the subject purge on 410 (and that it is the connector's share of glovebox-wekc.18.1). `powerschool.md`: the seven types (fields, keys, scopes), how `data_subject` and audience are taken from the kid's rules, what is emitted when, the settling rule, the config keys. `upgrading.md`: enabling checklist for gitops (below). `CHANGELOG.md`: an Unreleased entry.
 
-- [ ] **Step 24.2: The gitops enabling checklist** (in `upgrading.md`; not done by this plan):
+- [x] **Step 24.2: The gitops enabling checklist** (in `upgrading.md`; not done by this plan):
   1. The journal is enabled and ready (Part A checklist done).
   2. **Subjects:** every `data_subject` in the PowerSchool rules is a roster member: `kubectl -n openclaw get cm openclaw-household -o jsonpath='{.data.household\.json}' | jq -r '.people|keys[]'` contains each rule's `data_subject` (otherwise those snapshots wait in the spool with 409 until `max_age`).
   3. HelmRelease values: `journal.connectorRecordTypes: [powerschool]`; `journal.services."openclaw/glovebox-glovebox-connector-powerschool": {write_types: [course_mark, assignment, attendance_mark, attendance_day, attendance_total, term_grade, term_comment], write_scopes: {source: [powerschool]}, write_subjects: roster_subjects}`; `journal.networkPolicy.writerConnectors: [powerschool]`; `journal.staleness: [{prefix: "source=powerschool/", maxAgeHours: 96}]`; `connectors.powerschool.records.enabled: true`.
   4. After the next poll window: `glovebox_journal_spool_files{dir="pending"}` returns to 0; `glovebox_journal_snapshots_total{status="applied"}` grows on the core; no `GloveboxJournalSpool*` alert; the connector's items are unchanged (the openclaw patrol sees nothing different).
   5. Rollback: `records.enabled: false`. The spool directory stays on the PVC until deleted by hand (log it in gitops' change description); nothing in the item path depends on it.
 
-- [ ] **Step 24.3: Container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeds; run it once with a records-enabled config against nothing reachable (`journal_url: http://127.0.0.1:1`) and a read-only root plus a writable `/state` and check that it starts, creates `/state/spool`, and logs no token (`podman run --read-only -v <tmp>:/state ...`, then stop it).
+- [x] **Step 24.3: Container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeds; run it once with a records-enabled config against nothing reachable (`journal_url: http://127.0.0.1:1`) and a read-only root plus a writable `/state` and check that it starts, creates `/state/spool`, and logs no token (`podman run --read-only -v <tmp>:/state ...`, then stop it).
 
-- [ ] **Step 24.4: Final verification** (fresh, `GOTOOLCHAIN=go1.27.1`): `go build ./...`; `go vet ./...`; staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...`; `gofmt -l` over the files the branch touches; `go test ./... -count=1 -race`; `scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/...`; `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`; the ASCII grep over the branch's files (`git diff --name-only origin/main | xargs grep -nP '[^\x00-\x7F]'` finds nothing); the placeholder check (no id other than `e_child*`, `e_parent*`, existing fixture ids in new files). Record the results as a NOTE under this task.
+- [x] **Step 24.4: Final verification** (fresh, `GOTOOLCHAIN=go1.27.1`): `go build ./...`; `go vet ./...`; staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...`; `gofmt -l` over the files the branch touches; `go test ./... -count=1 -race`; `scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/...`; `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`; the ASCII grep over the branch's files (`git diff --name-only origin/main | xargs grep -nP '[^\x00-\x7F]'` finds nothing); the placeholder check (no id other than `e_child*`, `e_parent*`, existing fixture ids in new files). Record the results as a NOTE under this task.
 
-- [ ] **Step 24.5: Commit** (`docs(records): connector spool, powerschool records, enabling checklist`), push the branch, open the MR. Do not enable anything in gitops from this plan.
+- [x] **Step 24.5: Commit** (`docs(records): connector spool, powerschool records, enabling checklist`), push the branch, open the MR. Do not enable anything in gitops from this plan.
+
+NOTE (B1 implementation, Tasks 20-24):
+- **Docs.** `docs/journal-api.md` "Connector side: the spool" (layout and file name, Emit synchronous on the poll, delivery only while `Watch` runs, sending order and backoff, bounds, the subject purge on 410 as the connector's share of glovebox-wekc.18.1, logs, metrics, alerts, key caps); `docs/connectors/powerschool.md` "Records (journal)" (the seven types with keys, fields, scopes and audiences; the binding from the kid's rules; what is sent when, including that a comments page whose term is not confirmed is never a record even with `require_term_confirmation: false`; the settling rule and S16; the config keys; the skip reasons); `docs/upgrading.md` "PowerSchool records (Part B1)" (what the chart renders, the refusals, the cutover rule, the enabling checklist of 24.2); `CHANGELOG.md` Unreleased; spec 5.1 amended for S4-S7, S9-S11 and, under "Settled days only", S1-S3 and S16. The cutover rule is stated in all three docs: openclaw switches to the journal only when both PowerSchool and Schoology emit records (Schoology is Part B2).
+- **Step 24.3, container.** `podman build -f connectors/powerschool/Dockerfile -t glovebox-powerschool:records-test .` succeeded. Run once with `--read-only --network none`, `/state` writable, a records block with `journal_url: http://127.0.0.1:1`, a placeholder token file and a placeholder session for `example.invalid`: after 20 s it was up, had created `/state/spool` and `/state/spool/rejected`, logged "powerschool records enabled ... journal=http://127.0.0.1:1", and the token string appeared nowhere in its log. Stopped and removed.
+- **Step 24.4, final verification** (fresh, `GOTOOLCHAIN=go1.27.1`, on the branch with these docs): `go build ./...` ok. `go vet ./...` and `go test ./... -race` fail only at `internal/sanitizeapi [setup failed]` (missing go.sum entry for `github.com/getkin/kin-openapi`; that package and go.sum are untouched here, so it is pre-existing); every other package passes (85 `ok`). staticcheck v0.8.1 over `./connector/... ./connectors/powerschool/...` reports only findings in files this branch does not touch (ST1005 in `connector/enrich/...`; SA4006 `cmd/powerschool/main_test.go`, U1000 `session_probe_test.go`, SA1019 `testkit_test.go`). `gofmt -l` over the branch's Go files: nothing. `JOURNAL_PG_HOST_NETWORK=1 scripts/journal-test-db.sh ./connectors/powerschool/ ./internal/journal/... . -p 1`: all ok. `REQUIRE_BASE_REF=1 scripts/chart-checks.sh`: all passed. Lines this branch adds: ASCII only (the whole-file grep also lists older CHANGELOG and ci.yml lines); new ids are `e_child1`, `e_child2`, `e_parent1` only.
+- **Targeted mutation run (Tasks 20-23), 10 mutants**, applied one at a time and reverted (tree verified clean), named failures only: E1 attendance_mark `complete_range.from` at 1 August (`TestRecordsAgainstTheJournal`: term rollover removed a mark); M2 the loginOnDemand refusal removed ("refused: records with loginOnDemand"); M3 token floor 300 ("refused: tokenExpirationSeconds 300"); M4 token audience changed ("on: exactly one projected token ..."); M5 journal token on every connector whenever the journal is on ("off: journal enabled, records off: powerschool pod as on origin/main" and others); M6 duplicate type check removed ("types: a type version also in recordTypes"); M7 the first-increment half of the counter alerts removed ("promtool: spool alert unit tests"); M8 the erased_subject filter removed (that check and the promtool tests); M9 records merged into the values' config instead of the merged one ("on: same with the login broker"); M10 a field added to `attendance_total` (`TestRecordTypesFileIsUpToDate`). All 10 killed.
+
+NOTE (review of 0991bd6..b013fe3, fixes):
+- **I1.** `journalChecks` refuses any `journal.services` write_type that is not in the rendered `record_types` (general, not only records): with records on and `journal.connectorRecordTypes` empty the chart had rendered a policy the core refuses at startup (`policy.New: unknown record type`), exiting the core and stopping items. `records-values.yaml` lists `connectorRecordTypes: [powerschool]`; `TestJournalHelmRenderedRecordsFixture` (internal/config) loads the core config rendered from it and runs `Journal.Build()` (red first on the render without the list: "unknown record type \"course_mark\""), and the chart test pins the fixture to the render.
+- **I2.** `GloveboxJournalSpoolDeploymentFault` looks back 90m: at the maximum backoff (3600 s, +20% jitter) a persisting fault answers about every 72 minutes and the 15m window fired and resolved each hour. A promtool case with one answer every 72 minutes stays firing.
+- **I3.** The other-connector refusal is now tested with rss in `writerConnectors` and in `journal.services`, matching the guard's own message, so only `glovebox.recordsEnabled` can refuse it.
+- **I4.** `TestRecordsAgainstTheJournal` has a December poll whose grid ends with today's full-day absence (carried, S16) and two January polls: the day is created as `full_day` in the first, nothing is late, and the second's complete snapshot does not remove it.
+- **S1** `GloveboxJournalSpoolWriteErrors` (first-increment counter form, promtool case, runbook). **S2** runbook notes (a persisting 5xx `internal` shows only through NotEmpty; a single 403 `forbidden` right after enabling is expected). **S4** a render in release namespace `school`. **S5** a `records` block in `connectors.powerschool.config` is refused. **S6** docs: the ordered prerequisites, the same-change rule, the cutover sentence in journal-api.md.
+- Mutants: C8 (name guard removed) killed by "refused: records on another connector"; C7 (namespace hard-coded in the services key) killed by "on: in another namespace, keyed by that namespace"; the write_type check removed, killed by "types: records on without connectorRecordTypes"; the fault window back to 15m, killed by the promtool unit tests; the config.records refusal removed, killed by both "refused: a records block ..." checks; the carry horizon at 20 days and the carried snapshot dropped, each killed by `TestRecordsAgainstTheJournal` ("after the rollover, attendance_day 2026-12-18 of e_child1: <nil>").
 
 ---
 

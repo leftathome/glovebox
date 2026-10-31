@@ -1,0 +1,104 @@
+{{- /*
+Alerts of the connector-side record spool (spec 4.3, 4.14, 4.15; metrics in
+connector/records/metrics.go), with metrics.prometheusRule.enabled and at
+least one connector with records enabled. The journal core's own alerts are
+in journal-prometheusrule.yaml. Every description is the runbook entry: what
+it means, what to check, how it clears. Expressions keep
+metrics.prometheusRule.extraSelector and aggregate by namespace and
+connector (the connector label every spool metric carries), so several
+releases and connectors sharing a Prometheus alert separately.
+
+Counters (answers, rejected, dropped) have no series until their first
+increment, and increase() over a series whose first sample is already 1 is
+0. Each counter alert therefore also fires on a series that is non-zero now
+and did not exist one window ago, as the core's counter alerts do, so the
+first increment after a start is not lost.
+
+The deployment-fault window is 90m, not shorter: a fault that persists is
+retried at the sender's maximum backoff (records.spool max_backoff_seconds,
+default 3600, +20% jitter: up to 72 minutes between answers), and a window
+shorter than that would fire and resolve once an hour while the fault
+stays.
+*/}}
+{{- $pr := .Values.metrics.prometheusRule | default dict }}
+{{- $any := false }}
+{{- range $name, $connector := .Values.connectors }}
+{{- if and $connector.enabled (include "glovebox.recordsEnabled" (dict "name" $name "connector" $connector)) }}
+{{- $any = true }}
+{{- end }}
+{{- end }}
+{{- $sc := .Values.schoologyConnector | default dict }}
+{{- if and $sc.enabled (include "glovebox.recordsEnabled" (dict "name" "schoology" "connector" $sc "schoologyConnector" true)) }}
+{{- $any = true }}
+{{- end }}
+{{- if and $any $pr.enabled }}
+{{- $extra := "" }}
+{{- with $pr.extraSelector }}{{- $extra = printf ",%s" . }}{{- end }}
+{{- $sel := trimPrefix "," $extra }}
+{{- $q := ternary (printf "{%s}" $sel) "" (ne $sel "") }}
+{{- $sev := $pr.severity | default "warning" }}
+{{- $by := "namespace, connector, reason" }}
+{{- $counterFires := dict }}
+{{- range $key, $c := dict
+      "fault" (dict "metric" "glovebox_journal_spool_answers_total" "match" "action=\"retry_alert\"" "window" "90m")
+      "writeErrors" (dict "metric" "glovebox_journal_spool_write_errors_total" "match" "" "window" "1h")
+      "rejected" (dict "metric" "glovebox_journal_spool_rejected_total" "match" "" "window" "1h")
+      "dropped" (dict "metric" "glovebox_journal_spool_dropped_total" "match" "reason!=\"erased_subject\"" "window" "1h") }}
+{{- $inner := trimPrefix "," (printf "%s%s" (ternary (printf ",%s" $c.match) "" (ne $c.match "")) $extra) }}
+{{- $s := printf "%s%s" $c.metric (ternary (printf "{%s}" $inner) "" (ne $inner "")) }}
+{{- $_ := set $counterFires $key (printf "sum by (%s) (increase(%s[%s])) > 0 or max by (%s) ((%s > 0) unless (%s offset %s))" $by $s $c.window $by $s $s $c.window) }}
+{{- end }}
+{{- $rules := list
+  (dict
+    "alert" "GloveboxJournalSpoolNotEmpty"
+    "expr" (printf "max by (namespace, connector) (glovebox_journal_spool_oldest_seconds%s) > 3600" $q)
+    "for" "5m"
+    "labels" (dict "severity" $sev)
+    "annotations" (dict
+      "summary" "A connector's record spool has held a snapshot for over an hour"
+      "description" "The oldest snapshot waiting in the connector's spool (/state/spool on its state PVC) is more than an hour old: the journal has not accepted it. Items are unaffected (records run in shadow), and nothing is lost while the spool is inside records.spool.maxAgeHours and maxBytes. Look at glovebox_journal_spool_answers_total for this connector by code and reason. reason=\"unavailable\" or \"auth_unavailable\" (503, retried): the journal is starting, busy or cannot reach TokenReview -- see GloveboxJournalNotReady on the core. code=\"0\" (transport): the connector cannot reach the journal Service -- check journal.networkPolicy.writerConnectors and the journal pod. reason=\"unknown_subject\" (409): a data_subject in the connector's rules is not in the household roster; that scope waits until the roster has it or max_age drops the file (docs/upgrading.md, the enabling checklist). Any retry_alert answer also raises GloveboxJournalSpoolDeploymentFault. A 5xx with reason internal (or none) is retried with backoff and raises no other alert: a persisting one shows only here -- look at the core's log for the failing request. The alert clears when the spool drains (the oldest-file gauge returns under an hour)."))
+  (dict
+    "alert" "GloveboxJournalSpoolDeploymentFault"
+    "expr" (index $counterFires "fault")
+    "labels" (dict "severity" $sev)
+    "annotations" (dict
+      "summary" "The journal answers a connector's snapshots with a deployment fault"
+      "description" "The journal answered this connector in a way the spool keeps and retries but that will not fix itself (action retry_alert, spec 4.3 alert rows), by reason: unauthenticated (401: the projected token is not accepted -- check the pod has the journal-token volume with audience glovebox-journal and the core's TokenReview rights), forbidden (403: the connector's ServiceAccount is missing from journal.services or lacks write_types for this record type), bad_request or not_found (400/404: connector and core versions disagree on the API), none with code token (the token file could not be read: the projected volume is missing or empty), and other (an answer the connector does not know: compare versions). The snapshots stay in the spool, oldest first, so fixing the deployment delivers them. A 409 for a subject not in the roster and a 503 are retried without this alert (GloveboxJournalSpoolNotEmpty covers a persisting one). A single 403 forbidden right after enabling is expected when the connector polls before the core has rolled with the new journal.services policy; it delivers on the next retry. Clears 90 minutes after the last such answer (the window covers the sender's maximum backoff, so a fault that persists stays up)."))
+  (dict
+    "alert" "GloveboxJournalSpoolRejected"
+    "expr" (index $counterFires "rejected")
+    "labels" (dict "severity" $sev)
+    "annotations" (dict
+      "summary" "The journal permanently refused a connector's snapshot"
+      "description" "A snapshot was answered with a permanent refusal (403 policy, 413 too_large, 422 schema, future_observed_at, duplicate_key or snapshot_id_reused) or was unreadable on disk, and was moved to rejected/ under the connector's spool. Resending it would be refused again: this is a connector bug, or record types in journal.connectorRecordTypes that do not match the connector's image. The connector logs the record type, scope and reason (never the content). Compare the connector's version with the chart's journal-record-types file and the core's record_types; fix and redeploy. Rejected files count toward records.spool.maxBytes and are dropped first when it is reached; delete them by hand once understood. Clears an hour after the last rejection."))
+  (dict
+    "alert" "GloveboxJournalSpoolDropped"
+    "expr" (index $counterFires "dropped")
+    "labels" (dict "severity" $sev)
+    "annotations" (dict
+      "summary" "A connector's record spool dropped snapshots unsent"
+      "description" "Snapshots were deleted from the connector's spool without the journal accepting them, by reason: max_age (older than records.spool.maxAgeHours: the journal was unreachable or refusing for that long), max_bytes (the spool reached records.spool.maxBytes and superseded snapshots were removed), unknown_subject_expired (a scope whose data_subject the roster never gained). The journal's state for those scopes is missing the dropped observations until the next snapshot of each scope is delivered: a complete scope (PowerSchool) is restored by its next snapshot, a windowed one (Schoology) only for what that snapshot holds -- the next listing restores the overdue/upcoming window, a detail value only at its next refresh read. Find why delivery stopped (GloveboxJournalSpoolNotEmpty, GloveboxJournalSpoolDeploymentFault). Drops of an erased subject's snapshots (reason erased_subject) are expected and do not alert. Clears an hour after the last drop."))
+  (dict
+    "alert" "GloveboxJournalSpoolWriteErrors"
+    "expr" (index $counterFires "writeErrors")
+    "labels" (dict "severity" $sev)
+    "annotations" (dict
+      "summary" "A connector could not write snapshots to its record spool"
+      "description" "The poll built record snapshots but could not write them to the spool on the connector's state volume (/state/spool on its PVC), so those observations never reach the journal; items are unaffected. Usually a full or read-only state volume, or a permissions change on it: check the PVC's usage and the pod's events, and the connector's log (\"record snapshots were not all spooled\"). Nothing to clear by hand: once the volume is writable the next poll spools again -- complete scopes (PowerSchool) and the Schoology listings are whole after it, Schoology detail values at their next refresh read. Clears an hour after the last failed write."))
+}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "glovebox.fullname" . }}-connector-records
+  labels:
+    {{- include "glovebox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: connector
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: glovebox-connector-records
+      rules:
+        {{- toYaml $rules | nindent 8 }}
+{{- end }}

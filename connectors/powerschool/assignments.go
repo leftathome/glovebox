@@ -430,14 +430,7 @@ func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, c
 			if a == nil {
 				continue
 			}
-			// An assignment shared by several sections comes back once
-			// per section under one id; keep the rows apart.
-			id := a.ID
-			seen[id]++
-			if n := seen[id]; n > 1 {
-				id = fmt.Sprintf("%s#%d", id, n)
-			}
-			key := courseKey(g) + ":" + id
+			key := assignmentKey(g, a.ID, seen)
 			text := textOf(a)
 			fp := assignmentFingerprint(a, text)
 			prev, seenBefore := e.CP.Load(CheckpointKey(assignmentSurface, kid.Name, key))
@@ -491,6 +484,18 @@ func stageAssignments(ctx context.Context, e Env, kid Kid, reads []courseRead, c
 		}
 	}
 	return res
+}
+
+// assignmentKey is an assignment's checkpoint id within its course read,
+// "<courseKey>:<id>". An assignment shared by several sections comes back
+// once per section under one id; the repeats are kept apart as "<id>#2",
+// "<id>#3", ... in page order. seen counts the ids of the course so far.
+func assignmentKey(g *pslib.Grade, id string, seen map[string]int) string {
+	seen[id]++
+	if n := seen[id]; n > 1 {
+		id = fmt.Sprintf("%s#%d", id, n)
+	}
+	return courseKey(g) + ":" + id
 }
 
 // ProcessAssignments reads each course's assignments and stages every one

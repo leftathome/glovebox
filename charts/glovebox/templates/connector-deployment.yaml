@@ -33,6 +33,8 @@ Turn off chart-wide with readOnlyRootFilesystem.enabled=false, or per
 connector with connectors.<name>.readOnlyRootFilesystem=false.
 */}}
 {{- $roRoot := include "glovebox.readOnlyRootFilesystem" (dict "workload" $connector "root" $) }}
+{{- /* Record journal: a projected token for its audience (connector-configmap.yaml checks the rest). */}}
+{{- $records := include "glovebox.recordsEnabled" (dict "name" $name "connector" $connector) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -219,6 +221,11 @@ spec:
               mountPath: /var/run/secrets/login-broker
               readOnly: true
             {{- end }}
+            {{- if $records }}
+            - name: journal-token
+              mountPath: /var/run/secrets/glovebox-journal
+              readOnly: true
+            {{- end }}
       {{- with ($connector.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -268,6 +275,20 @@ spec:
               - serviceAccountToken:
                   audience: {{ include "glovebox.loginBrokerAudience" (dict "name" $brokerKey "broker" $broker "root" $) | quote }}
                   expirationSeconds: 600
+                  path: token
+        {{- end }}
+        {{- if $records }}
+        # A token for the record journal and for nothing else: audience
+        # glovebox-journal, so neither the Kubernetes API nor the login
+        # broker accepts it. Short-lived; the kubelet rotates it and the
+        # connector re-reads the file for every request.
+        - name: journal-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: glovebox-journal
+                  expirationSeconds: {{ $connector.records.tokenExpirationSeconds | default 600 | int }}
                   path: token
         {{- end }}
         {{- if $roRoot }}

@@ -541,33 +541,8 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 		if g == nil || strings.TrimSpace(g.LetterGrade) == "" {
 			continue
 		}
-		term := strings.TrimSpace(g.DateCompletedText)
-		if !g.DateCompleted.IsZero() {
-			term = g.DateCompleted.Format("2006-01")
-		}
-		if term == "" {
-			term = "undated"
-		}
-		course := g.CourseNumber
-		if course == "" {
-			course = "name:" + strings.ToLower(strings.TrimSpace(g.CourseName))
-		}
-		// The same course can be stored more than once for one month (two
-		// schools, a repeated course). The rows are told apart by content
-		// that does not change when a grade is corrected -- credit
-		// attempted, school, grade level, course name -- so the key does
-		// not depend on the order the page lists them in. Only rows that
-		// are identical in all of that fall back to their position.
-		key := course + ":" + term + ":" + strings.Join([]string{
-			formatFloat(g.CreditAttempted),
-			strings.ToLower(strings.TrimSpace(g.School)),
-			strconv.Itoa(g.GradeLevel),
-			strings.ToLower(strings.TrimSpace(g.CourseName)),
-		}, "|")
-		seen[key]++
-		if c := seen[key]; c > 1 {
-			key = fmt.Sprintf("%s#%d", key, c)
-		}
+		term := termGradeTerm(g)
+		key := termGradeKey(g, seen)
 		fp := strings.Join([]string{
 			"grade=" + g.LetterGrade,
 			"earned=" + formatFloat(g.CreditEarned),
@@ -645,7 +620,65 @@ func ProcessTermGrades(ctx context.Context, e Env, kid Kid, page *pslib.GradeHis
 	return res
 }
 
+// termGradeTerm is a stored grade's term: its completion month
+// ("2026-01"), else the date as the page printed it, else "undated".
+func termGradeTerm(g *pslib.HistoricalGrade) string {
+	term := strings.TrimSpace(g.DateCompletedText)
+	if !g.DateCompleted.IsZero() {
+		term = g.DateCompleted.Format("2006-01")
+	}
+	if term == "" {
+		term = "undated"
+	}
+	return term
+}
+
+// termGradeKey is a stored grade's checkpoint id (and, made safe, its
+// record key; decision S5). seen counts the keys of the page so far, over
+// rows with a letter grade.
+//
+// The same course can be stored more than once for one month (two
+// schools, a repeated course). The rows are told apart by content that
+// does not change when a grade is corrected -- credit attempted, school,
+// grade level, course name -- so the key does not depend on the order the
+// page lists them in. Only rows that are identical in all of that fall
+// back to their position.
+func termGradeKey(g *pslib.HistoricalGrade, seen map[string]int) string {
+	course := g.CourseNumber
+	if course == "" {
+		course = "name:" + strings.ToLower(strings.TrimSpace(g.CourseName))
+	}
+	key := course + ":" + termGradeTerm(g) + ":" + strings.Join([]string{
+		formatFloat(g.CreditAttempted),
+		strings.ToLower(strings.TrimSpace(g.School)),
+		strconv.Itoa(g.GradeLevel),
+		strings.ToLower(strings.TrimSpace(g.CourseName)),
+	}, "|")
+	return withRepeat(key, seen)
+}
+
+// withRepeat counts key in seen and returns it, or "<key>#<n>" for the
+// n-th repeat.
+func withRepeat(key string, seen map[string]int) string {
+	seen[key]++
+	if c := seen[key]; c > 1 {
+		return fmt.Sprintf("%s#%d", key, c)
+	}
+	return key
+}
+
 // --- teacher_comment ----------------------------------------------------
+
+// teacherCommentKey is a comment's checkpoint id (and, made safe, its
+// record key; decision S6): "<course number or name:...>|<expression>:<term>".
+// seen counts the keys of the page so far, over comments with visible text.
+func teacherCommentKey(cm *pslib.TeacherComment, term string, seen map[string]int) string {
+	course := cm.CourseNumber
+	if course == "" {
+		course = "name:" + strings.ToLower(strings.TrimSpace(cm.CourseName))
+	}
+	return withRepeat(course+"|"+strings.TrimSpace(cm.Expression)+":"+term, seen)
+}
 
 // ProcessTeacherComments stages one item per (course, term) that has a
 // non-empty teacher comment. It is staged again when the text changes.
@@ -703,15 +736,7 @@ func ProcessTeacherComments(ctx context.Context, e Env, kid Kid, page *pslib.Tea
 		if comment == "" {
 			continue
 		}
-		course := cm.CourseNumber
-		if course == "" {
-			course = "name:" + strings.ToLower(strings.TrimSpace(cm.CourseName))
-		}
-		key := course + "|" + strings.TrimSpace(cm.Expression) + ":" + term
-		seen[key]++
-		if c := seen[key]; c > 1 {
-			key = fmt.Sprintf("%s#%d", key, c)
-		}
+		key := teacherCommentKey(cm, term, seen)
 		sum := sha256.Sum256([]byte(cm.Comment + "\x1f" + cm.Teacher))
 		fp := hex.EncodeToString(sum[:8])
 		change, _ := Compare(e.CP, teacherCommentSurface, kid.Name, key, fp)

@@ -16,6 +16,7 @@ Turn off with readOnlyRootFilesystem.enabled=false chart-wide, or
 schoologyConnector.readOnlyRootFilesystem=false here.
 */}}
 {{- $roRoot := include "glovebox.readOnlyRootFilesystem" (dict "workload" .Values.schoologyConnector "root" .) }}
+{{- $records := include "glovebox.recordsEnabled" (dict "name" "schoology" "connector" .Values.schoologyConnector "schoologyConnector" true) }}
 # Schoology connector Deployment (spec 12).
 #
 # Runs the glovebox-schoology connector binary. The binary loads its
@@ -171,6 +172,11 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- end }}
+            {{- if $records }}
+            - name: journal-token
+              mountPath: /var/run/secrets/glovebox-journal
+              readOnly: true
+            {{- end }}
       {{- with (.Values.schoologyConnector.nodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -218,5 +224,19 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: {{ include "glovebox.tmpSizeLimit" (dict "workload" .Values.schoologyConnector "root" .) }}
+        {{- end }}
+        {{- if $records }}
+        # A token for the record journal and for nothing else: audience
+        # glovebox-journal, so the Kubernetes API does not accept it.
+        # Short-lived; the kubelet rotates it and the connector re-reads the
+        # file for every request. automountServiceAccountToken stays false.
+        - name: journal-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: glovebox-journal
+                  expirationSeconds: {{ .Values.schoologyConnector.records.tokenExpirationSeconds | default 600 | int }}
+                  path: token
         {{- end }}
 {{- end }}

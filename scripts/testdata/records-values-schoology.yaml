@@ -1,0 +1,35 @@
+# Values for scripts/test-chart-records.sh: the Schoology connector with
+# records enabled against the journal (record journal Part B2, Task 6).
+# Placeholder addresses and ids only. Release "glovebox" in namespace
+# "openclaw", as in records-values.yaml. Used on its own; with
+# records-values.yaml for both connectors (then journal.connectorRecordTypes
+# and writerConnectors are set on the command line, since lists replace).
+journal:
+  enabled: true
+  database:
+    host: postgres-rw.databases-app.svc.cluster.local
+    existingSecret: glovebox-journal-db
+  roster:
+    configMap: openclaw-household
+  connectorRecordTypes: [schoology]
+  services:
+    openclaw/openclaw-gateway:
+      read: true
+      readers: "*"
+    openclaw/glovebox-glovebox-connector-schoology:
+      write_types: [lms_assignment, lms_assignment_detail]
+      write_scopes: {source: [schoology]}
+      write_subjects: roster_subjects
+  networkPolicy:
+    writerConnectors: [schoology]
+    kubernetesAPICIDRs: [192.0.2.10/32]
+schoologyConnector:
+  enabled: true
+  # Decision T6: the spool must survive a pod restart.
+  state:
+    persistent: true
+  records:
+    enabled: true
+metrics:
+  prometheusRule:
+    enabled: true

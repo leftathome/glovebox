@@ -22,6 +22,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/journal-schema.md` and `docs/upgrading.md` before enabling it;
   gitops-kxpb blocks enabling. Connectors (Part B) and the openclaw
   consumer (Part C) follow.
+- **Record journal, part B1: the connector spool and PowerSchool records
+  (off by default).** `connector/records` is the connector side: typed
+  field values the journal accepts, a durable spool on the connector's
+  state volume (`/state/spool`, one file per snapshot, written atomically,
+  resent byte for byte), a sender that acts on every answer by its reason,
+  `max_age` / `max_bytes` bounds, a subject purge on `410 erased_subject`,
+  and spool metrics. The PowerSchool connector, with
+  `connectors.powerschool.records.enabled`, writes `course_mark`,
+  `assignment`, `attendance_total`, `attendance_mark`, `attendance_day`
+  (settled days only; days a term ended before settling are carried into
+  the next term, decision S16), `term_grade` and `term_comment` (guardians
+  only) in shadow: items are unchanged. The chart renders the records block
+  and a token projected for `glovebox-journal` only when enabled, refuses
+  records without the journal grants or with `loginOnDemand`, ships the
+  connector's record types (`journal.connectorRecordTypes`, generated from
+  Go) and the `GloveboxJournalSpool*` alerts. With records off the chart
+  renders exactly as before. openclaw switches to the journal only when
+  both school connectors emit records; Schoology is Part B2. See
+  `docs/connectors/powerschool.md` ("Records (journal)"),
+  `docs/journal-api.md` ("Connector side: the spool") and the enabling
+  checklist in `docs/upgrading.md`.
+- **Record journal, part B2: Schoology records (off by default).** With
+  `schoologyConnector.records.enabled` the Schoology connector writes
+  `lms_assignment` (each kid's overdue/upcoming listing) and
+  `lms_assignment_detail` (each clean detail read; degraded reads are no
+  record) through the same spool, in shadow: items are unchanged. Both
+  scopes are windows (`complete: false`): a change while an assignment is
+  listed becomes an `updated` event, and nothing is ever removed. With
+  records on the connector requires an exact per-kid assignment rule with a
+  subject of its own, and the chart requires a durable state volume
+  (`schoologyConnector.state.persistent` or `existingClaim`), renders the
+  records block and a token projected for `glovebox-journal`, and ships the
+  types (`journal.connectorRecordTypes: [schoology]`). With records off the
+  chart renders exactly as before. See `docs/connectors/schoology.md`
+  ("Records (journal)") and the enabling checklist in `docs/upgrading.md`.
 
 ## [0.12.0] - 2026-10-16
 

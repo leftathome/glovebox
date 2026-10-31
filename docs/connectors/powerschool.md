@@ -27,6 +27,9 @@ before it can be enabled:
 
 See spec 16 section 11.
 
+Record journal snapshots (`records`, off by default) are built and tested
+but not enabled anywhere: see [Records (journal)](#records-journal).
+
 ## Authentication and the session
 
 **The connector never logs in.** It never sees the account's username or
@@ -457,6 +460,7 @@ Connector-specific fields:
 | `assignments.lookback_days` | int | no | assignments first seen with a due date older than this and no missing/late/incomplete flag are recorded without being staged (default 30) |
 | `assignments.course_delay_ms` | int | no | pause between per-course requests (default 500) |
 | `failure_threshold` | int | no | consecutive polls that read no student before the connector exits (default 5) |
+| `records` | object | no | record journal snapshots in shadow, off by default: see [Records (journal)](#records-journal) |
 
 Startup also enforces per-child visibility on `rules`: every enabled surface
 of every kid must match a rule that sets `data_subject`, a kid's surfaces
@@ -714,6 +718,161 @@ A comments page is staged only when the page itself marks the reporting
 term it shows (`teacher_comments.require_term_confirmation`, default
 `true`); the portal does mark it. No teacher comment was posted in any term
 when this was checked, so until one appears the surface stages nothing.
+
+## Records (journal)
+
+With `records.enabled` (chart: `connectors.powerschool.records.enabled`, off
+by default) the connector also writes what it reads to the
+[record journal](../journal-api.md) as keyed records, **in shadow**: the
+items it stages, its checkpoints and its routing are exactly what they are
+with records off (pinned by `TestRecordsOnStagesTheSameItems` and the parity
+tests). With records off nothing of this exists: no spool directory, no
+metric, no log line, no goroutine. Design: spec
+`docs/superpowers/specs/2026-10-16-record-journal-design.md` 5.1, plan
+`docs/superpowers/plans/2026-10-28-record-journal-part-b.md` (B1), whose
+decisions S1-S16 are referred to below.
+
+**Cutover.** openclaw keeps reading items. It switches to the journal only
+when **both** school connectors emit records: PowerSchool (this, Part B1)
+and Schoology (Part B2, `schoology.md`). Until then the PowerSchool records
+are shadow data for the comparison of rollout step 4, and nothing reads
+them in production.
+
+### The seven record types
+
+Owner `powerschool`, schema version 1, every field nullable. Defined once in
+Go (`RecordTypes()`, `record_types.go`); the chart's
+`journal-record-types/powerschool.json` is generated from it (S14) and
+rendered into the core's config by `journal.connectorRecordTypes:
+[powerschool]`.
+
+| Type | Key | Fields | Scope (`complete`) | Audience |
+|---|---|---|---|---|
+| `course_mark` | the course key (`courseKey`: course number, else `name:<lowercased name>\|<period>`; S7) | `course`, `period`, `teacher`, `q1_letter` ... `s2_letter` string; `q1_percent` ... `s2_percent` number | `(powerschool, grades, subject, course)`, yes | rule's |
+| `assignment` | `<course key>:<assignment id>`, `#n` for an id repeated in a course | `course`, `category`, `title`, `letter` string; `due` date; `score`, `max_score`, `percent` number; `missing`, `late`, `incomplete`, `exempt`, `collected`, `absent` (S9) bool; `teacher_comment`, `description`, `category_description` text | `(powerschool, assignments, subject, course)`, yes: every assignment of the course, no lookback | rule's |
+| `attendance_total` | the course key | `course` string; `absences`, `tardies` int | `(powerschool, attendance_totals, subject, course)`, yes | rule's |
+| `attendance_mark` | `<attendance course key>:<date>` | `date` date; `course`, `period`, `code`, `code_description`, `kind` string; `excused` bool (S10: true for `*_excused`, false for `*_unexcused`, null for `authorized` and `unknown`) | `(powerschool, attendance_marks, subject, school_year)`, yes, `complete_range` over `date` = the first and last date the grid shows in that school year | rule's |
+| `attendance_day` | the date | `date` date; `periods_met`, `periods_unmarked`, `absent_unexcused`, `absent_excused`, `late`, `left_early`, `authorized`, `unknown_codes` int; `any_unexcused` bool; `classification` string (`full_day`, `partial_day`, `late_or_left_early`, `other`) | `(powerschool, attendance_days, subject, school_year)`, yes, `complete_range` (S3, below); carried days: no (S16) | rule's |
+| `term_grade` | the item path's key (S5): `<course>:<term>:<attempted>\|<school>\|<grade level>\|<name>`, `#n` for identical rows | `course`, `term`, `grade` string; `earned`, `attempted` number | `(powerschool, term_grades, subject)`, yes | rule's |
+| `term_comment` | the item path's key (S6): `<course>\|<expression>:<term>`, `#n` on collision | `course`, `term` string; `comment` text | `(powerschool, term_comments, subject, term)` (S4: one complete snapshot per term page), yes | `[guardians]` only |
+
+Keys and scope values are made safe for the journal by `records.SafeKey` /
+`SafeScopeValue` (a value that is too long or has control characters becomes
+`h:` and 32 hex digits of its SHA-256). `school_year` runs 1 August to 31
+July, written `2026-27`. Keys equal the checkpoint ids the item path writes
+for the same rows, so the parity tests and the seed (S15, a later plan) can
+match them.
+
+**Who a record is about and who may see it.** Each surface's records take
+`data_subject` and `audience` from the same rule that routes the kid's items
+on that surface (`powerschool:<kid>:<surface>`); startup already guarantees
+one subject per kid, no subject shared by two kids, and teacher comments for
+the guardians only. No new mapping is configured. A surface with no rule
+gets no records. The `term_comment` builder refuses an audience other than
+exactly `[guardians]` (counted `audience_not_guardians_only`), as the item
+path does. With records enabled, every kid's rule for an enabled surface
+must name its `audience` explicitly: `audience_default` is applied to items
+but never to records, so a rule relying on it would stage the item for one
+audience and the record for another. The connector refuses to start
+otherwise (fail closed), naming the kid and the surface.
+
+### What is sent, and when
+
+- Records are built at the end of a kid's turn, **after** every check that
+  guards that turn's items has passed (the selection confirmed before and
+  after the reads, every scores page bound to the kid), from the same pages
+  in memory, and only for enabled surfaces: `grades` -> `course_mark`;
+  `attendance` -> `attendance_total`; `assignments` -> `assignment`;
+  `attendance_days` -> `attendance_mark` and `attendance_day`;
+  `term_grades` -> `term_grade`; `teacher_comments` -> `term_comment`.
+  `observed_at` is the start of the kid's read.
+- Records describe state, not change: a course with no grade, a course with
+  no absences and an old assignment are records although they are not
+  items. A course whose assignment read failed gets no snapshot (no removal
+  from a partial view); a course read with no assignments is a complete,
+  empty snapshot.
+- The history and comment pages are read on their own throttles
+  (`term_grades.min_interval_hours`, `teacher_comments.min_interval_hours`),
+  so most polls send no `term_grade` or `term_comment` snapshot.
+- **Term pages whose term is not confirmed are never records.** A comments
+  page becomes a `term_comment` snapshot only when the page itself marks
+  the reporting term it shows. With `teacher_comments.require_term_confirmation:
+  false`, comments from a page that names a term without marking it are still
+  staged as items, but they are not records: the page is not a confirmed
+  term, and a complete snapshot of the wrong term would remove that term's
+  comments.
+- `text` values arrive as the library returned them (no cleaning, no 4 KiB
+  item cut); one over 64 KiB is cut on a rune boundary (S8, counted
+  `glovebox_journal_record_values_cut_total`). A snapshot over the journal's
+  limits (8 MiB encoded, or too many records) is not sent (counted
+  `snapshot_too_large`) rather than refused on every poll.
+- The snapshots go to the connector's spool synchronously, on the poll; a
+  separate loop, running only while the connector's `Watch` runs, sends
+  them. Layout, answers, bounds, metrics and alerts:
+  [Connector side: the spool](../journal-api.md#connector-side-the-spool).
+  Nothing in the spool ever changes an item.
+
+### Settled attendance days (S1, S2, S3, S16)
+
+The grid is still being filled in for recent days, so an `attendance_day`
+is sent only once it is **settled**: it is before today (the school's time
+zone) and either it has no unmarked (`.`) cell, or at least
+`attendance_day_settle_school_days` (S1; default 3, 1-10) school days have
+followed it. A school day (S2) is a grid date on or before today on which at
+least one cell is not `-`; "followed" counts those strictly after the date,
+up to and including today. Today is never settled. Only days with at least
+one code are records; a fully present day is not.
+
+The snapshot's `complete_range` (S3) runs from the school year's first grid
+date to the end of the longest run of settled dates from there: a day still
+unsettled ends the range, so the snapshot never removes a day it did not
+judge. A day whose codes are all corrected away inside the range drops out
+and the journal records `removed`.
+
+**Across a term boundary (S16).** The grid shows only the current term, so
+the last days of a term could never settle in it. The connector keeps each
+kid's coded days that lie after the settled range (on or before today) in
+its checkpoint (`meta:records_pending_attendance_days:<kid>`, records on
+only), and settles them on later polls by the same rule, counting the next
+term's school days. While the grid still shows a carried day, the grid wins
+(a correction is picked up). A carried day that settles is sent in a
+`complete: false` snapshot of its own school year's scope (no
+`complete_range`, so it adds or updates and never removes, and does not
+widen the new term's range over the break). A carried day not settled
+within 30 calendar days of its date is dropped (counted
+`attendance_day_carry_expired`). If the spool write fails the carried set is
+not saved, so those days are tried again.
+
+### Configuration (`records`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `records.enabled` | `false` | Build and send records. Nothing below is read when false. |
+| `records.journal_url` | -- | The journal listener, scheme and host only (the chart sets `http://<fullname>-journal:<journal.port>`). |
+| `records.token_file` | -- | The token projected for audience `glovebox-journal` (the chart mounts `/var/run/secrets/glovebox-journal/token`); re-read for every request. |
+| `records.timeout_seconds` | 90 | One request (10-600). |
+| `records.attendance_day_settle_school_days` | 3 | S1 (1-10). |
+| `records.spool.max_age_hours` | 168 | 1-2160. |
+| `records.spool.max_bytes` | 268435456 | 1 MiB - 4 GiB. |
+| `records.spool.min_backoff_seconds`, `max_backoff_seconds` | 30, 3600 | Retry backoff (max at most 86400). |
+
+With records on, startup also refuses an `attendance_days.kinds` entry that
+is not one of the seven kind names (S11): `attendance_day` has to know which
+kinds are absences. The chart (`connectors.powerschool.records.*`, camelCase)
+renders the block, mirrors these ranges, and refuses records without the
+journal, without this connector in `journal.networkPolicy.writerConnectors`
+or without `write_types` for its ServiceAccount in `journal.services` (S13),
+together with `loginOnDemand` (S12: that mode mounts the API token; the
+login broker is fine), with a `records` block written into
+`connectors.powerschool.config`, and with a `journal.services` write_type
+that is not in the rendered record types (list `powerschool` in
+`journal.connectorRecordTypes` in the same change). Enabling checklist: [upgrading.md](../upgrading.md#powerschool-records-part-b1).
+
+`powerschool_record_rows_skipped_total{reason}` counts what the builders
+left out: `duplicate_key` (a second row with an existing key; the first is
+kept), `snapshot_too_large`, `audience_not_guardians_only`,
+`attendance_day_carry_expired`, `builder_panic` (a builder failure,
+recovered: items are unaffected).
 
 ## Enabling in the Helm chart
 

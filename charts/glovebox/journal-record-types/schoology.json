@@ -1,0 +1,45 @@
+[
+  {
+    "name": "lms_assignment",
+    "schema_version": 1,
+    "owner": "schoology",
+    "fields": {
+      "course": {
+        "type": "string"
+      },
+      "due": {
+        "type": "timestamp"
+      },
+      "link": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  },
+  {
+    "name": "lms_assignment_detail",
+    "schema_version": 1,
+    "owner": "schoology",
+    "fields": {
+      "comments": {
+        "type": "text"
+      },
+      "description": {
+        "type": "text"
+      }
+    },
+    "default_audience": [
+      "subject",
+      "guardians"
+    ]
+  }
+]

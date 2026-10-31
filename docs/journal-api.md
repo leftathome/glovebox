@@ -33,6 +33,7 @@ below (`e_parent1`, `e_child1`, ...) is a placeholder.
 - [Audit logs](#audit-logs)
 - [Configuration](#configuration)
 - [Metrics and alerts](#metrics-and-alerts)
+- [Connector side: the spool](#connector-side-the-spool)
 - [Known follow-ups](#known-follow-ups)
 
 ---
@@ -465,7 +466,10 @@ inherits that reader's access to kept notes about someone else.
 **Copies outside the journal are not erased.** What was already delivered
 -- events a reader fetched (the openclaw inbox, audiences, agent memory),
 files in connector spools -- stays where it is. Erasing those is
-glovebox-wekc.18.1.
+glovebox-wekc.18.1. A connector spool purges a subject's files, pending and
+rejected, at the first `410 erased_subject` it is answered for that subject
+([Connector side: the spool](#connector-side-the-spool)); when nothing more
+about the subject is sent, its rejected files stay until `max_age`.
 
 Answer (200):
 
@@ -618,13 +622,125 @@ PrometheusRule (aggregated by namespace; each description is its runbook):
 | `GloveboxJournalVisibilityMismatch` (critical) | any increase of `glovebox_journal_visibility_mismatch_total`; stays up 24h | -- |
 | `GloveboxJournalNoSnapshots` (one per `journal.staleness` entry) | no snapshot under the prefix for `maxAgeHours` | -- |
 
+## Connector side: the spool
+
+A connector with journal rights (Part B; only the PowerSchool connector so
+far, [powerschool.md](connectors/powerschool.md#records-journal)) does not
+call the journal from its poll. It writes each snapshot to a **spool** on its
+own state volume and a separate loop sends them (`connector/records`, spec
+4.14). Items are not affected by anything here: a snapshot that cannot be
+written, sent or accepted never changes what the connector stages or its
+checkpoints. openclaw switches from items to the journal only when **both**
+PowerSchool and Schoology emit records (Schoology is Part B2; both are
+off by default); until then connector records are shadow data.
+
+**Layout.** `<state>/spool/` (the connector's `/state`, its PVC), mode 0700,
+holds one file per snapshot named `<observed_at>-<snapshot_id>.json`
+(`observed_at` as `20060102T150405.000Z`, UTC, milliseconds), the snapshot's
+exact request body. `<state>/spool/rejected/` holds the files the journal
+refused permanently. A file is written to a temp file, fsynced, renamed into
+place and the directory fsynced before the write returns; the snapshot id
+is assigned then, and the file is resent byte for byte, so a resend after a
+crash is answered `duplicate` (A9). On start, temp files are removed, a file
+found in both directories (a crash during a move) is kept as rejected, and a
+file whose name or content is not a snapshot is moved to `rejected/` and
+counted (`reason="unreadable"`); a file that cannot be read at all (an I/O
+error) is left in place and tried again.
+
+**Emit is synchronous on the poll.** When a kid's turn has verified, the
+poll builds that turn's snapshots and writes them to the spool before it
+goes on (`Emitter.Emit`): a spool write is on the poll's path, so a slow or
+full state volume slows the poll by that much. A write that fails is logged
+and counted (`glovebox_journal_spool_write_errors_total`) and the poll
+carries on with its items. Nothing is sent from the poll.
+
+**Delivery runs only while the connector's `Watch` runs.** The send loop
+(`Emitter.Run`, the one goroutine records add) is started by `Watch` and
+stops with it; the framework restarts `Watch` with a new context and the
+next loop starts only after the previous one has returned. While no loop
+runs (a connector that is stopped, crash-looping, or between a `Watch`
+exit and its restart) snapshots stay in the spool; the next start sends
+them, oldest first. The loop runs a pass at once, whenever `Emit` writes,
+when a backoff ends, and every minute (gauges and `max_age`).
+
+**Sending.** One snapshot at a time (the journal allows 16 requests in
+flight for every caller together, A14), oldest first within each scope (the
+scope is the record type plus its scope parts: the journal's identity), with
+the token re-read from the projected file for every request
+(`/var/run/secrets/glovebox-journal/token`, audience `glovebox-journal`). The
+action for each answer is the table in
+[Answers, and what the connector's spool does](#answers-and-what-the-connectors-spool-does).
+A `409 unknown_subject` blocks only that scope, with its own backoff; every
+other kept answer stops the pass with a global backoff, at least the
+answer's `Retry-After`. Backoff is exponential from `min_backoff_seconds`
+(30) to `max_backoff_seconds` (3600) with +/-20% jitter, reset by any
+accepted or rejected file, and held in memory only: a restart sends at once,
+which is safe because every send is idempotent. A token file that is missing
+or empty sends nothing and counts as a deployment fault (code `token`).
+
+**Bounds** (both directories alike):
+
+- `max_age_hours` (default 168, 1-2160): a file older than this (by the
+  `observed_at` in its name) is deleted, sent or not -- counted
+  `dropped{reason="max_age"}`, or `unknown_subject_expired` when its scope was
+  last answered 409.
+- `max_bytes` (default 256 MiB, 1 MiB - 4 GiB): on overflow rejected files go
+  first, oldest first; then pending files that a newer snapshot of the same
+  scope supersedes, oldest first (`dropped{reason="max_bytes"}`). The newest
+  pending file of each scope is always kept, even over the limit (logged
+  once).
+
+**Erase (`410 erased_subject`).** The file is deleted, and so is every
+pending and rejected spool file about the same `data_subject`
+(`dropped{reason="erased_subject"}`); for the rest of the process's life a
+new snapshot about that subject is not even written. This is the
+connector's share of glovebox-wekc.18.1: the journal's erase does not reach
+spools by itself, so the first 410 does it. After a restart the next
+snapshot about the subject is answered 410 again and purges again.
+
+**Logs** carry the record type, the scope prefix (`source=<v>/surface=<v>/`),
+the code and the reason: never a subject id, scope value, key, field value,
+file name or the token.
+
+**Metrics** (the connector's `/metrics`, label `connector` on each):
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `glovebox_journal_spool_files` | gauge | `dir` (`pending`, `rejected`) | Files in each directory. |
+| `glovebox_journal_spool_bytes` | gauge | | Bytes in both directories (bounded by `max_bytes`). |
+| `glovebox_journal_spool_oldest_seconds` | gauge | | Age of the oldest pending file (0 when empty). |
+| `glovebox_journal_spool_answers_total` | counter | `code`, `reason`, `action` | Journal answers by HTTP code (`0`: transport, `token`: no token), bounded reason (`none`, `other` or a known one) and spool action (`delete`, `erased`, `reject`, `retry_scope`, `retry`, `retry_alert`). |
+| `glovebox_journal_spool_rejected_total` | counter | `reason` | Files moved to `rejected/`. |
+| `glovebox_journal_spool_dropped_total` | counter | `reason` | Files deleted unsent (`max_age`, `max_bytes`, `unknown_subject_expired`, `erased_subject`). |
+| `glovebox_journal_spool_write_errors_total` | counter | | Snapshots that could not be written to the spool. |
+| `glovebox_journal_record_values_cut_total` | counter | | `text` values cut to 64 KiB (decision S8). |
+
+With `metrics.prometheusRule.enabled` and records on for an enabled
+connector, the `<fullname>-connector-records` PrometheusRule (aggregated by
+namespace and connector; each description is its runbook):
+
+| Alert | Fires on | For |
+|---|---|---|
+| `GloveboxJournalSpoolNotEmpty` | `glovebox_journal_spool_oldest_seconds > 3600` (a persisting 503, 409 or 5xx `internal` shows here, and only here for the 5xx) | 5m |
+| `GloveboxJournalSpoolDeploymentFault` | any `answers_total{action="retry_alert"}` within 90m (401, 403 `forbidden`, 400, 404, no token, an unknown answer); 90m covers the sender's maximum backoff (3600 s, +20% jitter), so a persisting fault stays up | -- |
+| `GloveboxJournalSpoolRejected` | any `rejected_total` within 1h | -- |
+| `GloveboxJournalSpoolDropped` | any `dropped_total` other than `erased_subject` within 1h | -- |
+| `GloveboxJournalSpoolWriteErrors` | any `write_errors_total` within 1h (a snapshot the poll could not write to the spool) | -- |
+
+**Key caps (A4).** The journal caps the keys of one JSON object at the widest
+configured record type's field count plus 16. With the PowerSchool types
+loaded that is 17 + 16 = 33 (`assignment` is the widest), so no PowerSchool
+record, which carries exactly its type's fields, comes near it.
+
 ## Known follow-ups
 
 Open beads for the journal core (glovebox-wekc.18):
 
 - **glovebox-wekc.18.1 -- erase fan-out.** Erase does not reach copies
   already delivered outside the journal (the openclaw inbox and audiences,
-  agent memory and vaults, connector spools).
+  agent memory and vaults, connector spools). Connector spools purge a
+  subject's files at their first `410 erased_subject` (Part B1); nothing
+  tells a connector that has nothing more to send about the subject.
 - **glovebox-wekc.18.2 -- `sslmode=verify-full`.** The chart renders only
   `require` (encrypted, server certificate not verified) until it mounts
   the CNPG CA (`ca.crt` only, never `ca.key`).
