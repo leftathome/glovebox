@@ -812,7 +812,7 @@ otherwise (fail closed), naming the kid and the surface.
   [Connector side: the spool](../journal-api.md#connector-side-the-spool).
   Nothing in the spool ever changes an item.
 
-### Settled attendance days (S1, S2, S3, S16)
+### Settled attendance days (S1, S2, S3, S16, S18)
 
 The grid is still being filled in for recent days, so an `attendance_day`
 is sent only once it is **settled**: it is before today (the school's time
@@ -839,8 +839,11 @@ term's school days. While the grid still shows a carried day, the grid wins
 `complete: false` snapshot of its own school year's scope (no
 `complete_range`, so it adds or updates and never removes, and does not
 widen the new term's range over the break). A carried day not settled
-within 30 calendar days of its date is dropped (counted
-`attendance_day_carry_expired`). If the spool write fails the carried set is
+within `attendance_day_carry_max_days` (S18; default 120, 30-200) calendar
+days of its date is dropped (counted `attendance_day_carry_expired`). The
+default covers the summer break: the last days of a school year are
+settled by the next school year's first school days (counted across the
+year boundary) and sent in the old year's scope. If the spool write fails the carried set is
 not saved, so those days are tried again.
 
 ### Configuration (`records`)
@@ -852,6 +855,7 @@ not saved, so those days are tried again.
 | `records.token_file` | -- | The token projected for audience `glovebox-journal` (the chart mounts `/var/run/secrets/glovebox-journal/token`); re-read for every request. |
 | `records.timeout_seconds` | 90 | One request (10-600). |
 | `records.attendance_day_settle_school_days` | 3 | S1 (1-10). |
+| `records.attendance_day_carry_max_days` | 120 | S18 (30-200): calendar days a carried attendance day may wait to settle before it is dropped. |
 | `records.spool.max_age_hours` | 168 | 1-2160. |
 | `records.spool.max_bytes` | 268435456 | 1 MiB - 4 GiB. |
 | `records.spool.min_backoff_seconds`, `max_backoff_seconds` | 30, 3600 | Retry backoff (max at most 86400). |

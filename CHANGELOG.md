@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connectors.powerschool.records.enabled`, writes `course_mark`,
   `assignment`, `attendance_total`, `attendance_mark`, `attendance_day`
   (settled days only; days a term ended before settling are carried into
-  the next term, decision S16), `term_grade` and `term_comment` (guardians
+  the next term, decision S16, for up to
+  `connectors.powerschool.records.attendanceDayCarryMaxDays` calendar days,
+  default 120, 30-200, so the last days of a school year settle after the
+  summer break, decision S18), `term_grade` and `term_comment` (guardians
   only) in shadow: items are unchanged. The chart renders the records block
   and a token projected for `glovebox-journal` only when enabled, refuses
   records without the journal grants or with `loginOnDemand`, ships the
