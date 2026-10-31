@@ -164,15 +164,20 @@ fi
 # --- records on -----------------------------------------------------------
 V=(-f "$VALUES")
 check "on: records block in config.json" \
-  "cfg('powerschool')['records'] == {'enabled': True, 'journal_url': 'http://glovebox-glovebox-journal:9095', 'token_file': '/var/run/secrets/glovebox-journal/token', 'timeout_seconds': 90, 'attendance_day_settle_school_days': 3, 'spool': {'max_age_hours': 168, 'max_bytes': 268435456}}" "${V[@]}"
+  "cfg('powerschool')['records'] == {'enabled': True, 'journal_url': 'http://glovebox-glovebox-journal:9095', 'token_file': '/var/run/secrets/glovebox-journal/token', 'timeout_seconds': 90, 'attendance_day_settle_school_days': 3, 'attendance_day_carry_max_days': 120, 'spool': {'max_age_hours': 168, 'max_bytes': 268435456}}" "${V[@]}"
 check "on: records block is the Go fixture (connectors/powerschool TestHelmRenderedRecordsBlock)" \
   "cfg('powerschool')['records'] == json.load(open('$ROOT/connectors/powerschool/testdata/helm-rendered-records.json'))" "${V[@]}"
 check "on: journal URL follows journal.port" \
   "cfg('powerschool')['records']['journal_url'] == 'http://glovebox-glovebox-journal:9096'" "${V[@]}" --set journal.port=9096
 check "on: values reach the block" \
-  "cfg('powerschool')['records']['timeout_seconds'] == 120 and cfg('powerschool')['records']['attendance_day_settle_school_days'] == 5 and cfg('powerschool')['records']['spool'] == {'max_age_hours': 72, 'max_bytes': 4294967296}" \
+  "cfg('powerschool')['records']['timeout_seconds'] == 120 and cfg('powerschool')['records']['attendance_day_settle_school_days'] == 5 and cfg('powerschool')['records']['attendance_day_carry_max_days'] == 30 and cfg('powerschool')['records']['spool'] == {'max_age_hours': 72, 'max_bytes': 4294967296}" \
   "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=120 --set connectors.powerschool.records.attendanceDaySettleSchoolDays=5 \
+  --set connectors.powerschool.records.attendanceDayCarryMaxDays=30 \
   --set connectors.powerschool.records.spool.maxAgeHours=72 --set connectors.powerschool.records.spool.maxBytes=4294967296
+check "on: carry horizon 0 or unset takes the default 120 (decision S18)" \
+  "cfg('powerschool')['records']['attendance_day_carry_max_days'] == 120" "${V[@]}" --set connectors.powerschool.records.attendanceDayCarryMaxDays=0
+check "on: carry horizon unset takes the default 120 (decision S18)" \
+  "cfg('powerschool')['records']['attendance_day_carry_max_days'] == 120" "${V[@]}" --set connectors.powerschool.records.attendanceDayCarryMaxDays=null
 check "on: exactly one projected token, audience glovebox-journal, no API token" \
   "tokens('powerschool') == [{'audience': 'glovebox-journal', 'expirationSeconds': 600, 'path': 'token'}] and pod('powerschool')['automountServiceAccountToken'] is False and vols('powerschool')['journal-token']['projected']['defaultMode'] == 0o440" "${V[@]}"
 check "on: token mounted read-only where token_file points" \
@@ -242,6 +247,9 @@ expect_fail "refused: tokenExpirationSeconds 300" "tokenExpirationSeconds must b
 expect_fail "refused: tokenExpirationSeconds 3601" "tokenExpirationSeconds must be 600-3600" "${V[@]}" --set connectors.powerschool.records.tokenExpirationSeconds=3601
 expect_fail "refused: settle -1" "attendanceDaySettleSchoolDays must be 1-10" "${V[@]}" --set connectors.powerschool.records.attendanceDaySettleSchoolDays=-1
 expect_fail "refused: settle 11" "attendanceDaySettleSchoolDays must be 1-10" "${V[@]}" --set connectors.powerschool.records.attendanceDaySettleSchoolDays=11
+expect_fail "refused: carry horizon -1" "attendanceDayCarryMaxDays must be 30-200" "${V[@]}" --set connectors.powerschool.records.attendanceDayCarryMaxDays=-1
+expect_fail "refused: carry horizon 29" "attendanceDayCarryMaxDays must be 30-200" "${V[@]}" --set connectors.powerschool.records.attendanceDayCarryMaxDays=29
+expect_fail "refused: carry horizon 201" "attendanceDayCarryMaxDays must be 30-200" "${V[@]}" --set connectors.powerschool.records.attendanceDayCarryMaxDays=201
 expect_fail "refused: timeoutSeconds 9" "timeoutSeconds must be 10-600" "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=9
 expect_fail "refused: timeoutSeconds 601" "timeoutSeconds must be 10-600" "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=601
 expect_fail "refused: maxAgeHours -1" "spool.maxAgeHours must be 1-2160" "${V[@]}" --set connectors.powerschool.records.spool.maxAgeHours=-1
@@ -265,8 +273,9 @@ NS=school check "on: in another namespace, keyed by that namespace" \
   "${V[@]}" --set-json 'journal.services={"school/openclaw-gateway":{"read":true,"readers":"*"},"school/glovebox-glovebox-connector-powerschool":{"write_types":["course_mark","assignment"],"write_scopes":{"source":["powerschool"]},"write_subjects":"roster_subjects"}}'
 NS=school expect_fail "refused: in another namespace, a services entry keyed by openclaw" "no write_types" "${V[@]}"
 check "edge values Go accepts render" \
-  "cfg('powerschool')['records']['timeout_seconds'] == 600 and cfg('powerschool')['records']['attendance_day_settle_school_days'] == 10 and cfg('powerschool')['records']['spool'] == {'max_age_hours': 2160, 'max_bytes': 1048576} and tokens('powerschool')[0]['expirationSeconds'] == 600" \
+  "cfg('powerschool')['records']['timeout_seconds'] == 600 and cfg('powerschool')['records']['attendance_day_settle_school_days'] == 10 and cfg('powerschool')['records']['attendance_day_carry_max_days'] == 200 and cfg('powerschool')['records']['spool'] == {'max_age_hours': 2160, 'max_bytes': 1048576} and tokens('powerschool')[0]['expirationSeconds'] == 600" \
   "${V[@]}" --set connectors.powerschool.records.timeoutSeconds=600 --set connectors.powerschool.records.attendanceDaySettleSchoolDays=10 \
+  --set connectors.powerschool.records.attendanceDayCarryMaxDays=200 \
   --set connectors.powerschool.records.spool.maxAgeHours=2160 --set connectors.powerschool.records.spool.maxBytes=1048576
 
 # --- schoology (Part B2) ----------------------------------------------------

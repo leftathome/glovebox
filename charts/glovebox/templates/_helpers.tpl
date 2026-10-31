@@ -905,8 +905,8 @@ true
 
 {{/*
 The records block of a records-enabled connector's config.json, as JSON
-(records.Config, plus the PowerSchool settle time for any connector but
-the Schoology one). Takes (dict "connector" <entry> "root" $, and "name"
+(records.Config, plus the PowerSchool settle time and carry horizon for
+any connector but the Schoology one). Takes (dict "connector" <entry> "root" $, and "name"
 "schoology" for the Schoology connector). A zero or missing value takes its
 default here, as the connector would, so the rendered block shows what
 runs. glovebox.recordsChecks bounds every value first.
@@ -924,6 +924,7 @@ runs. glovebox.recordsChecks bounds every value first.
     "max_bytes" (int64 ($spool.maxBytes | default 268435456))) -}}
 {{- if ne (toString .name) "schoology" -}}
 {{- $_ := set $block "attendance_day_settle_school_days" (int ($r.attendanceDaySettleSchoolDays | default 3)) -}}
+{{- $_ := set $block "attendance_day_carry_max_days" (int ($r.attendanceDayCarryMaxDays | default 120)) -}}
 {{- end -}}
 {{- $block | toJson -}}
 {{- end }}
@@ -938,7 +939,8 @@ Every grant is an explicit value reviewed in gitops: the chart adds nothing
 to journal.services or writerConnectors by itself. journalChecks already
 refuses a writer connector without write_types; this is the reverse check.
 The ranges are the connector's own (connector/records Config.Validate and
-the PowerSchool settle time), so values that render are values it accepts.
+the PowerSchool settle time and carry horizon), so values that render are
+values it accepts.
 */}}
 {{- define "glovebox.recordsChecks" -}}
 {{- $root := .root -}}
@@ -984,6 +986,10 @@ the PowerSchool settle time), so values that render are values it accepts.
 {{- $settle := int ($r.attendanceDaySettleSchoolDays | default 3) -}}
 {{- if or (lt $settle 1) (gt $settle 10) -}}
 {{- fail (printf "%s.attendanceDaySettleSchoolDays must be 1-10, got %v" $p $r.attendanceDaySettleSchoolDays) -}}
+{{- end -}}
+{{- $carry := int ($r.attendanceDayCarryMaxDays | default 120) -}}
+{{- if or (lt $carry 30) (gt $carry 200) -}}
+{{- fail (printf "%s.attendanceDayCarryMaxDays must be 30-200, got %v" $p $r.attendanceDayCarryMaxDays) -}}
 {{- end -}}
 {{- end -}}
 {{- $spool := $r.spool | default dict -}}

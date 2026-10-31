@@ -102,14 +102,9 @@ func tallyDays(page *pslib.AttendancePage, cfg AttendanceDaysConfig) map[string]
 // buildAttendanceDaysCarry (decision S16).
 func BuildAttendanceDays(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int,
 	now time.Time, tz *time.Location, observedAt time.Time) []journalapi.Snapshot {
-	snaps, _ := buildAttendanceDaysCarry(b, page, cfg, settle, now, tz, observedAt, nil)
+	snaps, _ := buildAttendanceDaysCarry(b, page, cfg, settle, 0, now, tz, observedAt, nil)
 	return snaps
 }
-
-// carryHorizonDays bounds how long a carried day waits to settle: one
-// that has not settled this many calendar days after its date is dropped
-// (decision S16).
-const carryHorizonDays = 30
 
 // pendingDay is a coded day the grid showed but could not yet settle: its
 // tally and how many school days have followed it so far. The connector
@@ -180,11 +175,15 @@ func dayRecord(b Binding, t *dayTally) journalapi.Record {
 // complete=false snapshot of its school year's scope: it adds or updates
 // that day and removes nothing, so the current term's complete_range is
 // not widened over the break between terms. A carried day not settled
-// carryHorizonDays after its date is dropped and counted.
-func buildAttendanceDaysCarry(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle int,
+// maxDays calendar days after its date is dropped and counted; maxDays
+// below 1 is DefaultAttendanceDayCarryMaxDays (decision S18).
+func buildAttendanceDaysCarry(b Binding, page *pslib.AttendancePage, cfg AttendanceDaysConfig, settle, maxDays int,
 	now time.Time, tz *time.Location, observedAt time.Time, carried []pendingDay) ([]journalapi.Snapshot, []pendingDay) {
 	if settle < 1 {
 		settle = DefaultAttendanceDaySettleSchoolDays
+	}
+	if maxDays < 1 {
+		maxDays = DefaultAttendanceDayCarryMaxDays
 	}
 	if tz == nil {
 		tz = time.UTC
@@ -254,7 +253,7 @@ func buildAttendanceDaysCarry(b Binding, page *pslib.AttendancePage, cfg Attenda
 		if !ok {
 			continue
 		}
-		if expires := t.date.AddDate(0, 0, carryHorizonDays).Format("2006-01-02"); expires < today {
+		if expires := t.date.AddDate(0, 0, maxDays).Format("2006-01-02"); expires < today {
 			b.skip("attendance_day_carry_expired")
 			slog.Warn("powerschool attendance day carried past the horizon without settling; dropped",
 				"record_type", TypeAttendanceDay)

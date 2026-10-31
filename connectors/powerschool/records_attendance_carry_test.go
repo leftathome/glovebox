@@ -22,11 +22,43 @@ var (
 	nMon, nTue, nWed = day(2026, 10, 19), day(2026, 10, 20), day(2026, 10, 21)
 )
 
-// carry runs one poll of the builder with carried days and checks every
-// snapshot against the journal.
+// The last days of the 2026-27 school year and the first of 2027-28,
+// eleven weeks later (decision S18).
+var (
+	jun16, jun17     = day(2027, 6, 16), day(2027, 6, 17)
+	sep7, sep8, sep9 = day(2027, 9, 7), day(2027, 9, 8), day(2027, 9, 9)
+	summerPoll       = day(2027, 8, 2)
+)
+
+// juneGrid is the last two days of the school year, one row per course.
+func juneGrid(rows ...[]string) *pslib.AttendancePage {
+	return gridPage([]time.Time{jun16, jun17}, rows...)
+}
+
+// septemberGridUntil is the new school year's grid through last, every
+// cell present.
+func septemberGridUntil(last time.Time) *pslib.AttendancePage {
+	var dates []time.Time
+	var row []string
+	for _, d := range []time.Time{sep7, sep8, sep9} {
+		if !d.After(last) {
+			dates, row = append(dates, d), append(row, "")
+		}
+	}
+	return gridPage(dates, row)
+}
+
+// carry runs one poll of the builder with carried days and the default
+// carry horizon, and checks every snapshot against the journal.
 func carry(t *testing.T, b Binding, page *pslib.AttendancePage, settle int, today time.Time, in []pendingDay) ([]journalapi.Snapshot, []pendingDay) {
 	t.Helper()
-	snaps, out := buildAttendanceDaysCarry(b, page, defaultDaysConfig(), settle, at(t, today), testTZ(t), at(t, today), in)
+	return carryMax(t, b, page, settle, 0, today, in)
+}
+
+// carryMax is carry with the carry horizon maxDays (0: the default).
+func carryMax(t *testing.T, b Binding, page *pslib.AttendancePage, settle, maxDays int, today time.Time, in []pendingDay) ([]journalapi.Snapshot, []pendingDay) {
+	t.Helper()
+	snaps, out := buildAttendanceDaysCarry(b, page, defaultDaysConfig(), settle, maxDays, at(t, today), testTZ(t), at(t, today), in)
 	validateAll(t, snaps)
 	return snaps, out
 }
@@ -158,31 +190,108 @@ func TestCarryCorrectionWhileStillInTheGrid(t *testing.T) {
 }
 
 // A carried day that never settles is dropped after the horizon, counted
-// and logged with the record type only.
+// and logged with the record type only: kept on the horizon's last day,
+// dropped the day after. The default horizon is 120 days (decision S18); a
+// configured one (30-200) is used as given.
 func TestCarryExpiresAfterTheHorizon(t *testing.T) {
-	_, pending := carry(t, bind1, gridPage([]time.Time{thu, fri}, []string{".", ""}, []string{"UA", "-"}), 3, fri, nil)
-	if len(pending) != 1 {
+	if DefaultAttendanceDayCarryMaxDays != 120 {
+		t.Fatalf("default carry horizon %d, want 120 (decision S18)", DefaultAttendanceDayCarryMaxDays)
+	}
+	for _, tc := range []struct{ configured, horizon int }{
+		{0, DefaultAttendanceDayCarryMaxDays}, {30, 30}, {200, 200},
+	} {
+		_, pending := carry(t, bind1, gridPage([]time.Time{thu, fri}, []string{".", ""}, []string{"UA", "-"}), 3, fri, nil)
+		if len(pending) != 1 {
+			t.Fatalf("pending %v", pendingDates(pending))
+		}
+		var skipped []string
+		b := bind1
+		b.OnSkip = func(r string) { skipped = append(skipped, r) }
+		logs := captureLogs(t)
+		// The horizon's last day, still no school day after it (a break of "-").
+		last := thu.AddDate(0, 0, tc.horizon)
+		_, kept := carryMax(t, b, gridPage([]time.Time{last}, []string{"-"}), 3, tc.configured, last, pending)
+		if len(kept) != 1 || len(skipped) != 0 {
+			t.Fatalf("horizon %d: dropped on the horizon's last day: kept %v skipped %v", tc.horizon, pendingDates(kept), skipped)
+		}
+		after := last.AddDate(0, 0, 1)
+		snaps, kept := carryMax(t, b, gridPage([]time.Time{after}, []string{"-"}), 3, tc.configured, after, kept)
+		noCarriedSnapshot(t, snaps)
+		if len(kept) != 0 || !reflect.DeepEqual(skipped, []string{"attendance_day_carry_expired"}) {
+			t.Fatalf("horizon %d: kept %v skipped %v", tc.horizon, pendingDates(kept), skipped)
+		}
+		if out := logs.String(); !strings.Contains(out, "record_type=attendance_day") || strings.Contains(out, "2026-10-08") {
+			t.Fatalf("log: %s", out)
+		}
+	}
+}
+
+// Decision S18 (Steve 2026-10-30): the carry horizon covers the summer
+// break. The last day of the school year, fully marked, is polled that day
+// and carried; the attendance page is not read over the summer, and the
+// first September poll, after one school day of the new year, settles it
+// in its own year's scope. The new year's range starts at its first date.
+func TestCarryFullyMarkedLastDayOfSchoolSettlesAfterSummer(t *testing.T) {
+	snaps, pending := carry(t, bind1, juneGrid([]string{"", "UA"}), 3, jun17, nil)
+	noCarriedSnapshot(t, snaps)
+	if !reflect.DeepEqual(pendingDates(pending), []string{"2027-06-17"}) {
 		t.Fatalf("pending %v", pendingDates(pending))
 	}
 	var skipped []string
 	b := bind1
 	b.OnSkip = func(r string) { skipped = append(skipped, r) }
-	logs := captureLogs(t)
-	// Thirty days later, still no school day after it (a break of "-").
-	day30 := thu.AddDate(0, 0, carryHorizonDays)
-	_, kept := carry(t, b, gridPage([]time.Time{day30}, []string{"-"}), 3, day30, pending)
-	if len(kept) != 1 || len(skipped) != 0 {
-		t.Fatalf("dropped on the horizon's last day: kept %v skipped %v", pendingDates(kept), skipped)
+	snaps, pending = carry(t, b, septemberGridUntil(sep8), 3, sep8, pending)
+	if len(pending) != 0 || len(skipped) != 0 {
+		t.Fatalf("after the summer: pending %v skipped %v", pendingDates(pending), skipped)
 	}
-	day31 := day30.AddDate(0, 0, 1)
-	snaps, kept := carry(t, b, gridPage([]time.Time{day31}, []string{"-"}), 3, day31, kept)
+	s := carriedSnapshot(t, snaps)
+	wantScope(t, s, "powerschool", "attendance_days", "e_child1", "school_year", "2026-27")
+	wantJSON(t, fieldsOf(t, s, "2027-06-17"), map[string]string{"date": `"2027-06-17"`, "periods_met": "1",
+		"absent_unexcused": "1", "classification": `"full_day"`})
+	for _, c := range snaps {
+		if c.Complete {
+			wantScope(t, c, "powerschool", "attendance_days", "e_child1", "school_year", "2027-28")
+			wantRange(t, c, "2027-09-07", "2027-09-07")
+		}
+	}
+}
+
+// A last day of school with an unmarked cell needs `settle` school days
+// after it, and the summer has none: polls in August (the June grid still
+// shown, then an empty one) count nothing. The new school year's September
+// school days count across the boundary: settled after the third, a
+// repeated poll counting nothing twice.
+func TestCarryUnmarkedLastDayOfSchoolSettlesWithSeptemberSchoolDays(t *testing.T) {
+	june := juneGrid([]string{"", "UA"}, []string{"", "."})
+	_, pending := carry(t, bind1, june, 3, jun17, nil)
+	if !reflect.DeepEqual(pendingDates(pending), []string{"2027-06-17"}) {
+		t.Fatalf("pending %v", pendingDates(pending))
+	}
+	snaps, pending := carry(t, bind1, june, 3, summerPoll, pending)
 	noCarriedSnapshot(t, snaps)
-	if len(kept) != 0 || !reflect.DeepEqual(skipped, []string{"attendance_day_carry_expired"}) {
-		t.Fatalf("kept %v skipped %v", pendingDates(kept), skipped)
+	snaps, pending = carry(t, bind1, gridPage(nil), 3, summerPoll.AddDate(0, 0, 14), pending)
+	noCarriedSnapshot(t, snaps)
+	if len(pending) != 1 || pending[0].Followed != 0 {
+		t.Fatalf("over the summer: %+v", pending)
 	}
-	if out := logs.String(); !strings.Contains(out, "record_type=attendance_day") || strings.Contains(out, "2026-10-08") {
-		t.Fatalf("log: %s", out)
+	for i, today := range []time.Time{sep7, sep8, sep8} {
+		snaps, pending = carry(t, bind1, septemberGridUntil(today), 3, today, pending)
+		noCarriedSnapshot(t, snaps)
+		if len(pending) != 1 {
+			t.Fatalf("poll %d: pending %v", i, pendingDates(pending))
+		}
 	}
+	if pending[0].Followed != 2 {
+		t.Fatalf("followed %d after two September school days (one poll repeated), want 2", pending[0].Followed)
+	}
+	snaps, pending = carry(t, bind1, septemberGridUntil(sep9), 3, sep9, pending)
+	if len(pending) != 0 {
+		t.Fatalf("still pending %v", pendingDates(pending))
+	}
+	s := carriedSnapshot(t, snaps)
+	wantScope(t, s, "powerschool", "attendance_days", "e_child1", "school_year", "2026-27")
+	wantJSON(t, fieldsOf(t, s, "2027-06-17"), map[string]string{"periods_met": "2", "periods_unmarked": "1",
+		"absent_unexcused": "1", "classification": `"full_day"`})
 }
 
 // Carried days are in the kid's checkpoint, survive a restart, and settle

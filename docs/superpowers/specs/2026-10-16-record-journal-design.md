@@ -766,7 +766,7 @@ Two rules keep the signal clean:
   cells or it is at least three school days old. Days still filling in would
   otherwise read as `partial_day` and then `full_day` and fire rules twice.
   Their codes still arrive at once as `attendance_mark` records.
-  *Amended by Part B1 plan, decisions S1-S3 and S16:* the settling time is
+  *Amended by Part B1 plan, decisions S1-S3, S16 and S18:* the settling time is
   configurable (`records.attendance_day_settle_school_days`, default 3,
   1-10); a school day is a grid date on or before today with at least one
   cell that is not `-`; `complete_range.to` is the end of the longest run of
@@ -776,7 +776,10 @@ Two rules keep the signal clean:
   settles them with the next term's school days by the same rule (the grid
   wins while it still shows a day), sends them in a `complete=false`
   snapshot of their school year's scope, and drops one not settled within
-  30 calendar days (counted).
+  `records.attendance_day_carry_max_days` calendar days of its date
+  (counted; S18: default 120, 30-200, so the horizon covers the summer
+  break and the last days of a school year settle with the next year's
+  first school days).
 - **Only days with at least one code are records.** A fully present day is not
   a record. If every code on a day is later cleared, the day drops out of the
   complete scope and the journal records `removed` -- which is exactly "no

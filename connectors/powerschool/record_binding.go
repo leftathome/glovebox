@@ -20,10 +20,19 @@ type PowerSchoolRecords struct {
 	// attendance_day record once this many school days have followed it
 	// (decision S1; default 3, 1-10).
 	AttendanceDaySettleSchoolDays int `json:"attendance_day_settle_school_days"`
+	// AttendanceDayCarryMaxDays: a carried attendance day not settled this
+	// many calendar days after its date is dropped and counted (decisions
+	// S16, S18; default 120, 30-200: long enough for the summer break).
+	AttendanceDayCarryMaxDays int `json:"attendance_day_carry_max_days"`
 }
 
 // DefaultAttendanceDaySettleSchoolDays is the settling time of decision S1.
 const DefaultAttendanceDaySettleSchoolDays = 3
+
+// DefaultAttendanceDayCarryMaxDays is the carry horizon of decision S18: it
+// covers the summer break, so the last days of a school year settle with
+// the next year's first school days.
+const DefaultAttendanceDayCarryMaxDays = 120
 
 // applyRecordsDefaults fills the records block, only when it is enabled: a
 // disabled block stays as it was written.
@@ -34,6 +43,9 @@ func applyRecordsDefaults(r *PowerSchoolRecords) {
 	r.Config.ApplyDefaults()
 	if r.AttendanceDaySettleSchoolDays == 0 {
 		r.AttendanceDaySettleSchoolDays = DefaultAttendanceDaySettleSchoolDays
+	}
+	if r.AttendanceDayCarryMaxDays == 0 {
+		r.AttendanceDayCarryMaxDays = DefaultAttendanceDayCarryMaxDays
 	}
 }
 
@@ -55,6 +67,9 @@ func validateRecords(c *Config) error {
 	}
 	if n := c.Records.AttendanceDaySettleSchoolDays; n < 1 || n > 10 {
 		return fmt.Errorf("records.attendance_day_settle_school_days must be between 1 and 10")
+	}
+	if n := c.Records.AttendanceDayCarryMaxDays; n < 30 || n > 200 {
+		return fmt.Errorf("records.attendance_day_carry_max_days must be between 30 and 200")
 	}
 	for kind := range c.AttendanceDays.Kinds {
 		if !slices.Contains(recordKinds, kind) {

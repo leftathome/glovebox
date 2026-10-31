@@ -460,6 +460,55 @@ func TestRecordsAgainstTheJournal(t *testing.T) {
 		}
 	}
 	wantCarried("after the second January poll")
+	seq5 := lastSeq(jrn.events("e_parent1", 0))
+
+	// Poll 6, 17 June 2027, the last day of the school year: today's
+	// full-day unexcused absence is carried. The attendance page is not read
+	// again until September.
+	const lastSchoolDay = "2027-06-17"
+	juneGrid := []pslib.AttendanceDay{
+		{Date: day(2027, 6, 15), Kind: pslib.CellPresent},
+		{Date: day(2027, 6, 16), Kind: pslib.CellPresent},
+		codeDay(day(2027, 6, 17), "UA"),
+	}
+	poll(time.Date(2027, 6, 17, 23, 30, 0, 0, time.UTC), e2ePages{attendance: juneGrid, scored: true})
+	for _, subject := range []string{"e_child1", "e_child2"} {
+		if r := findRow(jrn.state("e_parent1"), TypeAttendanceDay, subject, lastSchoolDay); r != nil {
+			t.Fatalf("the last day of the school year was sent before it settled: %+v", r)
+		}
+	}
+
+	// Poll 7, 8 September 2027, 83 days later (decision S18: the carry
+	// horizon covers the summer break): the new school year's grid, one
+	// school day before today. The carried 17 June settles, is applied in
+	// the 2026-27 scope and is live; the new year's complete snapshot
+	// removes nothing of the old year.
+	sepGrid := []pslib.AttendanceDay{
+		{Date: day(2027, 9, 7), Kind: pslib.CellPresent},
+		{Date: day(2027, 9, 8), Kind: pslib.CellPresent},
+	}
+	poll(time.Date(2027, 9, 8, 23, 30, 0, 0, time.UTC), e2ePages{attendance: sepGrid, scored: true})
+	evSep := jrn.events("e_parent1", seq5)
+	for _, e := range evSep {
+		if e.Kind == journalapi.KindRemoved {
+			t.Fatalf("the September poll removed %s %s of %s", e.RecordType, e.Key, e.DataSubject)
+		}
+	}
+	sepRows := jrn.state("e_parent1")
+	for _, subject := range []string{"e_child1", "e_child2"} {
+		r := findRow(sepRows, TypeAttendanceDay, subject, lastSchoolDay)
+		if r == nil || r.Removed || string(r.Fields["classification"]) != `"full_day"` ||
+			!strings.Contains(r.Scope, "school_year=2026-27") {
+			t.Fatalf("after the summer, the carried %s of %s: %+v", lastSchoolDay, subject, r)
+		}
+		if e := findEvent(evSep, TypeAttendanceDay, subject, lastSchoolDay); e == nil || e.Kind != journalapi.KindCreated {
+			t.Fatalf("the carried %s of %s: event %+v, want created", lastSchoolDay, subject, e)
+		}
+	}
+	if strings.Contains(logs.String(), "attendance_day carried past the horizon") {
+		t.Fatalf("a carried day expired over the summer; log:\n%s", logs.String())
+	}
+	wantCarried("after the September poll")
 	parentRows = jrn.state("e_parent1")
 
 	// Visibility: a child reads only its own rows, and never a term

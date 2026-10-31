@@ -216,12 +216,20 @@ both sources in one step: never PowerSchool alone first.
      powerschool:
        records:
          enabled: true
+         # Optional; the default shown. Calendar days a carried
+         # attendance day may wait to settle (S18, 30-200).
+         attendanceDayCarryMaxDays: 120
    ```
 
    `journal.connectorRecordTypes` and the services entry land in the same
    change: the chart refuses a services entry whose `write_types` the core
    does not have. `journal.rules` for the attendance signals are documented
-   in `values.yaml` next to `journal.rules`.
+   in `values.yaml` next to `journal.rules`. Leave
+   `attendanceDayCarryMaxDays` at its default 120 unless the school's
+   longest break differs: it must cover the summer break, or the last days
+   of each school year are dropped (`powerschool_record_rows_skipped_total{reason="attendance_day_carry_expired"}`)
+   instead of settling with the next year's first school days. Outside
+   30-200 the render is refused.
 4. After the next poll window: `glovebox_journal_spool_files{dir="pending"}`
    on the connector returns to 0; `glovebox_journal_snapshots_total{status="applied"}`
    grows on the core; no `GloveboxJournalSpool*` alert; the connector's

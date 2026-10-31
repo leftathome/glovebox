@@ -31,10 +31,12 @@ func TestHelmRenderedRecordsBlock(t *testing.T) {
 		t.Errorf("chart -> Go mismatch: %+v", r)
 	}
 	if r.TimeoutSeconds != rendered.TimeoutSeconds || r.AttendanceDaySettleSchoolDays != rendered.AttendanceDaySettleSchoolDays ||
+		r.AttendanceDayCarryMaxDays != rendered.AttendanceDayCarryMaxDays ||
 		r.Spool.MaxAgeHours != rendered.Spool.MaxAgeHours || r.Spool.MaxBytes != rendered.Spool.MaxBytes {
 		t.Errorf("defaults changed a value the chart rendered: rendered %+v, running %+v", rendered, r)
 	}
-	if rendered.TimeoutSeconds == 0 || rendered.AttendanceDaySettleSchoolDays == 0 || rendered.Spool.MaxAgeHours == 0 || rendered.Spool.MaxBytes == 0 {
+	if rendered.TimeoutSeconds == 0 || rendered.AttendanceDaySettleSchoolDays == 0 || rendered.AttendanceDayCarryMaxDays == 0 ||
+		rendered.Spool.MaxAgeHours == 0 || rendered.Spool.MaxBytes == 0 {
 		t.Errorf("the chart left a value to the connector's defaults: %+v", rendered)
 	}
 }
