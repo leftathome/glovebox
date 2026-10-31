@@ -1818,6 +1818,12 @@ connectors:
       # A day with unmarked cells becomes an attendance_day record once this
       # many school days have followed it (decision S1). 1-10.
       attendanceDaySettleSchoolDays: 3
+      # A day the grid could not settle before it rolled to the next term
+      # or school year is carried and settled by the next school days; one
+      # not settled this many calendar days after its date is dropped and
+      # counted (decisions S16, S18). The default covers the summer break.
+      # 30-200.
+      attendanceDayCarryMaxDays: 120
       spool:
         # A spool file older than this is dropped, sent or not (1-2160).
         maxAgeHours: 168

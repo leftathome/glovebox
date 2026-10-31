@@ -123,7 +123,7 @@ func (c *PowerSchoolConnector) emitKidRecords(sink RecordSink, env Env, kid Kid,
 			if b, ok := bind(attendanceDaySurface); ok {
 				snaps = append(snaps, BuildAttendanceMarks(b, extras.attendance, c.cfg.AttendanceDays, readAt)...)
 				days, next := buildAttendanceDaysCarry(b, extras.attendance, c.cfg.AttendanceDays,
-					c.cfg.Records.AttendanceDaySettleSchoolDays, readAt, env.tz(), readAt, loadPendingDays(env.CP, kid.Name))
+					c.cfg.Records.AttendanceDaySettleSchoolDays, c.cfg.Records.AttendanceDayCarryMaxDays, readAt, env.tz(), readAt, loadPendingDays(env.CP, kid.Name))
 				snaps = append(snaps, days...)
 				carry, carryRead = next, true
 			}

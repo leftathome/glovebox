@@ -130,6 +130,24 @@ func TestRecordsConfigDefaultsAndBounds(t *testing.T) {
 			t.Errorf("settle %d: %v", n, err)
 		}
 	}
+	// The carry horizon (decision S18): default 120, 30-200.
+	if cfg.Records.AttendanceDayCarryMaxDays != 120 {
+		t.Fatalf("default carry horizon %d, want 120", cfg.Records.AttendanceDayCarryMaxDays)
+	}
+	for _, n := range []int{-1, 29, 201} {
+		bad := validRecordsConfig(t)
+		bad.Records.AttendanceDayCarryMaxDays = n
+		if err := ValidateConfig(&bad); err == nil || !strings.Contains(err.Error(), "attendance_day_carry_max_days") {
+			t.Errorf("carry max %d: err = %v", n, err)
+		}
+	}
+	for _, n := range []int{30, 200} {
+		ok := validRecordsConfig(t)
+		ok.Records.AttendanceDayCarryMaxDays = n
+		if err := ValidateConfig(&ok); err != nil {
+			t.Errorf("carry max %d: %v", n, err)
+		}
+	}
 	bad := validRecordsConfig(t)
 	bad.Records.JournalURL = "ftp://journal"
 	if err := ValidateConfig(&bad); err == nil || !strings.Contains(err.Error(), "journal_url") {
@@ -154,12 +172,12 @@ func TestRecordsOffConfigIsUntouched(t *testing.T) {
 // The embedded shared block is flattened into "records".
 func TestRecordsConfigJSONIsFlat(t *testing.T) {
 	var cfg Config
-	raw := `{"records":{"enabled":true,"journal_url":"http://j:9095","token_file":"/t","attendance_day_settle_school_days":4,"spool":{"max_age_hours":24}}}`
+	raw := `{"records":{"enabled":true,"journal_url":"http://j:9095","token_file":"/t","attendance_day_settle_school_days":4,"attendance_day_carry_max_days":150,"spool":{"max_age_hours":24}}}`
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	r := cfg.Records
-	if !r.Enabled || r.JournalURL != "http://j:9095" || r.TokenFile != "/t" || r.AttendanceDaySettleSchoolDays != 4 || r.Spool.MaxAgeHours != 24 {
+	if !r.Enabled || r.JournalURL != "http://j:9095" || r.TokenFile != "/t" || r.AttendanceDaySettleSchoolDays != 4 || r.AttendanceDayCarryMaxDays != 150 || r.Spool.MaxAgeHours != 24 {
 		t.Fatalf("decoded %+v", r)
 	}
 }

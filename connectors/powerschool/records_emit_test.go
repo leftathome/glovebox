@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -355,6 +356,50 @@ func TestEmitUsesTheConfiguredSettleTime(t *testing.T) {
 		}
 		for _, s := range days {
 			wantRange(t, s, "2026-10-05", "2026-10-06")
+		}
+	}
+}
+
+// The configured carry horizon reaches the builder (decision S18): the last
+// day of the school year is carried from 17 June and the next poll is on 8
+// September, 83 days later. A horizon of 90 settles it (one snapshot per
+// kid); one of 30 drops it.
+func TestEmitUsesTheConfiguredCarryHorizon(t *testing.T) {
+	for _, tc := range []struct {
+		maxDays int
+		want    int // carried attendance_day snapshots
+	}{{90, 2}, {30, 0}} {
+		var grid atomic.Pointer[pslib.AttendancePage]
+		client := extraFixture("111111")
+		client.AttendanceFunc = func(ctx context.Context) (*pslib.AttendancePage, error) {
+			p := *grid.Load()
+			p.Student = pageStudentOf(client.Selected)
+			return &p, nil
+		}
+		cfg := recordsConfig()
+		cfg.Records.AttendanceDayCarryMaxDays = tc.maxDays
+		cp := newMemCheckpoint()
+		pollOn := func(today time.Time, page *pslib.AttendancePage) []journalapi.Snapshot {
+			grid.Store(page)
+			sink := &recorderSink{}
+			w, _ := connector.NewStagingWriter(t.TempDir(), "powerschool")
+			c := newRecordsConnector(t, client, cfg, w, func() (RecordSink, error) { return sink, nil })
+			c.now = func() time.Time { return at(t, today) }
+			captureLogs(t)
+			if err := c.pollNow(context.Background(), cp, "scheduled"); err != nil {
+				t.Fatal(err)
+			}
+			return sink.all()
+		}
+		pollOn(jun17, juneGrid([]string{"", "UA"}))
+		carried := 0
+		for _, s := range snapsOfType(pollOn(sep8, septemberGridUntil(sep8)), TypeAttendanceDay) {
+			if !s.Complete {
+				carried++
+			}
+		}
+		if carried != tc.want {
+			t.Fatalf("carry max %d: %d carried snapshots, want %d", tc.maxDays, carried, tc.want)
 		}
 	}
 }

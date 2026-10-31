@@ -1,1 +1,1 @@
-{"attendance_day_settle_school_days":3,"enabled":true,"journal_url":"http://glovebox-glovebox-journal:9095","spool":{"max_age_hours":168,"max_bytes":268435456},"timeout_seconds":90,"token_file":"/var/run/secrets/glovebox-journal/token"}
+{"attendance_day_carry_max_days":120,"attendance_day_settle_school_days":3,"enabled":true,"journal_url":"http://glovebox-glovebox-journal:9095","spool":{"max_age_hours":168,"max_bytes":268435456},"timeout_seconds":90,"token_file":"/var/run/secrets/glovebox-journal/token"}
