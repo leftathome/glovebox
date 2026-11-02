@@ -179,7 +179,7 @@ test-journal-db:
   tags: [cluster]
   image: golang:1.27.3-bookworm
   services:
-    - name: ghcr.io/cloudnative-pg/postgresql:17.11
+    - name: ghcr.io/cloudnative-pg/postgresql:18.6
       alias: postgres
       entrypoint: ["/bin/sh", "-c"]
       command: ["initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -c listen_addresses='*' -c fsync=off"]
