@@ -20,6 +20,16 @@ type fakeClient struct {
 	AssignmentFunc         func(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error)
 	CommentsFunc           func(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error)
 	ValidateFunc           func(ctx context.Context) error
+	// ViewChildFunc, when set, answers ViewChild; nil switches without
+	// error.
+	ViewChildFunc func(ctx context.Context, childUID int64) error
+}
+
+func (f *fakeClient) ViewChild(ctx context.Context, childUID int64) error {
+	if f.ViewChildFunc != nil {
+		return f.ViewChildFunc(ctx, childUID)
+	}
+	return nil
 }
 
 func (f *fakeClient) GetAssignment(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error) {

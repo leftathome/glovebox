@@ -425,9 +425,11 @@ func (c *SchoologyConnector) pollNow(ctx context.Context, cp connector.Checkpoin
 		kidCtx, kidSpan := tel.StartSpan(ctx, "schoology.poll.kid",
 			attribute.String("kid", kid.Name),
 		)
-		// The library performs the view-child cookie switch on the first
-		// per-kid call; this metric counts intent (the connector chose to
-		// switch), not the underlying HTTP request.
+		// The listing and feed reads name the child in their URL; this
+		// metric counts intent (the connector chose to read as this kid),
+		// not an HTTP request. The detail surface's real switches
+		// (ViewChild, one per kid with reads) are counted where they are
+		// made.
 		tel.RecordViewChildSwitch(kid.Name)
 
 		// The start of the kid's listing read: the observed_at of its

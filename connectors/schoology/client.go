@@ -35,11 +35,18 @@ type SchoologyClient interface {
 	DownloadAttachment(ctx context.Context, url string) (io.ReadCloser, error)
 
 	// GetAssignment and GetAssignmentComments read one assignment's own
-	// page. Neither takes a child: the page is the same whichever child the
-	// session is viewing, so the connector -- not the library -- decides
-	// whose item the result is (see assignment_detail.go).
+	// page. Neither takes a child: the page is read under whichever child
+	// the session is viewing, so the detail surface switches the view to
+	// the kid before that kid's reads (ViewChild) and the connector -- not
+	// the library -- decides whose item the result is (see
+	// assignment_detail.go).
 	GetAssignment(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error)
 	GetAssignmentComments(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error)
+
+	// ViewChild switches the session's viewed child to childUID, so the
+	// reads that follow are made as that child's parent view. Like every
+	// other request it is a GET.
+	ViewChild(ctx context.Context, childUID int64) error
 
 	// ValidateSession asks Schoology whether the session is still good
 	// with a request that involves no assignment. It returns an auth error
@@ -80,6 +87,15 @@ func (p *productionClient) GetAssignment(ctx context.Context, assignmentID int64
 
 func (p *productionClient) GetAssignmentComments(ctx context.Context, assignmentID int64) (*schoologylib.AssignmentComments, error) {
 	return p.lib.GetAssignmentComments(ctx, assignmentID)
+}
+
+// ViewChild uses GetCoursesForChild, the only library call that switches
+// the view (GET /parent/switch_child/{uid}, then the course list it reads
+// and the connector discards): two GETs. schoology-go v0.3.0 has no public
+// switch on its own.
+func (p *productionClient) ViewChild(ctx context.Context, childUID int64) error {
+	_, err := p.lib.GetCoursesForChild(ctx, childUID)
+	return err
 }
 
 func (p *productionClient) ValidateSession(ctx context.Context) error {

@@ -517,8 +517,10 @@ Design rules:
 
 1. **Attribution comes from the list, never from the page.** The work list
    is built only from the rows `GetOverdueSubmissions(uid)` returned for a
-   kid in this poll. An id in two kids' lists is fetched once and staged
-   once per kid. A page whose course cannot be the list row's course, or
+   kid in this poll. Each kid's reads are made after one switch to that
+   kid (`/parent/switch_child/<uid>`) and are never used for another kid,
+   so an id in two kids' lists is fetched once per kid, under that kid's
+   view, and staged once per kid (glovebox-n1x1). A page whose course cannot be the list row's course, or
    whose title is not the list row's title, is not staged (receipts
    `course_mismatch`, `title_mismatch`). On the live site the page's course
    is the list's course plus a `:` section suffix and the titles are
