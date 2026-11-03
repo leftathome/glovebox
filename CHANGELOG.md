@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Schoology: assignment details are read per kid, under that kid's view
+  (glovebox-n1x1).** A detail read was shared between kids and made under
+  whichever child the session happened to be viewing, so for an assignment
+  listed for two kids the second kid's item -- and, with records on, its
+  `lms_assignment_detail` record -- carried the page read once for both.
+  Now the session is switched to each kid (one switch per kid with reads,
+  per poll) before that kid's reads, and every kid's read is its own. Cost:
+  a shared assignment is requested once per kid (each counting against
+  `max_per_poll`), and each kid with reads adds two GETs for the switch. A
+  switch refused for one kid skips only that kid's reads, with a receipt.
+  See `docs/connectors/schoology.md` "Attribution".
+
 ### Added
 
 - **Record journal, part A (off by default; glovebox-wekc.18).** Stateful

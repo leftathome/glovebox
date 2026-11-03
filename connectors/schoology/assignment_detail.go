@@ -27,13 +27,17 @@ import (
 // whether the teacher has commented -- as a second item linked to the first
 // by the assignment_id tag.
 //
-// ATTRIBUTION. GetAssignment takes no child: the page is the same whichever
-// child the session is viewing. Which child an item belongs to therefore
-// comes from exactly one place, the list the id was found in. The work list
-// is built only from the rows GetOverdueSubmissions returned for a kid, an
-// id that is in two kids' lists is staged once under each kid's own rule,
-// and a page whose course or title does not agree with the list row is not
-// staged at all.
+// ATTRIBUTION. GetAssignment takes no child: the page is read under
+// whichever child the session is viewing, and whether that changes what it
+// shows (its comment block, say) is not known. So each kid's reads are made
+// as that kid's: the session is switched to the kid (ViewChild, once per
+// kid per poll) before that kid's reads, and a read made for one kid is
+// never used for another -- an id in two kids' lists is read once for each
+// (glovebox-n1x1). Which child an item belongs to comes from the list the
+// id was found in: the work list is built only from the rows
+// GetOverdueSubmissions returned for a kid, each kid's item is staged under
+// that kid's own rule, and a page whose course or title does not agree with
+// the list row is not staged at all.
 //
 // REQUEST BUDGET. One page read per assignment per poll would be the single
 // largest source of requests in the connector, against a real parent
@@ -162,8 +166,8 @@ type detailKidState struct {
 	listed map[int64]bool
 }
 
-// detailFetch is the result of reading one assignment, shared between kids
-// within a poll so an id listed for two of them is requested once.
+// detailFetch is the result of reading one assignment for one kid, under
+// that kid's view. It is never used for another kid.
 type detailFetch struct {
 	detail    *schoologylib.AssignmentDetail
 	comments  schoologylib.AssignmentComments
@@ -191,7 +195,6 @@ type detailRun struct {
 	deps       DetailDeps
 	now        time.Time
 	requested  bool
-	cache      map[int64]*detailFetch
 	receipts   map[string]*detailReceipt
 	order      []string
 	staged     int
@@ -235,7 +238,6 @@ func ProcessAssignmentDetails(ctx context.Context, deps DetailDeps, lists []KidA
 	run := &detailRun{
 		deps:     deps,
 		now:      deps.Now(),
-		cache:    map[int64]*detailFetch{},
 		receipts: map[string]*detailReceipt{},
 	}
 	work := run.plan(lists)
@@ -374,9 +376,12 @@ func interleave(queues [][]detailWork, first int) []detailWork {
 	}
 }
 
-// execute works through the plan within the per-poll cap. It returns early
-// when the session is refused, when a request fails in a way that is not
-// about one assignment (network, server, rate limit), when staging is
+// execute works through the plan within the per-poll cap. The cap picks
+// the reads in plan order; they are then made kid by kid, each kid's after
+// one switch to that kid, in the order the kids first appear in the plan
+// (so the kid whose turn it is goes first). It returns early when the
+// session is refused, when a request fails in a way that is not about one
+// assignment or one kid (network, server, rate limit), when staging is
 // failing, when the poll window is about to close or when ctx ends:
 // continuing would only repeat the failure against the school's site.
 func (run *detailRun) execute(ctx context.Context, work []detailWork) {
@@ -384,36 +389,78 @@ func (run *detailRun) execute(ctx context.Context, work []detailWork) {
 	budget := deps.Config.maxPerPoll()
 	deferred := 0
 
+	var kids []*detailKidState
+	byKid := map[*detailKidState][]detailWork{}
 	for _, w := range work {
-		if ctx.Err() != nil {
-			return
+		if budget == 0 {
+			deferred++
+			deps.Tel.RecordAssignmentDetailFetch(w.kid.kid.Name, detailOutcomeDeferred)
+			run.markWaiting(w)
+			continue
 		}
-		kid := w.kid.kid
-		f, cached := run.cache[w.row.ID]
-		if !cached {
-			if budget == 0 {
-				deferred++
-				deps.Tel.RecordAssignmentDetailFetch(kid.Name, detailOutcomeDeferred)
-				run.markWaiting(w)
-				continue
-			}
-			budget--
-			var stop bool
-			f, stop = run.fetch(ctx, kid, w.row.ID)
-			if stop {
-				return
-			}
-			run.cache[w.row.ID] = f
+		budget--
+		if _, ok := byKid[w.kid]; !ok {
+			kids = append(kids, w.kid)
 		}
-		if stop := run.handle(ctx, w, f); stop {
-			return
-		}
+		byKid[w.kid] = append(byKid[w.kid], w)
 	}
-
 	if deferred > 0 {
 		slog.Info("schoology assignment detail cap reached; remainder deferred to the next poll",
 			"max_per_poll", deps.Config.maxPerPoll(), "deferred", deferred)
 	}
+
+	for _, ks := range kids {
+		group := byKid[ks]
+		ok, stop := run.switchTo(ctx, ks.kid, group[0].row.ID)
+		if stop {
+			return
+		}
+		if !ok {
+			continue
+		}
+		for _, w := range group {
+			f, stop := run.fetch(ctx, ks.kid, w.row.ID)
+			if stop {
+				return
+			}
+			if stop := run.handle(ctx, w, f); stop {
+				return
+			}
+		}
+	}
+}
+
+// switchTo switches the session's view to kid ahead of that kid's reads.
+// ok=true means the reads can be made. ok=false, stop=false means the
+// switch was refused for this kid alone: none of its reads are made this
+// poll (they would be made under another kid's view), nothing is
+// remembered, and the other kids carry on. stop=true ends the surface for
+// the poll. firstID is the kid's first assignment in the poll, the id its
+// receipt is filed under.
+func (run *detailRun) switchTo(ctx context.Context, kid Kid, firstID int64) (ok, stop bool) {
+	deps := run.deps
+	if !run.before(ctx) {
+		return false, true
+	}
+	deps.Tel.RecordViewChildSwitch(kid.Name)
+	err := viewChildTraced(ctx, deps.Client, deps.Tel, kid)
+	if err == nil {
+		return true, false
+	}
+	if ctx.Err() != nil {
+		return false, true
+	}
+	class, perKid := classifyDetailErr(err)
+	if class == "auth" {
+		if stop := run.confirmAuth(ctx, kid, firstID, "ViewChild", err); stop {
+			return false, true
+		}
+		class, perKid = detailClassUnexpectedPage, true
+	}
+	run.hardFailure(kid, firstID, "ViewChild", class, fmt.Sprintf(
+		"could not switch the session to %s, so none of %s's assignment details were read this poll: %v",
+		kid.Name, kid.Name, err))
+	return false, !perKid
 }
 
 // markWaiting records when a row the cap deferred first needed reading, so
@@ -885,6 +932,16 @@ func getAssignmentCommentsTraced(ctx context.Context, client SchoologyClient, te
 	)
 	defer span.End()
 	return client.GetAssignmentComments(ctx, id)
+}
+
+// viewChildTraced wraps client.ViewChild in the schoology.lib.ViewChild
+// span.
+func viewChildTraced(ctx context.Context, client SchoologyClient, tel *Telemetry, kid Kid) error {
+	ctx, span := tel.StartSpan(ctx, "schoology.lib.ViewChild",
+		attribute.String("kid", kid.Name),
+	)
+	defer span.End()
+	return client.ViewChild(ctx, kid.SchoologyUID)
 }
 
 // validateSessionTraced wraps client.ValidateSession in the

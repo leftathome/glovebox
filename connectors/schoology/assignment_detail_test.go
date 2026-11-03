@@ -55,6 +55,17 @@ type detailHarness struct {
 	deadline time.Time
 	// onVerified is DetailDeps.OnVerified (nil: records off).
 	onVerified func(VerifiedDetail)
+
+	// view is the child UID the fake session is viewing (0: none yet).
+	// Every switch and read is logged in calls, in order, as
+	// "switch:<uid>", "get:<view>:<id>" and "comments:<view>:<id>".
+	view  int64
+	calls []string
+	// viewDetails, when it has a page for (view, id), is served instead
+	// of details[id]: a page that differs by the child being viewed.
+	viewDetails map[int64]map[int64]*schoologylib.AssignmentDetail
+	// switchErr is what a switch to a child UID answers.
+	switchErr map[int64]error
 }
 
 func newDetailHarness(t *testing.T) *detailHarness {
@@ -82,6 +93,9 @@ func newDetailHarness(t *testing.T) *detailHarness {
 		failWith: map[int64]error{},
 		comments: map[int64]*schoologylib.AssignmentComments{},
 		commErr:  map[int64]error{},
+
+		viewDetails: map[int64]map[int64]*schoologylib.AssignmentDetail{},
+		switchErr:   map[int64]error{},
 	}
 }
 
@@ -91,13 +105,26 @@ func (h *detailHarness) client() *fakeClient {
 			h.validated++
 			return h.validateErr
 		},
+		ViewChildFunc: func(_ context.Context, uid int64) error {
+			h.calls = append(h.calls, "switch:"+strconv.FormatInt(uid, 10))
+			if err := h.switchErr[uid]; err != nil {
+				return err
+			}
+			h.view = uid
+			return nil
+		},
 		AssignmentFunc: func(_ context.Context, id int64) (*schoologylib.AssignmentDetail, schoologylib.ParseErrors, error) {
 			h.fetched = append(h.fetched, id)
+			h.calls = append(h.calls, "get:"+strconv.FormatInt(h.view, 10)+":"+strconv.FormatInt(id, 10))
 			if h.onFetch != nil {
 				h.onFetch(id)
 			}
 			if err := h.failWith[id]; err != nil {
 				return nil, nil, err
+			}
+			if d, ok := h.viewDetails[h.view][id]; ok {
+				cp := *d
+				return &cp, h.parseErr[id], nil
 			}
 			d, ok := h.details[id]
 			if !ok {
@@ -109,6 +136,7 @@ func (h *detailHarness) client() *fakeClient {
 		},
 		CommentsFunc: func(_ context.Context, id int64) (*schoologylib.AssignmentComments, error) {
 			h.commentsFetched = append(h.commentsFetched, id)
+			h.calls = append(h.calls, "comments:"+strconv.FormatInt(h.view, 10)+":"+strconv.FormatInt(id, 10))
 			if err := h.commErr[id]; err != nil {
 				return nil, err
 			}
@@ -151,7 +179,7 @@ func (h *detailHarness) poll(lists ...KidAssignments) (int, bool, *ReceiptDedup)
 
 // resetCalls forgets the requests recorded so far.
 func (h *detailHarness) resetCalls() {
-	h.fetched, h.commentsFetched, h.sleeps = nil, nil, nil
+	h.fetched, h.commentsFetched, h.sleeps, h.calls = nil, nil, nil, nil
 }
 
 // stagedItem is one committed staging item.
@@ -523,8 +551,10 @@ func TestAssignmentDetail_SameIDInBothKidsListsStagesOnePerKid(t *testing.T) {
 	if staged != 2 {
 		t.Fatalf("staged = %d, want 2 (one per kid)", staged)
 	}
-	if len(h.fetched) != 1 {
-		t.Errorf("page requested %d times, want 1 (shared within the poll)", len(h.fetched))
+	// One read per kid, each under that kid's view (glovebox-n1x1): a
+	// read made for one kid is never used for the other.
+	if len(h.fetched) != 2 {
+		t.Errorf("page requested %d times, want 2 (once per kid)", len(h.fetched))
 	}
 	subjects := map[string]int{}
 	for _, it := range h.detailItems() {
@@ -965,9 +995,10 @@ func TestAssignmentDetail_RequestsAreSpaced(t *testing.T) {
 		listRow(2, "B", "Example Course A"),
 		listRow(3, "C", "Example Course A"),
 	))
-	// Four requests (three pages and one comments page): three gaps.
-	if len(h.sleeps) != 3 {
-		t.Fatalf("waited %d times between 4 requests, want 3", len(h.sleeps))
+	// Five requests (the switch to k1, three pages and one comments
+	// page): four gaps.
+	if len(h.sleeps) != 4 {
+		t.Fatalf("waited %d times between 5 requests, want 4", len(h.sleeps))
 	}
 	for _, d := range h.sleeps {
 		if d != defaultDetailRequestSpacingMS*time.Millisecond {
@@ -1487,6 +1518,10 @@ func TestConnector_AssignmentDetailUsesEachKidsOwnList(t *testing.T) {
 	}
 	if bySubject["e_k1"] != "11" || bySubject["e_k2"] != "22" || len(bySubject) != 2 {
 		t.Errorf("detail items by data subject = %v, want k1->11 and k2->22", bySubject)
+	}
+	// Each kid's reads are made after the switch to that kid.
+	if got, want := strings.Join(h.calls, " "), "switch:1001 get:1001:11 switch:1002 get:1002:22 comments:1002:22"; got != want {
+		t.Errorf("detail requests = %s, want %s", got, want)
 	}
 	// Two assignment items and two detail items, linked by id.
 	if got := len(h.items()); got != 4 {

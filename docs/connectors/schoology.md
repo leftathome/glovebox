@@ -267,13 +267,28 @@ back is staged a third time.
 
 ### Attribution
 
-The assignment page is the same whichever child the session is viewing, so
-the page cannot say whose assignment it is. The kid comes only from the list
-the id was found in:
+The assignment page does not say whose assignment it is, and whether what it
+shows (the comment block in particular) depends on which child the session is
+viewing is not known. So **detail reads are per kid, under that kid's view**:
+
+- before a kid's reads in a poll the session is switched to that kid
+  (`GET /parent/switch_child/<uid>`, the library's `GetCoursesForChild`;
+  once per kid per poll, and only for a kid with reads inside the cap), and
+  all of that kid's pages and comments pages are read after it;
+- a read made for one kid is never used for another: an id in two kids'
+  lists is requested once for each kid, under that kid's view, and each
+  kid's item and `lms_assignment_detail` record carry that kid's own read;
+- a switch refused for one kid (permission, not found, an unexpected page)
+  skips that kid's reads for the poll, with a receipt, and they are tried
+  again next poll; an auth answer is checked against the session as for a
+  page; a network, server or rate-limit failure ends the surface for the
+  poll.
+
+The kid comes only from the list the id was found in:
 
 - only ids from a kid's own overdue/upcoming list are ever requested;
-- an id in two kids' lists is requested once and staged once per kid, each
-  under that kid's rule;
+- an id in two kids' lists is staged once per kid, each under that kid's
+  rule;
 - the page must agree with the list row on two things, or nothing is staged
   and a receipt says why:
   - the **course** (`course_mismatch`). The list prints a course as its name
@@ -302,7 +317,12 @@ Reads are spaced `request_spacing_ms` apart (default 1500) and capped at
 `max_per_poll` assignments per poll across all kids (default 20). A regular
 assignment costs one request. An assessment costs two, because its comments
 are on a separate page; a "not available" answer there is normal and is
-staged as `comments_state=unavailable`.
+staged as `comments_state=unavailable`. An assignment listed for two kids
+counts once per kid against the cap. Each kid with reads in the poll adds
+one switch, which is two requests (the switch and the course list the
+library reads with it) and is spaced and window-checked like a read; it does
+not count against `max_per_poll`. With two kids that is at most four extra
+requests per poll.
 
 Who goes first when the cap bites:
 

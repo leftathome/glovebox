@@ -670,8 +670,9 @@ func TestAssignmentDetail_CancellationDuringSpacingStops(t *testing.T) {
 		Now:   func() time.Time { return h.now },
 		Sleep: func(context.Context, time.Duration) error { return context.Canceled },
 	}, []KidAssignments{k1List(rows...)})
-	if staged != 1 || errs || len(h.fetched) != 1 {
-		t.Errorf("staged=%d errs=%v fetched=%v, want one read, then a clean stop", staged, errs, h.fetched)
+	// The first request is the switch to k1; the wait after it ends.
+	if staged != 0 || errs || len(h.fetched) != 0 || len(h.calls) != 1 {
+		t.Errorf("staged=%d errs=%v calls=%v, want the switch only, then a clean stop", staged, errs, h.calls)
 	}
 }
 
