@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-04
+
+### Upgrade notes
+
+No chart value has to be added or changed, and no Vault or gitops change
+has to land first: the record journal and both connectors' records are off
+by default, and with them off the chart renders as in 0.12.0. Two things to
+know:
+
+- **The Schoology connector makes a few more requests.** Assignment details
+  are now read per kid under that kid's view (see Fixed): each kid with
+  detail reads adds one view-child switch (two GETs) per poll, and an
+  assignment listed for two kids is read once per kid, each read counting
+  against `max_per_poll`.
+- **Enabling the journal is its own project.** Read `docs/upgrading.md`
+  "Record journal" and its prerequisites in gitops before setting
+  `journal.enabled`, then the PowerSchool and Schoology enabling checklists
+  there. openclaw reads the journal only when both connectors emit records,
+  cut over in one step (`docs/superpowers/plans/2026-11-02-record-journal-part-c.md`).
+
 ### Fixed
 
 - **Schoology: assignment details are read per kid, under that kid's view
@@ -20,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_per_poll`), and each kid with reads adds two GETs for the switch. A
   switch refused for one kid skips only that kid's reads, with a receipt.
   See `docs/connectors/schoology.md` "Attribution".
+- **`go.sum` is complete again.** Two dependency updates left it without
+  entries the module needs (`kin-openapi` v0.152.0, and `golang.org/x/text`
+  v0.43.0 with the `x/sync` and `x/tools` versions it requires), so a build
+  with `-mod=readonly` failed; CI's `GOFLAGS=-mod=mod` hid it
+  (glovebox-60ot tracks making CI catch this). Renovate now runs
+  `go mod tidy` after Go module updates.
 
 ### Added
 
@@ -33,9 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   readers frozen at erase time), rescan, importance rules; metrics and
   alerts. With `journal.enabled: false` the chart renders exactly as
   before. See `docs/journal-api.md`, `docs/journal-roster.md`,
-  `docs/journal-schema.md` and `docs/upgrading.md` before enabling it;
-  gitops-kxpb blocks enabling. Connectors (Part B) and the openclaw
-  consumer (Part C) follow.
+  `docs/journal-schema.md` and `docs/upgrading.md` before enabling it.
+  Connectors are Part B (below); the openclaw consumer is Part C, planned
+  in `docs/superpowers/plans/2026-11-02-record-journal-part-c.md`.
+- **The household roster is parsed strictly, and says so (journal only).**
+  A field this glovebox does not know makes the journal refuse the whole
+  `household.json` and keep the last roster it accepted, so membership
+  changes, removals included, wait until glovebox is updated. With the
+  journal enabled, the core logs a warning at start, the refusal names the
+  unknown field (never a value), and `GloveboxJournalRosterReloadFailing`
+  names this cause. Rule: release glovebox before adding a field to the
+  roster. See `docs/journal-roster.md` "Adding a field to household.json".
 - **Record journal, part B1: the connector spool and PowerSchool records
   (off by default).** `connector/records` is the connector side: typed
   field values the journal accepts, a durable spool on the connector's
@@ -50,7 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connectors.powerschool.records.attendanceDayCarryMaxDays` calendar days,
   default 120, 30-200, so the last days of a school year settle after the
   summer break, decision S18), `term_grade` and `term_comment` (guardians
-  only) in shadow: items are unchanged. The chart renders the records block
+  only) in shadow: items are unchanged. With records on, every rule used for
+  records must name its `audience` explicitly (decision S17: records fail
+  closed and never take `audience_default`). The chart renders the records block
   and a token projected for `glovebox-journal` only when enabled, refuses
   records without the journal grants or with `loginOnDemand`, ships the
   connector's record types (`journal.connectorRecordTypes`, generated from
@@ -63,17 +99,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Record journal, part B2: Schoology records (off by default).** With
   `schoologyConnector.records.enabled` the Schoology connector writes
   `lms_assignment` (each kid's overdue/upcoming listing) and
-  `lms_assignment_detail` (each clean detail read; degraded reads are no
-  record) through the same spool, in shadow: items are unchanged. Both
+  `lms_assignment_detail` (each clean detail read, meaning its comments were
+  actually read; degraded reads are no record, so an unreadable comments
+  page never blanks a stored comment) through the same spool, in shadow:
+  items are unchanged. Both
   scopes are windows (`complete: false`): a change while an assignment is
   listed becomes an `updated` event, and nothing is ever removed. With
   records on the connector requires an exact per-kid assignment rule with a
-  subject of its own, and the chart requires a durable state volume
+  subject of its own and an explicit `audience` (S17), and the chart requires a durable state volume
   (`schoologyConnector.state.persistent` or `existingClaim`), renders the
   records block and a token projected for `glovebox-journal`, and ships the
   types (`journal.connectorRecordTypes: [schoology]`). With records off the
   chart renders exactly as before. See `docs/connectors/schoology.md`
   ("Records (journal)") and the enabling checklist in `docs/upgrading.md`.
+
+### Changed
+
+- **CI on the shared cluster runner.** Image builds run in three lanes
+  (`resource_group` per lane) so surplus builds queue in GitLab instead of
+  timing out Pending; jobs that fail for infrastructure reasons
+  (`runner_system_failure`, `scheduler_failure`) are retried twice; the race
+  test job runs on the cluster runner only; test jobs request 2Gi with an
+  8Gi limit. A data race in the core test harness is fixed. No effect on
+  what is built.
 
 ## [0.12.0] - 2026-10-16
 

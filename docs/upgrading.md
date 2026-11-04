@@ -10,6 +10,29 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.13.0 (from 0.12.0)
+
+No chart value has to be added or changed, and no Vault or gitops change has
+to land first. The record journal and both connectors' records are off by
+default, and with them off the chart renders as in 0.12.0.
+
+- **The Schoology connector makes a few more requests.** Assignment details
+  are read per kid, under that kid's view (glovebox-n1x1): each kid with
+  detail reads adds one view-child switch (two GETs) per poll, and an
+  assignment listed for two kids is read once per kid, each read counting
+  against `max_per_poll`. If a poll ran close to `max_per_poll` before,
+  expect some details to wait one more poll.
+- **Enabling the journal comes later, on purpose.** It is a project of its
+  own: the [Record journal](#record-journal) section below, its gitops
+  prerequisites, then the PowerSchool and Schoology checklists. Two rules
+  to know first: every rule used for records names its `audience`
+  explicitly (S17), and the roster is parsed strictly, so release glovebox
+  before adding a field to `household.json`. openclaw switches to the
+  journal only when both connectors emit records, in one step
+  (`docs/superpowers/plans/2026-11-02-record-journal-part-c.md`).
+
+---
+
 ## Record journal
 
 The record journal (`journal.*` in `values.yaml`; design spec
