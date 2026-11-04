@@ -76,6 +76,13 @@ same() {
 if git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>&1; then
   mkdir -p "$TMP/base"
   git -C "$ROOT" archive "$BASE_REF" charts/glovebox | tar -x -C "$TMP/base"
+  # A release bump changes only version-derived output (chart and app
+  # version labels, the image tag, config checksums): compare against the
+  # base at this chart's version and appVersion, so only real changes show.
+  ver=$(sed -n 's/^version: //p' "$ROOT/charts/glovebox/Chart.yaml")
+  app=$(sed -n 's/^appVersion: //p' "$ROOT/charts/glovebox/Chart.yaml")
+  sed -i "s/^version: .*/version: $ver/; s/^appVersion: .*/appVersion: $app/" \
+    "$TMP/base/charts/glovebox/Chart.yaml"
   same "disabled: default values render exactly as $BASE_REF"
   same "disabled: ingest.auth.enabled renders exactly as $BASE_REF" --set ingest.auth.enabled=true
   same "disabled: journal values present but off render exactly as $BASE_REF" \
