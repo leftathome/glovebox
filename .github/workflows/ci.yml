@@ -182,11 +182,21 @@ jobs:
       # entrypoint and service containers cannot override the command, so it
       # is started here. Trust auth, no password: a throwaway server bound
       # to the runner's loopback for the life of this job.
+      #
+      # Host network, listening on 127.0.0.1:55432 only (as
+      # scripts/journal-test-db.sh does with JOURNAL_PG_HOST_NETWORK=1).
+      # With a published port (-p 127.0.0.1:55432:5432) docker forwards the
+      # connection, so the server sees the bridge gateway (172.17.0.1) as
+      # the client, and initdb --auth=trust trusts only 127.0.0.1/::1: every
+      # connection was refused ("no pg_hba.conf entry for host
+      # 172.17.0.1"). On the host network the client really is 127.0.0.1,
+      # so pg_hba.conf stays initdb's loopback-only default. GitLab's
+      # service shares the job pod's loopback and never hit this.
       - name: Start PostgreSQL
         run: >
-          docker run -d --name journal-pg -p 127.0.0.1:55432:5432
+          docker run -d --name journal-pg --network host
           ghcr.io/cloudnative-pg/postgresql:17.10
-          /bin/sh -c "initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -c listen_addresses='*' -c fsync=off"
+          /bin/sh -c "initdb -D /tmp/pg -U postgres --auth=trust >/dev/null && exec postgres -D /tmp/pg -p 55432 -c listen_addresses=127.0.0.1 -c fsync=off"
 
       - name: Journal tests
         env:

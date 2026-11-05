@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only, which neither advisory affects. 0.12.0 and 0.13.0 both shipped
   v0.60.0.
 
+### Fixed
+
+- **GitHub CI: the journal database tests run.** The `Journal database
+  tests` job had never passed: PostgreSQL ran with a published port, so
+  docker's forwarding made every connection arrive from the bridge gateway
+  (172.17.0.1), which initdb's trust rules (127.0.0.1 and ::1 only) refuse
+  ("no pg_hba.conf entry"). The server now runs on the runner's host
+  network, listening on 127.0.0.1:55432 only, as
+  `scripts/journal-test-db.sh` does with `JOURNAL_PG_HOST_NETWORK=1`;
+  pg_hba.conf keeps initdb's loopback-only default. GitLab's
+  `test-journal-db` was not affected.
+
 ## [0.13.0] - 2026-11-04
 
 ### Upgrade notes
