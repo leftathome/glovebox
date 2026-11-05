@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`golang.org/x/net` v0.60.0 -> v0.62.0** (GO-2026-6866, GO-2026-6860;
+  `golang.org/x/sys` follows to v0.49.0). The HTML parser in v0.60.0 had
+  quadratic-time text-node coalescing in `html.Parse` / `ParseFragment`
+  (a crafted page can burn CPU) and `html.Render` did not check every
+  ancestor namespace when rendering raw text. Reached only where glovebox
+  builds an HTML tree from a school portal page (goquery): the PowerSchool
+  connector and its page reads, the PowerSchool sign-in form checks
+  (`internal/pslogin`, used by the PowerSchool connector, the PowerSchool
+  auth refresher and the login broker), and the Schoology connector's page
+  reads (assignment detail renders HTML). The HTML enricher, the mail
+  connectors, RSS and the core's preprocessing use the streaming tokenizer
+  only, which neither advisory affects. 0.12.0 and 0.13.0 both shipped
+  v0.60.0.
+
 ## [0.13.0] - 2026-11-04
 
 ### Upgrade notes
