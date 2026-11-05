@@ -10,6 +10,16 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.13.1 (from 0.13.0)
+
+A security patch: `golang.org/x/net` v0.62.0 fixes GO-2026-6866 and
+GO-2026-6860 in the HTML parser the PowerSchool and Schoology connectors
+use on portal pages (0.12.0 and 0.13.0 both carry the affected v0.60.0).
+Nothing to change: no chart value, Vault or gitops change. Upgrade from
+0.12.0 directly to 0.13.1 by reading the 0.13.0 notes below.
+
+---
+
 ## Upgrading to 0.13.0 (from 0.12.0)
 
 No chart value has to be added or changed, and no Vault or gitops change has

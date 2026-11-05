@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-05
+
+### Upgrade notes
+
+A security and CI patch on 0.13.0: no chart value, Vault or gitops change
+is needed. Deploy it in place of 0.13.0 (and of 0.12.0, which has the
+same `golang.org/x/net`).
+
+### Security
+
+- **`golang.org/x/net` v0.60.0 -> v0.62.0** (GO-2026-6866, GO-2026-6860;
+  `golang.org/x/sys` follows to v0.49.0). The HTML parser in v0.60.0 had
+  quadratic-time text-node coalescing in `html.Parse` / `ParseFragment`
+  (a crafted page can burn CPU) and `html.Render` did not check every
+  ancestor namespace when rendering raw text. Reached only where glovebox
+  builds an HTML tree from a school portal page (goquery): the PowerSchool
+  connector and its page reads, the PowerSchool sign-in form checks
+  (`internal/pslogin`, used by the PowerSchool connector, the PowerSchool
+  auth refresher and the login broker), and the Schoology connector's page
+  reads (assignment detail renders HTML). The HTML enricher, the mail
+  connectors, RSS and the core's preprocessing use the streaming tokenizer
+  only, which neither advisory affects. 0.12.0 and 0.13.0 both shipped
+  v0.60.0.
+
+### Fixed
+
+- **`go.sum` complete for `pgx` v5.12.0, and CI now fails an incomplete
+  `go.sum`.** The Renovate `pgx` bump left `go.sum` without its entries, so
+  the image build on main failed (0.13.0 itself is unaffected: it is tagged
+  before that bump). The GitLab `test` job now starts with a
+  `-mod=readonly` build; its inherited `GOFLAGS=-mod=mod` had let three
+  incomplete dependency bumps pass their MRs.
+- **GitHub CI: the journal database tests run.** The `Journal database
+  tests` job had never passed: PostgreSQL ran with a published port, so
+  docker's forwarding made every connection arrive from the bridge gateway
+  (172.17.0.1), which initdb's trust rules (127.0.0.1 and ::1 only) refuse
+  ("no pg_hba.conf entry"). The server now runs on the runner's host
+  network, listening on 127.0.0.1:55432 only, as
+  `scripts/journal-test-db.sh` does with `JOURNAL_PG_HOST_NETWORK=1`;
+  pg_hba.conf keeps initdb's loopback-only default. GitLab's
+  `test-journal-db` was not affected.
+
+### Changed
+
+- **Records emitter tests no longer flake on a loaded runner.**
+  `TestRestartReplaysInOrder` failed "no drain pass" on a tag pipeline
+  under `go test -race -p 4 ./...`: the tests waited at most 5s for the
+  emitter loop's drain pass, which on a CPU-starved runner can take longer.
+  The waits in `connector/records` (next drain pass, Run returning after
+  cancel, its goroutines exiting, and the in-flight-slot poll in
+  `recordstest`) still end the moment the event happens, but are now
+  bounded at 2 minutes. What the tests assert is unchanged. Test-only.
+
 ## [0.13.0] - 2026-11-04
 
 ### Upgrade notes
