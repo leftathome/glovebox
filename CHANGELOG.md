@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-05
+
+### Upgrade notes
+
+A security and CI patch on 0.13.0: no chart value, Vault or gitops change
+is needed. Deploy it in place of 0.13.0 (and of 0.12.0, which has the
+same `golang.org/x/net`).
+
 ### Security
 
 - **`golang.org/x/net` v0.60.0 -> v0.62.0** (GO-2026-6866, GO-2026-6860;
@@ -25,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`go.sum` complete for `pgx` v5.12.0, and CI now fails an incomplete
+  `go.sum`.** The Renovate `pgx` bump left `go.sum` without its entries, so
+  the image build on main failed (0.13.0 itself is unaffected: it is tagged
+  before that bump). The GitLab `test` job now starts with a
+  `-mod=readonly` build; its inherited `GOFLAGS=-mod=mod` had let three
+  incomplete dependency bumps pass their MRs.
 - **GitHub CI: the journal database tests run.** The `Journal database
   tests` job had never passed: PostgreSQL ran with a published port, so
   docker's forwarding made every connection arrive from the bridge gateway
