@@ -54,6 +54,18 @@ func (r *emitterRig) emitter(t *testing.T, mfs fsys, transport http.RoundTripper
 	return e
 }
 
+// asyncWait bounds every wait in these tests for something the Run loop
+// does on its own goroutine: a drain pass, Run returning after cancel, its
+// goroutines exiting. Each wait ends as soon as the event happens, so the
+// bound costs nothing when the test passes; it only decides how long a
+// genuinely stuck loop takes to fail. It is generous on purpose: a pass is
+// real file I/O (fsyncs) and real HTTP under the race detector, and with
+// `go test -race -p 4 ./...` on a CPU-starved CI pod a first pass took
+// longer than the 5s these waits used to allow (TestRestartReplaysInOrder
+// failed "no drain pass" on a tag pipeline). Well inside go test's
+// default 10m timeout, so a stuck loop still fails here, by name.
+const asyncWait = 2 * time.Minute
+
 // start runs e in the background; the returned stop waits for Run to
 // return.
 func start(t *testing.T, e *Emitter) (stop func()) {
@@ -69,7 +81,7 @@ func start(t *testing.T, e *Emitter) (stop func()) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(asyncWait):
 			t.Fatal("Run did not return after cancel")
 		}
 	}
@@ -83,7 +95,7 @@ func (r *emitterRig) nextPass(t *testing.T) PassResult {
 	select {
 	case res := <-r.passed:
 		return res
-	case <-time.After(5 * time.Second):
+	case <-time.After(asyncWait):
 		t.Fatal("no drain pass")
 	}
 	return PassResult{}
@@ -206,7 +218,7 @@ func TestRunStopsWithContext(t *testing.T) {
 	r.nextPass(t)
 	stop()
 	r.j.CloseClientConnections()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(asyncWait)
 	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)

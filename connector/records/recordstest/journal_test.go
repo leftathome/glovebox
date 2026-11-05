@@ -258,8 +258,11 @@ func TestTableRowInFlightLimit(t *testing.T) {
 			_, _ = c.Send(context.Background(), body(t, snap("e_child1", now)))
 		}()
 	}
-	// Wait until every slot is held (the blocked requests hold them).
-	deadline := time.Now().Add(10 * time.Second)
+	// Wait until every slot is held (the blocked requests hold them; the
+	// server keeps a slot until release() even if its client gives up).
+	// The poll ends as soon as they are; the bound is generous so a
+	// starved CI runner getting 16 requests in cannot fail it.
+	deadline := time.Now().Add(2 * time.Minute)
 	for r.j.InFlight() < recordstest.MaxInFlight {
 		if time.Now().After(deadline) {
 			release()

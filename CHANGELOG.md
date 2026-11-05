@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pg_hba.conf keeps initdb's loopback-only default. GitLab's
   `test-journal-db` was not affected.
 
+### Changed
+
+- **Records emitter tests no longer flake on a loaded runner.**
+  `TestRestartReplaysInOrder` failed "no drain pass" on a tag pipeline
+  under `go test -race -p 4 ./...`: the tests waited at most 5s for the
+  emitter loop's drain pass, which on a CPU-starved runner can take longer.
+  The waits in `connector/records` (next drain pass, Run returning after
+  cancel, its goroutines exiting, and the in-flight-slot poll in
+  `recordstest`) still end the moment the event happens, but are now
+  bounded at 2 minutes. What the tests assert is unchanged. Test-only.
+
 ## [0.13.0] - 2026-11-04
 
 ### Upgrade notes
