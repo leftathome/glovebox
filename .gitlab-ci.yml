@@ -129,6 +129,11 @@ test:
     - "go version"
     - "go env GOPATH GOMODCACHE GOCACHE"
   script:
+    # go.sum must be complete. GOFLAGS=-mod=mod (above) lets go add missing
+    # entries during the build, which hid three incomplete dependency bumps
+    # (kin-openapi, x/text, pgx) until the image build failed on main. A
+    # readonly build fails the MR instead (glovebox-60ot).
+    - "GOFLAGS=-mod=readonly go build ./..."
     - "go vet ./..."
     - "./scripts/check-codegen.sh"
     - "go test ./... -count=1 -race -p 4"
