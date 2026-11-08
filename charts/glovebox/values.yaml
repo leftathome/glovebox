@@ -1409,19 +1409,13 @@ connectors:
       pullPolicy: IfNotPresent
     config:
       rules:
-        # Match "channel:<entry as written in channels>", or "*" for all.
-        # destination must be in agentAllowlist.
-        - match: "channel:@ExampleHandle"
-          destination: media
+        - match: "channel:UC_EXAMPLE_CHANNEL_ID"
+          destination: media-agent
           tags:
             source_type: video
             priority: normal
-      # Channel IDs (UC...) or @handles, e.g. ["@ExampleHandle"]. Handles are
-      # resolved once and cached. Empty by default (Helm merges maps but
-      # replaces lists, so a default entry here would leak into deployments
-      # that set the legacy channel_ids key instead).
-      channels: []
-      poll_interval: "1h"
+      channel_ids:
+        - UC_EXAMPLE_CHANNEL_ID
     env: {}
     secrets: ""
     externalSecret:

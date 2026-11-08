@@ -24,8 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like and comment counts are never staged (YouTube Developer Policy
   III.E.4); relative `viewership` / `comment_activity` buckets are staged
   instead. A `TranscriptProvider` seam is in place with no provider yet.
-- Sample config and chart example route to `media` (in the chart's default
-  `agentAllowlist`) instead of the never-allowed `media-agent`.
+- The connector's sample config routes to `media` (in the chart's default
+  `agentAllowlist`) instead of the never-allowed `media-agent`. The chart's
+  own youtube example is unchanged in this release: deployments set
+  `connectors.youtube.config` themselves, and should set `channel_ids: []`
+  when using `channels` (Helm replaces lists, so the chart's example
+  `channel_ids` entry would otherwise remain).
 
 ## [0.13.1] - 2026-11-05
 
