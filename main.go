@@ -232,6 +232,7 @@ func main() {
 		if err := ingestHandler.InitQueueDepth(); err != nil {
 			log.Fatalf("init ingest queue depth: %v", err)
 		}
+		go ingestHandler.StartDepthReconciler(ctx, time.Duration(cfg.PollIntervalSeconds)*time.Second)
 		ingestHandler.SetReady()
 
 		// mountIngest attaches the plaintext connector intake. Peer
@@ -293,6 +294,7 @@ func main() {
 			if err := tlsHandler.InitQueueDepth(); err != nil {
 				log.Fatalf("init mTLS ingest queue depth: %v", err)
 			}
+			go tlsHandler.StartDepthReconciler(ctx, time.Duration(cfg.PollIntervalSeconds)*time.Second)
 			tlsHandler.SetReady()
 			tlsHandler.SetPeerEnforcement(cfg.Ingest.TLS.SourceMatchEnforced(), "mtls")
 

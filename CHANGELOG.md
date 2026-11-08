@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ingest backpressure no longer locks out connectors on a long-lived pod**
+  (glovebox-0dfx). The `/v1/ingest` queue counter went up on every accepted
+  item and never came down (`DecrementQueue` had no production caller), so
+  once `backpressure_threshold` items had been accepted over the pod's
+  lifetime every request got 429, whatever staging held. On orac this
+  stopped all ingest for ~36h (2026-11-04..05) with 98 items in staging.
+  Each ingest listener now recounts the staged item directories every
+  `poll_interval_seconds`, so `glovebox_staging_queue_depth` tracks staging
+  and backpressure clears as the scanner drains it.
+
 ## [0.13.1] - 2026-11-05
 
 ### Upgrade notes

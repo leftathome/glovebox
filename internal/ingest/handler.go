@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -84,19 +85,60 @@ func (h *Handler) InitQueueDepth() error {
 		return fmt.Errorf("clean .ingest-tmp: %w", err)
 	}
 
+	count, err := h.countStagedItems()
+	if err != nil {
+		return err
+	}
+	h.queueDepth.Store(count)
+	return nil
+}
+
+// ReconcileQueueDepth resets the backpressure counter to the number of items
+// actually in stagingDir. Accepts increment the counter as they happen; this
+// recount is what brings it back down as the scanner drains staging, so the
+// counter cannot drift upward over a pod's lifetime (glovebox-0dfx). Unlike
+// InitQueueDepth it leaves .ingest-tmp alone: in-flight writes live there.
+func (h *Handler) ReconcileQueueDepth() error {
+	count, err := h.countStagedItems()
+	if err != nil {
+		return err
+	}
+	h.queueDepth.Store(count)
+	h.recordStagingDepth()
+	return nil
+}
+
+// StartDepthReconciler calls ReconcileQueueDepth every interval until ctx is
+// done. A failed recount keeps the previous value and is retried next tick.
+func (h *Handler) StartDepthReconciler(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := h.ReconcileQueueDepth(); err != nil {
+				log.Printf("reconcile ingest queue depth: %v", err)
+			}
+		}
+	}
+}
+
+// countStagedItems counts the non-hidden directories in stagingDir; each one
+// is a committed item waiting for the scanner.
+func (h *Handler) countStagedItems() (int64, error) {
 	entries, err := os.ReadDir(h.stagingDir)
 	if err != nil {
-		return fmt.Errorf("read staging dir: %w", err)
+		return 0, fmt.Errorf("read staging dir: %w", err)
 	}
-
 	var count int64
 	for _, e := range entries {
 		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			count++
 		}
 	}
-	h.queueDepth.Store(count)
-	return nil
+	return count, nil
 }
 
 // recordReceived increments the items_received counter if metrics are wired.
