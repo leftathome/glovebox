@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" \
 # same digest as the PowerSchool login job's image (the multi-arch index of
 # debian:bookworm-slim as of 2026-10-11); Renovate raises a PR for both when
 # the tag moves.
-FROM docker.io/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM docker.io/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # UID 65532 is the "nonroot" UID of the distroless images and what the chart
 # runs this Deployment as. It needs a real account with a home directory:
 # Chromium writes its config and crash state under $HOME. (In the pod,
