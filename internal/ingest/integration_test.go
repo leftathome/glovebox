@@ -251,8 +251,9 @@ func TestIntegrationEndToEndBackpressureAndRecovery(t *testing.T) {
 
 	// Third item hits backpressure. Unblock it the way production does: the
 	// scanner removes a routed item from staging and the periodic recount
-	// brings the counter down (glovebox-0dfx). The commit's retries (the 429
-	// carries Retry-After) outlast the 50ms head start.
+	// brings the counter down (glovebox-0dfx). The 429 carries Retry-After: 5
+	// and the HTTP backend sleeps that long before retrying, so the 50ms
+	// recount always lands first; the WithRetry backoff plays no part.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
