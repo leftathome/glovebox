@@ -1,0 +1,4 @@
+# Transcript provider for the youtube connector (glovebox-9zmo): captions only,
+# never media (--skip-download). Renovate bumps this; YouTube breaks yt-dlp
+# often, so a stale pin shows up as "transcript: error" on items.
+yt-dlp==2026.10.26
