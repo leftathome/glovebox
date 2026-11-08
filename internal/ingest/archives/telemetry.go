@@ -427,11 +427,19 @@ func (t *Telemetry) RecordTokenReload(ctx context.Context, listener string, err 
 		return
 	}
 	l := attribute.String("listener", listener)
+	failure := metric.WithAttributes(l, attribute.String("result", "failure"))
+	success := metric.WithAttributes(l, attribute.String("result", "success"))
+	// Add 0 to the other result so both series exist from the first reload:
+	// a listener that fails once and never reloads again (the archive
+	// listener after a failed boot load) is then "failure > 0, success == 0"
+	// rather than a missing series an alert cannot see.
 	if err != nil {
-		t.tokenReloadTotal.Add(ctx, 1, metric.WithAttributes(l, attribute.String("result", "failure")))
+		t.tokenReloadTotal.Add(ctx, 1, failure)
+		t.tokenReloadTotal.Add(ctx, 0, success)
 		return
 	}
-	t.tokenReloadTotal.Add(ctx, 1, metric.WithAttributes(l, attribute.String("result", "success")))
+	t.tokenReloadTotal.Add(ctx, 1, success)
+	t.tokenReloadTotal.Add(ctx, 0, failure)
 	t.tokenReloadLastSuccess.Record(ctx, float64(time.Now().UnixNano())/1e9, metric.WithAttributes(l))
 	t.tokensLoaded.Record(ctx, int64(tokensLoaded), metric.WithAttributes(l))
 }

@@ -57,3 +57,23 @@ func TestReloadReportsSuccessAndTokenCountToOnReload(t *testing.T) {
 		t.Errorf("OnReload tokens = %d, want 2", gotTokens)
 	}
 }
+
+// tokensLoaded counts what the store actually holds: entries dropped as
+// duplicates or malformed are not loaded.
+func TestReloadOnReloadCountsOnlyLoadedTokens(t *testing.T) {
+	dup := strings.Repeat("c", 64)
+	src := NewVaultTokenSource(&fakeVault{Data: map[string]map[string]any{
+		"a":   {"token": dup},
+		"b":   {"token": dup},
+		"ok":  {"token": strings.Repeat("d", 64)},
+		"bad": {"token": "not-hex"},
+	}}, "secret", "glovebox/ingest-tokens")
+	got := -1
+	cfg := ReloadConfig{Source: src, OnReload: func(_ error, n int) { got = n }}
+	if err := NewTokenStore().Reload(context.Background(), cfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("tokensLoaded = %d, want 1 (duplicate pair and malformed entry dropped)", got)
+	}
+}
