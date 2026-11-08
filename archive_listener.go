@@ -65,8 +65,8 @@ func buildTokenSource(ctx context.Context, cfg config.IngestAuthConfig) (auth.To
 // (bootstrapArchives) builds the source via buildTokenSource and wraps
 // this; integration tests pass an in-memory source. A source whose List
 // fails surfaces through archives.StartArchiveListener as the 503
-// fallback path per spec 10 §4.1 (a VaultTokenSource wrapping a
-// failingVaultClient produces the same outcome a Vault outage would).
+// fallback path per spec 10 §4.1 (a VaultTokenSource whose login fails
+// produces the same outcome a Vault outage would).
 func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *http.ServeMux, src auth.TokenSource, extractScanner archives.ExtractScanner) error {
 	trustedCIDRs, err := parseTrustedCIDRs(cfg.Ingest.Auth.TrustedProxyCIDRs)
 	if err != nil {

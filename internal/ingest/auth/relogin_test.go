@@ -4,22 +4,30 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 
 	vaultapi "github.com/hashicorp/vault/api"
 )
 
 // scriptedVault is a VaultClient whose calls fail with err (if set) and
-// otherwise return fixed data.
+// otherwise return fixed data. Safe for concurrent callers.
 type scriptedVault struct {
 	err   error
 	keys  []string
 	data  map[string]any
+	mu    sync.Mutex
 	calls int
 }
 
-func (s *scriptedVault) ListPath(context.Context, string, string) ([]string, error) {
+func (s *scriptedVault) count() {
+	s.mu.Lock()
 	s.calls++
+	s.mu.Unlock()
+}
+
+func (s *scriptedVault) ListPath(context.Context, string, string) ([]string, error) {
+	s.count()
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -27,7 +35,7 @@ func (s *scriptedVault) ListPath(context.Context, string, string) ([]string, err
 }
 
 func (s *scriptedVault) ReadKV(context.Context, string, string) (map[string]any, error) {
-	s.calls++
+	s.count()
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -61,6 +69,7 @@ func TestReloginVaultClientRenewsOnExpiredToken(t *testing.T) {
 	fresh := &scriptedVault{keys: []string{"nagus"}}
 	login, logins := loginSequence(expired, fresh)
 	c := NewReloginVaultClient(login)
+	c.minRelogin = 0 // these cases are about the re-login itself, not its rate limit
 
 	keys, err := c.ListPath(context.Background(), "secret", "glovebox/ingest-tokens")
 	if err != nil {
@@ -88,6 +97,7 @@ func TestReloginVaultClientRenewsOn401(t *testing.T) {
 	fresh := &scriptedVault{data: map[string]any{"token": "x"}}
 	login, logins := loginSequence(stale, fresh)
 	c := NewReloginVaultClient(login)
+	c.minRelogin = 0 // these cases are about the re-login itself, not its rate limit
 
 	if _, err := c.ReadKV(context.Background(), "secret", "p"); err != nil {
 		t.Fatalf("ReadKV: %v", err)
@@ -103,6 +113,7 @@ func TestReloginVaultClientRecoversFromFailedBootLogin(t *testing.T) {
 	ok := &scriptedVault{keys: []string{"a"}}
 	login, logins := loginSequence(errors.New("vault k8s login: connection refused"), ok)
 	c := NewReloginVaultClient(login)
+	c.minRelogin = 0 // these cases are about the re-login itself, not its rate limit
 
 	if _, err := c.ListPath(context.Background(), "secret", "p"); err == nil {
 		t.Fatal("first call: expected the login error, got nil")
@@ -121,6 +132,7 @@ func TestReloginVaultClientDoesNotReloginOnOtherErrors(t *testing.T) {
 	broken := &scriptedVault{err: vaultStatus(http.StatusInternalServerError, "internal error")}
 	login, logins := loginSequence(broken)
 	c := NewReloginVaultClient(login)
+	c.minRelogin = 0 // these cases are about the re-login itself, not its rate limit
 
 	if _, err := c.ListPath(context.Background(), "secret", "p"); err == nil {
 		t.Fatal("expected the 500 to be returned")
@@ -139,6 +151,7 @@ func TestReloginVaultClientRetriesOnlyOnce(t *testing.T) {
 	denied := &scriptedVault{err: vaultStatus(http.StatusForbidden, "permission denied")}
 	login, logins := loginSequence(denied, denied, denied)
 	c := NewReloginVaultClient(login)
+	c.minRelogin = 0 // these cases are about the re-login itself, not its rate limit
 
 	if _, err := c.ListPath(context.Background(), "secret", "p"); err == nil {
 		t.Fatal("expected a 403 when the fresh token is refused too")
