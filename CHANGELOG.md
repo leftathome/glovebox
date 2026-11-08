@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incomplete `go.sum` and broke `go vet ./...` on main. Both the GitLab
   `test` job and the GitHub `Test` job now run `go mod tidy -diff` before
   vet; it prints the missing change and fails without writing anything.
+- **PowerSchool tests no longer age out (glovebox-ldoj).** From
+  2026-11-08 `TestPoll_TeacherCommentStaysWithItsKid` and
+  `TestEndToEnd_RealLibraryTeacherComment` failed on every run: their
+  fixture assignment is due 2026-10-08, and the connector built its `Env`
+  without the connector clock, so the default 30-day assignments lookback
+  measured from the real date, not the clock the tests set. `Env` now
+  carries the connector clock and the tests pin it to 2026-10-07.
+  Production is unchanged (the connector clock is `time.Now`).
 
 ### Changed
 
