@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ingest token reload metrics** (glovebox-l9zp), labelled
+  `listener="archive"|"sanitize"`: `glovebox_ingest_token_reload_total{result}`,
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds` and
+  `glovebox_ingest_tokens_loaded`. A whole-reload failure (Vault refusing the
+  token) was previously visible only as a WARN log; on orac it went unnoticed
+  for 2+ weeks. Alert on `time() - ..._last_success_timestamp_seconds`.
+
 ## [0.13.1] - 2026-11-05
 
 ### Upgrade notes
