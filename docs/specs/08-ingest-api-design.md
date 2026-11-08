@@ -199,10 +199,26 @@ Unavailable (`503`):
 
 ### 3.7 Backpressure
 
-The scanner tracks the number of unprocessed items using an atomic counter
-(not a directory listing -- directory scans are too slow and race under
-concurrency). The counter is incremented when an ingest write completes and
-decremented when the watcher dispatches an item to the scan worker pool.
+The scanner tracks the number of items in staging with an atomic counter. The
+counter is incremented when an ingest write completes, and every
+`poll_interval_seconds` it is reset to the number of committed items actually
+in the staging directory (non-hidden directories; `.ingest-tmp/` and the
+connectors' `.tmp/` are excluded). The recount is what brings the counter back
+down as the scanner routes items out of staging.
+
+*(Amended, glovebox-0dfx.)* The original design decremented the counter when
+the watcher dispatched an item, but that decrement was never wired: the
+counter only went up, and a long-lived pod 429'd every request once
+`backpressure_threshold` items had been accepted over its lifetime, whatever
+staging held. A periodic recount is used instead of a dispatch-time decrement
+because each ingest listener (plaintext and mTLS) has its own counter over the
+same staging directory, and because a recount self-heals after any drift.
+
+Two consequences: between recounts the counter can be off by the accepts and
+routings since the last tick (a soft limit, as the check-then-increment
+already was); and it counts items dispatched to the scan pool but not yet
+routed, plus items left in staging after a failed route, until they leave the
+directory.
 
 On startup, the counter is initialized by counting existing items in the staging
 directory. This ensures backpressure is accurate even after a crash that left
@@ -226,7 +242,7 @@ performed directly on the filesystem:
 5. Validate metadata (same validation as spec 04, Section 5.4)
 6. Write metadata.json to temp dir
 7. Atomic rename to <staging>/<timestamp>-<uuid>/
-8. Increment backpressure counter
+8. Increment backpressure counter (the periodic recount, Section 3.7, brings it back down)
 9. Return 202 with item_id
 ```
 
@@ -327,7 +343,7 @@ filesystem). All metrics use the `source` label from item metadata.
 | `glovebox_receive_duration_seconds` | histogram | source | Time from request start to staging write complete |
 | `glovebox_receive_bytes_total` | counter | source | Content bytes received |
 | `glovebox_receive_to_scan_seconds` | histogram | source | Latency from staging write to watcher pickup |
-| `glovebox_staging_queue_depth` | gauge | | Unprocessed items in staging (atomic counter) |
+| `glovebox_staging_queue_depth` | gauge | | Items in staging (atomic counter, recounted from the directory every poll interval) |
 
 In filesystem mode, `glovebox_items_received_total` is incremented when the
 watcher detects a new item. `glovebox_receive_duration_seconds` is not
@@ -340,8 +356,9 @@ responses. `glovebox_items_received_total{status="throttled"}` counts 429
 responses.
 
 `glovebox_staging_queue_depth` replaces the previous `glovebox_staging_queue_depth`
-from spec 04 with a unified implementation: atomic counter in HTTP mode, directory
-count in filesystem mode, same metric name either way.
+from spec 04 with a unified implementation: atomic counter in HTTP mode, recounted
+from the directory every poll interval (Section 3.7), directory count in filesystem
+mode, same metric name either way.
 
 #### 3.12.3 Scanner Processing Metrics (existing, unchanged)
 
@@ -668,7 +685,8 @@ behavior are unchanged."
 `glovebox_receive_duration_seconds`, `glovebox_receive_bytes_total`, and
 `glovebox_receive_to_scan_seconds` (see Section 3.12 of this spec). The
 `glovebox_staging_queue_depth` gauge implementation changes to an atomic counter
-in HTTP mode but retains the same metric name and semantics.
+in HTTP mode, recounted from the staging directory every poll interval
+(Section 3.7), but retains the same metric name and semantics.
 
 **Section 14 (Graceful Shutdown):** Add to step 1: "Stop accepting new items
 from the watcher *and* the ingest endpoint (return 503). Complete all in-flight

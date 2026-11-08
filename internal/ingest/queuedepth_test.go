@@ -132,3 +132,20 @@ func TestStartDepthReconcilerHealsDrift(t *testing.T) {
 		t.Fatal("StartDepthReconciler did not return after context cancel")
 	}
 }
+
+// A recount that cannot read staging keeps the last value rather than
+// dropping backpressure to zero.
+func TestReconcileQueueDepthKeepsValueWhenStagingUnreadable(t *testing.T) {
+	h, stagingDir := newTestHandler(t, defaultIngestConfig(), []string{"home-agent"})
+	h.queueDepth.Store(7)
+	if err := os.RemoveAll(stagingDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.ReconcileQueueDepth(); err == nil {
+		t.Fatal("expected an error for a missing staging dir")
+	}
+	if got := h.queueDepth.Load(); got != 7 {
+		t.Errorf("depth after failed recount = %d, want 7 (unchanged)", got)
+	}
+}

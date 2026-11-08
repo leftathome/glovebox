@@ -560,7 +560,7 @@ Metrics:
 - `glovebox_items_received_total` (counter, labels: source, status) — items received via ingest or filesystem *(Added by spec 08)*
 - `glovebox_receive_duration_seconds` (histogram, labels: source) — time to receive + write to staging *(Added by spec 08)*
 - `glovebox_receive_bytes_total` (counter, labels: source) — content bytes received *(Added by spec 08)*
-- `glovebox_staging_queue_depth` (gauge) — uses atomic counter in HTTP mode, directory count in filesystem mode *(Amended by spec 08)*
+- `glovebox_staging_queue_depth` (gauge) — uses an atomic counter in HTTP mode, recounted from the directory every poll interval, and a directory count in filesystem mode *(Amended by spec 08 §3.7, glovebox-0dfx)*
 - `glovebox_quarantine_queue_depth` (gauge)
 - `glovebox_pending_items` (gauge, labels: source, destination_agent)
 - `glovebox_scan_workers_busy` (gauge)
