@@ -43,9 +43,9 @@ func deliveryWritable(dir string) error {
 // livenessHandler returns 200 while the delivery path is writable and 503 when
 // it is not. Wire a Kubernetes livenessProbe httpGet at /healthz so a stuck
 // delivery mount triggers an automatic pod restart instead of a silent stall.
-func livenessHandler(agentsDir string) http.HandlerFunc {
+func livenessHandler(agentsDir string, probe func(string) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := deliveryWritable(agentsDir); err != nil {
+		if err := probe(agentsDir); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = fmt.Fprintf(w, "delivery path %s not writable: %v\n", agentsDir, err)
 			return

@@ -42,7 +42,7 @@ func TestDeliveryWritable(t *testing.T) {
 func TestLivenessHandler(t *testing.T) {
 	t.Run("writable delivery path -> 200", func(t *testing.T) {
 		rr := httptest.NewRecorder()
-		livenessHandler(t.TempDir())(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		livenessHandler(t.TempDir(), deliveryWritable)(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body=%q", rr.Code, rr.Body.String())
 		}
@@ -50,7 +50,7 @@ func TestLivenessHandler(t *testing.T) {
 
 	t.Run("broken delivery path -> 503", func(t *testing.T) {
 		rr := httptest.NewRecorder()
-		livenessHandler(filepath.Join(t.TempDir(), "missing"))(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		livenessHandler(filepath.Join(t.TempDir(), "missing"), deliveryWritable)(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503", rr.Code)
 		}

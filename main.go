@@ -188,7 +188,7 @@ func main() {
 	ready := &atomic.Bool{}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
-	mux.HandleFunc("/healthz", livenessHandler(cfg.AgentsDir))
+	mux.HandleFunc("/healthz", livenessHandler(cfg.AgentsDir, deliveryWritable))
 	mux.HandleFunc("/readyz", readinessHandler(ready))
 	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.MetricsPort),
