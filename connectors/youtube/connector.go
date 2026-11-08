@@ -120,6 +120,17 @@ type commentThreadsResponse struct {
 	} `json:"items"`
 }
 
+// bucketAssessmentDelay is how long after first sight a video's engagement
+// is assessed. Operator decision 2026-11-08: assess at 30 days, when the
+// video has had time to accumulate views, keep only the high/medium/low
+// label, and never hold the counts themselves (Developer Policy III.E.4).
+const bucketAssessmentDelay = 30 * 24 * time.Hour
+
+// bucketPending is the engagement label before the assessment has run.
+const bucketPending = "pending"
+
+func firstSeenKey(videoID string) string { return "seen:" + videoID }
+
 // apiError is a non-200 Data API response. Reason is the first
 // error.errors[].reason (e.g. quotaExceeded, commentsDisabled).
 type apiError struct {
@@ -268,35 +279,26 @@ func (c *YouTubeConnector) pollChannel(ctx context.Context, entry string, cp con
 		return nil
 	}
 
-	// One videos.list call for every recent upload: the fresh ones get staged,
-	// the rest are the peer set the engagement buckets are ranked against.
-	ids := make([]string, len(uploads))
-	for i, u := range uploads {
+	// One batched videos.list call for the fresh uploads. Statistics are NOT
+	// requested: engagement is assessed 30 days after first sight
+	// (bucketAssessmentDelay), never at first sight.
+	ids := make([]string, len(fresh))
+	for i, u := range fresh {
 		ids[i] = u.ID
 	}
 	var vr videosResponse
 	if err := c.getJSON(ctx, "videos", neturl.Values{
 		"id":         {strings.Join(ids, ",")},
-		"part":       {"snippet,contentDetails,statistics,topicDetails"},
+		"part":       {"snippet,contentDetails,topicDetails"},
 		"maxResults": {"50"},
 	}, &vr); err != nil {
 		return fmt.Errorf("fetch video details for %s: %w", entry, err)
 	}
 	byID := map[string]videoItem{}
-	var peers []peerStats
 	for _, v := range vr.Items {
 		byID[v.ID] = v
-		pub, _ := time.Parse(time.RFC3339, v.Snippet.PublishedAt)
-		views, _ := strconv.ParseUint(v.Statistics.ViewCount, 10, 64)
-		p := peerStats{ID: v.ID, Published: pub, Views: views}
-		if v.Statistics.CommentCount != nil {
-			p.Comments, _ = strconv.ParseUint(*v.Statistics.CommentCount, 10, 64)
-			p.HasComments = true
-		}
-		peers = append(peers, p)
 	}
 	now := c.clock()
-	bk := computeBuckets(peers, now)
 
 	// Stage oldest first so the checkpoint only ever moves forward.
 	latest := last
@@ -314,8 +316,14 @@ func (c *YouTubeConnector) pollChannel(ctx context.Context, entry string, cp con
 			logger.Info("fetch limit reached, stopping", "channel", entry, "status", status)
 			break
 		}
-		if err := c.stageVideo(ctx, info, v, bk[v.ID], now, result); err != nil {
+		if err := c.stageVideo(ctx, info, v, now, result); err != nil {
 			return err
+		}
+		// First-seen date per video: the engagement assessment (and the
+		// 30-day refresh of everything else) is scheduled from it
+		// (glovebox-0tzc).
+		if err := cp.Save(firstSeenKey(v.ID), now.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("save first-seen for %s: %w", v.ID, err)
 		}
 		if u.Published > latest {
 			latest = u.Published
@@ -330,16 +338,11 @@ func (c *YouTubeConnector) pollChannel(ctx context.Context, entry string, cp con
 	return nil
 }
 
-func (c *YouTubeConnector) stageVideo(ctx context.Context, ch channelInfo, v videoItem, b buckets, now time.Time, result connector.MatchResult) error {
+func (c *YouTubeConnector) stageVideo(ctx context.Context, ch channelInfo, v videoItem, now time.Time, result connector.MatchResult) error {
 	logger := slog.Default()
 
 	pub, _ := time.Parse(time.RFC3339, v.Snippet.PublishedAt)
-	note := ""
-	if !pub.IsZero() {
-		if age := now.Sub(pub); age < 48*time.Hour {
-			note = fmt.Sprintf("measured %dh after publish; early buckets understate viewership", int(age.Hours()))
-		}
-	}
+	assessOn := now.Add(bucketAssessmentDelay).Format("2006-01-02")
 
 	in := renderInput{
 		VideoID:       v.ID,
@@ -357,8 +360,8 @@ func (c *YouTubeConnector) stageVideo(ctx context.Context, ch channelInfo, v vid
 		LiveContent:   v.Snippet.LiveBroadcastContent,
 		Description:   v.Snippet.Description,
 		Chapters:      parseChapters(v.Snippet.Description),
-		Buckets:       b,
-		BucketNote:    note,
+		Buckets:       buckets{Viewership: bucketPending, Comments: bucketPending},
+		BucketNote:    "assessed 30 days after first seen, on or after " + assessOn,
 	}
 
 	if c.config.ShouldFetchComments() {

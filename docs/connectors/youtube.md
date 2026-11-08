@@ -36,7 +36,7 @@ Quota Extension form, which comes with a compliance audit.
 |---|---|---|
 | `channels.list` | 1 | once per channel, ever (resolves a handle, finds the uploads playlist; cached in the checkpoint) |
 | `playlistItems.list` (uploads playlist, 50 newest) | 1 | every poll, per channel |
-| `videos.list` (all recent uploads in one batched call) | 1 | only when a channel has something new |
+| `videos.list` (the new uploads in one batched call; no statistics) | 1 | only when a channel has something new |
 | `commentThreads.list` | 1 | per new video, if `fetch_comments` |
 
 `search.list` (100/day bucket) and `captions.list` (50 units, returns only
@@ -68,7 +68,7 @@ per-channel checkpoint. The first poll of a channel stages only its newest
 - default_audio_language: <lang>
 - viewership: high | medium | low | unknown
 - comment_activity: high | medium | low | unknown
-- engagement_note: <present when measured under 48h after publish>
+- engagement_note: assessed 30 days after first seen, on or after <date>
 - transcript: available (<lang>) | unavailable (<reason>) | skipped (<reason>) | error (<reason>)
 ```
 
@@ -79,16 +79,22 @@ followed by `## Chapters` (each `- <m:ss> <title> (offset_seconds: N)`),
 description using YouTube's own rule: the first is 0:00, there are at least
 three, and they ascend. Otherwise no chapters are emitted.
 
-**Engagement buckets, not counts.** YouTube API Services Developer Policy
-III.E.4 says data read with an API key must be refreshed or deleted within 30
-days, and statistics in particular may not be stored longer than 30 days. Raw
-view, like and comment counts are therefore never staged. The connector ranks
-each video against the channel's other recent uploads (up to 50, same
-`videos.list` call) by views per day and comments per day since publish, and
-labels the bottom third `low`, the top third `high`, the rest `medium`. With
-fewer than 5 comparable videos the label is `unknown`. Buckets are a snapshot
-at fetch time; a video fetched within its first hours ranks low because it
-has not had time to accumulate views, which `engagement_note` calls out.
+**Engagement buckets, not counts, assessed at 30 days.** YouTube API Services
+Developer Policy III.E.4 says data read with an API key must be refreshed or
+deleted within 30 days, and statistics in particular may not be stored longer
+than 30 days. Raw view, like and comment counts are therefore never staged,
+and at first sight they are not even requested. A new item reads
+`viewership: pending` / `comment_activity: pending`, with an
+`engagement_note` giving the date it becomes due (30 days after first seen,
+recorded per video in the checkpoint). Judged that late, a video has had time
+to accumulate views; judged at first sight (within an hour of publishing at
+the default poll) nearly everything would rank `low`.
+
+The assessment itself ranks each video against the channel's other recent
+uploads by views per day and comments per day since publish (bottom third
+`low`, top third `high`, the rest `medium`; `unknown` with fewer than 5
+comparable videos) and keeps only the label. It runs as part of the 30-day
+refresh, which is not built yet (glovebox-0tzc).
 
 The general 30-day clause still applies to the titles, descriptions and
 thumbnails held downstream (caro). Refresh/expiry is tracked in glovebox-0tzc.
