@@ -71,7 +71,7 @@ later only where artifact/runtime verification is justified).
 | linkedin | test-account | TBD (private ci-templates) | TBD (OAuth token) | no |
 | notion | test-account | TBD (private ci-templates) | TBD (integration token, test workspace) | no |
 | steam | test-account | TBD (private ci-templates) | TBD (Web API key) | no |
-| youtube | test-account | TBD (private ci-templates) | TBD (Data API key) | no |
+| youtube | test-account | `eso/glovebox-youtube` (orac) | `YOUTUBE_API_KEY` (Data API v3 key, restricted to that API) | no |
 | semantic-scholar | test-account | TBD (private ci-templates) | free SEMANTIC_SCHOLAR_API_KEY | no |
 
 Tally: 3 `none` + 9 `real-readonly` + 12 `test-account` = 24 source connectors.
