@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-08
+
+### Upgrade notes
+
+No chart value has to change. Two recommended for a release with the
+record journal enabled: give the core more memory (it idles near 280Mi and
+peaked at 410Mi of a 512Mi limit while catching up after a restart; for
+example requests 384Mi, limits 768Mi) and set
+`livenessProbe.timeoutSeconds: 5`. youtube connector users: items are now
+markdown and the connector discovers uploads through the uploads playlist
+(see Changed).
+
 ### Fixed
 
 - **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**

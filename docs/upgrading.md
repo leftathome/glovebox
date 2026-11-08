@@ -10,6 +10,18 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.13.2 (from 0.13.1)
+
+A fix for the core's liveness probe: `/healthz` no longer writes to the
+delivery volume inside the request, so a slow volume (NFS-backed
+storage, a stalling disk) can no longer get the core killed mid-ingest
+(glovebox-q0ch). The write check now runs in the background; `/healthz`
+still fails on a broken or hung mount. Nothing has to change. Recommended
+with the journal enabled: core memory requests 384Mi / limits 768Mi, and
+`livenessProbe.timeoutSeconds: 5` (new value; unset renders as before).
+
+---
+
 ## Upgrading to 0.13.1 (from 0.13.0)
 
 A security patch: `golang.org/x/net` v0.62.0 fixes GO-2026-6866 and
