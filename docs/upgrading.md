@@ -65,9 +65,11 @@ afterwards keep their access until glovebox learns the field.
 [Adding a field to household.json](journal-roster.md#adding-a-field-to-householdjson).
 
 Before enabling it, the
-per-connector ServiceAccounts of 0.12.0 must be deployed, and gitops-kxpb
-must be fixed: the openclaw Telegram watchdog's Role can exec into every
-pod in the namespace, the glovebox core included, which would expose the
+per-connector ServiceAccounts of 0.12.0 must be deployed. gitops-kxpb no
+longer blocks it: it was fixed by gitops !112 (closed 2026-10-29), a
+ValidatingAdmissionPolicy limiting the openclaw Telegram watchdog to the
+gateway. It mattered because the watchdog's Role could exec into every pod
+in the namespace, the glovebox core included, which would have exposed the
 journal's database credentials and ServiceAccount token.
 
 ### What `journal.enabled: true` renders

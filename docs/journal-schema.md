@@ -309,9 +309,9 @@ kept rows, their rewritten events, their `erasure_reader` rows and the
 are next changed or frozen. The old tuple versions, which still hold the id,
 stay in the table files until VACUUM removes them, and WAL archives and base
 backups keep them for the backup retention window (the `databases-app`
-cluster's object store keeps 30 days, `retentionPolicy: "30d"` in gitops
-`clusters/orac/foundation/databases-app/objectstore-cnpg-app.yaml`, as of
-2026-10-23). Erase removes the id from the live rows, not from storage history
+cluster's object store keeps 14 days, `retentionPolicy: "14d"` in gitops
+`clusters/orac/foundation/databases-app/objectstore-cnpg-app.yaml`, since
+2026-10-27; it was 30 days before). Erase removes the id from the live rows, not from storage history
 within that window.
 
 Copies already delivered outside the journal (to readers past those events'

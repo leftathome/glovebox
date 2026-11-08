@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
+  The core's `/healthz` wrote and removed a probe file in `agents_dir`
+  inside the request. On a networked delivery volume (Longhorn RWX) whose
+  replica disk stalls, that write takes seconds; three probes in a row
+  missed the kubelet's 1s timeout and a healthy core was restarted mid-poll,
+  while `/metrics` and `/readyz` on the same port answered in milliseconds.
+  The write probe now runs in a background loop every 10s, one at a time,
+  and `/healthz` reports its state without doing any I/O: `503` when the
+  latest probe failed (a stale mount's `EIO`, as before), when one probe has
+  hung for over 2 minutes, or when the loop stopped; `200` otherwise,
+  including while a probe is merely slow. The record journal's database was
+  never on this path, and still is not: a stuck journal database leaves the
+  core's `/healthz`, `/readyz` and `/metrics` answering at once (a new
+  database test holds that). `/readyz` is unchanged.
+
+### Changed
+
+- **Chart: `livenessProbe.timeoutSeconds` sets the core's liveness probe
+  timeout.** Unset (the default) it renders nothing and Kubernetes' 1s
+  applies, so default renders are unchanged; 5 is recommended, in addition
+  to the fix above: with a 250m CPU limit a GC pause can still stretch an
+  answer past a second.
+- **Chart: the `resources` comment no longer says 128Mi/512Mi is safe
+  without archives** (glovebox-75am). A 0.13.1 core idles at ~280Mi and
+  reached ~410Mi applying a first PowerSchool records poll; without archives
+  size it at about requests 384Mi / limits 768Mi. Defaults are unchanged.
+
+### Documentation
+
+- `docs/journal-api.md`, `docs/upgrading.md`: gitops-kxpb is fixed (gitops
+  !112) and no longer blocks enabling the journal; the Part C gates
+  (glovebox-n1x1, glovebox-wekc.18.3) are listed, both closed.
+- `docs/journal-schema.md`: the journal database's backups are kept 14 days
+  (since 2026-10-27), not 30 (glovebox-dli7).
+- `docs/journal-roster.md`: after a roster change, restart the openclaw
+  gateway (its `subPath` mount sees no change until then) and check its
+  `household.json` hash against the journal healthz `roster_sha256`.
+- `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
+  (the section still said the core had none).
+
 ## [0.13.1] - 2026-11-05
 
 ### Upgrade notes
