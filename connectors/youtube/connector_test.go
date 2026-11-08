@@ -319,10 +319,15 @@ func TestVideosListIsOneBatchedCallWithAllParts(t *testing.T) {
 	if got := q.Get("id"); got != "v3,v2,v1" {
 		t.Errorf("videos.list id = %q, want comma-batched v3,v2,v1", got)
 	}
-	for _, part := range []string{"snippet", "contentDetails", "statistics", "topicDetails"} {
+	for _, part := range []string{"snippet", "contentDetails", "topicDetails"} {
 		if !strings.Contains(q.Get("part"), part) {
 			t.Errorf("videos.list part %q missing %s", q.Get("part"), part)
 		}
+	}
+	// Engagement is assessed 30 days after first sight, so first sight
+	// does not even request statistics.
+	if strings.Contains(q.Get("part"), "statistics") {
+		t.Errorf("videos.list part %q requests statistics at first sight", q.Get("part"))
 	}
 }
 
@@ -430,11 +435,20 @@ func TestRawCountsAreNeverStaged(t *testing.T) {
 				t.Errorf("raw statistic %q leaked into staged content:\n%s", raw, it.Content)
 			}
 		}
-		if !regexp.MustCompile(`(?m)^- viewership: (high|medium|low)$`).MatchString(it.Content) {
-			t.Errorf("no viewership bucket with 8 peers:\n%s", it.Content)
+		for _, want := range []string{
+			"- viewership: pending\n",
+			"- comment_activity: pending\n",
+			"- engagement_note: assessed 30 days after first seen, on or after 2026-12-07\n",
+		} {
+			if !strings.Contains(it.Content, want) {
+				t.Errorf("content missing %q:\n%s", want, it.Content)
+			}
 		}
-		if !regexp.MustCompile(`(?m)^- comment_activity: (high|medium|low)$`).MatchString(it.Content) {
-			t.Errorf("no comment_activity bucket with 8 peers:\n%s", it.Content)
+	}
+	// The first-seen date the 30-day assessment is scheduled from.
+	for _, id := range []string{"v0", "v1", "v2"} {
+		if got, ok := cp.Load(firstSeenKey(id)); !ok || got != testNow.Format(time.RFC3339) {
+			t.Errorf("first-seen for %s = %q, %v; want %s", id, got, ok, testNow.Format(time.RFC3339))
 		}
 	}
 }

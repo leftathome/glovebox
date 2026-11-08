@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **youtube engagement is assessed 30 days after first sight, not at first
+  sight.** At an hourly poll a new video is found within its first hour,
+  when per-day view rates rank nearly everything `low`. New items now read
+  `viewership: pending` / `comment_activity: pending` with the due date, the
+  first-seen date is kept per video in the checkpoint, and statistics are no
+  longer requested at all on first sight. The 30-day assessment runs with the
+  30-day refresh (glovebox-0tzc, not yet built).
+
 - **Chart: `livenessProbe.timeoutSeconds` sets the core's liveness probe
   timeout.** Unset (the default) it renders nothing and Kubernetes' 1s
   applies, so default renders are unchanged; 5 is recommended, in addition
@@ -63,8 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   best thumbnail, duration, tags, topics, chapters parsed from the
   description, top comments and an explicit `transcript:` marker. Raw view,
   like and comment counts are never staged (YouTube Developer Policy
-  III.E.4); relative `viewership` / `comment_activity` buckets are staged
-  instead. A `TranscriptProvider` seam is in place with no provider yet.
+  III.E.4); relative `viewership` / `comment_activity` buckets stand in
+  for them (assessed at 30 days, see above). A `TranscriptProvider` seam is in place with no provider yet.
 - The connector's sample config routes to `media` (in the chart's default
   `agentAllowlist`) instead of the never-allowed `media-agent`. The chart's
   own youtube example is unchanged in this release: deployments set
