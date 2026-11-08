@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **youtube connector reworked so it can actually run** (glovebox-fy4e,
+  glovebox-tbgd, glovebox-07il, glovebox-rrtu, glovebox-8wu1, glovebox-iwqm).
+  Discovery moves from `search.list` (its own 100 calls/day bucket; the old
+  5-minute poll needed 288/day per channel) to the channel's uploads playlist
+  via `playlistItems.list`, with one batched `videos.list` per poll that has
+  new uploads. `captions.list` (50 units for language names only) is gone.
+  The poll interval is configurable (`poll_interval`, default `1h`).
+  Channels may be given as `@handles` (`channels`; `channel_ids` still
+  accepted). First poll of a channel stages only `initial_backfill` (3).
+- **youtube items are now markdown** (`text/markdown`) carrying watch URL,
+  best thumbnail, duration, tags, topics, chapters parsed from the
+  description, top comments and an explicit `transcript:` marker. Raw view,
+  like and comment counts are never staged (YouTube Developer Policy
+  III.E.4); relative `viewership` / `comment_activity` buckets are staged
+  instead. A `TranscriptProvider` seam is in place with no provider yet.
+- The connector's sample config routes to `media` (in the chart's default
+  `agentAllowlist`) instead of the never-allowed `media-agent`. The chart's
+  own youtube example is unchanged in this release: deployments set
+  `connectors.youtube.config` themselves, and should set `channel_ids: []`
+  when using `channels` (Helm replaces lists, so the chart's example
+  `channel_ids` entry would otherwise remain).
+
 ## [0.13.1] - 2026-11-05
 
 ### Upgrade notes
