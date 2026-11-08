@@ -117,6 +117,13 @@ jobs:
       - name: Adversarial corpus detection/false-positive gate
         run: ./scripts/corpus-gate.sh
 
+      # go.mod and go.sum must be complete and tidy, test-only dependencies
+      # included (a Renovate bump whose new dependencies only a test imports
+      # passes a plain build). Prints the missing change and fails; writes
+      # nothing.
+      - name: Check go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
       - name: Vet
         run: go vet ./...
 

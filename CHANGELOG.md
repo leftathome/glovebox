@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never on this path, and still is not: a stuck journal database leaves the
   core's `/healthz`, `/readyz` and `/metrics` answering at once (a new
   database test holds that). `/readyz` is unchanged.
+- **CI fails a `go.mod`/`go.sum` that is not tidy, test-only dependencies
+  included.** The 0.13.1 guard (a `-mod=readonly` build in the GitLab
+  `test` job) compiles no test files, so the Renovate kin-openapi v0.153.0
+  bump, whose new dependencies only a test imports, merged with an
+  incomplete `go.sum` and broke `go vet ./...` on main. Both the GitLab
+  `test` job and the GitHub `Test` job now run `go mod tidy -diff` before
+  vet; it prints the missing change and fails without writing anything.
 
 ### Changed
 
