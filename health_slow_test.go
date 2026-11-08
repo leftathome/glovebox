@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -98,10 +100,14 @@ func TestHealthzAnswersWhileDeliveryMountIsSlow(t *testing.T) {
 	}
 }
 
-// newTestHealthz serves /healthz as main.go wires it.
+// newTestHealthz serves /healthz as main.go wires it: the prober's loop
+// running until the test ends, the handler reading its state.
 func newTestHealthz(t *testing.T, dir string, probe func(string) error) http.Handler {
 	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", livenessHandler(dir, probe))
-	return mux
+	p := newDeliveryProber(dir, probe)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); p.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return metricsMux(http.NotFoundHandler(), p, &atomic.Bool{})
 }
