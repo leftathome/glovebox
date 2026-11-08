@@ -138,9 +138,9 @@ podman build -f image/Dockerfile -t openclaw-schoolpatrol:part-c .   # from the 
 
 `docs/journal-api.md` ("Known follow-ups") and `docs/upgrading.md` ("Record journal") still say gitops-kxpb blocks enabling. It was closed 2026-10-29 (gitops !112, a ValidatingAdmissionPolicy limiting the watchdog to the gateway, verified live).
 
-- [ ] **Step 1.1:** Update both docs: kxpb fixed by gitops !112; enabling is no longer blocked by it. Keep the sentence about why it mattered.
-- [ ] **Step 1.2:** In `docs/journal-api.md` "Known follow-ups", add the Part C gates: `glovebox-n1x1` must be closed and deployed before the cutover (Task 16), `glovebox-wekc.18.3` confirmed before the shadow passes (Task 15).
-- [ ] **Step 1.3: Commit** (`docs(journal): kxpb is fixed; Part C gates`).
+- [x] **Step 1.1:** Update both docs: kxpb fixed by gitops !112; enabling is no longer blocked by it. Keep the sentence about why it mattered.
+- [x] **Step 1.2:** In `docs/journal-api.md` "Known follow-ups", add the Part C gates: `glovebox-n1x1` must be closed and deployed before the cutover (Task 16), `glovebox-wekc.18.3` confirmed before the shadow passes (Task 15).
+- [x] **Step 1.3: Commit** (`docs(journal): kxpb is fixed; Part C gates`).
 
 ### Task 2: Gitops: enable the journal and both connectors' records, in shadow
 
