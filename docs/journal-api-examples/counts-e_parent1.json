@@ -1,0 +1,69 @@
+{
+  "counts": [
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 2
+      },
+      "live": 1,
+      "record_type": "assignment"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "high": 1
+      },
+      "live": 1,
+      "record_type": "attendance_day"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 3
+      },
+      "live": 1,
+      "record_type": "attendance_mark"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 1
+      },
+      "live": 1,
+      "record_type": "course_mark"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 3
+      },
+      "live": 2,
+      "record_type": "lms_assignment"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 1
+      },
+      "live": 1,
+      "record_type": "lms_assignment_detail"
+    },
+    {
+      "data_subject": "e_child1",
+      "events": {
+        "low": 2
+      },
+      "live": 1,
+      "record_type": "term_comment"
+    },
+    {
+      "data_subject": "e_child2",
+      "events": {
+        "low": 1
+      },
+      "live": 1,
+      "record_type": "course_mark"
+    }
+  ],
+  "since": "2026-10-08T15:10:00Z"
+}

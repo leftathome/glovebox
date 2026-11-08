@@ -1,0 +1,370 @@
+{
+  "events": [
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "period": "3",
+        "q1_letter": "B+",
+        "q1_percent": 88.5,
+        "teacher": "EXAMPLE TEACHER"
+      },
+      "importance": "low",
+      "key": "c1",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "course_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=grades/data_subject=e_child1/course=c1",
+      "seq": 1
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child2",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "period": "3",
+        "q1_letter": "B+",
+        "q1_percent": 88.5,
+        "teacher": "EXAMPLE TEACHER"
+      },
+      "importance": "low",
+      "key": "c2",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "course_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=grades/data_subject=e_child2/course=c2",
+      "seq": 2
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "absent": false,
+        "category": "Homework",
+        "collected": true,
+        "course": "EXAMPLE SCIENCE 7",
+        "description": "withheld: failed content scan",
+        "due": "2026-10-20",
+        "exempt": false,
+        "incomplete": false,
+        "late": false,
+        "max_score": 10,
+        "missing": false,
+        "title": "Worksheet 3"
+      },
+      "importance": "low",
+      "key": "c1:98765",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "assignment",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=assignments/data_subject=e_child1/course=c1",
+      "seq": 3
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-13",
+        "excused": false,
+        "kind": "tardy",
+        "period": "3"
+      },
+      "importance": "low",
+      "key": "c1:2026-10-13",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 4
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "A",
+        "code_description": "Absent",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-14",
+        "excused": false,
+        "kind": "absent",
+        "period": "3"
+      },
+      "importance": "low",
+      "key": "c1:2026-10-14",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 5
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "absent_excused": 0,
+        "absent_unexcused": 6,
+        "any_unexcused": true,
+        "authorized": 0,
+        "classification": "full_day",
+        "date": "2026-10-14",
+        "late": 0,
+        "left_early": 0,
+        "periods_met": 6,
+        "periods_unmarked": 0,
+        "unknown_codes": 0
+      },
+      "group_key": "data_subject=e_child1/field:date=2026-10-14",
+      "importance": "high",
+      "key": "2026-10-14",
+      "kind": "created",
+      "notify": [
+        {
+          "mode": "push",
+          "token": "guardians"
+        }
+      ],
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_day",
+      "rule": "full_day_absence",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_days/data_subject=e_child1/school_year=2026-27",
+      "seq": 6
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "comment": "Example comment, first version.",
+        "course": "EXAMPLE SCIENCE 7",
+        "term": "Q1"
+      },
+      "importance": "low",
+      "key": "c1:Q1",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "term_comment",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=term_comments/data_subject=e_child1/term=Q1",
+      "seq": 7
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-schoology",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "due": "2026-10-21T06:59:00Z",
+        "link": "https://lms.example/assignment/a1001",
+        "status": "upcoming",
+        "title": "Lab report"
+      },
+      "importance": "low",
+      "key": "a1001",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment",
+      "schema_version": 1,
+      "scope": "source=schoology/surface=assignments/data_subject=e_child1",
+      "seq": 8
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-schoology",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "due": "2026-10-12T06:59:00Z",
+        "link": "https://lms.example/assignment/a1002",
+        "status": "overdue",
+        "title": "Reading log"
+      },
+      "importance": "low",
+      "key": "a1002",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment",
+      "schema_version": 1,
+      "scope": "source=schoology/surface=assignments/data_subject=e_child1",
+      "seq": 9
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-schoology",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "description": "Write up the experiment."
+      },
+      "importance": "low",
+      "key": "a1001",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment_detail",
+      "schema_version": 1,
+      "scope": "source=schoology/surface=assignment_details/data_subject=e_child1",
+      "seq": 10
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "changed": {
+        "letter": {
+          "new": "A-",
+          "old": null
+        },
+        "percent": {
+          "new": 90,
+          "old": null
+        },
+        "score": {
+          "new": 9,
+          "old": null
+        }
+      },
+      "data_subject": "e_child1",
+      "importance": "low",
+      "key": "c1:98765",
+      "kind": "updated",
+      "observed_at": "2026-10-15T14:50:00Z",
+      "prev_observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "assignment",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=assignments/data_subject=e_child1/course=c1",
+      "seq": 11
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "importance": "low",
+      "key": "c1:2026-10-13",
+      "kind": "removed",
+      "last_fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-13",
+        "excused": false,
+        "kind": "tardy",
+        "period": "3"
+      },
+      "observed_at": "2026-10-15T14:50:00Z",
+      "prev_observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 12
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "changed": {
+        "comment": {
+          "new": "Example comment, second version.",
+          "old": "Example comment, first version."
+        }
+      },
+      "data_subject": "e_child1",
+      "importance": "low",
+      "key": "c1:Q1",
+      "kind": "updated",
+      "observed_at": "2026-10-15T14:50:00Z",
+      "prev_observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "term_comment",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=term_comments/data_subject=e_child1/term=Q1",
+      "seq": 13
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-schoology",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "changed": {
+        "status": {
+          "new": "submitted",
+          "old": "upcoming"
+        }
+      },
+      "data_subject": "e_child1",
+      "importance": "low",
+      "key": "a1001",
+      "kind": "updated",
+      "observed_at": "2026-10-15T14:50:00Z",
+      "prev_observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment",
+      "schema_version": 1,
+      "scope": "source=schoology/surface=assignments/data_subject=e_child1",
+      "seq": 14
+    }
+  ],
+  "next": 14
+}

@@ -170,10 +170,12 @@ openclaw cannot import glovebox's `internal/journal/journalapi`. Its decoder is 
 
 **Files:** Create `internal/journal/httpapi/golden_test.go`, `docs/journal-api-examples/{state,events,events-empty,counts,healthz,refusal-policy,refusal-bad-request,refusal-unavailable}.json`.
 
-- [ ] **Step 4.1: Write the test.** Behind `JOURNAL_TEST_DATABASE_URL` (as Part A's DB tests): assemble the API as B1 Task 23 did, apply PowerSchool and Schoology snapshots for `e_child1`/`e_child2` (one course mark, one scored assignment update, a removed attendance mark, a windowed `lms_assignment` that left the listing, a withheld text value, an audience change), read as `e_parent1` and `e_child1`, and write the answers with volatile fields (times, seqs, hashes) normalised. With `-update` it rewrites the files; without, it fails on any difference.
-- [ ] **Step 4.2: Run** `scripts/journal-test-db.sh ./internal/journal/httpapi/ -run TestGoldenAnswers` (WSL: `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`). PASS.
-- [ ] **Step 4.3:** `docs/journal-api.md` links the examples ("consumers pin their decoders to these").
-- [ ] **Step 4.4: Commit** (`test(journal): golden answers for consumers`).
+- [x] **Step 4.1: Write the test.** Behind `JOURNAL_TEST_DATABASE_URL` (as Part A's DB tests): assemble the API as B1 Task 23 did, apply PowerSchool and Schoology snapshots for `e_child1`/`e_child2` (one course mark, one scored assignment update, a removed attendance mark, a windowed `lms_assignment` that left the listing, a withheld text value, an audience change), read as `e_parent1` and `e_child1`, and write the answers with volatile fields (times, seqs, hashes) normalised. With `-update` it rewrites the files; without, it fails on any difference.
+- [x] **Step 4.2: Run** `scripts/journal-test-db.sh ./internal/journal/httpapi/ -run TestGoldenAnswers` (WSL: `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`). PASS.
+- [x] **Step 4.3:** `docs/journal-api.md` links the examples ("consumers pin their decoders to these").
+- [x] **Step 4.4: Commit** (`test(journal): golden answers for consumers`).
+
+NOTE (Task 4, as built): the journal runs the connectors' real record types, loaded from the chart's `journal-record-types/*.json` (what the core loads), not `journaltest.Types()`, so the answers carry real field names. The files are per reader (`state-e_parent1.json`, `state-e_child1.json`, `events-e_parent1.json`, `events-e_child1.json`), plus `state-e_parent1-include-removed.json`, `counts-e_parent1.json` (one reader), `events-empty.json`, `healthz.json`, `refusal-unauthenticated.json` (401) beside the three refusals planned, a `README.md` with each request and its HTTP status, and `household.json` (the fixture roster byte for byte, so a consumer can check its own hash against `roster_sha256`; the hash is kept, not normalised, since it is stable). Normalised: event seqs renumbered 1..n (and `next`), and times rewritten in UTC: read back from the database they carry the test process's local offset (a developer machine's TZ), while the deployed core answers `Z` times (checked read-only against orac on 2026-11-08: every `observed_at`/`confirmed_at` sampled ends in `Z`). The test passes under `TZ=Asia/Tokyo` too. Not-ready 503 carries no `Retry-After`; only the in-flight-limit 503 does.
 
 ---
 

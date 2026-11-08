@@ -92,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `household.json` hash against the journal healthz `roster_sha256`.
 - `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
   (the section still said the core had none).
+- `docs/journal-api-examples/`: golden answers of the journal's read API
+  (state, events, counts, healthz, refusals) and the roster they were read
+  with, generated from the real API by `TestGoldenAnswers` (record journal
+  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ## [0.13.1] - 2026-11-05
 

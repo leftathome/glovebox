@@ -1,0 +1,201 @@
+{
+  "roster_sha256": "ec8d57382ef4941983fb20bc7b3d42e1d854e889052002195e997ef16339a3e4",
+  "rows": [
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-15T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "absent": false,
+        "category": "Homework",
+        "collected": true,
+        "course": "EXAMPLE SCIENCE 7",
+        "description": "withheld: failed content scan",
+        "due": "2026-10-20",
+        "exempt": false,
+        "incomplete": false,
+        "late": false,
+        "letter": "A-",
+        "max_score": 10,
+        "missing": false,
+        "percent": 90,
+        "score": 9,
+        "title": "Worksheet 3"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1:98765",
+      "last_seen_at": "2026-10-15T14:50:00Z",
+      "record_type": "assignment",
+      "removed": false,
+      "scope": "source=powerschool/surface=assignments/data_subject=e_child1/course=c1"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-14T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "absent_excused": 0,
+        "absent_unexcused": 6,
+        "any_unexcused": true,
+        "authorized": 0,
+        "classification": "full_day",
+        "date": "2026-10-14",
+        "late": 0,
+        "left_early": 0,
+        "periods_met": 6,
+        "periods_unmarked": 0,
+        "unknown_codes": 0
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "2026-10-14",
+      "last_seen_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_day",
+      "removed": false,
+      "scope": "source=powerschool/surface=attendance_days/data_subject=e_child1/school_year=2026-27"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-15T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "A",
+        "code_description": "Absent",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-14",
+        "excused": false,
+        "kind": "absent",
+        "period": "3"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1:2026-10-14",
+      "last_seen_at": "2026-10-15T14:50:00Z",
+      "record_type": "attendance_mark",
+      "removed": false,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-14T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "period": "3",
+        "q1_letter": "B+",
+        "q1_percent": 88.5,
+        "teacher": "EXAMPLE TEACHER"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1",
+      "last_seen_at": "2026-10-14T14:50:00Z",
+      "record_type": "course_mark",
+      "removed": false,
+      "scope": "source=powerschool/surface=grades/data_subject=e_child1/course=c1"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-15T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "due": "2026-10-21T06:59:00Z",
+        "link": "https://lms.example/assignment/a1001",
+        "status": "submitted",
+        "title": "Lab report"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "a1001",
+      "last_seen_at": "2026-10-15T14:50:00Z",
+      "record_type": "lms_assignment",
+      "removed": false,
+      "scope": "source=schoology/surface=assignments/data_subject=e_child1"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-14T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "course": "EXAMPLE SCIENCE 7",
+        "due": "2026-10-12T06:59:00Z",
+        "link": "https://lms.example/assignment/a1002",
+        "status": "overdue",
+        "title": "Reading log"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": false,
+      "key": "a1002",
+      "last_seen_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment",
+      "removed": false,
+      "scope": "source=schoology/surface=assignments/data_subject=e_child1"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-14T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "description": "Write up the experiment."
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "a1001",
+      "last_seen_at": "2026-10-14T14:50:00Z",
+      "record_type": "lms_assignment_detail",
+      "removed": false,
+      "scope": "source=schoology/surface=assignment_details/data_subject=e_child1"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-15T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "comment": "Example comment, second version.",
+        "course": "EXAMPLE SCIENCE 7",
+        "term": "Q1"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1:Q1",
+      "last_seen_at": "2026-10-15T14:50:00Z",
+      "record_type": "term_comment",
+      "removed": false,
+      "scope": "source=powerschool/surface=term_comments/data_subject=e_child1/term=Q1"
+    }
+  ]
+}
