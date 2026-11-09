@@ -235,6 +235,9 @@ func (j *Journal) StateWithRoster(ctx context.Context, q StateQuery) ([]journala
 			b := inLatest.Bool
 			s.InLatestSnapshot = &b
 		}
+		// The driver returns times in the process's local zone; the API
+		// answers in UTC wherever the core runs (glovebox-pblt).
+		s.FirstSeenAt, s.LastSeenAt, s.ConfirmedAt = s.FirstSeenAt.UTC(), s.LastSeenAt.UTC(), s.ConfirmedAt.UTC()
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -336,6 +339,12 @@ func (j *Journal) Events(ctx context.Context, q EventsQuery) ([]journalapi.Event
 			}
 			// rules.Notice is journalapi.Notice, so the filtered list is the wire form.
 			e.Notify = access.Notices(grants, e.DataSubject, ns)
+		}
+		// In UTC, as for state rows (glovebox-pblt).
+		e.ObservedAt = e.ObservedAt.UTC()
+		if e.PrevObservedAt != nil {
+			p := e.PrevObservedAt.UTC()
+			e.PrevObservedAt = &p
 		}
 		out = append(out, e)
 	}

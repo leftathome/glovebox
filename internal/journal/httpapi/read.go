@@ -190,7 +190,9 @@ func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request, c call) {
 		s.readErr(w, "counts", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, journalapi.CountsResponse{Since: since, Counts: nonNil(counts)})
+	// since echoes the instant counted from, in UTC (as every answer's
+	// times; a since sent with an offset is the same instant).
+	writeJSON(w, http.StatusOK, journalapi.CountsResponse{Since: since.UTC(), Counts: nonNil(counts)})
 }
 
 // handleHealthz is GET /v1/healthz: any authenticated caller; the roster

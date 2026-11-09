@@ -21,6 +21,16 @@ markdown and the connector discovers uploads through the uploads playlist
 
 ### Fixed
 
+- **The journal API answers in UTC wherever the core runs
+  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
+  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
+  `since` were written in the core process's local time zone (the database
+  driver returns local times, and a `since` sent with an offset was echoed
+  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
+  whose core runs in UTC (the chart's image does) saw no difference. Now
+  converted to UTC before answering; `TestAnswersAreUTC` runs under a
+  non-UTC zone.
+
 - **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
   The core's `/healthz` wrote and removed a probe file in `agents_dir`
   inside the request. On a networked delivery volume (Longhorn RWX) whose
@@ -104,6 +114,10 @@ markdown and the connector discovers uploads through the uploads playlist
   `household.json` hash against the journal healthz `roster_sha256`.
 - `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
   (the section still said the core had none).
+- `docs/journal-api-examples/`: golden answers of the journal's read API
+  (state, events, counts, healthz, refusals) and the roster they were read
+  with, generated from the real API by `TestGoldenAnswers` (record journal
+  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ## [0.13.1] - 2026-11-05
 
