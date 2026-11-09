@@ -113,6 +113,9 @@ spec:
               port: metrics
             initialDelaySeconds: 10
             periodSeconds: 30
+            {{- with .Values.livenessProbe.timeoutSeconds }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           {{- if .Values.config.ingest.enabled }}
           {{- /*
             Probe a port the process actually binds. Under

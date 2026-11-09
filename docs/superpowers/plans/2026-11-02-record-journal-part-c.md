@@ -138,9 +138,9 @@ podman build -f image/Dockerfile -t openclaw-schoolpatrol:part-c .   # from the 
 
 `docs/journal-api.md` ("Known follow-ups") and `docs/upgrading.md` ("Record journal") still say gitops-kxpb blocks enabling. It was closed 2026-10-29 (gitops !112, a ValidatingAdmissionPolicy limiting the watchdog to the gateway, verified live).
 
-- [ ] **Step 1.1:** Update both docs: kxpb fixed by gitops !112; enabling is no longer blocked by it. Keep the sentence about why it mattered.
-- [ ] **Step 1.2:** In `docs/journal-api.md` "Known follow-ups", add the Part C gates: `glovebox-n1x1` must be closed and deployed before the cutover (Task 16), `glovebox-wekc.18.3` confirmed before the shadow passes (Task 15).
-- [ ] **Step 1.3: Commit** (`docs(journal): kxpb is fixed; Part C gates`).
+- [x] **Step 1.1:** Update both docs: kxpb fixed by gitops !112; enabling is no longer blocked by it. Keep the sentence about why it mattered.
+- [x] **Step 1.2:** In `docs/journal-api.md` "Known follow-ups", add the Part C gates: `glovebox-n1x1` must be closed and deployed before the cutover (Task 16), `glovebox-wekc.18.3` confirmed before the shadow passes (Task 15).
+- [x] **Step 1.3: Commit** (`docs(journal): kxpb is fixed; Part C gates`).
 
 ### Task 2: Gitops: enable the journal and both connectors' records, in shadow
 
@@ -170,10 +170,12 @@ openclaw cannot import glovebox's `internal/journal/journalapi`. Its decoder is 
 
 **Files:** Create `internal/journal/httpapi/golden_test.go`, `docs/journal-api-examples/{state,events,events-empty,counts,healthz,refusal-policy,refusal-bad-request,refusal-unavailable}.json`.
 
-- [ ] **Step 4.1: Write the test.** Behind `JOURNAL_TEST_DATABASE_URL` (as Part A's DB tests): assemble the API as B1 Task 23 did, apply PowerSchool and Schoology snapshots for `e_child1`/`e_child2` (one course mark, one scored assignment update, a removed attendance mark, a windowed `lms_assignment` that left the listing, a withheld text value, an audience change), read as `e_parent1` and `e_child1`, and write the answers with volatile fields (times, seqs, hashes) normalised. With `-update` it rewrites the files; without, it fails on any difference.
-- [ ] **Step 4.2: Run** `scripts/journal-test-db.sh ./internal/journal/httpapi/ -run TestGoldenAnswers` (WSL: `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`). PASS.
-- [ ] **Step 4.3:** `docs/journal-api.md` links the examples ("consumers pin their decoders to these").
-- [ ] **Step 4.4: Commit** (`test(journal): golden answers for consumers`).
+- [x] **Step 4.1: Write the test.** Behind `JOURNAL_TEST_DATABASE_URL` (as Part A's DB tests): assemble the API as B1 Task 23 did, apply PowerSchool and Schoology snapshots for `e_child1`/`e_child2` (one course mark, one scored assignment update, a removed attendance mark, a windowed `lms_assignment` that left the listing, a withheld text value, an audience change), read as `e_parent1` and `e_child1`, and write the answers with volatile fields (times, seqs, hashes) normalised. With `-update` it rewrites the files; without, it fails on any difference.
+- [x] **Step 4.2: Run** `scripts/journal-test-db.sh ./internal/journal/httpapi/ -run TestGoldenAnswers` (WSL: `JOURNAL_PG_HOST_NETWORK=1 ... -p 1`). PASS.
+- [x] **Step 4.3:** `docs/journal-api.md` links the examples ("consumers pin their decoders to these").
+- [x] **Step 4.4: Commit** (`test(journal): golden answers for consumers`).
+
+NOTE (Task 4, as built): the journal runs the connectors' real record types, loaded from the chart's `journal-record-types/*.json` (what the core loads), not `journaltest.Types()`, so the answers carry real field names. The files are per reader (`state-e_parent1.json`, `state-e_child1.json`, `events-e_parent1.json`, `events-e_child1.json`), plus `state-e_parent1-include-removed.json`, `counts-e_parent1.json` (one reader), `events-empty.json`, `healthz.json`, `refusal-unauthenticated.json` (401) beside the three refusals planned, a `README.md` with each request and its HTTP status, and `household.json` (the fixture roster byte for byte, so a consumer can check its own hash against `roster_sha256`; the hash is kept, not normalised, since it is stable). Normalised: event seqs renumbered 1..n (and `next`). Times are not normalised: review of !139 (glovebox-pblt) found the API wrote them in the core process's local zone (the database driver returns local times; the deployed core runs in UTC, so orac answered `Z` times, checked read-only on 2026-11-08); the journal now converts state, event and counts times to UTC before answering, `TestAnswersAreUTC` swaps the process zone, and the golden test fails on any non-`Z` time (run under `TZ=Asia/Tokyo` too). The scenario has three polls since review: a course mark moving scope (`prev_scope`) and a removed attendance mark restored (`kind: restored`). Not-ready 503 carries no `Retry-After`; only the in-flight-limit 503 does.
 
 ---
 
@@ -240,6 +242,8 @@ Mapping (the lists of patrol spec section 15, from typed fields instead of tags 
 - [ ] **Step 9.2: Implement.** The per-reader cursor is `readers.<eid>.journal_cursor` in `patrols/school/state.json` (additive; version stays 2, per section 5's rule).
 - [ ] **Step 9.3: Commit** (`feat(schoolpatrol): digests from journal events`).
 
+NOTE (review of glovebox !139 / openclaw !56, 2026-11-08; not yet implemented): (1) the stored cursor is read with **no** `type`/`min_importance` filter: `EventsAfter` with filters moves `next` past the events filtered out, so a filtered read would skip low-importance events that C7 counts; filtered reads are for display only and never store a cursor. (2) `/v1/events` carries no `roster_sha256`: after reading events, re-read healthz (or the state answer of the same run) and compare the roster hash before writing a digest.
+
 ### Task 10: Shadow mode and the comparison
 
 **Files:** `image/cmd/schoolpatrol/shadow.go`, test.
@@ -278,6 +282,8 @@ What is compared, per reader and child, after the guard:
 - [ ] **Step 11.2: Implement.**
 - [ ] **Step 11.3: Commit** (`feat(schoolpatrol): journal mode for both school sources`).
 
+NOTE (review of glovebox !139 / openclaw !56, 2026-11-08; not yet implemented): (1) `Guard.CompareRoster` must run before `CheckState`/`CheckEvents` for every reader, so a guard check never runs against a roster the journal did not use; make the patrol's journal reader the only path that calls the guard, or make the guard refuse checks until a match was recorded. (2) A row the journal serves legitimately but the guard refuses (a household row with subject "", a `[siblings]` audience, an erased member's kept note) would abort that agent's write on every run forever: decide between skipping the row with an alert and a `guard_skipped` count, and aborting (today's rule); privacy rows (wrong subject, reader outside the audience) always abort. (3) healthz `ok` while every reader answers `403 policy` is a deployment fault (policy or roster wiring), not N refused readers: alert once, `journal_unavailable`-style. (4) Under C17, `KindRequest` and `KindProtocol` errors are alert + no write for that run (keep previous files), like `KindDeployment`; only `KindUnavailable` is retried and counted toward the 3-run unhealthy rule.
+
 ### Task 12: Isolation tests (spec 6, spec 8)
 
 **Files:** `image/cmd/schoolpatrol/journal_isolation_test.go`; `canary.go`.
@@ -285,6 +291,8 @@ What is compared, per reader and child, after the guard:
 - [ ] **Step 12.1: Tests** over the fake journal with two child agents and two guardian agents, in shadow and journal mode: no child's files (state, digest, shadow, diff) contain a row, key or text of the other child or any `[guardians]`-only row; each guardian's files hold both children; `main` gets nothing; with the fake told to ignore `reader` (the "deliberately wrong reader" of spec 6), the guard aborts the affected agents and nothing is written for them; group files hold only the intersection.
 - [ ] **Step 12.2:** `--selftest-canary` gains a journal leg against an in-process fake (hermetic, as today).
 - [ ] **Step 12.3: Commit** (`test(schoolpatrol): journal isolation and canary`).
+
+NOTE (review, 2026-11-08): the isolation tests include rows the journal serves but the guard refuses by design (see Task 11's NOTE (2)), so the chosen policy is pinned, and a run where the fake ignores the reader for one agent only.
 
 ### Task 13: Docs, image, container check
 

@@ -78,7 +78,7 @@ The Helm chart is published alongside them at
 
 All images are multi-arch (linux/amd64 + linux/arm64) with SBOMs and SLSA
 provenance attestations. Tagged `latest` (from main) plus semver tags
-(`v0.13.1`, `v0.13`) on release. Binaries available from
+(`v0.13.2`, `v0.13`) on release. Binaries available from
 [GitHub Releases](https://github.com/leftathome/glovebox/releases).
 
 ---
@@ -318,14 +318,14 @@ OCI artifact:
 
 ```sh
 # Install with default values (glovebox only, no connectors enabled)
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.1
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.2
 
 # Install with RSS connector enabled
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.1 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.2 \
   --set connectors.rss.enabled=true
 
 # Install with custom values file
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.1 \
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.13.2 \
   -f my-values.yaml -n glovebox --create-namespace
 ```
 
@@ -1036,11 +1036,13 @@ Glovebox exposes a single HTTP server on the `metrics_port` (default `9090`):
 | Endpoint | Description |
 |----------|-------------|
 | `/metrics` | Prometheus metrics endpoint (OpenTelemetry format). |
+| `/healthz` | Liveness. `200` while the process is alive; `503` when the latest background write probe of the delivery directory (`agents_dir`, every 10s) failed, when one probe has hung for over 2 minutes, or when the probe loop stopped. The handler itself does no I/O, so a slow delivery volume or a slow journal database never makes it slow. |
+| `/readyz` | Readiness. `503` until startup has finished, then `200`. |
 
-Glovebox does not currently expose dedicated `/healthz` or `/readyz` endpoints.
-In Docker Compose, use the `/metrics` endpoint for health checks. In
-Kubernetes, use a TCP liveness probe on the metrics port or check `/metrics`
-with an HTTP probe.
+The chart wires both; set `livenessProbe.timeoutSeconds: 5` (unset, Kubernetes
+uses 1s). The record journal has
+its own health on its port (`GET /v1/healthz`, `glovebox_journal_ready`); a
+journal database problem never fails the core's `/healthz`.
 
 ### 7.2 Connectors
 

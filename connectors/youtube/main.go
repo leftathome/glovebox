@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/leftathome/glovebox/connector"
 )
@@ -32,11 +31,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	pollInterval, err := cfg.EffectivePollInterval()
+	if err != nil {
+		slog.Error("invalid config", "error", err)
+		os.Exit(1)
+	}
+	transcripts, err := newTranscriptProvider(cfg.Transcript)
+	if err != nil {
+		slog.Error("invalid config", "error", err)
+		os.Exit(1)
+	}
+	if len(cfg.AllChannels()) == 0 {
+		slog.Error("invalid config: no channels configured (set \"channels\")")
+		os.Exit(1)
+	}
+
 	c := &YouTubeConnector{
 		config:      cfg,
 		httpClient:  connector.NewHTTPClient(connector.HTTPClientOptions{}),
 		tokenSource: connector.NewStaticTokenSource(apiKey),
 		apiBase:     "https://www.googleapis.com/youtube/v3",
+		transcripts: transcripts,
 	}
 
 	connector.Run(connector.Options{
@@ -55,6 +70,6 @@ func main() {
 			}
 			return nil
 		},
-		PollInterval: 5 * time.Minute,
+		PollInterval: pollInterval,
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/leftathome/glovebox/connector"
@@ -634,6 +635,7 @@ func TestPoll_TeacherCommentStaysWithItsKid(t *testing.T) {
 
 	t.Run("both kids read", func(t *testing.T) {
 		c, cp, dir := newWiredConnector(t, fixture("111111"), cfg)
+		pinFixtureClock(c)
 		if err := c.Poll(context.Background(), cp); err != nil {
 			t.Fatalf("Poll: %v", err)
 		}
@@ -660,6 +662,7 @@ func TestPoll_TeacherCommentStaysWithItsKid(t *testing.T) {
 		client := fixture("111111")
 		client.IgnoreSwitch = true
 		c, cp, dir := newWiredConnector(t, client, cfg)
+		pinFixtureClock(c)
 		_ = c.Poll(context.Background(), cp)
 		items := readItems(t, dir)
 		got := assertCommentsStayWithTheirKid(t, items)
@@ -686,6 +689,7 @@ func TestPoll_TeacherCommentStaysWithItsKid(t *testing.T) {
 			return []*pslib.Assignment{withComment(sampleAssignment("5001", "Lab report"), commentFor[client.Selected])}, nil
 		}
 		c, cp, dir := newWiredConnector(t, client, cfg)
+		pinFixtureClock(c)
 		_ = c.Poll(context.Background(), cp)
 		assertCommentsStayWithTheirKid(t, readItems(t, dir))
 	})
@@ -719,6 +723,7 @@ func TestEndToEnd_RealLibraryTeacherComment(t *testing.T) {
 			t.Fatalf("NewProductionClient: %v", err)
 		}
 		c, cp, dir := newWiredConnector(t, client, testConfig())
+		pinFixtureClock(c)
 		if err := c.Poll(context.Background(), cp); err != nil {
 			t.Fatalf("Poll: %v", err)
 		}
@@ -758,4 +763,12 @@ func TestEndToEnd_RealLibraryTeacherComment(t *testing.T) {
 			t.Errorf("%s tags = %v", it.Meta.Tags["kid"], it.Meta.Tags)
 		}
 	}
+}
+
+// pinFixtureClock fixes the connector clock beside the fixtures' due
+// date (2026-10-08). Without it these tests read time.Now and the default
+// 30-day assignments lookback drops the fixture once the real date passes
+// 2026-11-07 (glovebox-ldoj: main went red at midnight Pacific 2026-11-08).
+func pinFixtureClock(c *PowerSchoolConnector) {
+	c.now = func() time.Time { return time.Date(2026, 10, 7, 9, 0, 0, 0, c.tz) }
 }
