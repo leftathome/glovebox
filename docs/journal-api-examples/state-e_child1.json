@@ -69,7 +69,32 @@
         "guardians",
         "subject"
       ],
-      "confirmed_at": "2026-10-15T14:50:00Z",
+      "confirmed_at": "2026-10-16T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-13",
+        "excused": true,
+        "kind": "tardy",
+        "period": "3"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1:2026-10-13",
+      "last_seen_at": "2026-10-16T14:50:00Z",
+      "record_type": "attendance_mark",
+      "removed": false,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-16T14:50:00Z",
       "data_subject": "e_child1",
       "fields": {
         "code": "A",
@@ -83,7 +108,7 @@
       "first_seen_at": "2026-10-14T14:50:00Z",
       "in_latest_snapshot": true,
       "key": "c1:2026-10-14",
-      "last_seen_at": "2026-10-15T14:50:00Z",
+      "last_seen_at": "2026-10-16T14:50:00Z",
       "record_type": "attendance_mark",
       "removed": false,
       "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27"

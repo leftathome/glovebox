@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The journal API answers in UTC wherever the core runs
+  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
+  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
+  `since` were written in the core process's local time zone (the database
+  driver returns local times, and a `since` sent with an offset was echoed
+  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
+  whose core runs in UTC (the chart's image does) saw no difference. Now
+  converted to UTC before answering; `TestAnswersAreUTC` runs under a
+  non-UTC zone.
+
 - **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
   The core's `/healthz` wrote and removed a probe file in `agents_dir`
   inside the request. On a networked delivery volume (Longhorn RWX) whose

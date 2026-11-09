@@ -90,6 +90,32 @@
       ],
       "data_subject": "e_child1",
       "fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE MATH 7",
+        "date": "2026-10-13",
+        "excused": false,
+        "kind": "tardy",
+        "period": "4"
+      },
+      "importance": "low",
+      "key": "c2:2026-10-13",
+      "kind": "created",
+      "observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 5
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
         "code": "A",
         "code_description": "Absent",
         "course": "EXAMPLE SCIENCE 7",
@@ -105,7 +131,7 @@
       "record_type": "attendance_mark",
       "schema_version": 1,
       "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
-      "seq": 5
+      "seq": 6
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-powerschool",
@@ -144,7 +170,7 @@
       "rule": "full_day_absence",
       "schema_version": 1,
       "scope": "source=powerschool/surface=attendance_days/data_subject=e_child1/school_year=2026-27",
-      "seq": 6
+      "seq": 7
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-schoology",
@@ -168,7 +194,7 @@
       "record_type": "lms_assignment",
       "schema_version": 1,
       "scope": "source=schoology/surface=assignments/data_subject=e_child1",
-      "seq": 8
+      "seq": 9
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-schoology",
@@ -192,7 +218,7 @@
       "record_type": "lms_assignment",
       "schema_version": 1,
       "scope": "source=schoology/surface=assignments/data_subject=e_child1",
-      "seq": 9
+      "seq": 10
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-schoology",
@@ -212,7 +238,7 @@
       "record_type": "lms_assignment_detail",
       "schema_version": 1,
       "scope": "source=schoology/surface=assignment_details/data_subject=e_child1",
-      "seq": 10
+      "seq": 11
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-powerschool",
@@ -244,7 +270,7 @@
       "record_type": "assignment",
       "schema_version": 1,
       "scope": "source=powerschool/surface=assignments/data_subject=e_child1/course=c1",
-      "seq": 11
+      "seq": 12
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-powerschool",
@@ -271,7 +297,34 @@
       "record_type": "attendance_mark",
       "schema_version": 1,
       "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
-      "seq": 12
+      "seq": 13
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "importance": "low",
+      "key": "c2:2026-10-13",
+      "kind": "removed",
+      "last_fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE MATH 7",
+        "date": "2026-10-13",
+        "excused": false,
+        "kind": "tardy",
+        "period": "4"
+      },
+      "observed_at": "2026-10-15T14:50:00Z",
+      "prev_observed_at": "2026-10-14T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 14
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-powerschool",
@@ -294,7 +347,7 @@
       "record_type": "term_comment",
       "schema_version": 1,
       "scope": "source=powerschool/surface=term_comments/data_subject=e_child1/term=Q1",
-      "seq": 13
+      "seq": 15
     },
     {
       "actor": "openclaw/glovebox-glovebox-connector-schoology",
@@ -318,8 +371,35 @@
       "record_type": "lms_assignment",
       "schema_version": 1,
       "scope": "source=schoology/surface=assignments/data_subject=e_child1",
-      "seq": 14
+      "seq": 16
+    },
+    {
+      "actor": "openclaw/glovebox-glovebox-connector-powerschool",
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-13",
+        "excused": true,
+        "kind": "tardy",
+        "period": "3"
+      },
+      "importance": "low",
+      "key": "c1:2026-10-13",
+      "kind": "restored",
+      "observed_at": "2026-10-16T14:50:00Z",
+      "prev_observed_at": "2026-10-15T14:50:00Z",
+      "record_type": "attendance_mark",
+      "schema_version": 1,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27",
+      "seq": 18
     }
   ],
-  "next": 14
+  "next": 18
 }

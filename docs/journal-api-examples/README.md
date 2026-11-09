@@ -23,13 +23,14 @@ The connectors' real record types (the chart's `journal-record-types`
 files), the fixture roster (`internal/journal/journaltest` `HouseholdV1`:
 `e_parent1`, `e_parent2` guardians of siblings `e_child1`, `e_child2`, and a
 guest), the spec's two attendance rules, and the gateway's policy entry as
-gitops gives it (`read`, `counts`, `readers: "*"`). Two polls a day apart:
+gitops gives it (`read`, `counts`, `readers: "*"`). Three polls a day apart:
 
-- a `course_mark` for each child;
+- a `course_mark` for each child; `e_child2`'s moves to another course
+  section's scope on the second poll (`updated` with `prev_scope`);
 - an `assignment` created unscored, scored on the second poll (`updated`,
   `score` from null), whose `description` the scanner withholds;
-- two `attendance_mark` rows, one gone from the second complete snapshot
-  (`removed`, `last_fields`);
+- three `attendance_mark` rows, two gone from the second complete snapshot
+  (`removed`, `last_fields`), one of them back on the third (`restored`);
 - a full-day `attendance_day` (rule `full_day_absence`: `importance`,
   `group_key`, `notify`);
 - a `term_comment` whose audience widens from `[guardians]` to
@@ -40,8 +41,10 @@ gitops gives it (`read`, `counts`, `readers: "*"`). Two polls a day apart:
   `lms_assignment_detail`.
 
 Normalised: event sequence numbers are renumbered 1, 2, ... in the order the
-journal assigned them, and `next` with them; times are written in UTC (the
-deployed core answers in UTC). Everything else is the answer as served.
+journal assigned them, and `next` with them. Everything else is the answer
+as served: every time is UTC (`...Z`) whatever the core's time zone, and the
+test checks it (run it under a non-UTC `TZ`; `TestAnswersAreUTC` also swaps
+the process's zone itself).
 Values are placeholders.
 
 ## The files

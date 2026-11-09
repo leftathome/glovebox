@@ -69,7 +69,32 @@
         "guardians",
         "subject"
       ],
-      "confirmed_at": "2026-10-15T14:50:00Z",
+      "confirmed_at": "2026-10-16T14:50:00Z",
+      "data_subject": "e_child1",
+      "fields": {
+        "code": "T",
+        "code_description": "Tardy",
+        "course": "EXAMPLE SCIENCE 7",
+        "date": "2026-10-13",
+        "excused": true,
+        "kind": "tardy",
+        "period": "3"
+      },
+      "first_seen_at": "2026-10-14T14:50:00Z",
+      "in_latest_snapshot": true,
+      "key": "c1:2026-10-13",
+      "last_seen_at": "2026-10-16T14:50:00Z",
+      "record_type": "attendance_mark",
+      "removed": false,
+      "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27"
+    },
+    {
+      "approximate": false,
+      "audience": [
+        "guardians",
+        "subject"
+      ],
+      "confirmed_at": "2026-10-16T14:50:00Z",
       "data_subject": "e_child1",
       "fields": {
         "code": "A",
@@ -83,7 +108,7 @@
       "first_seen_at": "2026-10-14T14:50:00Z",
       "in_latest_snapshot": true,
       "key": "c1:2026-10-14",
-      "last_seen_at": "2026-10-15T14:50:00Z",
+      "last_seen_at": "2026-10-16T14:50:00Z",
       "record_type": "attendance_mark",
       "removed": false,
       "scope": "source=powerschool/surface=attendance_marks/data_subject=e_child1/school_year=2026-27"
@@ -117,11 +142,11 @@
         "guardians",
         "subject"
       ],
-      "confirmed_at": "2026-10-14T14:50:00Z",
+      "confirmed_at": "2026-10-15T14:50:00Z",
       "data_subject": "e_child2",
       "fields": {
         "course": "EXAMPLE SCIENCE 7",
-        "period": "3",
+        "period": "5",
         "q1_letter": "B+",
         "q1_percent": 88.5,
         "teacher": "EXAMPLE TEACHER"
@@ -129,10 +154,10 @@
       "first_seen_at": "2026-10-14T14:50:00Z",
       "in_latest_snapshot": true,
       "key": "c2",
-      "last_seen_at": "2026-10-14T14:50:00Z",
+      "last_seen_at": "2026-10-15T14:50:00Z",
       "record_type": "course_mark",
       "removed": false,
-      "scope": "source=powerschool/surface=grades/data_subject=e_child2/course=c2"
+      "scope": "source=powerschool/surface=grades/data_subject=e_child2/course=c2b"
     },
     {
       "approximate": false,

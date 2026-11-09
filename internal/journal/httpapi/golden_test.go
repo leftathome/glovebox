@@ -206,9 +206,10 @@ func rec(key, subject string, audience []string, fields string) journalapi.Recor
 	return journalapi.Record{Key: key, DataSubject: subject, Audience: audience, Fields: f}
 }
 
-// goldenScenario is two polls of both connectors for both children: a
-// course mark, an assignment scored on the second poll, an attendance mark
-// removed, a full-day absence (a rule with notify advice), a Schoology
+// goldenScenario is three polls of both connectors for both children: a
+// course mark (one moving to another scope), an assignment scored on the
+// second poll, attendance marks removed (one restored on the third poll), a
+// full-day absence (a rule with notify advice), a Schoology
 // assignment that leaves the listing, a text the scanner withholds, and a
 // term comment whose audience widens from guardians to the subject.
 func goldenScenario(g *goldenJournal) {
@@ -232,6 +233,8 @@ func goldenScenario(g *goldenJournal) {
 			"teacher_comment": null, "description": "INJECT example text the scanner withholds", "category_description": null}`))
 	g.post(goldenPSToken, "attendance_mark", records.Scope("powerschool", "attendance_marks", "e_child1", year), true, marks, t1,
 		rec("c1:2026-10-13", "e_child1", sg, `{"date": "2026-10-13", "course": "EXAMPLE SCIENCE 7", "period": "3",
+			"code": "T", "code_description": "Tardy", "kind": "tardy", "excused": false}`),
+		rec("c2:2026-10-13", "e_child1", sg, `{"date": "2026-10-13", "course": "EXAMPLE MATH 7", "period": "4",
 			"code": "T", "code_description": "Tardy", "kind": "tardy", "excused": false}`),
 		rec("c1:2026-10-14", "e_child1", sg, `{"date": "2026-10-14", "course": "EXAMPLE SCIENCE 7", "period": "3",
 			"code": "A", "code_description": "Absent", "kind": "absent", "excused": false}`))
@@ -264,7 +267,22 @@ func goldenScenario(g *goldenJournal) {
 	g.post(goldenSGToken, "lms_assignment", records.Scope("schoology", "assignments", "e_child1"), false, nil, t2,
 		rec("a1001", "e_child1", sg, `{"title": "Lab report", "course": "EXAMPLE SCIENCE 7", "status": "submitted",
 			"link": "https://lms.example/assignment/a1001", "due": "2026-10-21T06:59:00Z"}`))
-	g.setNow(t2.Add(20 * time.Minute))
+	// e_child2's course mark moves to another course section's scope
+	// (an event with prev_scope).
+	g.post(goldenPSToken, "course_mark", records.Scope("powerschool", "grades", "e_child2", records.Part("course", "c2b")), true, nil, t2,
+		rec("c2", "e_child2", sg, `{"course": "EXAMPLE SCIENCE 7", "period": "5", "teacher": "EXAMPLE TEACHER",
+			"q1_letter": "B+", "q1_percent": 88.5, "q2_letter": null, "q2_percent": null}`))
+
+	// Poll 3, a day later: one removed mark is back (restored); the other
+	// stays removed.
+	t3 := t2.Add(24 * time.Hour)
+	g.setNow(t3.Add(10 * time.Minute))
+	g.post(goldenPSToken, "attendance_mark", records.Scope("powerschool", "attendance_marks", "e_child1", year), true, marks, t3,
+		rec("c1:2026-10-13", "e_child1", sg, `{"date": "2026-10-13", "course": "EXAMPLE SCIENCE 7", "period": "3",
+			"code": "T", "code_description": "Tardy", "kind": "tardy", "excused": true}`),
+		rec("c1:2026-10-14", "e_child1", sg, `{"date": "2026-10-14", "course": "EXAMPLE SCIENCE 7", "period": "3",
+			"code": "A", "code_description": "Absent", "kind": "absent", "excused": false}`))
+	g.setNow(t3.Add(20 * time.Minute))
 }
 
 // seqMap renumbers event sequence numbers 1, 2, ... in ascending order.
@@ -311,44 +329,44 @@ func decodeAny(t *testing.T, raw []byte) any {
 	if err := dec.Decode(&v); err != nil {
 		t.Fatalf("%v: %s", err, raw)
 	}
-	utcTimes(t, v)
 	return v
 }
 
 // timeKeys are the answers' time fields.
 var timeKeys = map[string]bool{"observed_at": true, "prev_observed_at": true, "first_seen_at": true,
-	"last_seen_at": true, "confirmed_at": true, "since": true}
+	"last_seen_at": true, "confirmed_at": true, "since": true, "erased_at": true}
 
-// utcTimes rewrites every time field in UTC. NOTE (Part C Task 4): times
-// read back from the database carry the test process's local offset (a
-// developer machine's TZ); the deployed core runs in UTC and answers "Z"
-// times, as the API documents. The files hold the UTC form so they do not
-// depend on where the test runs.
-func utcTimes(t *testing.T, v any) {
-	t.Helper()
+// notZ returns every time field of v that is not an RFC 3339 time in UTC
+// ("...Z"), as key=value.
+func notZ(v any) []string {
+	var bad []string
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
 			if s, ok := e.(string); ok && timeKeys[k] {
-				ts, err := time.Parse(time.RFC3339Nano, s)
-				if err != nil {
-					t.Fatalf("%s: %v", k, err)
+				if _, err := time.Parse(time.RFC3339Nano, s); err != nil || !strings.HasSuffix(s, "Z") {
+					bad = append(bad, k+"="+s)
 				}
-				x[k] = ts.UTC().Format(time.RFC3339Nano)
 				continue
 			}
-			utcTimes(t, e)
+			bad = append(bad, notZ(e)...)
 		}
 	case []any:
 		for _, e := range x {
-			utcTimes(t, e)
+			bad = append(bad, notZ(e)...)
 		}
 	}
+	return bad
 }
 
 // golden compares (or with -update writes) one example file.
 func golden(t *testing.T, name string, v any) {
 	t.Helper()
+	// The API answers in UTC (docs/journal-api.md) wherever the core runs;
+	// run this test under a non-UTC TZ to check it (glovebox-pblt).
+	if bad := notZ(v); len(bad) > 0 {
+		t.Errorf("%s: times not in UTC: %v", name, bad)
+	}
 	want, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -443,7 +461,7 @@ func TestGoldenAnswers(t *testing.T) {
 	// The examples carry what the scenario is for (a guard against a
 	// scenario edit that silently drops a shape).
 	all, _ := json.Marshal(map[string]any{"p": events["e_parent1"], "c": events["e_child1"]})
-	for _, want := range []string{`"kind":"removed"`, `"kind":"updated"`, `"last_fields"`, `"prev_observed_at"`,
+	for _, want := range []string{`"kind":"removed"`, `"kind":"restored"`, `"prev_scope"`, `"kind":"updated"`, `"last_fields"`, `"prev_observed_at"`,
 		`"notify"`, `"group_key"`, `"importance":"high"`, journalapi.WithheldPrefix + "failed content scan",
 		journalapi.WithheldPrefix + "different audience"} {
 		if !strings.Contains(string(all), want) {
@@ -457,5 +475,40 @@ func TestGoldenAnswers(t *testing.T) {
 	cst, _ := json.Marshal(get(journalapi.PathState+"?reader=e_child1", 200))
 	if strings.Contains(string(cst), `"e_child2"`) {
 		t.Errorf("e_child1's state names e_child2")
+	}
+}
+
+// Every time the API answers is in UTC whatever the core's local zone
+// (glovebox-pblt): times read back from the database, the clock's, and a
+// since given with an offset. time.Local is swapped for this test (no
+// test in this package runs in parallel).
+func TestAnswersAreUTC(t *testing.T) {
+	saved := time.Local
+	time.Local = time.FixedZone("UTC-7", -7*60*60)
+	t.Cleanup(func() { time.Local = saved })
+	g := newGoldenJournal(t)
+	goldenScenario(g)
+	g.setNow(g.now.Load().In(time.Local))
+	paths := []string{
+		journalapi.PathState + "?reader=e_parent1&include_removed=true",
+		journalapi.PathState + "?reader=e_child1",
+		journalapi.PathEvents + "?reader=e_parent1&limit=1000",
+		journalapi.PathEvents + "?reader=e_child1&limit=1000",
+		journalapi.PathCounts + "?reader=e_parent1",
+		journalapi.PathCounts + "?reader=e_parent1&since=2026-10-01T00:00:00-07:00",
+	}
+	for _, p := range paths {
+		code, raw := g.send("GET", p, goldenGatewayToken, nil)
+		if code != 200 {
+			t.Fatalf("%s: %d %s", p, code, raw)
+		}
+		if bad := notZ(decodeAny(t, raw)); len(bad) > 0 {
+			t.Errorf("%s: times not in UTC: %v", p, bad)
+		}
+	}
+	// The since given is the same instant, in UTC.
+	code, raw := g.send("GET", journalapi.PathCounts+"?reader=e_parent1&since=2026-10-01T00:00:00-07:00", goldenGatewayToken, nil)
+	if code != 200 || !strings.Contains(string(raw), `"since":"2026-10-01T07:00:00Z"`) {
+		t.Errorf("since: %d %s", code, raw)
 	}
 }
