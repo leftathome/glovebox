@@ -23,6 +23,15 @@ import (
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
 
+// emitterWait bounds every wait for the records emitter loop, which runs on
+// its own goroutine and does real file I/O and real HTTP (glovebox-062i, the
+// same failure class connector/records fixed with asyncWait in dcbb003). The
+// bound costs nothing when the test passes -- each wait ends the moment its
+// condition holds -- and only decides how long a stuck loop takes to fail.
+// On a CPU-starved CI pod one poll took 75s and this test's old 10s wait
+// for the journal answers ran out with 1 of 8 delivered.
+const emitterWait = 2 * time.Minute
+
 // recentConfigOnRecordRules is recentConfig on the record rules, records
 // off: the baseline the "on" runs are compared with.
 func recentConfigOnRecordRules() Config {
@@ -297,7 +306,7 @@ func TestRecordsOnStagesTheSameItems(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	on.c.startRecords(ctx)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(emitterWait)
 	// 8 snapshots per kid: one per course surface, one per school year of
 	// attendance (marks, days), the history, and two comment terms.
 	for on.recordsMetrics(t)["glovebox_journal_spool_answers_total"] < 16 && time.Now().Before(deadline) {
