@@ -62,13 +62,26 @@ variables:
   # NOTE: KUBERNETES_* pod scheduling/sizing and INTERNAL_REGISTRY_* come from
   # the included homelab/ci-templates global variables -- do not redefine here.
 
-cache:
+# Go cache: the module cache plus the build cache, keyed on go.sum.
+#
+# ONE OWNER. Only the jobs that run Go carry it (test, test-journal-db and
+# the .integration jobs, via the anchor below -- not a global `cache:`), and
+# they only PULL it; the main-only cache-warm job is the single job that
+# uploads. Before this, the cache was global and pull-push: the Go jobs each
+# downloaded and re-uploaded it, and build-base, every image in the build
+# matrix, chart and release, which never read it, downloaded and extracted it
+# for nothing. The runner's HELPER container does that archiving and
+# extracting, and it carries no memory request or limit: glovebox's helper
+# peaked at 3.4GiB over 7 days, invisible to the scheduler, on johnny. An MR
+# pipeline now uploads nothing.
+.go-cache: &go_cache
   key:
     files:
       - go.sum
   paths:
     - .cache/go/pkg/mod
     - .cache/go-build
+  policy: pull
 
 # Local anchor: build/publish only on main and tags (within this one file --
 # anchors do not cross the include boundary, which is fine since this is the
@@ -90,6 +103,7 @@ cache:
 # ---------------------------------------------------------------------------
 test:
   stage: test
+  cache: *go_cache
   # Pinned to a concrete patch tag rather than the floating `golang:1.27`.
   #
   # The cluster pulls docker.io through Zot, and Zot cannot commit the floating
@@ -152,6 +166,42 @@ test:
     - if: '$CI_COMMIT_TAG'
 
 # ---------------------------------------------------------------------------
+# cache-warm -- the Go cache's only writer (see "Go cache" above). Main only:
+# MR pipelines read what main last wrote, so every pipeline of an MR that
+# changes go.sum runs its Go jobs cold until it merges, and the first main
+# pipeline after it does too. Compiles what test and test-journal-db build --
+# the plain build, vet, the oapi-codegen tool check-codegen.sh runs through
+# `go generate`, and the race test binaries (-run '^$' runs no test) -- so it
+# is quick and never red for a test reason. Same image as test, so the
+# toolchain and cache entries match. needs: [] so nothing earlier can block
+# the refresh; tags: [cluster] so it can never write to a runner whose cache
+# no cluster job reads.
+# ---------------------------------------------------------------------------
+cache-warm:
+  stage: test
+  image: golang:1.27.3-bookworm
+  tags: [cluster]
+  needs: []
+  cache:
+    <<: *go_cache
+    policy: pull-push
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
+  before_script:
+    - "go version"
+  script:
+    - "go mod download"
+    - "GOFLAGS=-mod=readonly go build ./..."
+    - "go vet ./..."
+    - "go build -o /dev/null github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen"
+    - "go test ./... -race -p 4 -run '^$'"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ---------------------------------------------------------------------------
 # test-journal-db: the record journal's database tests against PostgreSQL --
 # the CloudNativePG image at the version production runs (17.10, read from
 # the databases-app Cluster on 2026-10-16; bump it with the cluster, and
@@ -186,6 +236,7 @@ test-journal-db:
   # GitLab, which has no such timeout.
   resource_group: glovebox-journal-db-tests
   stage: test
+  cache: *go_cache
   tags: [cluster]
   image: golang:1.27.3-bookworm
   services:
@@ -270,6 +321,7 @@ chart-test:
 # ---------------------------------------------------------------------------
 .integration:
   stage: integration
+  cache: *go_cache
   # Pinned to a concrete patch tag rather than the floating `golang:1.27`.
   #
   # The cluster pulls docker.io through Zot, and Zot cannot commit the floating
