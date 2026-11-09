@@ -327,7 +327,7 @@ func TestWatchStartsOneRecordsLoop(t *testing.T) {
 		go func() { done <- run.c.Watch(ctx, run.cp) }()
 		select {
 		case <-sink.started:
-		case <-time.After(emitterWait):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("Watch %d did not start the records loop", i+1)
 		}
 		cancel()

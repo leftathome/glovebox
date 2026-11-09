@@ -27,13 +27,15 @@ import (
 	schoologylib "github.com/leftathome/schoology-go"
 )
 
-// emitterWait bounds every wait for the records emitter loop, which runs on
-// its own goroutine and does real file I/O and real HTTP (glovebox-062i, the
-// same failure class connector/records fixed with asyncWait in dcbb003). The
-// bound costs nothing when the test passes -- each wait ends the moment its
-// condition holds -- and only decides how long a stuck loop takes to fail.
-// On a CPU-starved CI pod one poll took 75s and this test's old 10s wait
-// for the journal answers ran out with 1 of 8 delivered.
+// emitterWait bounds the waits for the records emitter to deliver or drain
+// the spool: real HTTP plus a spool delete with a directory fsync per answer,
+// sent back to back (glovebox-062i; connector/records uses the same bound,
+// asyncWait, since dcbb003). The bound costs nothing when the test passes --
+// each wait ends the moment its condition holds -- and only decides how long
+// a stuck emitter takes to fail. While image builds saturated the CI node's
+// disk, this test's old 10s wait for the journal answers ran out with 1 of 8
+// delivered. Waits on the fake sinks in records_emit_test.go do no I/O and
+// stay short.
 const emitterWait = 2 * time.Minute
 
 // recordsPollTime is the fixed clock of the connector-level record tests.

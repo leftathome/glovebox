@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "1 answers, want 8" on main pipelines while image builds saturated the
   runner's NVMe: it waited at most 10s for the emitter to deliver the
   spooled snapshots, and each delivery does real fsyncs. The waits for the
-  records emitter loop in `connectors/schoology` and `connectors/powerschool`
-  (journal answers, loop start, spool drain) now use one 2-minute bound,
+  records emitter to deliver or drain the spool in `connectors/schoology` and
+  `connectors/powerschool` (journal answers, spool drain) now use one 2-minute
+  bound,
   like `connector/records` (dcbb003); they still end the moment the event
   happens. Reproduced by delaying every fsync/fdatasync by 1.5s with strace:
   both packages' tests failed 2/2 before, 0/2 after. What the tests assert

@@ -319,7 +319,7 @@ func TestWatchRunsOneDeliveryLoop(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	c.startRecords(ctx2)
-	deadline := time.Now().Add(emitterWait)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		sink.mu.Lock()
 		runs := sink.runs
