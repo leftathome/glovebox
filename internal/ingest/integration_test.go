@@ -249,14 +249,39 @@ func TestIntegrationEndToEndBackpressureAndRecovery(t *testing.T) {
 		t.Fatalf("item-2: %v", err)
 	}
 
-	// Third item will hit backpressure. Decrement queue in a goroutine to
-	// unblock it.
+	// Third item hits backpressure. Unblock it the way production does: the
+	// scanner removes a routed item from staging and the periodic recount
+	// brings the counter down (glovebox-0dfx). The 429 carries Retry-After: 5
+	// and the HTTP backend sleeps that long before retrying, so the 50ms
+	// recount always lands first; the WithRetry backoff plays no part.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		time.Sleep(50 * time.Millisecond)
-		h.DecrementQueue()
+		entries, err := os.ReadDir(stagingDir)
+		if err != nil {
+			t.Errorf("read staging: %v", err)
+			return
+		}
+		var routed string
+		for _, e := range entries {
+			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+				routed = e.Name()
+				break
+			}
+		}
+		if routed == "" {
+			t.Error("no staged item to route")
+			return
+		}
+		if err := os.RemoveAll(filepath.Join(stagingDir, routed)); err != nil {
+			t.Errorf("remove routed item: %v", err)
+			return
+		}
+		if err := h.ReconcileQueueDepth(); err != nil {
+			t.Errorf("ReconcileQueueDepth: %v", err)
+		}
 	}()
 
 	if err := commitItem("item-3"); err != nil {
@@ -265,8 +290,8 @@ func TestIntegrationEndToEndBackpressureAndRecovery(t *testing.T) {
 	wg.Wait()
 
 	dirs := stagingDirs(t, stagingDir)
-	if len(dirs) != 3 {
-		t.Fatalf("expected 3 staging dirs, got %d", len(dirs))
+	if len(dirs) != 2 {
+		t.Fatalf("expected 2 staging dirs (one routed, item-3 staged), got %d", len(dirs))
 	}
 }
 
