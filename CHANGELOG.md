@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Connector records tests no longer flake on a stalled disk**
+  (glovebox-062i). `TestRecordsOnStagesTheSameItems` (Schoology) failed
+  "1 answers, want 8" on main pipelines while image builds saturated the
+  runner's NVMe: it waited at most 10s for the emitter to deliver the
+  spooled snapshots, and each delivery does real fsyncs. The waits for the
+  records emitter to deliver or drain the spool in `connectors/schoology` and
+  `connectors/powerschool` (journal answers, spool drain) now use one 2-minute
+  bound,
+  like `connector/records` (dcbb003); they still end the moment the event
+  happens. Reproduced by delaying every fsync/fdatasync by 1.5s with strace:
+  both packages' tests failed 2/2 before, 0/2 after. What the tests assert
+  is unchanged. Test-only.
+
 ### Fixed
 
 - **Ingest token reloads recover from an expired Vault token**
@@ -21,6 +36,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reload for the sanitize/ingest token store. The archive listener is
   unchanged here: if its first token load fails it still mounts the 503
   fallback until the pod restarts (spec 10 §4.1; glovebox-fvxn).
+
+## [0.13.2] - 2026-11-08
+
+### Upgrade notes
+
+No chart value has to change. Two recommended for a release with the
+record journal enabled: give the core more memory (it idles near 280Mi and
+peaked at 410Mi of a 512Mi limit while catching up after a restart; for
+example requests 384Mi, limits 768Mi) and set
+`livenessProbe.timeoutSeconds: 5`. youtube connector users: items are now
+markdown and the connector discovers uploads through the uploads playlist
+(see Changed).
+
+### Fixed
+
+- **The journal API answers in UTC wherever the core runs
+  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
+  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
+  `since` were written in the core process's local time zone (the database
+  driver returns local times, and a `since` sent with an offset was echoed
+  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
+  whose core runs in UTC (the chart's image does) saw no difference. Now
+  converted to UTC before answering; `TestAnswersAreUTC` runs under a
+  non-UTC zone.
+
+- **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
+  The core's `/healthz` wrote and removed a probe file in `agents_dir`
+  inside the request. On a networked delivery volume (Longhorn RWX) whose
+  replica disk stalls, that write takes seconds; three probes in a row
+  missed the kubelet's 1s timeout and a healthy core was restarted mid-poll,
+  while `/metrics` and `/readyz` on the same port answered in milliseconds.
+  The write probe now runs in a background loop every 10s, one at a time,
+  and `/healthz` reports its state without doing any I/O: `503` when the
+  latest probe failed (a stale mount's `EIO`, as before), when one probe has
+  hung for over 2 minutes, or when the loop stopped; `200` otherwise,
+  including while a probe is merely slow. The record journal's database was
+  never on this path, and still is not: a stuck journal database leaves the
+  core's `/healthz`, `/readyz` and `/metrics` answering at once (a new
+  database test holds that). `/readyz` is unchanged.
+- **CI fails a `go.mod`/`go.sum` that is not tidy, test-only dependencies
+  included.** The 0.13.1 guard (a `-mod=readonly` build in the GitLab
+  `test` job) compiles no test files, so the Renovate kin-openapi v0.153.0
+  bump, whose new dependencies only a test imports, merged with an
+  incomplete `go.sum` and broke `go vet ./...` on main. Both the GitLab
+  `test` job and the GitHub `Test` job now run `go mod tidy -diff` before
+  vet; it prints the missing change and fails without writing anything.
+- **PowerSchool tests no longer age out (glovebox-ldoj).** From
+  2026-11-08 `TestPoll_TeacherCommentStaysWithItsKid` and
+  `TestEndToEnd_RealLibraryTeacherComment` failed on every run: their
+  fixture assignment is due 2026-10-08, and the connector built its `Env`
+  without the connector clock, so the default 30-day assignments lookback
+  measured from the real date, not the clock the tests set. `Env` now
+  carries the connector clock and the tests pin it to 2026-10-07.
+  Production is unchanged (the connector clock is `time.Now`).
+
+### Changed
+
+- **youtube engagement is assessed 30 days after first sight, not at first
+  sight.** At an hourly poll a new video is found within its first hour,
+  when per-day view rates rank nearly everything `low`. New items now read
+  `viewership: pending` / `comment_activity: pending` with the due date, the
+  first-seen date is kept per video in the checkpoint, and statistics are no
+  longer requested at all on first sight. The 30-day assessment runs with the
+  30-day refresh (glovebox-0tzc, not yet built).
+
+- **Chart: `livenessProbe.timeoutSeconds` sets the core's liveness probe
+  timeout.** Unset (the default) it renders nothing and Kubernetes' 1s
+  applies, so default renders are unchanged; 5 is recommended, in addition
+  to the fix above: with a 250m CPU limit a GC pause can still stretch an
+  answer past a second.
+- **Chart: the `resources` comment no longer says 128Mi/512Mi is safe
+  without archives** (glovebox-75am). A 0.13.1 core idles at ~280Mi and
+  reached ~410Mi applying a first PowerSchool records poll; without archives
+  size it at about requests 384Mi / limits 768Mi. Defaults are unchanged.
+- **youtube connector reworked so it can actually run** (glovebox-fy4e,
+  glovebox-tbgd, glovebox-07il, glovebox-rrtu, glovebox-8wu1, glovebox-iwqm).
+  Discovery moves from `search.list` (its own 100 calls/day bucket; the old
+  5-minute poll needed 288/day per channel) to the channel's uploads playlist
+  via `playlistItems.list`, with one batched `videos.list` per poll that has
+  new uploads. `captions.list` (50 units for language names only) is gone.
+  The poll interval is configurable (`poll_interval`, default `1h`).
+  Channels may be given as `@handles` (`channels`; `channel_ids` still
+  accepted). First poll of a channel stages only `initial_backfill` (3).
+- **youtube items are now markdown** (`text/markdown`) carrying watch URL,
+  best thumbnail, duration, tags, topics, chapters parsed from the
+  description, top comments and an explicit `transcript:` marker. Raw view,
+  like and comment counts are never staged (YouTube Developer Policy
+  III.E.4); relative `viewership` / `comment_activity` buckets stand in
+  for them (assessed at 30 days, see above). A `TranscriptProvider` seam is in place with no provider yet.
+- The connector's sample config routes to `media` (in the chart's default
+  `agentAllowlist`) instead of the never-allowed `media-agent`. The chart's
+  own youtube example is unchanged in this release: deployments set
+  `connectors.youtube.config` themselves, and should set `channel_ids: []`
+  when using `channels` (Helm replaces lists, so the chart's example
+  `channel_ids` entry would otherwise remain).
+
+### Documentation
+
+- `docs/journal-api.md`, `docs/upgrading.md`: gitops-kxpb is fixed (gitops
+  !112) and no longer blocks enabling the journal; the Part C gates
+  (glovebox-n1x1, glovebox-wekc.18.3) are listed, both closed.
+- `docs/journal-schema.md`: the journal database's backups are kept 14 days
+  (since 2026-10-27), not 30 (glovebox-dli7).
+- `docs/journal-roster.md`: after a roster change, restart the openclaw
+  gateway (its `subPath` mount sees no change until then) and check its
+  `household.json` hash against the journal healthz `roster_sha256`.
+- `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
+  (the section still said the core had none).
+- `docs/journal-api-examples/`: golden answers of the journal's read API
+  (state, events, counts, healthz, refusals) and the roster they were read
+  with, generated from the real API by `TestGoldenAnswers` (record journal
+  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ## [0.13.1] - 2026-11-05
 

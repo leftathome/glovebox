@@ -1,0 +1,5 @@
+{
+  "detail": "an unknown parameter: a request names its reader and its filters, nothing else",
+  "reason": "bad_request",
+  "status": "rejected"
+}
