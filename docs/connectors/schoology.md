@@ -550,7 +550,7 @@ schoologyConnector:
 # The session credentials this connector consumes are produced separately:
 schoologyAuthRefresher:
   enabled: true
-  schedule: "0 6 */12 * *"   # ~48h headroom before the 14-day cookie expiry
+  schedule: "0 6 * * *"   # daily; a session lasts well under 32h (glovebox-wekc.11)
   image:
     repository: ghcr.io/leftathome/glovebox-schoology-auth-refresher
   vault:

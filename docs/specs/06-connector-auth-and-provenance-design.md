@@ -604,9 +604,11 @@ The refresher comprises four artifacts:
    + `chromium` adds ~150 MiB but matches what the manual flow does
    on an operator's workstation.
 3. **`charts/glovebox/templates/schoology-auth-refresher-cronjob.yaml`**
-   -- a Helm-templated `CronJob` running every 12 days
-   (`schedule: "0 6 */12 * *"`) roughly 48 hours before the 14-day
-   session expiry window. Job `backoffLimit: 3`,
+   -- a Helm-templated `CronJob` running daily by default
+   (`schedule: "0 6 * * *"`). The 14-day session window this spec first
+   assumed was wrong: a session lasts well under 32 hours (observed
+   2026-10-10, glovebox-wekc.11), so deployments that poll more than once
+   a day schedule a run shortly before each poll window. Job `backoffLimit: 3`,
    `activeDeadlineSeconds: 600` (10 minutes), `restartPolicy: Never`,
    plus a `podFailurePolicy` that fails-fast on exit codes 2/3/4 so
    the Job controller doesn't retry bad-credentials past the lockout
