@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both packages' tests failed 2/2 before, 0/2 after. What the tests assert
   is unchanged. Test-only.
 
+### Fixed
+
+- **Ingest token reloads recover from an expired Vault token**
+  (glovebox-jzli). glovebox logged in to Vault once at boot and never
+  renewed or re-acquired the token, so once it expired every token reload
+  failed with 403 "invalid token" until the pod restarted: rotated or new
+  ingest tokens were never picked up. The Vault client now logs in again
+  when Vault rejects the token (401/403) and retries the call once, at most
+  once a minute, so a broken role or policy does not mint a new token on
+  every call; a freshly issued token that is refused too is reported as a
+  role/policy problem. A failed boot-time login is retried on the next
+  reload for the sanitize/ingest token store. The archive listener is
+  unchanged here: if its first token load fails it still mounts the 503
+  fallback until the pod restarts (spec 10 §4.1; glovebox-fvxn).
+
 ## [0.13.2] - 2026-11-08
 
 ### Upgrade notes
