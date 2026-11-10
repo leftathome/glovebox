@@ -200,9 +200,8 @@ func TestBootstrapArchives_AuthGuards(t *testing.T) {
 
 // TestBootstrapArchives_VaultLoadFailureMountsFallback exercises spec
 // 10 §4.1: when the initial Vault load fails, /v1/archives* mounts a
-// 503 fallback instead of the real handler. We trigger this by passing
-// a failingVaultClient (same sentinel that production loginVault would
-// produce on K8s-auth failure).
+// 503 fallback instead of the real handler. We trigger this with the
+// client production loginVault builds, whose K8s login fails.
 func TestBootstrapArchives_VaultLoadFailureMountsFallback(t *testing.T) {
 	stagingRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(stagingRoot, "archives"), 0o700); err != nil {
@@ -217,7 +216,9 @@ func TestBootstrapArchives_VaultLoadFailureMountsFallback(t *testing.T) {
 	defer cancel()
 
 	cfg := makeArchiveTestConfig(stagingRoot)
-	failing := &failingVaultClient{err: fmt.Errorf("simulated vault outage")}
+	failing := auth.NewReloginVaultClient(func(context.Context) (auth.VaultClient, error) {
+		return nil, fmt.Errorf("simulated vault outage")
+	})
 
 	if err := bootstrapArchivesWithSource(ctx, cfg, mux, auth.NewVaultTokenSource(failing, "secret", "glovebox/ingest-tokens"), nil); err != nil {
 		t.Fatalf("bootstrapArchivesWithSource: %v", err)
