@@ -116,6 +116,9 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 		TokenStore:       tokenStore,
 		AuthReloadConfig: auth.ReloadConfig{
 			Source: src,
+			OnReload: func(err error, n int) {
+				telemetry.RecordTokenReload(ctx, "archive", err, n)
+			},
 		},
 		RateLimiter:         rl,
 		ProxyResolver:       pr,
@@ -174,8 +177,14 @@ func buildIngestAuth(ctx context.Context, cfg config.Config) (*auth.TokenStore, 
 	})
 	pr := &auth.ProxyResolver{TrustedCIDRs: trustedCIDRs}
 
+	telemetry, err := archives.NewTelemetry("glovebox", "glovebox")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("init sanitize auth telemetry: %w", err)
+	}
 	store := auth.NewTokenStore()
-	reloadCfg := auth.ReloadConfig{Source: src}
+	reloadCfg := auth.ReloadConfig{Source: src, OnReload: func(err error, n int) {
+		telemetry.RecordTokenReload(ctx, "sanitize", err, n)
+	}}
 	if err := store.Reload(ctx, reloadCfg); err != nil {
 		log.Printf("glovebox sanitize auth: initial token load failed: %v (requests will 401 until a reload succeeds)", err)
 	}

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ingest token reload metrics** (glovebox-l9zp), labelled
+  `listener="archive"|"sanitize"`: `glovebox_ingest_token_reload_total{result}`,
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds` and
+  `glovebox_ingest_tokens_loaded`. A whole-reload failure (Vault refusing the
+  token) was previously visible only as a WARN log; on orac it went unnoticed
+  for 2+ weeks. Both `result` series exist from the first reload, so a
+  listener that failed once and never reloaded (the archive listener after
+  a failed boot load) reads as failure > 0 with success == 0. Alert on
+  `time() - ..._last_success_timestamp_seconds`, on failures with no
+  success, and on `glovebox_ingest_tokens_loaded == 0`: a policy that allows
+  listing but denies reads produces a "successful" reload of zero tokens.
+
 ### Changed
 
 - **Chart: the Schoology session refresher runs daily by default**
