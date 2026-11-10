@@ -16,8 +16,8 @@ Nothing has to change first. What changes when it rolls out:
 
 - **`glovebox_staging_queue_depth` now means items in staging.** It is
   recounted from the staging directory every `poll_interval_seconds`
-  (glovebox-0dfx). Before, it grew with every accepted item until the pod
-  restarted, and at `backpressure_threshold` all ingest got 429 regardless
+  (glovebox-0dfx). Before, it started from the items staged at boot and grew
+  with every accepted item until the pod restarted, and at `backpressure_threshold` all ingest got 429 regardless
   of what staging held -- on orac that stopped ingest for ~36 hours. If a
   restart has been your workaround for 429s, it no longer is needed.
 - **Token reloads survive token expiry** (glovebox-jzli). With Vault
@@ -37,6 +37,10 @@ Nothing has to change first. What changes when it rolls out:
 - **Schoology refresher schedule default is daily** (`0 6 * * *`, was
   every 12 days). Set `schoologyAuthRefresher.schedule` explicitly if you
   relied on the old cadence.
+- **Journal API times are UTC** (glovebox-pblt). State, event and counts
+  times were answered in the core's local zone when it ran outside UTC;
+  journal consumers that compensated for an offset should stop. The
+  chart's image runs in UTC and sees no difference.
 
 ---
 

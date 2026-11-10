@@ -12,12 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrade notes
 
 No chart value, Vault or gitops change has to land first. Deploy it in
-place of 0.13.x. Four things change for a running release:
+place of 0.13.x. Five things change for a running release:
 
 - **Ingest backpressure tracks staging** (glovebox-0dfx). Each ingest
   listener recounts the staged item directories every
   `poll_interval_seconds`, so `glovebox_staging_queue_depth` now reports
-  what is in staging instead of every item accepted since the pod started,
+  what is in staging instead of the items staged at boot plus every item
+  accepted since,
   and a long-lived pod no longer 429s all ingest once
   `backpressure_threshold` items have passed through it. A dashboard or
   alert that read the old ever-growing value will see it drop.
@@ -36,6 +37,10 @@ place of 0.13.x. Four things change for a running release:
   `schoologyAuthRefresher.schedule` defaults to `0 6 * * *` (was every 12
   days). A release with the refresher enabled and no schedule of its own
   now logs in daily; one that sets a schedule is unaffected.
+- **Journal API times are UTC** (glovebox-pblt). A core running outside
+  UTC answered state, event and counts times in its local zone; they are
+  now converted to UTC. The chart's image runs in UTC and sees no
+  difference.
 
 ### Added
 
@@ -50,6 +55,11 @@ place of 0.13.x. Four things change for a running release:
   `time() - ..._last_success_timestamp_seconds`, on failures with no
   success, and on `glovebox_ingest_tokens_loaded == 0`: a policy that allows
   listing but denies reads produces a "successful" reload of zero tokens.
+
+- `docs/journal-api-examples/`: golden answers of the journal's read API
+  (state, events, counts, healthz, refusals) and the roster they were read
+  with, generated from the real API by `TestGoldenAnswers` (record journal
+  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ### Changed
 
@@ -68,7 +78,8 @@ place of 0.13.x. Four things change for a running release:
   runner time.
 - **Chart: the Schoology session refresher runs daily by default**
   (`schoologyAuthRefresher.schedule` `0 6 * * *`, was every 12 days). A
-  session lasts well under 32 hours, so the old default left the connector
+  session does not survive 32 hours (valid at +6.6h, a login page by
+  +32h), so the old default left the connector
   waiting days for a new one (glovebox-wekc.11). Releases that set their
   own schedule are unaffected; the refresher is off by default.
 - **Connector records tests no longer flake on a stalled disk**
@@ -109,6 +120,16 @@ place of 0.13.x. Four things change for a running release:
   `poll_interval_seconds`, so `glovebox_staging_queue_depth` tracks staging
   and backpressure clears as the scanner drains it.
 
+- **The journal API answers in UTC wherever the core runs
+  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
+  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
+  `since` were written in the core process's local time zone (the database
+  driver returns local times, and a `since` sent with an offset was echoed
+  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
+  whose core runs in UTC (the chart's image does) saw no difference. Now
+  converted to UTC before answering; `TestAnswersAreUTC` runs under a
+  non-UTC zone.
+
 ## [0.13.2] - 2026-11-08
 
 ### Upgrade notes
@@ -122,16 +143,6 @@ markdown and the connector discovers uploads through the uploads playlist
 (see Changed).
 
 ### Fixed
-
-- **The journal API answers in UTC wherever the core runs
-  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
-  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
-  `since` were written in the core process's local time zone (the database
-  driver returns local times, and a `since` sent with an offset was echoed
-  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
-  whose core runs in UTC (the chart's image does) saw no difference. Now
-  converted to UTC before answering; `TestAnswersAreUTC` runs under a
-  non-UTC zone.
 
 - **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
   The core's `/healthz` wrote and removed a probe file in `agents_dir`
@@ -216,10 +227,6 @@ markdown and the connector discovers uploads through the uploads playlist
   `household.json` hash against the journal healthz `roster_sha256`.
 - `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
   (the section still said the core had none).
-- `docs/journal-api-examples/`: golden answers of the journal's read API
-  (state, events, counts, healthz, refusals) and the roster they were read
-  with, generated from the real API by `TestGoldenAnswers` (record journal
-  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ## [0.13.1] - 2026-11-05
 
