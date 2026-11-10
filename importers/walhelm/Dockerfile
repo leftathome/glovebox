@@ -3,7 +3,7 @@
 # the first FROM) resolves blank there, which newer BuildKit rejects with
 # UndefinedArgInFrom (enricher Dockerfile ARG-scope fix).
 ARG ENRICHER_BASE=ghcr.io/leftathome/glovebox-enricher-runtime:latest
-FROM docker.io/golang:1.27.3-bookworm AS build
+FROM docker.io/golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
