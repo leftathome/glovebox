@@ -291,7 +291,7 @@ func TestRecordsAgainstTheJournal(t *testing.T) {
 		if err := c.pollNow(context.Background(), cp, "scheduled", -1); err != nil {
 			t.Fatalf("pollNow: %v", err)
 		}
-		deadline := time.Now().Add(20 * time.Second)
+		deadline := time.Now().Add(emitterWait)
 		for pendingSpoolFiles(t, stateDir) > 0 && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
 		}

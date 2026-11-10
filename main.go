@@ -180,19 +180,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start metrics server. /healthz is an ACTIVE liveness probe that verifies
-	// the delivery mount is writable (see health.go) so a stale bind-mount EIO
-	// restarts the pod instead of silently stalling delivery; /readyz gates on
-	// startup completion. Co-located with /metrics on cfg.MetricsPort, matching
-	// the connector framework's health surface.
+	// Start metrics server. /healthz reports a background probe loop that
+	// verifies the delivery mount is writable (see health.go), so a stale
+	// bind-mount EIO restarts the pod instead of silently stalling delivery,
+	// while a merely slow mount never makes /healthz itself slow; /readyz
+	// gates on startup completion. Co-located with /metrics on
+	// cfg.MetricsPort, matching the connector framework's health surface.
 	ready := &atomic.Bool{}
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", m.Handler())
-	mux.HandleFunc("/healthz", livenessHandler(cfg.AgentsDir))
-	mux.HandleFunc("/readyz", readinessHandler(ready))
+	prober := newDeliveryProber(cfg.AgentsDir, deliveryWritable)
+	go prober.Run(ctx)
 	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.MetricsPort),
-		Handler: mux,
+		Handler: metricsMux(m.Handler(), prober, ready),
 	}
 	go func() {
 		log.Printf("metrics server listening on :%d", cfg.MetricsPort)
@@ -232,6 +231,7 @@ func main() {
 		if err := ingestHandler.InitQueueDepth(); err != nil {
 			log.Fatalf("init ingest queue depth: %v", err)
 		}
+		go ingestHandler.StartDepthReconciler(ctx, time.Duration(cfg.PollIntervalSeconds)*time.Second)
 		ingestHandler.SetReady()
 
 		// mountIngest attaches the plaintext connector intake. Peer
@@ -293,6 +293,7 @@ func main() {
 			if err := tlsHandler.InitQueueDepth(); err != nil {
 				log.Fatalf("init mTLS ingest queue depth: %v", err)
 			}
+			go tlsHandler.StartDepthReconciler(ctx, time.Duration(cfg.PollIntervalSeconds)*time.Second)
 			tlsHandler.SetReady()
 			tlsHandler.SetPeerEnforcement(cfg.Ingest.TLS.SourceMatchEnforced(), "mtls")
 

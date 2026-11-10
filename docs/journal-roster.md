@@ -286,6 +286,15 @@ belongs next to the roster, in the gitops repository that owns both.
   change therefore reaches the journal within about `reloadSeconds` plus
   two minutes. The gateway and glovebox can briefly hold different
   rosters; openclaw's own pre-write check fails safe in that window.
+- **After every roster change, restart the openclaw gateway.** The gateway
+  mounts `household.json` with `subPath`, so it never sees a change until
+  its pod restarts (Part C decision C5). Once the `openclaw-household`
+  change has reconciled, restart the gateway at a quiet time (a restart
+  drops in-flight Telegram messages), then check that
+  `sha256sum /seed/household.json` in the gateway's `gateway` container
+  equals the `roster_sha256` of the journal's `GET /v1/healthz`. Until that
+  restart openclaw's pre-write check refuses to rewrite agents' school
+  files (fail safe: the previous files stay).
 - A reload swaps the roster atomically. **A file that cannot be read or
   does not parse is ignored, and the previous roster stays in use**
   (`roster.Holder.Reload`). Grants do not follow the change: a member added

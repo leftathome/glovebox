@@ -20,7 +20,7 @@ metadata:
     {{- include "glovebox.labels" . | nindent 4 }}
     app.kubernetes.io/component: schoology-auth-refresher
 spec:
-  schedule: {{ .Values.schoologyAuthRefresher.schedule | default "0 6 */12 * *" | quote }}
+  schedule: {{ .Values.schoologyAuthRefresher.schedule | default "0 6 * * *" | quote }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5

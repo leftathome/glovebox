@@ -32,13 +32,26 @@ resources:
   # here), not page cache; it only matters for the scan-side heap. A code-side
   # reduction (sync_file_range / fadvise(DONTNEED) to bound dirty pages) is
   # tracked as an optional optimization on glovebox-jolp.
-  # If ingest.archives.enabled is false, scaling back to 128Mi/512Mi is safe.
+  # If ingest.archives.enabled is false the limit can come down, but not to
+  # 512Mi once journal.enabled is on (glovebox-75am): a 0.13.1 core idles at
+  # ~280Mi working set with the journal on or off (nearly all of it anonymous
+  # memory, mostly the scanner's language models), and applying a first
+  # PowerSchool records poll (73 snapshots) took it to ~410Mi, 80% of a 512Mi
+  # limit. Without archives, size it at about requests 384Mi / limits 768Mi.
   requests:
     cpu: 100m
     memory: 512Mi
   limits:
     cpu: 500m
     memory: 2Gi
+
+# The core's liveness probe (/healthz on the metrics port). timeoutSeconds
+# unset renders none, so Kubernetes' default of 1s applies. 5 is
+# recommended: since 0.13.2 the handler does no I/O (glovebox-q0ch), but with
+# a 250m CPU limit a GC pause can still stretch an answer past a second, and
+# three misses in a row restart the pod.
+livenessProbe: {}
+#   timeoutSeconds: 5
 
 nodeSelector: {}
 affinity: {}
@@ -1881,9 +1894,13 @@ connectors:
 # Schoology connector resources.
 schoologyAuthRefresher:
   enabled: false
-  # Every 12 days at 06:00 cluster TZ; ~48h headroom before the 14-day
-  # Schoology cookie expiry.
-  schedule: "0 6 */12 * *"
+  # Daily at 06:00 cluster TZ. A Schoology browser session does not last
+  # as long as its cookie claims: observed 2026-10-10, valid at +6.6h and
+  # a login page by +32h (glovebox-wekc.11), so the old every-12-days
+  # default left the connector without a session for days. Schedule a run
+  # shortly before each connector poll window if you poll more than once a
+  # day (one login per run; the account may allow only one session).
+  schedule: "0 6 * * *"
   image:
     repository: ghcr.io/leftathome/glovebox-schoology-auth-refresher
     # tag defaults to .Chart.AppVersion when empty.
