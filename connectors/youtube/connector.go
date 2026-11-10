@@ -9,12 +9,27 @@ import (
 	"log/slog"
 	"net/http"
 	neturl "net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/leftathome/glovebox/connector"
 )
 
-// YouTubeConnector polls YouTube channels for new video metadata.
+// YouTubeConnector polls followed channels for new uploads and stages one
+// markdown item per video.
+//
+// Quota (Data API v3, verified 2026-11-07 against determine_quota_cost): every
+// call below costs 1 unit from the shared 10,000/day pool. search.list (which
+// has its own 100/day bucket) and captions.list (50 units) are NOT used.
+//
+// Per channel per poll:
+//   - playlistItems.list on the uploads playlist             1 unit, always
+//   - videos.list, all recent uploads batched in ONE call    1 unit, only when something is new
+//   - commentThreads.list per new video                      1 unit each, if enabled
+//
+// plus channels.list once per channel ever (cached in the checkpoint).
 type YouTubeConnector struct {
 	config       Config
 	writer       connector.StagingBackend
@@ -23,335 +38,474 @@ type YouTubeConnector struct {
 	httpClient   *http.Client
 	tokenSource  connector.TokenSource
 	apiBase      string // e.g. "https://www.googleapis.com/youtube/v3" or test server URL
+	transcripts  TranscriptProvider
+	now          func() time.Time
 }
 
-// searchResponse represents the YouTube Data API v3 search.list response.
-type searchResponse struct {
-	Items []searchItem `json:"items"`
+// channelInfo is a followed channel after resolution.
+type channelInfo struct {
+	ID      string `json:"id"`
+	Handle  string `json:"handle,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Uploads string `json:"uploads"`
 }
 
-type searchItem struct {
-	ID searchItemID `json:"id"`
+type channelsResponse struct {
+	Items []struct {
+		ID      string `json:"id"`
+		Snippet struct {
+			Title     string `json:"title"`
+			CustomURL string `json:"customUrl"`
+		} `json:"snippet"`
+		ContentDetails struct {
+			RelatedPlaylists struct {
+				Uploads string `json:"uploads"`
+			} `json:"relatedPlaylists"`
+		} `json:"contentDetails"`
+	} `json:"items"`
 }
 
-type searchItemID struct {
-	VideoID string `json:"videoId"`
-}
-
-// videoResponse represents the YouTube Data API v3 videos.list response.
-type videoResponse struct {
-	Items []videoItem `json:"items"`
+type playlistItemsResponse struct {
+	Items []struct {
+		ContentDetails struct {
+			VideoID          string `json:"videoId"`
+			VideoPublishedAt string `json:"videoPublishedAt"`
+		} `json:"contentDetails"`
+	} `json:"items"`
 }
 
 type videoItem struct {
-	ID      string       `json:"id"`
-	Snippet videoSnippet `json:"snippet"`
+	ID      string `json:"id"`
+	Snippet struct {
+		Title                string               `json:"title"`
+		Description          string               `json:"description"`
+		PublishedAt          string               `json:"publishedAt"`
+		ChannelID            string               `json:"channelId"`
+		ChannelTitle         string               `json:"channelTitle"`
+		Thumbnails           map[string]thumbnail `json:"thumbnails"`
+		Tags                 []string             `json:"tags"`
+		CategoryID           string               `json:"categoryId"`
+		LiveBroadcastContent string               `json:"liveBroadcastContent"`
+		DefaultAudioLanguage string               `json:"defaultAudioLanguage"`
+		DefaultLanguage      string               `json:"defaultLanguage"`
+	} `json:"snippet"`
+	ContentDetails struct {
+		Duration string `json:"duration"`
+	} `json:"contentDetails"`
+	// Statistics counts arrive as decimal strings. They are used only to
+	// compute buckets and are never staged (glovebox-8wu1).
+	Statistics struct {
+		ViewCount    string  `json:"viewCount"`
+		CommentCount *string `json:"commentCount"`
+	} `json:"statistics"`
+	TopicDetails struct {
+		TopicCategories []string `json:"topicCategories"`
+	} `json:"topicDetails"`
 }
 
-type videoSnippet struct {
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	PublishedAt  string `json:"publishedAt"`
-	ChannelTitle string `json:"channelTitle"`
+type videosResponse struct {
+	Items []videoItem `json:"items"`
 }
 
-// commentThreadsResponse represents the YouTube Data API v3 commentThreads.list response.
 type commentThreadsResponse struct {
-	Items []commentThreadItem `json:"items"`
+	Items []struct {
+		Snippet struct {
+			TopLevelComment struct {
+				Snippet struct {
+					AuthorDisplayName string `json:"authorDisplayName"`
+					TextDisplay       string `json:"textDisplay"`
+				} `json:"snippet"`
+			} `json:"topLevelComment"`
+		} `json:"snippet"`
+	} `json:"items"`
 }
 
-type commentThreadItem struct {
-	Snippet commentThreadSnippet `json:"snippet"`
+// bucketAssessmentDelay is how long after first sight a video's engagement
+// is assessed. Operator decision 2026-11-08: assess at 30 days, when the
+// video has had time to accumulate views, keep only the high/medium/low
+// label, and never hold the counts themselves (Developer Policy III.E.4).
+const bucketAssessmentDelay = 30 * 24 * time.Hour
+
+// bucketPending is the engagement label before the assessment has run.
+const bucketPending = "pending"
+
+func firstSeenKey(videoID string) string { return "seen:" + videoID }
+
+// apiError is a non-200 Data API response. Reason is the first
+// error.errors[].reason (e.g. quotaExceeded, commentsDisabled).
+type apiError struct {
+	Status int
+	Reason string
 }
 
-type commentThreadSnippet struct {
-	TopLevelComment topLevelComment `json:"topLevelComment"`
+func (e *apiError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("HTTP %d from YouTube API (%s)", e.Status, e.Reason)
+	}
+	return fmt.Sprintf("HTTP %d from YouTube API", e.Status)
 }
 
-type topLevelComment struct {
-	Snippet commentSnippet `json:"snippet"`
-}
-
-type commentSnippet struct {
-	TextDisplay string `json:"textDisplay"`
-}
-
-// captionsResponse represents the YouTube Data API v3 captions.list response.
-type captionsResponse struct {
-	Items []captionItem `json:"items"`
-}
-
-type captionItem struct {
-	Snippet captionSnippet `json:"snippet"`
-}
-
-type captionSnippet struct {
-	Language string `json:"language"`
-	Name     string `json:"name"`
-}
-
-// videoContent is the JSON content written to staging for each video.
-type videoContent struct {
-	Title        string   `json:"title"`
-	Description  string   `json:"description"`
-	PublishedAt  string   `json:"publishedAt"`
-	ChannelTitle string   `json:"channelTitle"`
-	Comments         []string `json:"comments,omitempty"`          // top comment texts
-	CaptionLanguages []string `json:"captionLanguages,omitempty"` // available caption languages
+func (c *YouTubeConnector) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now().UTC()
 }
 
 func (c *YouTubeConnector) Poll(ctx context.Context, checkpoint connector.Checkpoint) error {
 	logger := slog.Default()
-
-	for _, channelID := range c.config.ChannelIDs {
+	for _, ch := range c.config.AllChannels() {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := c.pollChannel(ctx, channelID, checkpoint, logger); err != nil {
-			logger.Warn("channel poll failed", "channel", channelID, "error", err)
+		if err := c.pollChannel(ctx, ch, checkpoint, logger); err != nil {
+			logger.Warn("channel poll failed", "channel", ch, "error", err)
+			var ae *apiError
+			if errors.As(err, &ae) && ae.Reason == "quotaExceeded" {
+				// Every further call today fails the same way; stop spending
+				// requests until the next poll.
+				return nil
+			}
 		}
 	}
 	return nil
 }
 
-func (c *YouTubeConnector) pollChannel(ctx context.Context, channelID string, checkpoint connector.Checkpoint, logger *slog.Logger) error {
-	// Step 1: Search for recent videos on this channel.
+// resolveChannel turns a configured entry (UC id or @handle) into a
+// channelInfo, caching the answer in the checkpoint so it costs one
+// channels.list call per channel, ever.
+func (c *YouTubeConnector) resolveChannel(ctx context.Context, entry string, cp connector.Checkpoint) (channelInfo, error) {
+	cacheKey := "resolve:" + entry
+	if raw, ok := cp.Load(cacheKey); ok {
+		var info channelInfo
+		if err := json.Unmarshal([]byte(raw), &info); err == nil && info.ID != "" && info.Uploads != "" {
+			return info, nil
+		}
+	}
+
+	q := neturl.Values{"part": {"snippet,contentDetails"}}
+	if strings.HasPrefix(entry, "UC") && !strings.HasPrefix(entry, "@") {
+		q.Set("id", entry)
+	} else {
+		q.Set("forHandle", entry)
+	}
+	var resp channelsResponse
+	if err := c.getJSON(ctx, "channels", q, &resp); err != nil {
+		return channelInfo{}, fmt.Errorf("resolve channel %s: %w", entry, err)
+	}
+	if len(resp.Items) == 0 {
+		return channelInfo{}, fmt.Errorf("resolve channel %s: no such channel", entry)
+	}
+	it := resp.Items[0]
+	info := channelInfo{
+		ID:      it.ID,
+		Handle:  it.Snippet.CustomURL,
+		Title:   it.Snippet.Title,
+		Uploads: it.ContentDetails.RelatedPlaylists.Uploads,
+	}
+	if info.Uploads == "" {
+		return channelInfo{}, fmt.Errorf("resolve channel %s: no uploads playlist", entry)
+	}
+	if raw, err := json.Marshal(info); err == nil {
+		if err := cp.Save(cacheKey, string(raw)); err != nil {
+			return channelInfo{}, fmt.Errorf("cache channel %s: %w", entry, err)
+		}
+	}
+	return info, nil
+}
+
+type upload struct {
+	ID        string
+	Published string // RFC 3339, from playlistItems contentDetails.videoPublishedAt
+}
+
+func (c *YouTubeConnector) pollChannel(ctx context.Context, entry string, cp connector.Checkpoint, logger *slog.Logger) error {
+	result, ok := c.matcher.Match("channel:" + entry)
+	if !ok {
+		logger.Warn("no rule for channel, skipping", "channel", entry)
+		return nil
+	}
+
+	info, err := c.resolveChannel(ctx, entry, cp)
+	if err != nil {
+		return err
+	}
+
+	// Discovery: the uploads playlist, newest first. contentDetails carries
+	// the video's own publish time (not when it was added to the playlist).
+	var pl playlistItemsResponse
+	if err := c.getJSON(ctx, "playlistItems", neturl.Values{
+		"playlistId": {info.Uploads},
+		"part":       {"contentDetails"},
+		"maxResults": {"50"},
+	}, &pl); err != nil {
+		return fmt.Errorf("list uploads for %s: %w", entry, err)
+	}
+	var uploads []upload
+	for _, it := range pl.Items {
+		if it.ContentDetails.VideoID != "" && it.ContentDetails.VideoPublishedAt != "" {
+			uploads = append(uploads, upload{it.ContentDetails.VideoID, it.ContentDetails.VideoPublishedAt})
+		}
+	}
+	if len(uploads) == 0 {
+		return nil
+	}
+	sort.SliceStable(uploads, func(i, j int) bool { return uploads[i].Published > uploads[j].Published })
+
+	// The checkpoint is keyed by the resolved channel ID so renaming a handle
+	// in config does not replay the channel.
+	cpKey := "channel:" + info.ID
+	last, hasCheckpoint := cp.Load(cpKey)
+
+	var fresh []upload
+	if hasCheckpoint {
+		for _, u := range uploads {
+			if u.Published > last {
+				fresh = append(fresh, u)
+			}
+		}
+		if n := c.config.EffectiveMaxNewPerPoll(); len(fresh) > n {
+			logger.Info("more new uploads than max_new_per_poll; keeping newest", "channel", entry, "new", len(fresh), "kept", n)
+			fresh = fresh[:n]
+		}
+	} else {
+		n := c.config.EffectiveInitialBackfill()
+		if len(uploads) < n {
+			n = len(uploads)
+		}
+		fresh = uploads[:n]
+	}
+	if len(fresh) == 0 {
+		return nil
+	}
+
+	// One batched videos.list call for the fresh uploads. Statistics are NOT
+	// requested: engagement is assessed 30 days after first sight
+	// (bucketAssessmentDelay), never at first sight.
+	ids := make([]string, len(fresh))
+	for i, u := range fresh {
+		ids[i] = u.ID
+	}
+	var vr videosResponse
+	if err := c.getJSON(ctx, "videos", neturl.Values{
+		"id":         {strings.Join(ids, ",")},
+		"part":       {"snippet,contentDetails,topicDetails"},
+		"maxResults": {"50"},
+	}, &vr); err != nil {
+		return fmt.Errorf("fetch video details for %s: %w", entry, err)
+	}
+	byID := map[string]videoItem{}
+	for _, v := range vr.Items {
+		byID[v.ID] = v
+	}
+	now := c.clock()
+
+	// Stage oldest first so the checkpoint only ever moves forward.
+	latest := last
+	for i := len(fresh) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		u := fresh[i]
+		v, ok := byID[u.ID]
+		if !ok {
+			// Private, deleted or not yet processed; nothing to stage.
+			continue
+		}
+		if status := c.fetchCounter.TryFetch(info.ID); !status.Allowed() {
+			logger.Info("fetch limit reached, stopping", "channel", entry, "status", status)
+			break
+		}
+		if err := c.stageVideo(ctx, info, v, now, result); err != nil {
+			return err
+		}
+		// First-seen date per video: the engagement assessment (and the
+		// 30-day refresh of everything else) is scheduled from it
+		// (glovebox-0tzc).
+		if err := cp.Save(firstSeenKey(v.ID), now.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("save first-seen for %s: %w", v.ID, err)
+		}
+		if u.Published > latest {
+			latest = u.Published
+		}
+	}
+
+	if latest != "" && latest != last {
+		if err := cp.Save(cpKey, latest); err != nil {
+			return fmt.Errorf("save checkpoint: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *YouTubeConnector) stageVideo(ctx context.Context, ch channelInfo, v videoItem, now time.Time, result connector.MatchResult) error {
+	logger := slog.Default()
+
+	pub, _ := time.Parse(time.RFC3339, v.Snippet.PublishedAt)
+	assessOn := now.Add(bucketAssessmentDelay).Format("2006-01-02")
+
+	in := renderInput{
+		VideoID:       v.ID,
+		Title:         v.Snippet.Title,
+		ChannelID:     ch.ID,
+		ChannelTitle:  firstNonEmpty(ch.Title, v.Snippet.ChannelTitle),
+		ChannelHandle: ch.Handle,
+		PublishedAt:   v.Snippet.PublishedAt,
+		DurationSec:   parseISODuration(v.ContentDetails.Duration),
+		Thumbnail:     bestThumbnail(v.Snippet.Thumbnails),
+		CategoryID:    v.Snippet.CategoryID,
+		Tags:          v.Snippet.Tags,
+		Topics:        v.TopicDetails.TopicCategories,
+		Language:      firstNonEmpty(v.Snippet.DefaultAudioLanguage, v.Snippet.DefaultLanguage),
+		LiveContent:   v.Snippet.LiveBroadcastContent,
+		Description:   v.Snippet.Description,
+		Chapters:      parseChapters(v.Snippet.Description),
+		Buckets:       buckets{Viewership: bucketPending, Comments: bucketPending},
+		BucketNote:    "assessed 30 days after first seen, on or after " + assessOn,
+	}
+
+	if c.config.ShouldFetchComments() {
+		comments, err := c.fetchComments(ctx, v.ID)
+		if err != nil {
+			logger.Warn("fetch comments failed", "video", v.ID, "error", err)
+		}
+		in.Comments = comments
+	}
+
+	in.Transcript = c.transcript(ctx, v)
+
+	ts := pub
+	if ts.IsZero() {
+		ts = now
+	}
+	item, err := c.writer.NewItem(connector.ItemOptions{
+		Source:           "youtube",
+		Sender:           ch.ID,
+		Subject:          v.Snippet.Title,
+		Timestamp:        ts,
+		DestinationAgent: result.Destination,
+		ContentType:      "text/markdown",
+		RuleTags:         result.Tags,
+		RuleDataSubject:  result.DataSubject,
+		RuleAudience:     result.Audience,
+		Identity:         &connector.Identity{Provider: "youtube", AuthMethod: "api_key"},
+	})
+	if err != nil {
+		return fmt.Errorf("new staging item: %w", err)
+	}
+	if err := item.WriteContent([]byte(renderContent(in))); err != nil {
+		return fmt.Errorf("write content: %w", err)
+	}
+	if err := item.Commit(); err != nil {
+		return fmt.Errorf("commit item: %w", err)
+	}
+	return nil
+}
+
+// transcript asks the provider for a transcript, honouring skip_categories.
+// It never fails the item: any problem becomes an explicit marker.
+func (c *YouTubeConnector) transcript(ctx context.Context, v videoItem) transcriptResult {
+	for _, cat := range c.config.Transcript.EffectiveSkipCategories() {
+		if v.Snippet.CategoryID == cat {
+			return transcriptResult{Status: transcriptSkipped, Reason: "category " + cat}
+		}
+	}
+	p := c.transcripts
+	if p == nil {
+		p = noTranscriptProvider{}
+	}
+	r, err := p.Transcript(ctx, v.ID, c.config.Transcript.EffectiveLanguages())
+	if err != nil {
+		slog.Default().Warn("transcript fetch failed", "video", v.ID, "error", err)
+		return transcriptResult{Status: transcriptError, Reason: "provider failed"}
+	}
+	if r.Status == "" {
+		r.Status = transcriptUnavailable
+	}
+	return r
+}
+
+// fetchComments returns the top comments by relevance. Comments disabled on the
+// video is not an error.
+func (c *YouTubeConnector) fetchComments(ctx context.Context, videoID string) ([]comment, error) {
+	var resp commentThreadsResponse
+	err := c.getJSON(ctx, "commentThreads", neturl.Values{
+		"videoId":    {videoID},
+		"part":       {"snippet"},
+		"maxResults": {strconv.Itoa(c.config.EffectiveMaxComments())},
+		"order":      {"relevance"},
+		"textFormat": {"plainText"},
+	}, &resp)
+	if err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.Reason == "commentsDisabled" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("comment threads for %s: %w", videoID, err)
+	}
+	var out []comment
+	for _, it := range resp.Items {
+		s := it.Snippet.TopLevelComment.Snippet
+		if s.TextDisplay != "" {
+			out = append(out, comment{Author: s.AuthorDisplayName, Text: s.TextDisplay})
+		}
+	}
+	return out, nil
+}
+
+// getJSON calls one Data API method. The key travels as a query parameter;
+// errors never include the URL, so the key cannot leak into logs.
+func (c *YouTubeConnector) getJSON(ctx context.Context, method string, q neturl.Values, out any) error {
 	apiKey, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("get api key: %w", err)
 	}
-
-	searchURL := fmt.Sprintf(
-		"%s/search?channelId=%s&type=video&order=date&maxResults=10&part=snippet&key=%s",
-		c.apiBase, channelID, apiKey,
-	)
-
-	searchBody, err := c.fetchAPI(ctx, searchURL)
+	q.Set("key", apiKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/"+method+"?"+q.Encode(), nil)
 	if err != nil {
-		return fmt.Errorf("search videos for %s: %w", channelID, err)
+		return fmt.Errorf("build %s request", method)
 	}
-
-	var searchResp searchResponse
-	if err := json.Unmarshal(searchBody, &searchResp); err != nil {
-		return fmt.Errorf("parse search response for %s: %w", channelID, err)
-	}
-
-	if len(searchResp.Items) == 0 {
-		return nil
-	}
-
-	cpKey := "channel:" + channelID
-	lastPublishedAt, hasCheckpoint := checkpoint.Load(cpKey)
-
-	ruleKey := "channel:" + channelID
-	result, ok := c.matcher.Match(ruleKey)
-	if !ok {
-		logger.Warn("no rule for channel, skipping", "channel", channelID)
-		return nil
-	}
-
-	var latestPublishedAt string
-
-	// Step 2: For each video, fetch full details.
-	for _, si := range searchResp.Items {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		videoID := si.ID.VideoID
-		if videoID == "" {
-			continue
-		}
-
-		videoURL := fmt.Sprintf(
-			"%s/videos?id=%s&part=snippet&key=%s",
-			c.apiBase, videoID, apiKey,
-		)
-
-		videoBody, err := c.fetchAPI(ctx, videoURL)
-		if err != nil {
-			logger.Warn("fetch video details failed", "video", videoID, "error", err)
-			continue
-		}
-
-		var videoResp videoResponse
-		if err := json.Unmarshal(videoBody, &videoResp); err != nil {
-			logger.Warn("parse video details failed", "video", videoID, "error", err)
-			continue
-		}
-
-		if len(videoResp.Items) == 0 {
-			continue
-		}
-
-		video := videoResp.Items[0]
-
-		// Checkpoint dedup: skip videos published at or before the last checkpoint.
-		if hasCheckpoint && video.Snippet.PublishedAt <= lastPublishedAt {
-			continue
-		}
-
-		if status := c.fetchCounter.TryFetch(channelID); !status.Allowed() {
-			logger.Info("fetch limit reached, stopping", "channel", channelID, "status", status)
-			break
-		}
-
-		content := videoContent{
-			Title:        video.Snippet.Title,
-			Description:  video.Snippet.Description,
-			PublishedAt:  video.Snippet.PublishedAt,
-			ChannelTitle: video.Snippet.ChannelTitle,
-		}
-
-		// Fetch comments for this video.
-		if c.config.ShouldFetchComments() {
-			comments, err := c.fetchComments(ctx, videoID, apiKey)
-			if err != nil {
-				logger.Warn("fetch comments failed", "video", videoID, "error", err)
-			} else if len(comments) > 0 {
-				content.Comments = comments
-			}
-		}
-
-		// Fetch caption metadata for this video.
-		if c.config.ShouldFetchCaptions() {
-			captions, err := c.fetchCaptions(ctx, videoID, apiKey)
-			if err != nil {
-				logger.Warn("fetch captions failed", "video", videoID, "error", err)
-			} else if len(captions) > 0 {
-				content.CaptionLanguages = captions
-			}
-		}
-
-		contentData, err := json.Marshal(content)
-		if err != nil {
-			return fmt.Errorf("marshal video content: %w", err)
-		}
-
-		ts, _ := time.Parse(time.RFC3339, video.Snippet.PublishedAt)
-		if ts.IsZero() {
-			ts = time.Now().UTC()
-		}
-
-		item, err := c.writer.NewItem(connector.ItemOptions{
-			Source:           "youtube",
-			Sender:           channelID,
-			Subject:          video.Snippet.Title,
-			Timestamp:        ts,
-			DestinationAgent: result.Destination,
-			ContentType:      "application/json",
-			RuleTags:         result.Tags,
-			Identity:         &connector.Identity{Provider: "youtube", AuthMethod: "api_key"},
-		})
-		if err != nil {
-			return fmt.Errorf("new staging item: %w", err)
-		}
-
-		if err := item.WriteContent(contentData); err != nil {
-			return fmt.Errorf("write content: %w", err)
-		}
-
-		if err := item.Commit(); err != nil {
-			return fmt.Errorf("commit item: %w", err)
-		}
-
-		// Track the latest publishedAt for checkpoint.
-		if video.Snippet.PublishedAt > latestPublishedAt {
-			latestPublishedAt = video.Snippet.PublishedAt
-		}
-	}
-
-	// Save checkpoint with the latest publishedAt.
-	if latestPublishedAt != "" {
-		if err := checkpoint.Save(cpKey, latestPublishedAt); err != nil {
-			return fmt.Errorf("save checkpoint: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (c *YouTubeConnector) fetchAPI(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// NOTE: YouTube API uses the key as a query parameter (already in the URL).
-	// Do NOT set an Authorization header.
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Strip the URL from the error to avoid leaking the API key.
 		var urlErr *neturl.Error
 		if errors.As(err, &urlErr) {
-			return nil, fmt.Errorf("YouTube API request failed: %s: %w", urlErr.Op, urlErr.Err)
+			return fmt.Errorf("YouTube API %s request failed: %s: %w", method, urlErr.Op, urlErr.Err)
 		}
-		return nil, fmt.Errorf("YouTube API request failed: %w", err)
+		return fmt.Errorf("YouTube API %s request failed: %w", method, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from YouTube API", resp.StatusCode)
-	}
-
 	const maxBody = 10 << 20 // 10 MB
-	limited := io.LimitReader(resp.Body, maxBody)
-	return io.ReadAll(limited)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return fmt.Errorf("read %s response: %w", method, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		ae := &apiError{Status: resp.StatusCode}
+		var e struct {
+			Error struct {
+				Errors []struct {
+					Reason string `json:"reason"`
+				} `json:"errors"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &e) == nil && len(e.Error.Errors) > 0 {
+			ae.Reason = e.Error.Errors[0].Reason
+		}
+		return fmt.Errorf("%s: %w", method, ae)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("parse %s response: %w", method, err)
+	}
+	return nil
 }
 
-// fetchComments retrieves the top comments for a video via the commentThreads API.
-func (c *YouTubeConnector) fetchComments(ctx context.Context, videoID, apiKey string) ([]string, error) {
-	maxComments := c.config.EffectiveMaxComments()
-	url := fmt.Sprintf(
-		"%s/commentThreads?videoId=%s&part=snippet&maxResults=%d&order=relevance&key=%s",
-		c.apiBase, videoID, maxComments, apiKey,
-	)
-
-	body, err := c.fetchAPI(ctx, url)
-	if err != nil {
-		return nil, fmt.Errorf("fetch comment threads for %s: %w", videoID, err)
-	}
-
-	var resp commentThreadsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse comment threads for %s: %w", videoID, err)
-	}
-
-	var comments []string
-	for _, item := range resp.Items {
-		text := item.Snippet.TopLevelComment.Snippet.TextDisplay
-		if text != "" {
-			comments = append(comments, text)
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
 		}
 	}
-	return comments, nil
-}
-
-// fetchCaptions retrieves caption metadata (available languages) for a video.
-// Full subtitle text download requires OAuth, so in API-key mode we only
-// include the languages and track names that are available.
-func (c *YouTubeConnector) fetchCaptions(ctx context.Context, videoID, apiKey string) ([]string, error) {
-	url := fmt.Sprintf(
-		"%s/captions?videoId=%s&part=snippet&key=%s",
-		c.apiBase, videoID, apiKey,
-	)
-
-	body, err := c.fetchAPI(ctx, url)
-	if err != nil {
-		return nil, fmt.Errorf("fetch captions for %s: %w", videoID, err)
-	}
-
-	var resp captionsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse captions for %s: %w", videoID, err)
-	}
-
-	var languages []string
-	for _, item := range resp.Items {
-		if item.Snippet.Language != "" {
-			languages = append(languages, item.Snippet.Language)
-		}
-	}
-	return languages, nil
+	return ""
 }

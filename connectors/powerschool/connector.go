@@ -443,7 +443,7 @@ func (c *PowerSchoolConnector) pollNow(ctx context.Context, cp connector.Checkpo
 		return fmt.Errorf("powerschool: no client to poll with")
 	}
 
-	env := Env{Client: client, Writer: writer, Matcher: matcher, CP: cp, Tel: tel, TZ: c.tz}
+	env := Env{Client: client, Writer: writer, Matcher: matcher, CP: cp, Tel: tel, TZ: c.tz, Now: c.now}
 
 	total, kidsRead, authErr := c.pollKids(ctx, env)
 	if authErr != nil && c.Gate.Synchronous() {

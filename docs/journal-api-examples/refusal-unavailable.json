@@ -1,0 +1,5 @@
+{
+  "detail": "the journal is starting or cannot reach its database or roster",
+  "reason": "unavailable",
+  "status": "rejected"
+}
