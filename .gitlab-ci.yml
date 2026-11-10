@@ -418,6 +418,9 @@ build-base:
     IMAGE: glovebox-enricher-runtime
     DOCKERFILE: Dockerfile.enricher-runtime
   rules: *build_rules
+  # Same bound as `build` (glovebox-if8s): a hung base-image pull fails
+  # after 40 min rather than the 1h default.
+  timeout: 40m
 
 # ---------------------------------------------------------------------------
 # build: every connector + importer + the main image, in parallel via matrix.
@@ -431,6 +434,10 @@ build:
   stage: build
   needs: ["build-base"]
   rules: *build_rules
+  # Bounded below GitLab's 1h default (glovebox-if8s): successful builds take
+  # 6-37 min, so a base-image pull that hangs on the registry mirror now
+  # costs this lane at most 40 min instead of the full hour.
+  timeout: 40m
   # THREE BUILD LANES. Every build pod is pinned to johnny (ci-templates),
   # requests 2Gi and peaks at ~3.4Gi working set; johnny has ~9Gi left after
   # its resident workloads, so about three fit. Unbounded, the runner starts

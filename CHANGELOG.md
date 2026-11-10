@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Image builds pin the Go builder to `golang:1.27.3-bookworm`**
+  (glovebox-if8s). Every Dockerfile build stage (core, connectors,
+  importers, `Dockerfile.builder`, the generator template) used the floating
+  `docker.io/golang:1.27`, which a pull-through registry mirror could not
+  sync, so kaniko builds waited on the pull until the 1h job timeout. The
+  pin matches the tag the CI `test` and integration jobs already use, and a
+  Renovate rule bumps the builder tag in all Dockerfiles and the CI file in
+  one MR. Same Go release (1.27.3); the floating tag was the Debian trixie
+  variant, the pin is bookworm, which matches the bookworm/debian12 runtime
+  stages. Every binary is built with `CGO_ENABLED=0`, so the builder's libc
+  does not reach the images. The `build` and `build-base` CI jobs now time
+  out at 40 minutes (successful builds take 6-37) so a hung pull costs less
+  runner time.
 - **Chart: the Schoology session refresher runs daily by default**
   (`schoologyAuthRefresher.schedule` `0 6 * * *`, was every 12 days). A
   session lasts well under 32 hours, so the old default left the connector
