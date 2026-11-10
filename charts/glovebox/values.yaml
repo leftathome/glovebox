@@ -1894,9 +1894,13 @@ connectors:
 # Schoology connector resources.
 schoologyAuthRefresher:
   enabled: false
-  # Every 12 days at 06:00 cluster TZ; ~48h headroom before the 14-day
-  # Schoology cookie expiry.
-  schedule: "0 6 */12 * *"
+  # Daily at 06:00 cluster TZ. A Schoology browser session does not last
+  # as long as its cookie claims: observed 2026-10-10, valid at +6.6h and
+  # a login page by +32h (glovebox-wekc.11), so the old every-12-days
+  # default left the connector without a session for days. Schedule a run
+  # shortly before each connector poll window if you poll more than once a
+  # day (one login per run; the account may allow only one session).
+  schedule: "0 6 * * *"
   image:
     repository: ghcr.io/leftathome/glovebox-schoology-auth-refresher
     # tag defaults to .Chart.AppVersion when empty.

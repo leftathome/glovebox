@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Chart: the Schoology session refresher runs daily by default**
+  (`schoologyAuthRefresher.schedule` `0 6 * * *`, was every 12 days). A
+  session lasts well under 32 hours, so the old default left the connector
+  waiting days for a new one (glovebox-wekc.11). Releases that set their
+  own schedule are unaffected; the refresher is off by default.
 - **Connector records tests no longer flake on a stalled disk**
   (glovebox-062i). `TestRecordsOnStagesTheSameItems` (Schoology) failed
   "1 answers, want 8" on main pipelines while image builds saturated the
