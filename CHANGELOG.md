@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-10
+
+### Upgrade notes
+
+No chart value, Vault or gitops change has to land first. Deploy it in
+place of 0.13.x. Four things change for a running release:
+
+- **Ingest backpressure tracks staging** (glovebox-0dfx). Each ingest
+  listener recounts the staged item directories every
+  `poll_interval_seconds`, so `glovebox_staging_queue_depth` now reports
+  what is in staging instead of every item accepted since the pod started,
+  and a long-lived pod no longer 429s all ingest once
+  `backpressure_threshold` items have passed through it. A dashboard or
+  alert that read the old ever-growing value will see it drop.
+- **The Vault token is re-acquired** (glovebox-jzli). glovebox logs in
+  again when Vault rejects its token and on the next reload after a failed
+  boot login, instead of failing every token reload until a restart. Vault
+  roles are unchanged; the token TTL now only sets how often it logs in.
+  A refused fresh token is logged as a role/policy problem. The archive
+  listener still needs a restart if its first token load fails at boot.
+- **New token reload metrics** (glovebox-l9zp):
+  `glovebox_ingest_token_reload_total{listener,result}`,
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds`,
+  `glovebox_ingest_tokens_loaded`. Worth alerting on: no successful reload
+  for 30m, failures with no success since start, zero tokens loaded.
+- **Schoology session refresher: daily by default.**
+  `schoologyAuthRefresher.schedule` defaults to `0 6 * * *` (was every 12
+  days). A release with the refresher enabled and no schedule of its own
+  now logs in daily; one that sets a schedule is unaffected.
+
 ### Added
 
 - **Ingest token reload metrics** (glovebox-l9zp), labelled

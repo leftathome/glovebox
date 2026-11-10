@@ -10,6 +10,36 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.14.0 (from 0.13.2)
+
+Nothing has to change first. What changes when it rolls out:
+
+- **`glovebox_staging_queue_depth` now means items in staging.** It is
+  recounted from the staging directory every `poll_interval_seconds`
+  (glovebox-0dfx). Before, it grew with every accepted item until the pod
+  restarted, and at `backpressure_threshold` all ingest got 429 regardless
+  of what staging held -- on orac that stopped ingest for ~36 hours. If a
+  restart has been your workaround for 429s, it no longer is needed.
+- **Token reloads survive token expiry** (glovebox-jzli). With Vault
+  kubernetes auth the core used to log in once at boot; once the token
+  expired (the role's `token_ttl`) every reload failed and new or rotated
+  ingest tokens were never loaded. It now logs in again when Vault rejects
+  the token, at most once a minute. If a freshly issued token is refused
+  too, the log says to check the role and its policy. Exception: if the
+  archive listener's first token load fails at boot, `/v1/archives` still
+  answers 503 until the pod restarts.
+- **Alert on the new reload metrics** (glovebox-l9zp):
+  `glovebox_ingest_token_reload_total{listener,result}` (both `result`
+  series exist from the first reload),
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds` and
+  `glovebox_ingest_tokens_loaded`. A policy that allows listing the token
+  entries but not reading them gives successful reloads of zero tokens.
+- **Schoology refresher schedule default is daily** (`0 6 * * *`, was
+  every 12 days). Set `schoologyAuthRefresher.schedule` explicitly if you
+  relied on the old cadence.
+
+---
+
 ## Upgrading to 0.13.2 (from 0.13.1)
 
 A fix for the core's liveness probe: `/healthz` no longer writes to the
