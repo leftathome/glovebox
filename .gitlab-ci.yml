@@ -25,6 +25,11 @@ include:
   - project: 'homelab/ci-templates'
     ref: v0.1.1
     file: '/kaniko.yml'
+  # The light-job lane: small, arch-independent jobs extend `.light-job`, which
+  # carries their placement and sizing (and nothing global).
+  - project: 'homelab/ci-templates'
+    ref: v0.3.0
+    file: '/light.yml'
 
 stages:
   - test
@@ -382,6 +387,8 @@ integration:schoology:
 # artifact. Does not itself fail the pipeline -- the connector jobs already do.
 # ---------------------------------------------------------------------------
 integration-report:
+  # Light job: one multi-arch alpine image, a cat of a few small artifacts.
+  extends: .light-job
   stage: integration-report
   image: alpine:3
   rules:
