@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`github.com/go-jose/go-jose/v4` v4.1.4 -> v4.1.9** (CVE-2026-116587,
+  HIGH, fixed in 4.1.6; glovebox-2eq5). Denial of service via crafted RSA
+  parameters in a JWK. Indirect, through `github.com/hashicorp/vault/api`;
+  govulncheck finds no reachable call, but Trivy's filesystem scan failed
+  the release pipeline on it since 0.13.1.
+- **CI: `aquasecurity/trivy-action` pinned to a commit** (v0.36.0) in all
+  seven uses, instead of the moving `@master` branch, so a change upstream
+  cannot alter the release pipeline unreviewed.
+
 ## [0.14.0] - 2026-11-10
 
 ### Upgrade notes
