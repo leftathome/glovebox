@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **The Schoology refresher's Vault policy must allow the login-state
+  path before this deploys.** Grant `create`, `read` and `update` on
+  `<kvMount>/data/<statePath>` (default: `login-state` beside
+  `schoologyAuthRefresher.vault.sessionPath`). The session path stays
+  write-only. Without it the refresher fails safe: every run exits 4
+  (`secret_read_failed`) before starting a browser. Optionally grant
+  `update` on `auth/token/revoke-self` too; the refresher now revokes its
+  token at the end of a run, and a denied revoke is ignored.
+- The latch starts unset, so the first run after the upgrade logs in.
+- `schoologyAuthRefresher.suspend` (new, `false`) renders the CronJob's
+  `spec.suspend: true` when set; nothing is rendered when it is false.
+  Whether a CronJob suspended by hand stays suspended across an upgrade
+  then depends on how the release is applied and reconciled, so if the
+  job must stay off, set `suspend: true` in the same change as the
+  upgrade.
+
+### Fixed
+
+- **schoology-auth-refresher: a login that was not confirmed no longer
+  repeats at every scheduled run** (glovebox-iham). The refresher exited 3 on schoology-go's
+  `ErrBadCredentials` and `podFailurePolicy` stopped the Job, but the next
+  scheduled run logged in again with the same credentials. It now keeps a
+  login latch in Vault beside the session (`schoologyAuthRefresher.vault.statePath`,
+  shared code with the PowerSchool login job, `internal/loginvault`), with a
+  salted fingerprint of the credentials:
+  - a login left on the `/login` form after the submit (exit 3: not
+    confirmed, password possibly rejected -- the library cannot tell a
+    rejection from a slow page) sets the latch;
+  - a login that submitted the credentials and got no session (timeout,
+    SSO redirect, no session on the page) exits 5; two in a row set the
+    latch, a success resets the count. A failure before the submit stays
+    exit 1 and counts for nothing;
+  - while the latch is set for the configured credentials, a run exits 6
+    without starting a browser. It clears itself when the credentials
+    change, or by hand (docs/AUTH-RECOVERY.md, "The refresher's login
+    latch");
+  - the state record is written before every login, so a run that could
+    not record a rejection does not log in; a run that dies during its
+    login leaves a marker the next run counts as unconfirmed.
+  Exits 5 and 6 join the CronJob's `podFailurePolicy` FailJob codes, so
+  only exit 1 (nothing submitted) is retried within a Job. The Browserless
+  token, username and password are redacted from log lines.
+
+### Added
+
+- `schoologyAuthRefresher.suspend` and `schoologyAuthRefresher.vault.statePath`.
+- `GloveboxSchoologyLoginJobFailed` (with `metrics.prometheusRule.enabled`
+  and `schoologyAuthRefresher.enabled`): a failed refresher Job, no `for`.
+  Its severity is `metrics.prometheusRule.schoologyLoginJobSeverity`,
+  default `metrics.prometheusRule.severity`; `critical` is recommended
+  wherever only critical alerts reach a person.
+- `loginvault.Store.Put`: a session write without check-and-set, for a
+  token that may not read the session.
+
 ## [0.14.0] - 2026-11-10
 
 ### Upgrade notes
