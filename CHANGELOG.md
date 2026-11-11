@@ -68,7 +68,10 @@ place of 0.13.x. Five things change for a running release:
   importers, `Dockerfile.builder`, the generator template) used the floating
   `docker.io/golang:1.27`, which a pull-through registry mirror could not
   sync, so kaniko builds waited on the pull until the 1h job timeout. The
-  pin matches the tag the CI `test` and integration jobs already use, and a
+  pin is by tag and digest: a tag request through the mirror still re-checks
+  upstream and can take many minutes, while a digest request is answered
+  from the mirror's store. The pin matches the tag the CI `test` and
+  integration jobs already use, and a
   Renovate rule bumps the builder tag in all Dockerfiles and the CI file in
   one MR. Same Go release (1.27.3); the floating tag was the Debian trixie
   variant, the pin is bookworm, which matches the bookworm/debian12 runtime
