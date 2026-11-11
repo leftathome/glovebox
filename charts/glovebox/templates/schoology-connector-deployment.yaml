@@ -40,6 +40,7 @@ metadata:
     glovebox.io/connector: schoology
 spec:
   replicas: 1
+  {{- with include "glovebox.rolloutStrategy" . }}{{ . | nindent 2 }}{{ end }}
   selector:
     matchLabels:
       {{- include "glovebox.connectorSelectorLabels" (dict "Chart" .Chart "Release" .Release "Values" .Values "connector" "schoology") | nindent 6 }}
