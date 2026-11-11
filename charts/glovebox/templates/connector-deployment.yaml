@@ -46,6 +46,7 @@ metadata:
     glovebox.io/connector: {{ $name }}
 spec:
   replicas: 1
+  {{- with include "glovebox.rolloutStrategy" $ }}{{ . | nindent 2 }}{{ end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "glovebox.name" $ }}
