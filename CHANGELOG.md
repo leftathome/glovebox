@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the release pipeline on it since 0.13.1.
 - **CI: `aquasecurity/trivy-action` pinned to a commit** (v0.36.0) in all
   seven uses, instead of the moving `@master` branch, so a change upstream
-  cannot alter the release pipeline unreviewed.
+  cannot alter the release pipeline unreviewed. The steps set the scanner
+  version explicitly (`version: v0.76.2`): at the pinned commit the action
+  defaults to Trivy v0.70.0, older than what `@master` was installing.
 
 ## [0.14.0] - 2026-11-10
 
