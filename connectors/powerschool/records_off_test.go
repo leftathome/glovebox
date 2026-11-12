@@ -23,17 +23,6 @@ import (
 	"github.com/leftathome/glovebox/internal/journal/journalapi"
 )
 
-// emitterWait bounds the waits for the records emitter to deliver or drain
-// the spool: real HTTP plus a spool delete with a directory fsync per answer,
-// sent back to back (glovebox-062i; connector/records uses the same bound,
-// asyncWait, since dcbb003). The bound costs nothing when the test passes --
-// each wait ends the moment its condition holds -- and only decides how long
-// a stuck emitter takes to fail. The schoology copy of this test failed in CI
-// while image builds saturated the node's disk; this one fails the same way
-// with every fsync delayed by 1.5s. Waits on the fake sink in
-// records_emit_test.go do no I/O and stay short.
-const emitterWait = 2 * time.Minute
-
 // recentConfigOnRecordRules is recentConfig on the record rules, records
 // off: the baseline the "on" runs are compared with.
 func recentConfigOnRecordRules() Config {
@@ -308,12 +297,11 @@ func TestRecordsOnStagesTheSameItems(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	on.c.startRecords(ctx)
-	deadline := time.Now().Add(emitterWait)
 	// 8 snapshots per kid: one per course surface, one per school year of
 	// attendance (marks, days), the history, and two comment terms.
-	for on.recordsMetrics(t)["glovebox_journal_spool_answers_total"] < 16 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForProgress(t, "spool answers", func() int64 {
+		return on.recordsMetrics(t)["glovebox_journal_spool_answers_total"]
+	}, 16)
 	answers := on.journal.Answers()
 	if len(answers) == 0 {
 		t.Fatalf("nothing reached the journal; log:\n%s", on.logs.String())
