@@ -291,10 +291,10 @@ func TestRecordsAgainstTheJournal(t *testing.T) {
 		if err := c.pollNow(context.Background(), cp, "scheduled", -1); err != nil {
 			t.Fatalf("pollNow: %v", err)
 		}
-		deadline := time.Now().Add(emitterWait)
-		for pendingSpoolFiles(t, stateDir) > 0 && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		// The spool drains: progress is a fall in the pending count.
+		waitForProgress(t, "pending spool files", func() int64 {
+			return -int64(pendingSpoolFiles(t, stateDir))
+		}, 0)
 		if n := pendingSpoolFiles(t, stateDir); n > 0 {
 			t.Fatalf("%d snapshots still in the spool; log:\n%s", n, logs.String())
 		}
