@@ -10,6 +10,14 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.15.1 (from 0.14.0 or 0.15.0)
+
+Use 0.15.1 rather than 0.15.0: same changes, plus release binaries for
+darwin and windows (v0.15.0 has container images and a chart but no
+GitHub release). Everything in the 0.15.0 section below applies,
+including the Vault policy that must land first. From 0.15.0 nothing
+has to change.
+
 ## Upgrading to 0.15.0 (from 0.14.0)
 
 One thing must land first if the Schoology refresher is enabled:

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-12
+
+### Fixed
+
+- **Release binaries build for darwin and windows again.** The YouTube
+  connector's process-group kill (0.15.0) used `syscall.Kill` and
+  `SysProcAttr.Setpgid`, which exist only on Unix, so the GitHub release
+  workflow's windows build failed and v0.15.0 has no GitHub release or
+  binaries (its container images and chart were published). The code is
+  now split by build tag; on Windows a cancelled yt-dlp run kills the
+  process itself and `WaitDelay` bounds the wait. Linux behaviour is
+  unchanged.
+
+### Changed
+
+- CI: the `test` job also builds `./...` for windows/amd64 and
+  darwin/arm64, so a Unix-only call fails the MR instead of the tag.
+
 ## [0.15.0] - 2026-11-12
 
 ### Upgrade notes
