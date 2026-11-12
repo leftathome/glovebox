@@ -10,6 +10,46 @@ at 02:00 with uploads failing.
 
 ---
 
+## Upgrading to 0.15.0 (from 0.14.0)
+
+One thing must land first if the Schoology refresher is enabled:
+
+- **Vault policy for the refresher's login latch.** Grant `create`, `read`
+  and `update` on `<kvMount>/data/<statePath>` (default: `login-state`
+  beside `schoologyAuthRefresher.vault.sessionPath`, e.g.
+  `secret/data/glovebox/schoology/default/login-state`). The session path
+  stays write-only. Without it the refresher fails safe: every run exits 4
+  before starting a browser, and `GloveboxSchoologyLoginJobFailed` fires.
+  Optionally grant `update` on `auth/token/revoke-self`.
+
+What changes when it rolls out, and what to set:
+
+- **The Schoology refresher no longer repeats a login that was not
+  confirmed.** After one rejected-looking login (exit 3), or two unconfirmed
+  ones (exit 5), later runs exit 6 without starting a browser until the
+  credentials in Vault change or the latch is cleared
+  (docs/AUTH-RECOVERY.md, "The refresher's login latch"). The latch starts
+  unset, so the first run after the upgrade logs in. If the CronJob has
+  been suspended by hand, set `schoologyAuthRefresher.suspend: true` in
+  the same change, or the upgrade may re-enable it.
+- **Alert on refresher failures**: with `metrics.prometheusRule.enabled`,
+  `GloveboxSchoologyLoginJobFailed` renders. Set
+  `metrics.prometheusRule.schoologyLoginJobSeverity: critical` where only
+  critical alerts reach a person.
+- **Nodes near their CPU requests**: set
+  `rolloutStrategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 0,
+  maxUnavailable: 1}}`. With the default, each one-replica Deployment needs
+  a surge pod beside the old one; when none fits, the Helm wait times out
+  and the release rolls back (as 0.14.0 did on a full node). Each pod is
+  then down for its own restart.
+- **YouTube transcripts** are opt-in:
+  `connectors.youtube.config.transcript.provider: yt-dlp`. The YouTube
+  image is now `python:3.13-slim-bookworm` + yt-dlp, not distroless.
+- Dependency updates and the go-jose security fix (CVE-2026-116587) need
+  no action.
+
+---
+
 ## Upgrading to 0.14.0 (from 0.13.2)
 
 Nothing has to change first. What changes when it rolls out:

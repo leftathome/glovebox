@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-12
+
 ### Upgrade notes
 
 - **The Schoology refresher's Vault policy must allow the login-state
@@ -24,9 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then depends on how the release is applied and reconciled, so if the
   job must stay off, set `suspend: true` in the same change as the
   upgrade.
+- **The YouTube connector image is no longer distroless.** It is
+  `python:3.13-slim-bookworm` (digest-pinned) with yt-dlp, for the new
+  transcript provider; roughly 130-160 MB larger. Transcripts stay off
+  until `connectors.youtube.config.transcript.provider: yt-dlp` is set
+  (default `none`). yt-dlp uses YouTube's internal endpoints; enabling
+  it is the operator's call (docs/connectors/youtube.md).
 
 ### Fixed
 
+- **Records tests wait on progress, not a fixed 2 minutes**
+  (glovebox-062i follow-up; main pipeline 4475). The PowerSchool and
+  Schoology records tests now fail only when delivery stops moving for
+  2 minutes or after 10 minutes in all, so a CI node saturated by image
+  builds no longer turns `test-journal-db` red.
 - **schoology-auth-refresher: a login that was not confirmed no longer
   repeats at every scheduled run** (glovebox-iham). The refresher exited 3 on schoology-go's
   `ErrBadCredentials` and `podFailurePolicy` stopped the Job, but the next
@@ -54,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **YouTube transcripts via yt-dlp** (glovebox-9zmo), opt-in with
+  `transcript.provider: yt-dlp`. Captions only, never the video: two
+  `--skip-download` runs per new video, English by default
+  (`transcript.languages`), Music skipped (`transcript.skip_categories`),
+  90s per video (`transcript.timeout`). No shell; argv only; process
+  group killed on timeout; output capped (8 MiB info JSON, 4 MiB VTT,
+  1 MiB transcript text, truncated with a marker). yt-dlp is pinned
+  with hashes (`--require-hashes`). A provider failure never fails the
+  item: it reads `transcript: error (provider failed)`.
 - `schoologyAuthRefresher.suspend` and `schoologyAuthRefresher.vault.statePath`.
 - `GloveboxSchoologyLoginJobFailed` (with `metrics.prometheusRule.enabled`
   and `schoologyAuthRefresher.enabled`): a failed refresher Job, no `for`.
@@ -69,6 +91,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each one-replica upgrade needs a surge pod to fit next to the old one, and
   when none fits the pods stay Pending, the Helm wait times out and the
   release rolls back. `scripts/test-chart-rollout.sh` covers it.
+
+### Changed
+
+- Go module updates: opentelemetry-go v1.47.0 (exporters/prometheus
+  v0.69.0), prometheus/client_golang v1.25.0, pgx/v5 v5.13.0, goquery
+  v1.13.0, golang.org/x/text v0.44.0, oapi-codegen v2.8.2 (sanitizeapi
+  regenerated: it no longer stores an empty bearer-scope list in the
+  request context, which nothing read). Go builder 1.27.4.
+- CI: shared templates `homelab/ci-templates` v0.3.0; `integration-report`
+  runs on the light-job lane (orac04).
 
 ### Security
 

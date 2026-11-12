@@ -181,7 +181,7 @@ docker pull ghcr.io/leftathome/glovebox-imap:latest
 ### Helm chart
 
 ```sh
-helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.14.0
+helm install glovebox oci://ghcr.io/leftathome/charts/glovebox --version 0.15.0
 ```
 
 See `docs/deployment.md` for full Kubernetes deployment instructions including
