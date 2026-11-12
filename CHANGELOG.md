@@ -70,6 +70,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when none fits the pods stay Pending, the Helm wait times out and the
   release rolls back. `scripts/test-chart-rollout.sh` covers it.
 
+### Security
+
+- **`github.com/go-jose/go-jose/v4` v4.1.4 -> v4.1.9** (CVE-2026-116587,
+  HIGH, fixed in 4.1.6; glovebox-2eq5). Denial of service via crafted RSA
+  parameters in a JWK. Indirect, through `github.com/hashicorp/vault/api`;
+  govulncheck finds no reachable call, but Trivy's filesystem scan failed
+  the release pipeline on it since 0.13.1.
+- **CI: `aquasecurity/trivy-action` pinned to a commit** (v0.36.0) in all
+  seven uses, instead of the moving `@master` branch, so a change upstream
+  cannot alter the release pipeline unreviewed. The steps set the scanner
+  version explicitly (`version: v0.76.2`): at the pinned commit the action
+  defaults to Trivy v0.70.0, older than what `@master` was installing.
+
 ## [0.14.0] - 2026-11-10
 
 ### Upgrade notes
@@ -242,6 +255,12 @@ markdown and the connector discovers uploads through the uploads playlist
 
 ### Changed
 
+- **youtube: `transcript.provider: yt-dlp`** (glovebox-9zmo): English
+  captions as the item's transcript, captions only (`--skip-download`, one
+  exact track per video, creator captions preferred). The youtube image is
+  now `python:3.13-slim` with yt-dlp pinned in
+  `connectors/youtube/requirements.txt` (no longer distroless). The default
+  stays `none`; set the provider to opt in.
 - **youtube engagement is assessed 30 days after first sight, not at first
   sight.** At an hourly poll a new video is found within its first hour,
   when per-day view rates rank nearly everything `low`. New items now read

@@ -42,9 +42,14 @@ type Config struct {
 
 // TranscriptConfig selects the transcript provider (glovebox-iwqm).
 type TranscriptConfig struct {
-	// Provider: "none" (default). Further providers are added behind the
-	// TranscriptProvider seam.
+	// Provider: "none" (default) or "yt-dlp" (captions only, never the
+	// video; glovebox-9zmo).
 	Provider string `json:"provider,omitempty"`
+	// YtdlpPath is the yt-dlp executable for provider "yt-dlp". Default
+	// "yt-dlp" (on PATH in the connector image).
+	YtdlpPath string `json:"ytdlp_path,omitempty"`
+	// Timeout per video for provider "yt-dlp", a Go duration. Default "90s".
+	Timeout string `json:"timeout,omitempty"`
 	// Languages in preference order. Default ["en"].
 	Languages []string `json:"languages,omitempty"`
 	// SkipCategories are videoCategory IDs for which no transcript is
@@ -140,6 +145,19 @@ func newTranscriptProvider(t TranscriptConfig) (TranscriptProvider, error) {
 	switch t.Provider {
 	case "", "none":
 		return noTranscriptProvider{}, nil
+	case "yt-dlp":
+		p := ytdlpProvider{bin: t.YtdlpPath, timeout: 90 * time.Second}
+		if p.bin == "" {
+			p.bin = "yt-dlp"
+		}
+		if t.Timeout != "" {
+			d, err := time.ParseDuration(t.Timeout)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("transcript.timeout %q is not a positive duration", t.Timeout)
+			}
+			p.timeout = d
+		}
+		return p, nil
 	}
-	return nil, fmt.Errorf("transcript.provider %q is not supported (supported: none)", t.Provider)
+	return nil, fmt.Errorf("transcript.provider %q is not supported (supported: none, yt-dlp)", t.Provider)
 }
