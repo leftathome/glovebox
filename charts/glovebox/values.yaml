@@ -453,6 +453,15 @@ metrics:
     enabled: false
     labels: {}        # additional labels (e.g., release: prometheus)
     severity: warning
+    # Severity of GloveboxSchoologyLoginJobFailed (with
+    # schoologyAuthRefresher.enabled): a failed Schoology session refresher
+    # Job -- among them a login that was not confirmed (exit 3) and the
+    # latch holding further logins off (exit 6). Empty: `severity` above.
+    # Recommended: critical. Each failure means no new session, and while
+    # the latch holds none will come until a person acts; route it where a
+    # person reads it (an Alertmanager that only notifies on critical drops
+    # a warning).
+    schoologyLoginJobSeverity: ""
     # How long the latch must be seen set before the alert fires.
     latchedFor: 5m
     # Polls skipped for want of a session, in 24h, before the alert fires.
@@ -1922,6 +1931,11 @@ schoologyAuthRefresher:
   # shortly before each connector poll window if you poll more than once a
   # day (one login per run; the account may allow only one session).
   schedule: "0 6 * * *"
+  # true renders the CronJob with spec.suspend: true, so no scheduled run
+  # starts until it is set back to false; the hold survives Helm upgrades.
+  # Nothing is rendered while it is false. A Job created by hand from the
+  # CronJob still runs.
+  suspend: false
   image:
     repository: ghcr.io/leftathome/glovebox-schoology-auth-refresher
     # tag defaults to .Chart.AppVersion when empty.
@@ -1950,6 +1964,15 @@ schoologyAuthRefresher:
     # KV v2 path receiving the 5-field session JSON the refresher
     # writes; ESO syncs it into the connector pod.
     sessionPath: "glovebox/schoology/default/session"
+    # KV v2 path of the refresher's own record: the login latch, the count
+    # of unconfirmed logins in a row, and a salted fingerprint of the
+    # credentials last submitted (never the values). Empty: "login-state"
+    # beside the session (glovebox/schoology/default/login-state). Never
+    # the session path itself. The refresher's Vault policy must grant
+    # create, read and update on it (the session path stays write-only);
+    # without read, every run exits 4 before logging in. To clear a latch:
+    # delete this secret (docs/AUTH-RECOVERY.md).
+    statePath: ""
     refreshInterval: "1m"
     secretStoreRef:
       kind: ClusterSecretStore

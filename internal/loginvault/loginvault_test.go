@@ -2,6 +2,7 @@ package loginvault_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,5 +226,30 @@ func TestAttemptInProgressAndTheDailyCount(t *testing.T) {
 	s.CountLogin("2026-10-13")
 	if s.LoginDay != "2026-10-13" || s.LoginDayCount != 1 {
 		t.Errorf("a new day did not start a new count: %+v", s)
+	}
+}
+
+// Put writes the session over whatever is there, without check-and-set and
+// without reading it first: a token that may only create and update the
+// session path (the Schoology refresher's) can still store a session.
+func TestPutWritesWithoutCheckAndSet(t *testing.T) {
+	vaulttest.CleanEnv(t)
+	v := vaulttest.New(t)
+	store := connect(t, v)
+	ctx := context.Background()
+
+	v.Put(sessionPath, map[string]any{"sess_id": "old"})
+	before := len(v.Requests())
+	version, err := store.Put(ctx, map[string]any{"sess_id": "new"})
+	if err != nil || version != 2 {
+		t.Fatalf("Put over an existing session: version %d, %v", version, err)
+	}
+	if raw, _ := v.Secret(sessionPath); raw["sess_id"] != "new" {
+		t.Errorf("stored session = %v", raw)
+	}
+	for _, r := range v.Requests()[before:] {
+		if !strings.HasPrefix(r, "PUT ") && !strings.HasPrefix(r, "POST ") {
+			t.Errorf("Put made a request other than the write: %q", r)
+		}
 	}
 }
