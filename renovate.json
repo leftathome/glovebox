@@ -19,6 +19,18 @@
       ],
       "groupName": "golang docker image",
       "pinDigests": true
+    },
+    {
+      "description": "The youtube connector's runtime base (python, for yt-dlp) is pinned by digest like the Go builder.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "python",
+        "docker.io/python",
+        "docker.io/library/python"
+      ],
+      "pinDigests": true
     }
   ]
 }

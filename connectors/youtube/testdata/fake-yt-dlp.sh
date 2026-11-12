@@ -3,7 +3,9 @@
 #   1. --dump-single-json  -> print an info JSON listing caption tracks
 #   2. --load-info-json    -> write exactly the --sub-langs track asked for
 # FAKE_YTDLP_MODE selects the video: both (creator en-US + auto en-orig/en
-# + a machine-translated en-de), auto (auto only), none, fail, sleep.
+# + a machine-translated en-de), auto (auto only), none, fail, sleep,
+# bigjson (info JSON over the stdout cap), bigvtt (caption file over the file
+# cap), bigtext (caption text over the transcript cap, file under the file cap).
 # Every argv is appended to $FAKE_YTDLP_ARGS; any call without
 # --skip-download fails, so a regression that would fetch media fails the test.
 printf '%s\n' "---" "$@" >> "$FAKE_YTDLP_ARGS"
@@ -20,9 +22,10 @@ case "$FAKE_YTDLP_MODE" in
   sleep) sleep 30;;
 esac
 if [ "$dump" = 1 ]; then
+  if [ "$FAKE_YTDLP_MODE" = bigjson ]; then head -c 9000000 /dev/zero | tr '\0' 'a'; exit 0; fi
   manual='{}'; auto='{}'
   [ "$FAKE_YTDLP_MODE" = both ] && manual='{"en-US":[{"ext":"vtt"}],"live_chat":[{"ext":"json"}]}'
-  [ "$FAKE_YTDLP_MODE" = both ] || [ "$FAKE_YTDLP_MODE" = auto ] && auto='{"en-orig":[{"ext":"vtt"}],"en":[{"ext":"vtt"}],"en-de":[{"ext":"vtt"}]}'
+  case "$FAKE_YTDLP_MODE" in both|auto|bigvtt|bigtext) auto='{"en-orig":[{"ext":"vtt"}],"en":[{"ext":"vtt"}],"en-de":[{"ext":"vtt"}]}';; esac
   printf '{"id":"vid1","subtitles":%s,"automatic_captions":%s}\n' "$manual" "$auto"
   exit 0
 fi
@@ -41,7 +44,11 @@ Creator line one.
 Creator line two &amp; more.
 V
   ;;
-  en-orig|en) cat > "$dir/vid1.$code.vtt" <<'V'
+  en-orig|en) case "$FAKE_YTDLP_MODE" in
+    bigvtt) { printf 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n'; head -c 5000000 /dev/zero | tr '\0' 'a'; printf '\n'; } > "$dir/vid1.$code.vtt"; exit 0;;
+    bigtext) { printf 'WEBVTT\n\n'; awk 'BEGIN{for(i=0;i<30000;i++) printf "00:00:00.000 --> 00:00:01.000\nline number %d filler filler filler filler\n\n", i}'; } > "$dir/vid1.$code.vtt"; exit 0;;
+  esac
+  cat > "$dir/vid1.$code.vtt" <<'V'
 WEBVTT
 Kind: captions
 Language: en

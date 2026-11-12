@@ -14,7 +14,7 @@ import (
 //
 //	go test -c -o yt.test ./connectors/youtube
 //	podman run --rm --read-only --tmpfs /tmp -v ./yt.test:/yt.test:ro \
-//	  -e YOUTUBE_YTDLP_LIVE=vFMU2m-TZ3s --entrypoint /yt.test <image> -test.run Live -test.v
+//	  -e YOUTUBE_YTDLP_LIVE=<video id> --entrypoint /yt.test <image> -test.run Live -test.v
 func TestYtdlpLive(t *testing.T) {
 	id := os.Getenv("YOUTUBE_YTDLP_LIVE")
 	if id == "" {

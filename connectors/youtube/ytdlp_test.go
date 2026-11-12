@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func fakeYtdlp(t *testing.T, mode string) (ytdlpProvider, string) {
@@ -143,5 +144,54 @@ func TestChooseTrack(t *testing.T) {
 		if code != tc.code || isManual != tc.isManual {
 			t.Errorf("chooseTrack(%v, %v) = %q, %v; want %q, %v", tc.manual, tc.auto, code, isManual, tc.code, tc.isManual)
 		}
+	}
+}
+
+func TestYtdlpOversizeInfoJSONIsAnError(t *testing.T) {
+	p, _ := fakeYtdlp(t, "bigjson")
+	_, err := p.Transcript(context.Background(), "vid1", []string{"en"})
+	if err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("err = %v, want output-exceeded error", err)
+	}
+}
+
+func TestYtdlpOversizeCaptionFileIsAnError(t *testing.T) {
+	p, _ := fakeYtdlp(t, "bigvtt")
+	_, err := p.Transcript(context.Background(), "vid1", []string{"en"})
+	if err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("err = %v, want caption-file limit error", err)
+	}
+}
+
+func TestYtdlpOversizeTranscriptIsTruncated(t *testing.T) {
+	p, _ := fakeYtdlp(t, "bigtext")
+	r, err := p.Transcript(context.Background(), "vid1", []string{"en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != transcriptAvailable || len(r.Text) > maxTranscriptBytes || !strings.HasSuffix(r.Text, truncatedMarker) {
+		t.Fatalf("status %v, text %d bytes", r.Status, len(r.Text))
+	}
+}
+
+func TestTruncateTextRuneBoundary(t *testing.T) {
+	in := strings.Repeat("\u00e9", 100)
+	out := truncateText(in, 60)
+	if len(out) > 60 || !utf8.ValidString(out) || !strings.HasSuffix(out, truncatedMarker) {
+		t.Fatalf("out = %q (%d bytes)", out, len(out))
+	}
+	if truncateText("short", 60) != "short" {
+		t.Fatal("short text changed")
+	}
+}
+
+func TestTailWriterKeepsLastBytes(t *testing.T) {
+	w := &tailWriter{max: 10}
+	for i := 0; i < 100; i++ {
+		w.Write([]byte("0123456789"))
+	}
+	w.Write([]byte("END"))
+	if got := string(w.Bytes()); got != "3456789END" {
+		t.Fatalf("tail = %q", got)
 	}
 }

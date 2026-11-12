@@ -1,4 +1,6 @@
 # Transcript provider for the youtube connector (glovebox-9zmo): captions only,
 # never media (--skip-download). Renovate bumps this; YouTube breaks yt-dlp
 # often, so a stale pin shows up as "transcript: error" on items.
-yt-dlp==2026.10.26
+yt-dlp==2026.10.26 \
+    --hash=sha256:a05c5b5d8562f7e8a62f5334348b406af4930d56d3a65f8021d14af0e22339ae \
+    --hash=sha256:abe5c6b94c3b2f0560500add1c42e0a97641752743a5b65588ac2007a6e23eb6

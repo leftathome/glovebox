@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // ytdlpProvider fetches English captions with yt-dlp, subtitles ONLY
@@ -76,19 +77,99 @@ func (p ytdlpProvider) Transcript(ctx context.Context, videoID string, langs []s
 	); err != nil {
 		return transcriptResult{}, err
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, videoID+"."+code+".vtt"))
+	vttPath := filepath.Join(dir, videoID+"."+code+".vtt")
+	st, err := os.Stat(vttPath)
 	if err != nil {
 		return transcriptResult{}, fmt.Errorf("read captions: %w", err)
 	}
-	text := vttToText(string(raw))
+	if st.Size() > maxVTTBytes {
+		return transcriptResult{}, fmt.Errorf("caption file is %d bytes, over the %d byte limit", st.Size(), maxVTTBytes)
+	}
+	raw, err := os.ReadFile(vttPath)
+	if err != nil {
+		return transcriptResult{}, fmt.Errorf("read captions: %w", err)
+	}
+	text := truncateText(vttToText(string(raw)), maxTranscriptBytes)
 	if strings.TrimSpace(text) == "" {
 		return transcriptResult{Status: transcriptUnavailable, Reason: "caption track was empty"}, nil
 	}
 	return transcriptResult{Status: transcriptAvailable, Language: code + ", " + kind, Text: text}, nil
 }
 
-// run executes yt-dlp in dir and returns its stdout.
+// Output caps. yt-dlp output is untrusted input from a remote service; none
+// of it may grow without bound in this process.
+const (
+	maxInfoBytes       = 8 << 20 // stdout of the info-JSON run
+	maxVTTBytes        = 4 << 20 // one caption file on disk
+	maxTranscriptBytes = 1 << 20 // transcript text handed back to the caller
+	stderrKeepBytes    = 1024    // tail of stderr kept for error messages
+	truncatedMarker    = "\n\n[transcript truncated]"
+)
+
+// capWriter collects up to max bytes and, on the first byte beyond that,
+// marks itself over and calls onOver (to kill the child). It keeps accepting
+// writes, discarding them, so the child is never stuck on a full pipe.
+type capWriter struct {
+	buf    []byte
+	max    int
+	over   bool
+	onOver func()
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.over {
+		return len(p), nil
+	}
+	if len(w.buf)+len(p) > w.max {
+		w.over = true
+		w.buf = nil
+		if w.onOver != nil {
+			w.onOver()
+		}
+		return len(p), nil
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+// tailWriter keeps only the last max bytes written.
+type tailWriter struct {
+	buf []byte
+	max int
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > 2*w.max {
+		w.buf = append([]byte(nil), w.buf[len(w.buf)-w.max:]...)
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) Bytes() []byte {
+	if len(w.buf) > w.max {
+		return w.buf[len(w.buf)-w.max:]
+	}
+	return w.buf
+}
+
+// truncateText cuts s to at most max bytes (on a rune boundary) and appends a
+// marker when it had to.
+func truncateText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len(truncatedMarker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + truncatedMarker
+}
+
+// run executes yt-dlp in dir and returns its stdout (at most maxInfoBytes).
 func (p ytdlpProvider) run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	base := []string{"--no-progress", "--quiet", "--no-warnings"}
 	cmd := exec.CommandContext(ctx, p.bin, append(base, args...)...)
 	cmd.Dir = dir
@@ -97,16 +178,21 @@ func (p ytdlpProvider) run(ctx context.Context, dir string, args ...string) ([]b
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	stderr := &tailWriter{max: stderrKeepBytes}
+	cmd.Stderr = stderr
+	out := &capWriter{max: maxInfoBytes, onOver: cancel}
+	cmd.Stdout = out
+	err := cmd.Run()
+	if out.over {
+		return nil, fmt.Errorf("yt-dlp output exceeded %d bytes", maxInfoBytes)
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("yt-dlp timed out after %s", p.timeout)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp: %w: %s", err, lastLine([]byte(stderr.String())))
+		return nil, fmt.Errorf("yt-dlp: %w: %s", err, lastLine(stderr.Bytes()))
 	}
-	return out, nil
+	return out.buf, nil
 }
 
 func lastLine(b []byte) string {
