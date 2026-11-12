@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rolloutStrategy` chart value** for the core and every connector
+  Deployment (generic connectors and Schoology). Empty by default, so the
+  render is unchanged. Set `rollingUpdate: {maxSurge: 0, maxUnavailable: 1}`
+  on a node near its CPU requests: with the Kubernetes default (maxSurge 25%)
+  each one-replica upgrade needs a surge pod to fit next to the old one, and
+  when none fits the pods stay Pending, the Helm wait times out and the
+  release rolls back. `scripts/test-chart-rollout.sh` covers it.
+
 ### Security
 
 - **`github.com/go-jose/go-jose/v4` v4.1.4 -> v4.1.9** (CVE-2026-116587,
@@ -79,7 +89,10 @@ place of 0.13.x. Five things change for a running release:
   importers, `Dockerfile.builder`, the generator template) used the floating
   `docker.io/golang:1.27`, which a pull-through registry mirror could not
   sync, so kaniko builds waited on the pull until the 1h job timeout. The
-  pin matches the tag the CI `test` and integration jobs already use, and a
+  pin is by tag and digest: a tag request through the mirror still re-checks
+  upstream and can take many minutes, while a digest request is answered
+  from the mirror's store. The pin matches the tag the CI `test` and
+  integration jobs already use, and a
   Renovate rule bumps the builder tag in all Dockerfiles and the CI file in
   one MR. Same Go release (1.27.3); the floating tag was the Debian trixie
   variant, the pin is bookworm, which matches the bookworm/debian12 runtime
