@@ -10,7 +10,7 @@ public data with a YouTube Data API v3 key; no OAuth, no personal data.
 | Image | `ghcr.io/leftathome/glovebox-youtube` |
 | Credential class | `test-account` (YouTube Data API key), see [integration-credentials.md](integration-credentials.md) |
 | Tier | `feed` (triage diverts items to caro, out of per-agent recall) |
-| Enricher runtime | no (distroless) |
+| Enricher runtime | no (`python:3.13-slim` + yt-dlp for transcripts; not distroless) |
 | Live integration test | none yet |
 
 ## Authentication
@@ -101,9 +101,25 @@ thumbnails held downstream (caro). Refresh/expiry is tracked in glovebox-0tzc.
 
 **Transcripts.** The Data API cannot supply transcripts for videos you do not
 own (`captions.download` needs edit permission on the video). The transcript
-step is a `TranscriptProvider` seam; the default provider `none` marks every
-item `transcript: unavailable (no transcript provider configured)`. Videos in
-`transcript.skip_categories` (default Music, `10`) are marked `skipped`.
+step is a `TranscriptProvider` seam with two providers:
+
+- `none` (default): every item reads
+  `transcript: unavailable (no transcript provider configured)`.
+- `yt-dlp` (operator decision, glovebox-9zmo): English captions only, never
+  the video. Two yt-dlp runs per new video, both `--skip-download`: one lists
+  the caption tracks, the second fetches exactly one of them (a creator
+  upload in a preferred language if there is one, else YouTube's
+  original-language automatic captions; machine-translated tracks are never
+  used). The VTT becomes plain text with a `[m:ss]` marker about every minute.
+  This uses YouTube's internal player endpoints, not the Data API, which
+  YouTube's terms bar as automated access; enabling it is the operator's call.
+  A failure (yt-dlp broken by a YouTube change, rate limiting) never fails
+  the item: it reads `transcript: error (provider failed)` and the connector
+  logs the yt-dlp error. yt-dlp is pinned in
+  `connectors/youtube/requirements.txt` and bumped by Renovate.
+
+Videos in `transcript.skip_categories` (default Music, `10`) are marked
+`skipped` without calling the provider.
 
 ## Configuration
 
@@ -130,7 +146,9 @@ Connector-specific fields:
 | `max_new_per_poll` | int | `10` | cap per channel per poll; the newest are kept |
 | `fetch_comments` | bool | `true` | include top comments (by relevance) |
 | `max_comments` | int | `25` | comments per video (max 100) |
-| `transcript.provider` | string | `none` | transcript provider |
+| `transcript.provider` | string | `none` | `none` or `yt-dlp` |
+| `transcript.ytdlp_path` | string | `yt-dlp` | yt-dlp executable (on PATH in the image) |
+| `transcript.timeout` | duration | `90s` | per-video limit for the provider |
 | `transcript.languages` | `[]string` | `["en"]` | preferred transcript languages |
 | `transcript.skip_categories` | `[]string` | `["10"]` | category IDs that get no transcript |
 

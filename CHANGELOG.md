@@ -255,6 +255,12 @@ markdown and the connector discovers uploads through the uploads playlist
 
 ### Changed
 
+- **youtube: `transcript.provider: yt-dlp`** (glovebox-9zmo): English
+  captions as the item's transcript, captions only (`--skip-download`, one
+  exact track per video, creator captions preferred). The youtube image is
+  now `python:3.13-slim` with yt-dlp pinned in
+  `connectors/youtube/requirements.txt` (no longer distroless). The default
+  stays `none`; set the provider to opt in.
 - **youtube engagement is assessed 30 days after first sight, not at first
   sight.** At an hourly poll a new video is found within its first hour,
   when per-day view rates rank nearly everything `low`. New items now read
