@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -175,8 +174,7 @@ func (p ytdlpProvider) run(ctx context.Context, dir string, args ...string) ([]b
 	cmd.Dir = dir
 	// yt-dlp may leave children holding the output pipe; kill the whole
 	// group on timeout and stop waiting soon after.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	setProcessGroupKill(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	stderr := &tailWriter{max: stderrKeepBytes}
 	cmd.Stderr = stderr
