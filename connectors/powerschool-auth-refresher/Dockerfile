@@ -10,7 +10,7 @@
 # remote-browser option. So this image is what the Schoology refresher's was
 # before it moved to Browserless: debian:bookworm-slim with the apt
 # Chromium, run as a real non-root user.
-FROM docker.io/golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
+FROM docker.io/golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

@@ -1,4 +1,26 @@
 {{/*
+Deployment strategy for the core and connector Deployments, from
+.Values.rolloutStrategy (values.yaml says when to set it). Call with the
+root context. Renders nothing when the value is empty; rollingUpdate is
+rendered only for type RollingUpdate.
+*/}}
+{{- define "glovebox.rolloutStrategy" -}}
+{{- $s := .Values.rolloutStrategy | default dict -}}
+{{- if $s -}}
+{{- $type := $s.type | default "RollingUpdate" -}}
+{{- if not (has $type (list "RollingUpdate" "Recreate")) -}}
+{{- fail (printf "rolloutStrategy.type must be RollingUpdate or Recreate, got %v" $type) -}}
+{{- end -}}
+strategy:
+  type: {{ $type }}
+{{- if and (eq $type "RollingUpdate") $s.rollingUpdate }}
+  rollingUpdate:
+    {{- toYaml $s.rollingUpdate | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Expand the name of the chart.
 */}}
 {{- define "glovebox.name" -}}

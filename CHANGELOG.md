@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wherever only critical alerts reach a person.
 - `loginvault.Store.Put`: a session write without check-and-set, for a
   token that may not read the session.
+- **`rolloutStrategy` chart value** for the core and every connector
+  Deployment (generic connectors and Schoology). Empty by default, so the
+  render is unchanged. Set `rollingUpdate: {maxSurge: 0, maxUnavailable: 1}`
+  on a node near its CPU requests: with the Kubernetes default (maxSurge 25%)
+  each one-replica upgrade needs a surge pod to fit next to the old one, and
+  when none fits the pods stay Pending, the Helm wait times out and the
+  release rolls back. `scripts/test-chart-rollout.sh` covers it.
 
 ## [0.14.0] - 2026-11-10
 
