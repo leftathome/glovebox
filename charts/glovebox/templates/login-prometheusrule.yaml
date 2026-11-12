@@ -7,7 +7,8 @@ get a session -- an exit would be a restart loop that touches the portal --
 so a pod restart is no longer the alert. These rules are. One PrometheusRule
 object, with a group per enabled broker, one for the connector when it is
 wired to a broker, one for the connector's session wait, and one for the
-scheduled login Jobs; and one for the Schoology connector's session wait.
+scheduled login Jobs; one for the Schoology connector's session wait; and
+one for the Schoology session refresher's Jobs (schoologyAuthRefresher).
 
 A connector waiting for a new session is Ready (glovebox-wekc.17): readiness
 gates Helm upgrades and rollbacks of the whole release, and waiting is not a
@@ -114,6 +115,18 @@ several releases, narrow them through metrics.prometheusRule.extraSelector.
           "annotations" (dict
             "summary" "A PowerSchool login Job failed: {{ $labels.job_name }}"
             "description" "The pod's termination message names the outcome (kubectl describe pod). Exit 8, outcome=login_state_conflict, means the login state was changed by another login workload while this run was deciding and NO LOGIN WAS MADE for this window. Exit 3 or 6 is the latch. A failed login Job is never re-run automatically (backoffLimit 0). Needs kube-state-metrics.")))) }}
+{{- end }}
+{{- if .Values.schoologyAuthRefresher.enabled }}
+{{- $groups = append $groups (dict
+      "name" "glovebox-schoology-scheduled-login"
+      "rules" (list
+        (dict
+          "alert" "GloveboxSchoologyLoginJobFailed"
+          "expr" (printf "max by (job_name) (kube_job_status_failed{namespace=%q,job_name=~\"%s-schoology-auth-refresher-.*\"}) > 0" .Release.Namespace (include "glovebox.fullname" .))
+          "labels" (dict "severity" ($pr.schoologyLoginJobSeverity | default ($pr.severity | default "warning")))
+          "annotations" (dict
+            "summary" "A Schoology session refresher Job failed: {{ $labels.job_name }}"
+            "description" "The refresher log names the outcome (kubectl logs on the Job's pod). Exit 3, outcome=bad_credentials: the login was NOT CONFIRMED -- the page stayed on Schoology's /login form after the submit, so the password was possibly rejected (or the page was slow); the latch is now set. Exit 5, outcome=login_unconfirmed: the credentials were submitted and no session came back; two in a row set the latch. Exit 6, outcome=login_blocked: the latch is held and NO LOGIN WAS MADE; every later run exits 6 until the credentials change in Vault or the latch is cleared by deleting the refresher's login-state secret (schoologyAuthRefresher.vault.statePath; docs/AUTH-RECOVERY.md). Exit 4: Vault refused a read or write (the policy must allow create, read and update on the state path). Check the account in a browser before clearing the latch. Needs kube-state-metrics.")))) }}
 {{- end }}
 {{- if $groups }}
 apiVersion: monitoring.coreos.com/v1

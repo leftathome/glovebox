@@ -76,6 +76,11 @@ type Telemetry struct {
 	authRejectedByIPBucket metric.Int64Counter // remote_ip_bucket label
 	tokenLoadErrorsTotal   metric.Int64Counter // per-source token load errors
 
+	// Token reload health (glovebox-l9zp), labelled by listener.
+	tokenReloadTotal       metric.Int64Counter // result: success/failure
+	tokenReloadLastSuccess metric.Float64Gauge // unix seconds of the last successful reload
+	tokensLoaded           metric.Int64Gauge   // tokens in the store after the last successful reload
+
 	tracer trace.Tracer
 }
 
@@ -181,6 +186,22 @@ func NewTelemetry(meterName, tracerName string) (*Telemetry, error) {
 		metric.WithDescription("Spec 10 §4.1 per-source token-load errors (malformed Vault entry, etc.)"))
 	if err != nil {
 		return nil, fmt.Errorf("construct glovebox_ingest_token_load_errors_total: %w", err)
+	}
+	t.tokenReloadTotal, err = meter.Int64Counter("glovebox_ingest_token_reload_total",
+		metric.WithDescription("Ingest token store reloads by listener and result (success/failure)"))
+	if err != nil {
+		return nil, fmt.Errorf("construct glovebox_ingest_token_reload_total: %w", err)
+	}
+	t.tokenReloadLastSuccess, err = meter.Float64Gauge("glovebox_ingest_token_reload_last_success_timestamp_seconds",
+		metric.WithDescription("Unix time of the last successful ingest token store reload, by listener"),
+		metric.WithUnit("s"))
+	if err != nil {
+		return nil, fmt.Errorf("construct glovebox_ingest_token_reload_last_success_timestamp_seconds: %w", err)
+	}
+	t.tokensLoaded, err = meter.Int64Gauge("glovebox_ingest_tokens_loaded",
+		metric.WithDescription("Ingest tokens in the store after the last successful reload, by listener"))
+	if err != nil {
+		return nil, fmt.Errorf("construct glovebox_ingest_tokens_loaded: %w", err)
 	}
 
 	return t, nil
@@ -394,6 +415,33 @@ func (t *Telemetry) RecordTokenLoadError(ctx context.Context, sourceID string) {
 	t.tokenLoadErrorsTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("source_id", sourceID),
 	))
+}
+
+// RecordTokenReload records one TokenStore.Reload outcome for listener
+// ("archive" or "sanitize"). A failure bumps
+// glovebox_ingest_token_reload_total{result="failure"} and leaves the
+// last-success time and token count as they were, so "no successful
+// reload for N minutes" is alertable. Wire it as auth.ReloadConfig.OnReload.
+func (t *Telemetry) RecordTokenReload(ctx context.Context, listener string, err error, tokensLoaded int) {
+	if t == nil {
+		return
+	}
+	l := attribute.String("listener", listener)
+	failure := metric.WithAttributes(l, attribute.String("result", "failure"))
+	success := metric.WithAttributes(l, attribute.String("result", "success"))
+	// Add 0 to the other result so both series exist from the first reload:
+	// a listener that fails once and never reloads again (the archive
+	// listener after a failed boot load) is then "failure > 0, success == 0"
+	// rather than a missing series an alert cannot see.
+	if err != nil {
+		t.tokenReloadTotal.Add(ctx, 1, failure)
+		t.tokenReloadTotal.Add(ctx, 0, success)
+		return
+	}
+	t.tokenReloadTotal.Add(ctx, 1, success)
+	t.tokenReloadTotal.Add(ctx, 0, failure)
+	t.tokenReloadLastSuccess.Record(ctx, float64(time.Now().UnixNano())/1e9, metric.WithAttributes(l))
+	t.tokensLoaded.Record(ctx, int64(tokensLoaded), metric.WithAttributes(l))
 }
 
 // StartSpan is a thin wrapper over the package tracer's Start. Callers

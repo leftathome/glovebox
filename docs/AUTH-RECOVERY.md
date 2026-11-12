@@ -6,7 +6,7 @@ cookie expires.
 > **Note (2026-05-21):** an in-cluster refresher (spec 06 §12) is
 > being implemented to automate this procedure on a 12-day CronJob
 > schedule. Once it's deployed, this document remains the **fallback
-> procedure** when the refresher itself fails (bad credentials, IdP
+> procedure** when the refresher itself fails (a login it could not confirm, IdP
 > precondition change, anti-automation block, etc.).
 
 ## When this applies
@@ -183,6 +183,79 @@ Securely delete the workstation copy of the JSON:
 shred -u /tmp/schoology-session.json   # Linux
 # or: rm -P /tmp/schoology-session.json   # macOS
 ```
+
+## The refresher's login latch
+
+The in-cluster refresher (`schoology-auth-refresher`, spec 06 section 12)
+keeps a record in Vault beside the session, at
+`schoologyAuthRefresher.vault.statePath` (default: `login-state` beside the
+session, e.g. `secret/glovebox/schoology/<household>/login-state`). The
+connector never reads it. It holds the **latch**, the count of unconfirmed
+logins in a row, and a salted SHA-256 fingerprint of the credentials last
+submitted (never the values). It is the same record the PowerSchool login
+job keeps (`docs/connectors/powerschool-auth-refresher.md`, "Clearing the
+latch"), for the Schoology account.
+
+The latch is set when a login was **not confirmed**:
+
+- **exit 3**, `outcome=bad_credentials`: after the submit the page was
+  still Schoology's `/login` form (schoology-go's `ErrBadCredentials`: the
+  URL still contained `/login` three polls, about 1.5s, after the submit).
+  The password was possibly rejected; a slow page looks the same, so this
+  is not proof of a wrong password. The latch is set at once.
+- **exit 5**, `outcome=login_unconfirmed`: the credentials were (or may have
+  been) submitted and no session came back (a timeout, a redirect off the
+  tenant host, a page without a session). The second in a row sets the
+  latch. A successful login resets the count. A failure before the submit
+  (Browserless unreachable, the login form not found) is exit 1 and counts
+  for nothing.
+
+While the latch is set for the configured credentials, every run logs
+`login blocked` with `outcome=login_blocked` and **exits 6 without starting
+a browser**: nothing is sent to Schoology. With `metrics.prometheusRule`
+on, `GloveboxSchoologyLoginJobFailed` fires for each failed Job (route it at
+`critical`, `metrics.prometheusRule.schoologyLoginJobSeverity`).
+
+### Seeing the latch
+
+```bash
+KV=secret
+STATE=glovebox/schoology/<household>/login-state
+kubectl logs -n glovebox job/<failed refresher job>   # outcome=..., blocked_reason=...
+vault kv get -mount="$KV" "$STATE"
+```
+
+`login_blocked` is `"true"` while it holds; `blocked_reason` is
+`credentials_rejected` (exit 3) or `login_unconfirmed` (exit 5 twice);
+`blocked_at` is when; `unconfirmed_count` the count.
+
+### Clearing the latch
+
+First find out why: sign in to Schoology yourself in a browser with the
+same account and see what it does (a changed password, a notice to accept,
+a CAPTCHA, a district SSO redirect). Then either:
+
+- **Change the credentials** in the credentials source the refresher reads
+  (`schoologyAuthRefresher.vault.credentialsPath`). Once ESO has synced the
+  new values, the next run sees a different fingerprint and proceeds;
+  nothing to clear.
+- **Clear the latch**, when the credentials were right all along (the page
+  was slow, or the owner has dealt with what Schoology asked for):
+
+  ```bash
+  vault kv get -mount="$KV" "$STATE"            # look first
+  vault kv metadata delete -mount="$KV" "$STATE"
+  ```
+
+  This needs an operator token; the refresher's own policy cannot delete.
+  The next run starts from an empty record (and a new salt). To run it now
+  rather than at the next schedule:
+  `kubectl create job -n glovebox --from=cronjob/<release>-schoology-auth-refresher manual-$(date +%s)`.
+
+Do not clear the latch to "try again" with credentials Schoology may have
+rejected: repeated submissions are what the latch exists to prevent. To
+hold the job off meanwhile, set `schoologyAuthRefresher.suspend: true`
+(rendered as the CronJob's `spec.suspend`, so it survives upgrades).
 
 ## Troubleshooting
 

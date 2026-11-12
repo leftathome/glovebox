@@ -604,9 +604,11 @@ The refresher comprises four artifacts:
    + `chromium` adds ~150 MiB but matches what the manual flow does
    on an operator's workstation.
 3. **`charts/glovebox/templates/schoology-auth-refresher-cronjob.yaml`**
-   -- a Helm-templated `CronJob` running every 12 days
-   (`schedule: "0 6 */12 * *"`) roughly 48 hours before the 14-day
-   session expiry window. Job `backoffLimit: 3`,
+   -- a Helm-templated `CronJob` running daily by default
+   (`schedule: "0 6 * * *"`). The 14-day session window this spec first
+   assumed was wrong: a session lasts well under 32 hours (observed
+   2026-10-10, glovebox-wekc.11), so deployments that poll more than once
+   a day schedule a run shortly before each poll window. Job `backoffLimit: 3`,
    `activeDeadlineSeconds: 600` (10 minutes), `restartPolicy: Never`,
    plus a `podFailurePolicy` that fails-fast on exit codes 2/3/4 so
    the Job controller doesn't retry bad-credentials past the lockout
@@ -638,14 +640,28 @@ Per-invocation flow:
 3. Construct a context with a 5-minute timeout (login + write should
    complete in <2 minutes; the buffer covers Chromium cold-start
    plus DOM-change tolerance).
-4. Invoke `auth.LoginWithPassword(ctx, host, user, pass)`. On
+4. Read the login state record (`VAULT_STATE_PATH`, default
+   `login-state` beside the session; `internal/loginvault`). If the
+   latch is set for the configured credentials' fingerprint, exit code 6
+   (`login_blocked`) without starting a browser. Then write the record
+   (fingerprint, attempt marker) before logging in; if it cannot be
+   written, do not log in (exit 4 or 1).
+5. Invoke `auth.LoginWithPassword(ctx, host, user, pass)`. On
    error:
-   - `auth.ErrInvalidCredentials` (if the library distinguishes it) ->
-     exit code 3 (`bad credentials`). Operator must update the source
-     Vault KV path. Do NOT retry.
-   - any other error -> exit code 1 (`transient`). The Job's
-     `backoffLimit` handles retry.
-5. Marshal `*Credentials` to a flat map and write it to
+   - `auth.ErrBadCredentials` -> exit code 3 (`bad_credentials`). The
+     library returns it when the URL still contains `/login` three polls
+     (about 1.5s) after the submit: the login was NOT CONFIRMED and the
+     password was possibly rejected, which is not proof of it. The latch
+     is set. Do NOT retry.
+   - an error from before the submit (browser connection, login page,
+     finding or filling the form) -> exit code 1 (`transient`). Nothing
+     was submitted; the Job's `backoffLimit` handles retry.
+   - any other error (`ErrLoginTimeout`, `ErrSSORequired`, no session on
+     the landing page, anything unrecognised) -> exit code 5
+     (`login_unconfirmed`). The second in a row sets the latch. Not
+     retried within the Job.
+   A successful login resets the unconfirmed count.
+6. Marshal `*Credentials` to a flat map and write it to
    `<VAULT_KV_MOUNT>/data/<VAULT_SESSION_PATH>` via
    `client.KVv2(mount).Put(ctx, path, data)`.
    - On a 4xx response (permission denied, path malformed): exit code
@@ -653,7 +669,7 @@ Per-invocation flow:
      (Vault policy, role binding).
    - On 5xx or network error: exit code 1 (`transient`). Retried by
      `backoffLimit`.
-6. On success, emit a single structured log line at INFO with the
+7. On success, emit a single structured log line at INFO with the
    Vault path written and the response's `version` (KV v2 returns it)
    and exit 0.
 
@@ -671,11 +687,15 @@ logins. Two layers of defense:
   three failures across a single invocation, then the Job surfaces as
   failed and an operator alert fires. No further attempts happen until
   the next CronJob fire or a manual `kubectl create job --from`.
-- **Process-level credential-failure short-circuit**: bad-credentials
-  exit (code 3) MUST NOT be retried; the Job's
+- **Process-level credential-failure short-circuit**: exits 2-6 MUST
+  NOT be retried (`podFailurePolicy` FailJob); the Job's
   `restartPolicy: Never` plus the explicit non-retry classification
-  prevents a wrong password from triggering Schoology's lockout
-  threshold.
+  keeps a run that submitted the credentials from being repeated.
+- **Cross-run login latch** in Vault (step 4 of section 12.4): a login
+  that was not confirmed blocks every later scheduled run (exit 6, no
+  browser) until the credentials change or an operator clears the latch
+  (docs/AUTH-RECOVERY.md, "The refresher's login latch"). Without it the
+  next CronJob fire would submit the same credentials again.
 
 ### 12.6 Trigger Modes
 
@@ -700,7 +720,9 @@ ever needed, a human runs the manual command.
 The refresher must emit, at minimum:
 
 - A structured log line per outcome (`success | bad_credentials |
-  transient_failure | secret_write_failed`).
+  login_unconfirmed | login_blocked | login_in_progress |
+  login_state_conflict | transient_failure | secret_write_failed |
+  secret_read_failed`).
 - Stdout/stderr captured by K8s -- already searchable via the cluster's
   log aggregator.
 - An exit code matching §12.4 so the cluster's Job-failure alert can

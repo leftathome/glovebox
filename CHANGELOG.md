@@ -7,8 +7,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **The Schoology refresher's Vault policy must allow the login-state
+  path before this deploys.** Grant `create`, `read` and `update` on
+  `<kvMount>/data/<statePath>` (default: `login-state` beside
+  `schoologyAuthRefresher.vault.sessionPath`). The session path stays
+  write-only. Without it the refresher fails safe: every run exits 4
+  (`secret_read_failed`) before starting a browser. Optionally grant
+  `update` on `auth/token/revoke-self` too; the refresher now revokes its
+  token at the end of a run, and a denied revoke is ignored.
+- The latch starts unset, so the first run after the upgrade logs in.
+- `schoologyAuthRefresher.suspend` (new, `false`) renders the CronJob's
+  `spec.suspend: true` when set; nothing is rendered when it is false.
+  Whether a CronJob suspended by hand stays suspended across an upgrade
+  then depends on how the release is applied and reconciled, so if the
+  job must stay off, set `suspend: true` in the same change as the
+  upgrade.
+
+### Fixed
+
+- **schoology-auth-refresher: a login that was not confirmed no longer
+  repeats at every scheduled run** (glovebox-iham). The refresher exited 3 on schoology-go's
+  `ErrBadCredentials` and `podFailurePolicy` stopped the Job, but the next
+  scheduled run logged in again with the same credentials. It now keeps a
+  login latch in Vault beside the session (`schoologyAuthRefresher.vault.statePath`,
+  shared code with the PowerSchool login job, `internal/loginvault`), with a
+  salted fingerprint of the credentials:
+  - a login left on the `/login` form after the submit (exit 3: not
+    confirmed, password possibly rejected -- the library cannot tell a
+    rejection from a slow page) sets the latch;
+  - a login that submitted the credentials and got no session (timeout,
+    SSO redirect, no session on the page) exits 5; two in a row set the
+    latch, a success resets the count. A failure before the submit stays
+    exit 1 and counts for nothing;
+  - while the latch is set for the configured credentials, a run exits 6
+    without starting a browser. It clears itself when the credentials
+    change, or by hand (docs/AUTH-RECOVERY.md, "The refresher's login
+    latch");
+  - the state record is written before every login, so a run that could
+    not record a rejection does not log in; a run that dies during its
+    login leaves a marker the next run counts as unconfirmed.
+  Exits 5 and 6 join the CronJob's `podFailurePolicy` FailJob codes, so
+  only exit 1 (nothing submitted) is retried within a Job. The Browserless
+  token, username and password are redacted from log lines.
+
+### Added
+
+- `schoologyAuthRefresher.suspend` and `schoologyAuthRefresher.vault.statePath`.
+- `GloveboxSchoologyLoginJobFailed` (with `metrics.prometheusRule.enabled`
+  and `schoologyAuthRefresher.enabled`): a failed refresher Job, no `for`.
+  Its severity is `metrics.prometheusRule.schoologyLoginJobSeverity`,
+  default `metrics.prometheusRule.severity`; `critical` is recommended
+  wherever only critical alerts reach a person.
+- `loginvault.Store.Put`: a session write without check-and-set, for a
+  token that may not read the session.
+- **`rolloutStrategy` chart value** for the core and every connector
+  Deployment (generic connectors and Schoology). Empty by default, so the
+  render is unchanged. Set `rollingUpdate: {maxSurge: 0, maxUnavailable: 1}`
+  on a node near its CPU requests: with the Kubernetes default (maxSurge 25%)
+  each one-replica upgrade needs a surge pod to fit next to the old one, and
+  when none fits the pods stay Pending, the Helm wait times out and the
+  release rolls back. `scripts/test-chart-rollout.sh` covers it.
+
+### Security
+
+- **`github.com/go-jose/go-jose/v4` v4.1.4 -> v4.1.9** (CVE-2026-116587,
+  HIGH, fixed in 4.1.6; glovebox-2eq5). Denial of service via crafted RSA
+  parameters in a JWK. Indirect, through `github.com/hashicorp/vault/api`;
+  govulncheck finds no reachable call, but Trivy's filesystem scan failed
+  the release pipeline on it since 0.13.1.
+- **CI: `aquasecurity/trivy-action` pinned to a commit** (v0.36.0) in all
+  seven uses, instead of the moving `@master` branch, so a change upstream
+  cannot alter the release pipeline unreviewed. The steps set the scanner
+  version explicitly (`version: v0.76.2`): at the pinned commit the action
+  defaults to Trivy v0.70.0, older than what `@master` was installing.
+
+## [0.14.0] - 2026-11-10
+
+### Upgrade notes
+
+No chart value, Vault or gitops change has to land first. Deploy it in
+place of 0.13.x. Five things change for a running release:
+
+- **Ingest backpressure tracks staging** (glovebox-0dfx). Each ingest
+  listener recounts the staged item directories every
+  `poll_interval_seconds`, so `glovebox_staging_queue_depth` now reports
+  what is in staging instead of the items staged at boot plus every item
+  accepted since,
+  and a long-lived pod no longer 429s all ingest once
+  `backpressure_threshold` items have passed through it. A dashboard or
+  alert that read the old ever-growing value will see it drop.
+- **The Vault token is re-acquired** (glovebox-jzli). glovebox logs in
+  again when Vault rejects its token and on the next reload after a failed
+  boot login, instead of failing every token reload until a restart. Vault
+  roles are unchanged; the token TTL now only sets how often it logs in.
+  A refused fresh token is logged as a role/policy problem. The archive
+  listener still needs a restart if its first token load fails at boot.
+- **New token reload metrics** (glovebox-l9zp):
+  `glovebox_ingest_token_reload_total{listener,result}`,
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds`,
+  `glovebox_ingest_tokens_loaded`. Worth alerting on: no successful reload
+  for 30m, failures with no success since start, zero tokens loaded.
+- **Schoology session refresher: daily by default.**
+  `schoologyAuthRefresher.schedule` defaults to `0 6 * * *` (was every 12
+  days). A release with the refresher enabled and no schedule of its own
+  now logs in daily; one that sets a schedule is unaffected.
+- **Journal API times are UTC** (glovebox-pblt). A core running outside
+  UTC answered state, event and counts times in its local zone; they are
+  now converted to UTC. The chart's image runs in UTC and sees no
+  difference.
+
+### Added
+
+- **Ingest token reload metrics** (glovebox-l9zp), labelled
+  `listener="archive"|"sanitize"`: `glovebox_ingest_token_reload_total{result}`,
+  `glovebox_ingest_token_reload_last_success_timestamp_seconds` and
+  `glovebox_ingest_tokens_loaded`. A whole-reload failure (Vault refusing the
+  token) was previously visible only as a WARN log; on orac it went unnoticed
+  for 2+ weeks. Both `result` series exist from the first reload, so a
+  listener that failed once and never reloaded (the archive listener after
+  a failed boot load) reads as failure > 0 with success == 0. Alert on
+  `time() - ..._last_success_timestamp_seconds`, on failures with no
+  success, and on `glovebox_ingest_tokens_loaded == 0`: a policy that allows
+  listing but denies reads produces a "successful" reload of zero tokens.
+
+- `docs/journal-api-examples/`: golden answers of the journal's read API
+  (state, events, counts, healthz, refusals) and the roster they were read
+  with, generated from the real API by `TestGoldenAnswers` (record journal
+  Part C Task 4). Consumers such as openclaw pin their decoders to them.
+
 ### Changed
 
+- **Image builds pin the Go builder to `golang:1.27.3-bookworm`**
+  (glovebox-if8s). Every Dockerfile build stage (core, connectors,
+  importers, `Dockerfile.builder`, the generator template) used the floating
+  `docker.io/golang:1.27`, which a pull-through registry mirror could not
+  sync, so kaniko builds waited on the pull until the 1h job timeout. The
+  pin is by tag and digest: a tag request through the mirror still re-checks
+  upstream and can take many minutes, while a digest request is answered
+  from the mirror's store. The pin matches the tag the CI `test` and
+  integration jobs already use, and a
+  Renovate rule bumps the builder tag in all Dockerfiles and the CI file in
+  one MR. Same Go release (1.27.3); the floating tag was the Debian trixie
+  variant, the pin is bookworm, which matches the bookworm/debian12 runtime
+  stages. Every binary is built with `CGO_ENABLED=0`, so the builder's libc
+  does not reach the images. The `build` and `build-base` CI jobs now time
+  out at 40 minutes (successful builds take 6-37) so a hung pull costs less
+  runner time.
+- **Chart: the Schoology session refresher runs daily by default**
+  (`schoologyAuthRefresher.schedule` `0 6 * * *`, was every 12 days). A
+  session does not survive 32 hours (valid at +6.6h, a login page by
+  +32h), so the old default left the connector
+  waiting days for a new one (glovebox-wekc.11). Releases that set their
+  own schedule are unaffected; the refresher is off by default.
 - **Connector records tests no longer flake on a stalled disk**
   (glovebox-062i). `TestRecordsOnStagesTheSameItems` (Schoology) failed
   "1 answers, want 8" on main pipelines while image builds saturated the
@@ -21,6 +173,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happens. Reproduced by delaying every fsync/fdatasync by 1.5s with strace:
   both packages' tests failed 2/2 before, 0/2 after. What the tests assert
   is unchanged. Test-only.
+
+### Fixed
+
+- **Ingest token reloads recover from an expired Vault token**
+  (glovebox-jzli). glovebox logged in to Vault once at boot and never
+  renewed or re-acquired the token, so once it expired every token reload
+  failed with 403 "invalid token" until the pod restarted: rotated or new
+  ingest tokens were never picked up. The Vault client now logs in again
+  when Vault rejects the token (401/403) and retries the call once, at most
+  once a minute, so a broken role or policy does not mint a new token on
+  every call; a freshly issued token that is refused too is reported as a
+  role/policy problem. A failed boot-time login is retried on the next
+  reload for the sanitize/ingest token store. The archive listener is
+  unchanged here: if its first token load fails it still mounts the 503
+  fallback until the pod restarts (spec 10 §4.1; glovebox-fvxn).
+
+- **Ingest backpressure no longer locks out connectors on a long-lived pod**
+  (glovebox-0dfx). The `/v1/ingest` queue counter went up on every accepted
+  item and never came down (`DecrementQueue` had no production caller), so
+  once `backpressure_threshold` items had been accepted over the pod's
+  lifetime every request got 429, whatever staging held. On orac this
+  stopped all ingest for ~36h (2026-11-04..05) with 98 items in staging.
+  Each ingest listener now recounts the staged item directories every
+  `poll_interval_seconds`, so `glovebox_staging_queue_depth` tracks staging
+  and backpressure clears as the scanner drains it.
+
+- **The journal API answers in UTC wherever the core runs
+  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
+  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
+  `since` were written in the core process's local time zone (the database
+  driver returns local times, and a `since` sent with an offset was echoed
+  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
+  whose core runs in UTC (the chart's image does) saw no difference. Now
+  converted to UTC before answering; `TestAnswersAreUTC` runs under a
+  non-UTC zone.
 
 ## [0.13.2] - 2026-11-08
 
@@ -35,16 +222,6 @@ markdown and the connector discovers uploads through the uploads playlist
 (see Changed).
 
 ### Fixed
-
-- **The journal API answers in UTC wherever the core runs
-  (glovebox-pblt).** State rows' `first_seen_at`, `last_seen_at`,
-  `confirmed_at`, events' `observed_at` and `prev_observed_at`, and counts'
-  `since` were written in the core process's local time zone (the database
-  driver returns local times, and a `since` sent with an offset was echoed
-  with it), against `docs/journal-api.md`'s promise of UTC. Deployments
-  whose core runs in UTC (the chart's image does) saw no difference. Now
-  converted to UTC before answering; `TestAnswersAreUTC` runs under a
-  non-UTC zone.
 
 - **A slow delivery volume no longer gets the core killed (glovebox-q0ch).**
   The core's `/healthz` wrote and removed a probe file in `agents_dir`
@@ -78,6 +255,12 @@ markdown and the connector discovers uploads through the uploads playlist
 
 ### Changed
 
+- **youtube: `transcript.provider: yt-dlp`** (glovebox-9zmo): English
+  captions as the item's transcript, captions only (`--skip-download`, one
+  exact track per video, creator captions preferred). The youtube image is
+  now `python:3.13-slim` with yt-dlp pinned in
+  `connectors/youtube/requirements.txt` (no longer distroless). The default
+  stays `none`; set the provider to opt in.
 - **youtube engagement is assessed 30 days after first sight, not at first
   sight.** At an hourly poll a new video is found within its first hour,
   when per-day view rates rank nearly everything `low`. New items now read
@@ -129,10 +312,6 @@ markdown and the connector discovers uploads through the uploads playlist
   `household.json` hash against the journal healthz `roster_sha256`.
 - `docs/deployment.md`: the core's `/healthz` and `/readyz` are described
   (the section still said the core had none).
-- `docs/journal-api-examples/`: golden answers of the journal's read API
-  (state, events, counts, healthz, refusals) and the roster they were read
-  with, generated from the real API by `TestGoldenAnswers` (record journal
-  Part C Task 4). Consumers such as openclaw pin their decoders to them.
 
 ## [0.13.1] - 2026-11-05
 

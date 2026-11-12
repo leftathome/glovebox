@@ -1,5 +1,36 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "postUpdateOptions": ["gomodTidy"]
+  "extends": [
+    "config:recommended"
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "packageRules": [
+    {
+      "description": "One MR bumps the Go builder image everywhere: every Dockerfile build stage and the CI test/integration images move to the same golang tag together.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "golang",
+        "docker.io/golang",
+        "docker.io/library/golang"
+      ],
+      "groupName": "golang docker image",
+      "pinDigests": true
+    },
+    {
+      "description": "The youtube connector's runtime base (python, for yt-dlp) is pinned by digest like the Go builder.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "python",
+        "docker.io/python",
+        "docker.io/library/python"
+      ],
+      "pinDigests": true
+    }
+  ]
 }

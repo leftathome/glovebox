@@ -151,6 +151,11 @@ type ReloadConfig struct {
 	// duplicate-token collision). The caller wires this to a metric
 	// counter such as glovebox_ingest_token_load_errors_total.
 	OnError func(sourceID string)
+	// OnReload, if non-nil, is invoked once at the end of every Reload
+	// with its outcome: the error (nil on success) and the number of
+	// tokens now loaded (0 on failure, when the previous set is kept).
+	// The caller wires it to the token reload metrics (glovebox-l9zp).
+	OnReload func(err error, tokensLoaded int)
 }
 
 // parsedEntry is the intermediate shape produced by Reload's pass 1
@@ -181,7 +186,11 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
 	sourceIDs, err := cfg.Source.List(ctx)
 	if err != nil {
 		s.loadErr.Store(&err)
-		return fmt.Errorf("list tokens: %w", err)
+		err = fmt.Errorf("list tokens: %w", err)
+		if cfg.OnReload != nil {
+			cfg.OnReload(err, 0)
+		}
+		return err
 	}
 
 	// PASS 1: validate per-entry; build counts and parsed entries.
@@ -240,6 +249,9 @@ func (s *TokenStore) Reload(ctx context.Context, cfg ReloadConfig) error {
 	s.swap(next)
 	var nilErr error
 	s.loadErr.Store(&nilErr)
+	if cfg.OnReload != nil {
+		cfg.OnReload(nil, len(next))
+	}
 	return nil
 }
 

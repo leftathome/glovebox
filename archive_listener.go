@@ -65,8 +65,8 @@ func buildTokenSource(ctx context.Context, cfg config.IngestAuthConfig) (auth.To
 // (bootstrapArchives) builds the source via buildTokenSource and wraps
 // this; integration tests pass an in-memory source. A source whose List
 // fails surfaces through archives.StartArchiveListener as the 503
-// fallback path per spec 10 §4.1 (a VaultTokenSource wrapping a
-// failingVaultClient produces the same outcome a Vault outage would).
+// fallback path per spec 10 §4.1 (a VaultTokenSource whose login fails
+// produces the same outcome a Vault outage would).
 func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *http.ServeMux, src auth.TokenSource, extractScanner archives.ExtractScanner) error {
 	trustedCIDRs, err := parseTrustedCIDRs(cfg.Ingest.Auth.TrustedProxyCIDRs)
 	if err != nil {
@@ -116,6 +116,9 @@ func bootstrapArchivesWithSource(ctx context.Context, cfg config.Config, mux *ht
 		TokenStore:       tokenStore,
 		AuthReloadConfig: auth.ReloadConfig{
 			Source: src,
+			OnReload: func(err error, n int) {
+				telemetry.RecordTokenReload(ctx, "archive", err, n)
+			},
 		},
 		RateLimiter:         rl,
 		ProxyResolver:       pr,
@@ -174,8 +177,14 @@ func buildIngestAuth(ctx context.Context, cfg config.Config) (*auth.TokenStore, 
 	})
 	pr := &auth.ProxyResolver{TrustedCIDRs: trustedCIDRs}
 
+	telemetry, err := archives.NewTelemetry("glovebox", "glovebox")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("init sanitize auth telemetry: %w", err)
+	}
 	store := auth.NewTokenStore()
-	reloadCfg := auth.ReloadConfig{Source: src}
+	reloadCfg := auth.ReloadConfig{Source: src, OnReload: func(err error, n int) {
+		telemetry.RecordTokenReload(ctx, "sanitize", err, n)
+	}}
 	if err := store.Reload(ctx, reloadCfg); err != nil {
 		log.Printf("glovebox sanitize auth: initial token load failed: %v (requests will 401 until a reload succeeds)", err)
 	}
@@ -205,35 +214,19 @@ func parseTrustedCIDRs(strs []string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// loginVault returns an auth.VaultClient. On LoginK8s failure it
-// returns a sentinel client whose ListPath / ReadKV calls return the
-// captured error so StartArchiveListener's first Reload trips the 503
-// fallback path. Operator must fix Vault and restart the pod (matches
-// spec 10 §4.1).
-func loginVault(ctx context.Context, vc config.VaultClientConfig) auth.VaultClient {
-	client, err := auth.LoginK8s(ctx, vc.Addr, vc.K8sRole)
-	if err != nil {
-		log.Printf("glovebox vault k8s login failed: %v (archive listener will mount 503 fallback)", err)
-		return &failingVaultClient{err: err}
-	}
-	return auth.NewProductionVaultClient(client)
-}
-
-// failingVaultClient is the sentinel returned by loginVault when the
-// Vault K8s auth handshake fails. Both interface methods return the
-// captured error so the listener's first TokenStore.Reload observes a
-// load failure and mounts the 503 fallback. This is a deliberate
-// asymmetry to keep ALL startup failures funnelled through the same
-// "503 + structured log + operator-restart" code path; main.go does
-// not need its own mountArchive503 call.
-type failingVaultClient struct {
-	err error
-}
-
-func (f *failingVaultClient) ListPath(context.Context, string, string) ([]string, error) {
-	return nil, f.err
-}
-
-func (f *failingVaultClient) ReadKV(context.Context, string, string) (map[string]any, error) {
-	return nil, f.err
+// loginVault returns an auth.VaultClient that does the K8s login itself:
+// lazily on first use, again whenever Vault rejects the token, and again on
+// the next call after a failed login (glovebox-jzli). A boot-time login
+// failure still fails StartArchiveListener's first Reload, so the archive
+// listener mounts its 503 fallback as before (spec 10 §4.1); the token
+// reload loops now recover on their own once Vault accepts the login.
+func loginVault(_ context.Context, vc config.VaultClientConfig) auth.VaultClient {
+	return auth.NewReloginVaultClient(func(ctx context.Context) (auth.VaultClient, error) {
+		client, err := auth.LoginK8s(ctx, vc.Addr, vc.K8sRole)
+		if err != nil {
+			log.Printf("glovebox vault k8s login failed: %v (retried on the next token reload)", err)
+			return nil, err
+		}
+		return auth.NewProductionVaultClient(client), nil
+	})
 }

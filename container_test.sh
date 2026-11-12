@@ -31,7 +31,7 @@ set -euo pipefail
 #       image changed. Defaults to running the connector checks.
 #   CONTAINER_TEST_CONNECTOR_BUILD_TIMEOUT=<seconds>
 #       Per-connector docker-build timeout. Defaults to 600s (10 min);
-#       a cold first build that pulls golang:1.27 + the enricher-runtime
+#       a cold first build that pulls golang:1.27.3-bookworm + the enricher-runtime
 #       base can approach this on a slow link.
 #
 # Usage: ./container_test.sh
@@ -176,7 +176,7 @@ fi
 #                                       the static Go binary + CA certs):
 #       rss, hackernews, github, gitlab, linkedin, bluesky, x,
 #       notion, jira, schoology, powerschool, gcalendar, gdrive, onedrive,
-#       teams, steam, meta, trello, youtube
+#       teams, steam, meta, trello
 #
 # For each enricher-runtime connector: assert pdftotext, tesseract,
 # pandoc are all present and runnable.
@@ -213,8 +213,9 @@ else
     # schoology-auth-refresher is distroless but an auth helper, and
     # powerschool-auth-refresher and login-broker are debian:bookworm-slim
     # + Chromium (not distroless, not enricher-runtime); all three are
-    # excluded from both checks. trello and youtube are distroless/static per current repo
-    # state; included.
+    # excluded from both checks. trello is distroless/static per current repo
+    # state; included. youtube is python:slim + yt-dlp (captions only,
+    # glovebox-9zmo); not distroless, not enricher-runtime; excluded.
     DISTROLESS_CONNECTORS=(
         "rss:connectors/rss/Dockerfile"
         "hackernews:connectors/hackernews/Dockerfile"
@@ -234,7 +235,6 @@ else
         "steam:connectors/steam/Dockerfile"
         "meta:connectors/meta/Dockerfile"
         "trello:connectors/trello/Dockerfile"
-        "youtube:connectors/youtube/Dockerfile"
     )
 
     BUILD_TIMEOUT="${CONTAINER_TEST_CONNECTOR_BUILD_TIMEOUT:-600}"

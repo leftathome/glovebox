@@ -10,7 +10,9 @@
 // Two workloads use it for the same account and therefore share one record:
 // the scheduled PowerSchool login job (connectors/powerschool-auth-refresher)
 // and the login broker (internal/loginbroker). A latch set by either stops
-// both.
+// both. The Schoology session refresher (connectors/schoology-auth-refresher)
+// keeps a record of its own, for its own account, in the same form; its
+// token may write the session but not read it back (Put).
 //
 // Nothing here logs, and no error it returns carries a secret's value.
 package loginvault
@@ -363,6 +365,21 @@ func (v *Store) CanWrite(ctx context.Context) (bool, error) {
 // path is still at version cas (0 = must not exist yet).
 func (v *Store) Write(ctx context.Context, data map[string]any, cas int) (int, error) {
 	secret, err := v.client.KVv2(v.mount).Put(ctx, v.path, data, vaultapi.WithCheckAndSet(cas))
+	if err != nil {
+		return 0, err
+	}
+	if secret != nil && secret.VersionMetadata != nil {
+		return secret.VersionMetadata.Version, nil
+	}
+	return 0, nil
+}
+
+// Put stores the session WITHOUT check-and-set, for a workload whose token
+// may write the session path but not read it (so it cannot know the version
+// to check against). KVv2.Put adds the mount and the "/data/" segment
+// itself. Prefer Write wherever the session can be read.
+func (v *Store) Put(ctx context.Context, data map[string]any) (int, error) {
+	secret, err := v.client.KVv2(v.mount).Put(ctx, v.path, data)
 	if err != nil {
 		return 0, err
 	}
