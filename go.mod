@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/PuerkitoBio/goquery v1.13.0
 	github.com/coder/websocket v1.8.15
-	github.com/emersion/go-imap/v2 v2.0.0-beta.8
+	github.com/emersion/go-imap/v2 v2.0.0-beta.9
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getkin/kin-openapi v0.153.0
 	github.com/google/uuid v1.6.0
