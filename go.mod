@@ -12,7 +12,7 @@ require (
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/leftathome/powerschool-go v0.4.0
+	github.com/leftathome/powerschool-go v0.5.0
 	github.com/leftathome/schoology-go v0.3.0
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/prometheus/client_golang v1.25.0
